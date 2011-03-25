@@ -64,7 +64,7 @@
 	\renewcommand\@subclass{Note}
 \fi\fi\fi\fi
 
-\setcounter{chapter}{1}
+\setcounter{chapter}{0}
 
 \newcommand\@company{\relax}
 \newcommand\@tcompany{\relax}
