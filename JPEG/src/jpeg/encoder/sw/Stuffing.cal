@@ -29,61 +29,97 @@
  
 // Author: Endri Bezati <endri.bezati@epfl.ch>
 
-package std.io;
+package jpeg.encoder.sw;
 
-/**
- * Standard I/O writer actor.
- */
-actor Writer()
- 	uint(size=8) Byte,
- 	bool pEOF
- 		==> 
- 			:
-
-	/**
-	 * Initializing the file to be written
-	 */
-	native procedure Writer_init() end
-
-	/**
-	 * Wite a byte to a file
-	 */
-	native procedure Writer_write(uint(size=8) byte) end
+actor Stuffing()
+	int(size=32) SOI,
+	int(size=4) YCbCrBit,
+	int(size=32) YCbCrCount
+		==>
+			int(size=4) Bit,
+			int Count:
 	
-	/**
-	 * Close tthe file
-	 */
-	native procedure Writer_close() end
-
-	initialize ==>
+	int maxBlocks := 0;	
+	int CountRead := 0;	
+	int ReadBits := 0;
+	int Stuff := 0;
+	int CountBlocks := 0;
+	int Block_Type := 0;
+			
+	GetSz: action SOI:[soi] repeat 2 ==>
 	do
-		Writer_init();
+		maxBlocks :=((soi[0] + 15) >> 4) * ((soi[1] + 15) >> 4);
 	end
 	
-	bool peof := false;
-	
-	GetEOF: action pEOF:[p] ==>
+	GetYCbCrCounts: action YCbCrCount:[c] ==>
 	do
-		peof := p;
+		ReadBits := c;
+		CountRead := CountRead + c;
 	end
 	
-	Write: action Byte:[b] ==>
+	SendYCbCrBit: action YCbCrBit:[ycbcrbit] ==> Bit:[ycbcrbit]		
+	do
+		ReadBits := ReadBits - 1;
+	end
+	
+	DoneRead: action ==>
 	guard
-		not peof
+		ReadBits  = 0
 	do
-		Writer_write(b);
+		
+		if Block_Type = 5 then 
+			CountBlocks := CountBlocks + 1;
+			Block_Type := 0;
+		else
+			Block_Type := Block_Type + 1;
+		end
+		
 	end
 	
-	Close: action ==>
+	EOI: action ==> Count:[CountRead]
 	guard
-		peof
+		CountBlocks = maxBlocks
 	do
-		Writer_close();
-	end
+		//Bitsream should by 8-bit aligned, send Stuffing
+		if (CountRead mod 8 != 0)
+		then
+			Stuff := 8 - (CountRead mod 8);
+		else
+			Stuff := 0;
+		end
+	end	
+	
+	SendStuffing: action ==> Bit:[0] 
+	do
+		Stuff := Stuff - 1;
+	end	
+	
+	DoneStuffing: action ==>
+	guard
+		Stuff = 0
+	do
+		//Init
+		Block_Type := 0;
+		CountBlocks := 0;
+		CountRead := 0; 
+	end		
 	
 	schedule fsm s0:
-		s0		(GetEOF)		--> s1;
-		s1		(Write)			--> s0;
-		s1		(Close)			--> s0;
+		s0			(GetSz)					--> s1;
+		s1			(GetYCbCrCounts)		--> s2;
+		
+		s2			(SendYCbCrBit)			--> s2;
+		s2			(DoneRead)				--> s1;
+		
+		s1			(EOI)					--> s3;
+		
+		s3			(SendStuffing)			--> s3;
+		s3			(DoneStuffing)			--> s0;
+	end
+	
+	priority
+		EOI > GetYCbCrCounts;
+		DoneRead > SendYCbCrBit;
+		DoneStuffing > SendStuffing;
 	end
 end

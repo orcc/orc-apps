@@ -29,61 +29,79 @@
  
 // Author: Endri Bezati <endri.bezati@epfl.ch>
 
-package std.io;
+package jpeg.encoder.hw.quanta;
 
-/**
- * Standard I/O writer actor.
- */
-actor Writer()
- 	uint(size=8) Byte,
- 	bool pEOF
- 		==> 
- 			:
+import jpeg.encoder.common.Tables.QT;
+import jpeg.encoder.common.Tables.zigzag;
 
-	/**
-	 * Initializing the file to be written
-	 */
-	native procedure Writer_init() end
-
-	/**
-	 * Wite a byte to a file
-	 */
-	native procedure Writer_write(uint(size=8) byte) end
+actor Quantization()
+	int(size=32) In
+		==>
+			int(size=32) QT_Out,
+			int(size=32) ZZ_Out:
 	
-	/**
-	 * Close tthe file
-	 */
-	native procedure Writer_close() end
-
-	initialize ==>
-	do
-		Writer_init();
+	int Block_Type := 0; // Block_Type = 0,1,2,3 (Luma), Block_Type = 4,5 (Chroma)	
+	
+	int Counter := 0;
+	
+	List(type:int(size=32), size=64) data := [0: for int i in 0 .. 63];
+	
+	Input.start: action ==>
+	do	
+		Counter := 0;
 	end
 	
-	bool peof := false;
-	
-	GetEOF: action pEOF:[p] ==>
+	Input.save: action In:[token]==> 
 	do
-		peof := p;
-	end
+		data[Counter] := token;
+		Counter := Counter + 1;
+	end	
 	
-	Write: action Byte:[b] ==>
+	Input.finish: action ==>
 	guard
-		not peof
-	do
-		Writer_write(b);
+		Counter = 64
 	end
 	
-	Close: action ==>
-	guard
-		peof
+	// Quant.star: Adding this action because the if The Counter := 0 is put in the
+	// Input.finish the actor will send only one token (Really Strange !!!) 
+	
+	Quant.start: action ==>
+	do	
+		Counter := 0;
+	end
+	
+	Quant.send: action ==> QT_Out:[qt], ZZ_Out:[zz]
+	var
+		int(size=32) qt := 0,
+		int(size=32) zz	:= 0
 	do
-		Writer_close();
+		qt := QT[Block_Type >> 2][Counter];
+		zz := data[zigzag[Counter]];
+		Counter := Counter + 1;
+	end	
+	
+	Quant.finish: action ==>
+	guard
+		Counter = 64
+	do
+		Block_Type := (Block_Type + 1);
+		if Block_Type = 6 then
+			Block_Type := 0;
+		end
 	end
 	
 	schedule fsm s0:
-		s0		(GetEOF)		--> s1;
-		s1		(Write)			--> s0;
-		s1		(Close)			--> s0;
+		s0	(Input.start)	--> s01;
+		s01	(Input.save)	--> s01;
+		s01	(Input.finish)	--> s1;
+		
+		s1	(Quant.start)	--> s11;
+		s11	(Quant.send)	--> s11;
+		s11	(Quant.finish)	--> s0;
+	end
+	
+	priority
+		Input.finish > Input.save;
+		Quant.finish > Quant.send;
 	end
 end

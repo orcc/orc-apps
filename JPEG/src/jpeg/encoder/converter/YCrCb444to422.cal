@@ -1,0 +1,205 @@
+/*-------------------------------------------------------------------
+/*
+ * Copyright (c) 2009-2010, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+/* 
+ * Author: Richard Thavot <richard.thavot@epfl.ch>
+ *			alhadi.abrahman@epfl.ch - modified to work with CAL2HDL
+ *
+ * Create Date:   11/31/2008
+ * Design Name:   YCrCb444to422
+ * Project Name:  Chroma Resampler
+ * Tool versions:  Orcc
+ * Description:   
+ * 		This application note describes the implementation
+ *		of circuit necessary to perform commonly used 
+ *		conversions between various chroma formats.
+ * Dependencies:
+ * 
+ * Revision:
+ * 		Revision 0.10
+ * Additional Comments:
+ *		This actor is a 2:1 horizontal down conversion operation.
+ * 		By convention, Cr is always first.By default, this is
+ *		achieved using a three-tap structure with Coefficients 
+ *		equivalent to  [0.25 0.5 0.25] represented in 3-bit 
+ * 		form by the integer set [1 2 1]. This actor manages the
+ *		edge effect.
+ * Notes:
+ *  (1)original[in RGB] --> YCrCb444 --> (2)displayed[in RGB]
+ *	original 			displayed 	 			SNR[dB]		PSNR[dB]	RMSE	MAE   
+ *  (1)lena 512x512 	(2)lena422 512x512		37.887		45.356		1.322	1.012
+ */
+package jpeg.encoder.converter;
+
+
+actor YCrCb444to422()
+    int(size=32) SOI,
+    int(size=10) Cr,
+    int(size=10) Cb
+    	==>
+   			int(size=10) CrCb422:
+   		
+    //image width is imgSize(15 downto 0) and height is 31 downto 16)
+    //	int(size=32) SizeOfImage,
+    //function getWidth(int(size=32) sizeOfImage) --> int(size=16): bitand(sizeOfImage ,65535) end
+    //function getHeight(int(size=32) sizeOfImage) --> int(size=16): rshift(sizeOfImage ,16) end
+    function tap(int(size=10) a, int(size=10) b, int(size=10) c) --> int(size=10): 
+    	(a + (b << 1) + c) >> 2 
+    end
+    
+ 	bool StartOfLine;
+  	bool EndOfLine;
+    
+   	int(size=11) cr0 := 0;
+   	int(size=11) cr1 := 0;
+    int(size=11) cb0 := 0;
+    int(size=11) cb1 := 0;
+    
+    int count := 0;
+    
+    int(size=32) width := 0;
+    int(size=32) height := 0; 
+    
+    int(size=16) i := 0;
+    int(size=16) j := 0; 
+    
+    int CrOut := 0;
+    int CbOut := 0;
+    int i_CbOut := 0;
+    
+    getw: action SOI:[w] ==>
+	do
+		width := w;
+		
+		i := 0;
+		j := 0;
+	end
+    
+    geth: action SOI:[h] ==>
+	do
+		height := h;
+		
+		i := 0;
+		j := 0;
+	end
+	
+    wait : action Cr:[cr], Cb:[cb] ==>
+    do
+		cr1 := cr0;
+		cr0 := cr;
+		cb1 := cb0;
+		cb0 := cb;
+
+		if i = 0 then
+			StartOfLine := true;
+		else if i = width-2 then
+			EndOfLine := true;
+		else
+			StartOfLine := false;
+			EndOfLine := false;
+		end end
+		
+		count := count + 1;
+		
+    end
+       
+   	firecr : action Cr:[cr], Cb:[cb] ==> CrCb422:[CrOut]
+    var 
+    	int(size=10) Cr_CoefA, 
+    	int(size=10) Cr_CoefB, 
+    	int(size=10) Cr_CoefC,
+    	int(size=10) Cb_CoefA, 
+    	int(size=10) Cb_CoefB, 
+    	int(size=10) Cb_CoefC
+    do	
+    	if StartOfLine then
+    		Cr_CoefA := cr0;
+    		Cr_CoefB := cr0;
+    		Cr_CoefC := cr;
+    		Cb_CoefA := cb0;
+    		Cb_CoefB := cb0;
+    		Cb_CoefC := cb;
+    	else if EndOfLine then
+    		Cr_CoefA := cr0;
+    		Cr_CoefB := cr;
+    		Cr_CoefC := cr;
+    		Cb_CoefA := cb0;
+    		Cb_CoefB := cb;
+    		Cb_CoefC := cb;
+    	else
+    		Cr_CoefA := cr1;
+    		Cr_CoefB := cr0;
+    		Cr_CoefC := cr;
+    		Cb_CoefA := cb1;
+    		Cb_CoefB := cb0;
+    		Cb_CoefC := cb;
+    	end end
+    	CrOut := tap(Cr_CoefA,Cr_CoefB,Cr_CoefC);
+    	i_CbOut := tap(Cb_CoefA,Cb_CoefB,Cb_CoefC);
+
+	    cr1 := cr0;
+		cr0 := cr;
+		cb1 := cb0;
+		cb0 := cb;
+		
+		i := i + 2;
+		if i >= width then
+			i := 0;
+			j := j + 1;
+		end
+		count := count + 1;
+    end
+    
+    firecb : action ==>  CrCb422:[CbOut]
+    do
+    	CbOut := i_CbOut;
+    end
+    
+    
+    done: action ==>
+    guard count = width * height
+    do
+    count := 0;
+    end
+    
+    schedule fsm getw :
+    getw(getw)-->geth;
+    geth(geth) --> wait;
+    
+    wait(done)-->getw;
+    wait(wait )-->firecr;
+    firecr(firecr)-->firecb;
+    firecb(firecb)-->wait;    
+    end
+
+	priority
+	done > wait;
+	end
+end

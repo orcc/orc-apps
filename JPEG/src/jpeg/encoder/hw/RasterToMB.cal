@@ -1,0 +1,232 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+package jpeg.encoder.hw;
+
+actor RasterToMB()
+	int(size=32) SOI,
+	int(size=10) Y,
+	int(size=10) CbCr
+		==>
+			int(size=10) YCbCr:
+	// hack waiting for list-size parametrization
+	
+	int maxw_in_mb = 64;
+	
+	int currentYLine := 0;
+
+	int currentCbCrLine := 0;
+
+	int mbCount := 0;
+
+	int mbTotalCount := 0;
+
+	int lineType := 0;
+
+	int mbwidth :=0;
+	int mbheight :=0;
+
+	int Counter := 0;
+		
+	int cb_count := 0;
+	int cr_count := 0;
+	
+	int token;
+	
+	// one line of MB in the worst case
+	List(type: List(type: int(size=10), size=maxw_in_mb * 16), size=16) yTab := [[0 : for int i in 1 .. maxw_in_mb * 16] : for int j in 1 .. 16 ];
+
+	List(type: List(type: int(size=10), size=maxw_in_mb * 8), size=8) cbTab := [[0 : for int i in 1 .. maxw_in_mb * 8] : for int j in 1 .. 8 ];
+
+	List(type: List(type: int(size=10), size=maxw_in_mb * 8), size=8) crTab := [[0 : for int i in 1 .. maxw_in_mb * 8] : for int j in 1 .. 8 ];
+	
+	List(type: int(size=8), size=384) ycbcr := [0:for int i in 0 .. 383];
+	 
+	getSzW: action SOI:[soi] ==> 
+	do
+		mbwidth := (soi + 15) >> 4;
+	end
+	
+	getSzH: action SOI:[soi] ==> 
+	do
+		mbheight := (soi + 15) >> 4;
+	end
+
+	done: action ==> 
+	guard
+		currentYLine = 16
+	do
+		currentYLine := 0;
+		currentCbCrLine := 0;
+	end
+	
+	storeY.start: action ==> 
+	guard
+		lineType = 0 or lineType = 2
+	do
+		Counter := 0;
+	end
+	
+	storeY.save: action Y:[ y ] ==> 
+	do
+		yTab[currentYLine][mbCount * 16 + Counter] := y;
+		Counter := Counter + 1;
+	end
+
+	storeY.finish: action ==>
+	guard
+		Counter = 16
+	do	
+		mbCount := mbCount + 1;
+		if mbCount = mbwidth then
+			mbCount := 0;
+			currentYLine := currentYLine + 1;
+			if lineType = 0 then
+				lineType := 1;
+			else
+				lineType := 0;
+			end
+		end
+	end
+
+	storeCbCr.start: action ==>
+	guard
+		lineType = 1
+	do
+		Counter := 0;
+	end
+
+	storeCbCr.save: action CbCr:[ cbcr ] ==> 
+	do
+		if (Counter & 1)  = 1 then
+			cbTab[currentCbCrLine][mbCount * 8 + cb_count] := cbcr;
+			cb_count := cb_count+ 1;
+		else
+			crTab[currentCbCrLine][mbCount * 8 + cr_count] := cbcr;
+			cr_count := cr_count + 1;
+		end
+		Counter := Counter + 1;
+	end
+	
+	storeCbCr.finish: action ==>
+	guard
+		Counter = 16
+	do	
+		mbCount := mbCount + 1;
+		if mbCount = mbwidth then
+			currentCbCrLine := currentCbCrLine + 1;
+			mbCount := 0;
+			lineType := 2;
+		end
+		cr_count := 0;
+		cb_count := 0;
+	end
+
+	doneSend.EOI: action ==>
+	guard
+		mbTotalCount = mbwidth * mbheight
+	do
+		mbTotalCount := 0;
+		mbCount := 0;
+		
+		currentYLine := 0;
+		currentCbCrLine := 0;
+		lineType := 0;
+	end
+
+	doneSend.Line: action ==>
+	guard
+		mbCount = mbwidth
+	do
+		mbCount := 0;
+	end
+
+	send.start: action ==>
+	do
+		foreach int i in 0 .. 7 do
+			foreach int j in 0 .. 7 do
+				ycbcr[8 * i + j]       := yTab[i][j + 16 * mbCount];
+				ycbcr[8 * i + j + 64]  := yTab[i][(j + 8) + 16 * mbCount];
+				ycbcr[8 * i + j + 128] := yTab[i + 8][j + 16 * mbCount];
+				ycbcr[8 * i + j + 192] := yTab[i + 8][j + 8 + 16 * mbCount];
+				ycbcr[8 * i + j + 256] := cbTab[i][j + (8 * mbCount)];
+				ycbcr[8 * i + j + 320] := crTab[i][j + (8 * mbCount)];
+			end
+		end
+		Counter := 0;
+	end
+	
+	send.send: action ==> YCbCr:[token]
+	do
+		token := ycbcr[Counter];
+		Counter := Counter + 1;
+	end 
+	
+	send.stop: action ==>
+	guard
+		Counter = 384
+	do
+		mbCount := mbCount + 1;
+		mbTotalCount := mbTotalCount + 1;
+	end
+	
+
+	schedule fsm s0 :
+		s0 		(getSzW )				--> s1;
+		s1		(getSzH )				--> s2;
+		
+		s2		(storeY.start)			--> s21;
+		s21		(storeY.save)			--> s21;
+		s21		(storeY.finish)			--> s2;
+		
+		s2		(storeCbCr.start)		--> s22;
+		s22		(storeCbCr.save)		--> s22;
+		s22		(storeCbCr.finish)		--> s2;
+		
+		s2		(done)					--> s3;
+		
+		s3		(send.start)			--> s31;
+		s31		(send.send)				--> s31;
+		s31		(send.stop)				--> s3;
+		
+		s3 		(doneSend.Line)			--> s2;
+		s3 		(doneSend.EOI)			--> s0;
+	end
+
+	priority
+		storeY.finish > storeY.save;
+		storeCbCr.finish > storeCbCr.save;
+		
+		done > storeY.start;
+		done > storeCbCr.start;
+		
+		send.stop > send.send;
+		doneSend.EOI > doneSend.Line > send.start;
+	end
+end

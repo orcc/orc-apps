@@ -1,0 +1,393 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Endri Bezati <endri.bezati@epfl.ch>
+
+package jpeg.encoder.sw;
+
+import jpeg.encoder.common.Tables.HT_Bits;
+import jpeg.encoder.common.Tables.lumaDCValues;
+import jpeg.encoder.common.Tables.lumaACValues;
+import jpeg.encoder.common.Tables.chromaDCValues;
+import jpeg.encoder.common.Tables.chromaACValues;
+
+actor Huffman420()
+	int(size=32) In,
+	int(size=32) SOI
+		==> 
+			int(size=4) Bit,
+			int(size=32) Count:
+			
+	int blockCount := 0;
+	int maxBlock;
+	int count := 0;
+	int send_idx := 0;
+	int last_DC := 0;
+	uint cur_HT := 0;
+	uint to_read := 0;
+	uint read_HT := 0;
+	bool CheckType := false;
+	int isAC := 0; // 0: DC, 2:AC
+	int Block_Type := 0;
+	// Temporary buffers to store the data of the Huffman table definition.
+	List(type:uint(size=8), size=16) ht_codes_len;
+	List(type:uint(size=8), size=256) ht_codes_list;
+	
+	List(type:int(size=1), size=2048) out_buffer;
+	
+	List(type:int(size=32), size=3) Last_DC := [0, 0, 0];
+	// The constructed Huffman tables.
+	// Index 0 is DC Huffman table.
+	// Index 1 is AC Huffman table.
+	
+	// The length of each code.
+	List(type:List(type:uint(size=32), size=256), size=2) ht_lookup_bitlen;
+	// The binary representation of each code.
+	List(type:List(type:List(type:int(size=1), size=16), size=256), size=2) ht_lookup_bits;
+	// The value of the code.
+	List(type:List(type:uint(size=8), size=256), size=2) ht_lookup_code;
+			
+	procedure build_bitstring(uint bb_ht_idx, uint bb_code, int bb_idx)
+	var
+		bool bb_done
+	begin
+		bb_done := (bb_code = 0);
+		while (not bb_done)
+		do
+			ht_lookup_bits[cur_HT][bb_ht_idx][bb_idx] := bb_code mod 2;
+			bb_idx := bb_idx - 1;
+			bb_code := bb_code >> 1;
+			bb_done := (bb_code = 0);
+		end
+		// Add trailing zeros if necessary.
+		bb_done := (bb_idx = -1);
+		while (not bb_done)
+		do
+			ht_lookup_bits[cur_HT][bb_ht_idx][bb_idx] := 0;
+			bb_idx := bb_idx - 1;
+			bb_done := (bb_idx = -1);
+		end
+	end
+	
+	procedure generate_HT()
+	var
+		int v,
+		int ht_idx,
+		int code_idx,
+		bool done
+	begin
+		v := 0;
+		ht_idx := 0;
+		foreach uint i in 0 .. 15 do
+			code_idx := 0;
+			done := (code_idx = ht_codes_len[i]);
+			while (not done) do
+				ht_lookup_bitlen[cur_HT][ht_idx] := i + 1;
+				build_bitstring(ht_idx, v, i);
+				ht_lookup_code[cur_HT][ht_codes_list[ht_idx]] := ht_idx;
+				
+				v := v + 1;
+				ht_idx := ht_idx + 1;
+				code_idx := code_idx + 1;
+				done := (code_idx = ht_codes_len[i]);
+			end
+			v := v << 1;
+		end
+	end
+	
+	function abs(int x) --> int :
+		if x < 0 then
+			-x
+		else
+			x
+		end
+	end
+	
+	uint cur_idx;
+	uint offset := 0;
+	procedure build_outputbuffer(int bo_v, uint bo_ZRL)
+	var
+		uint v_abs,
+		uint len,
+		uint log2,
+		uint code,
+		bool done := false
+	begin
+		v_abs := abs(bo_v);
+	
+		log2 := 0;
+		if (bo_ZRL = 16) then
+			code := 0xF0;
+		else
+			if (bo_v = 0) then
+				code := 0x00;
+			else
+				// Compute log base 2 of v
+				while not done do
+					log2 := log2 + 1;
+					v_abs := v_abs >> 1;
+					done := (v_abs = 0);
+				end
+				code := (bo_ZRL << 4) + log2;
+			end
+		end
+		
+		cur_idx := ht_lookup_code[cur_HT][code];
+		
+		// Write the huffman code and the value to the output buffer.
+		len := ht_lookup_bitlen[cur_HT][cur_idx];
+		foreach uint i in 0 .. len - 1 do
+			out_buffer[offset + i] := ht_lookup_bits[cur_HT][cur_idx][i];
+		end
+		// Write the value
+		if (bo_v < 0) then
+			// 2 complement
+			v_abs := bo_v + (1 << log2) - 1;
+		else
+			v_abs := bo_v;
+		end
+		offset := offset + len;
+		foreach uint i in 1 .. log2 do
+			out_buffer[offset + log2 - i] := v_abs mod 2;
+			v_abs := v_abs / 2;
+		end
+		offset := offset + log2;
+	end	
+	
+	GetSz: action SOI:[soi] repeat 2 ==>
+	do
+		maxBlock := (4 + 2) * ((soi[0] + 15) >> 4) * ((soi[1] + 15) >> 4);
+	end
+	
+	int ht_idx;
+	
+	GetHT: action ==>
+	do
+		cur_HT := isAC >> 1;
+		to_read := 0;
+		foreach int i in 1 .. 16
+		do
+			ht_codes_len[i-1] := HT_Bits[isAC + ((Block_Type & 4) >> 2)][i];
+			to_read := to_read + ht_codes_len[i-1];
+		end
+		
+		ht_idx := 0;
+	
+		if isAC = 0 and (Block_Type & 4) = 0 then
+				while (to_read > 0) do
+					ht_codes_list[ht_idx] := lumaDCValues[ht_idx];
+					ht_idx := ht_idx + 1;
+					to_read := to_read - 1;
+				end
+		else
+			if isAC = 2 and (Block_Type & 4) = 0 then
+				while (to_read > 0) do
+					ht_codes_list[ht_idx] := lumaACValues[ht_idx];
+					ht_idx := ht_idx + 1;
+					to_read := to_read - 1;
+				end
+			else
+				if isAC = 0 and (Block_Type & 4) = 4 then
+					while (to_read > 0) do
+						ht_codes_list[ht_idx] := chromaDCValues[ht_idx];
+						ht_idx := ht_idx + 1;
+						to_read := to_read - 1;
+					end
+				else
+					if isAC = 2 and (Block_Type & 4) = 4 then
+						while (to_read > 0) do
+							ht_codes_list[ht_idx] := chromaACValues[ht_idx];
+							ht_idx := ht_idx + 1;
+							to_read := to_read - 1;
+						end
+					end
+				end
+			end
+		end
+		
+		generate_HT();
+		isAC := isAC + 2;
+		read_HT := read_HT + 1;
+	end
+
+	doneHT:action ==>
+	guard 
+		read_HT = 2
+	do
+		isAC := 0;
+		cur_HT := 0;
+	end
+	
+	EOI: action ==>
+	guard 
+		blockCount = maxBlock
+	do
+		maxBlock := 0;
+		blockCount := 0;
+	
+		//reset globals
+		Block_Type := 0;
+		Last_DC[0] := 0;
+		Last_DC[1] := 0;
+		Last_DC[2] := 0;
+		cur_HT := 0;
+		to_read := 0;
+		read_HT := 0;
+		offset := 0;
+		count := 0;
+		send_idx := 0;
+		last_DC := 0;
+		CheckType := false;
+		isAC := 0; 
+	end
+	
+	ChangeType: action ==>
+	guard
+		(Block_Type = 4 or Block_Type = 6) and CheckType
+	do
+		if Block_Type = 6 then
+			Block_Type := 0;
+		end
+		read_HT := 0;
+		CheckType := false;
+	end
+	
+	receiveBlock: action In:[b] repeat 64 ==> Count:[offset]
+	var
+		uint EOB_idx,
+		uint i,
+		uint val,
+		uint ZRL,
+		bool done,
+		bool zero
+	do
+		EOB_idx := 63;
+		done := (b[EOB_idx] != 0);
+		while (not done)
+		do
+			EOB_idx := EOB_idx - 1;
+			if (EOB_idx = 0)
+			then
+				done := true;
+			else
+				done := (b[EOB_idx] != 0);
+			end
+		end
+		
+		cur_HT := 0;
+		if Block_Type = 4 then
+			last_DC := Last_DC[1];
+		else
+			if Block_Type = 5 then
+				last_DC := Last_DC[2];
+			else
+				last_DC := Last_DC[0];
+			end
+		end
+		
+		val := b[0] - last_DC;
+		offset := 0;
+		build_outputbuffer(val, 0);
+		
+		if Block_Type = 4 then
+			Last_DC[1] := b[0];
+		else
+			if Block_Type = 5 then	
+				Last_DC[2] := b[0];
+			else
+				Last_DC[0] := b[0];
+			end
+		end
+
+		cur_HT := 1;
+		i := 1;
+		done := (i > EOB_idx);
+		while (not done)
+		do
+			ZRL := 0;
+			zero := (b[i] = 0);
+			while (zero)
+			do
+				ZRL := ZRL + 1;
+				i := i + 1;
+				zero := (b[i] = 0 and ZRL < 15);
+			end
+			if (b[i] = 0)
+			then
+				build_outputbuffer(0, 16);
+			else
+				build_outputbuffer(b[i], ZRL);
+			end
+			i := i + 1;
+			done := (i > EOB_idx);
+		end
+		// Add EOB if necessary
+		if (EOB_idx < 63)
+		then
+			build_outputbuffer(0, 0);
+		end
+		count := count + 1;
+		send_idx := 0;
+		
+		blockCount := blockCount + 1;
+	end
+	
+	sendBits: action ==> Bit:[b]
+	var
+		int(size=1) b
+	do
+		b := out_buffer[send_idx];
+		send_idx := send_idx + 1;
+	end
+
+	doneSend: action ==>
+	guard
+		send_idx = offset
+	do
+		Block_Type := Block_Type + 1;
+		CheckType := true;
+	end
+	
+	schedule fsm s0:
+		s0		(GetSz)				--> s1;
+		s1		(GetHT)				--> s1;
+		s1		(doneHT)			--> s2;
+		s2		(ChangeType)		--> s1;
+		s2		(receiveBlock)		--> s3;
+		s2		(EOI)				--> s0;
+		s3		(sendBits)			--> s3;
+		s3		(doneSend)			--> s2;
+	end
+		
+	priority
+		doneHT > GetHT;
+		EOI > ChangeType > receiveBlock;
+		doneSend > sendBits;
+	end
+end

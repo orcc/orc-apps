@@ -1,0 +1,319 @@
+/*
+ * Copyright (c) 2010, Regents of the Akatech SA, EPFL
+ * 
+ * All rights reserved.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Akatech SA, EPFL nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE REGENTS AND CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Author : Felix Abecassis
+ */
+  
+package jpeg.decoder;
+ 
+actor Huffman420() 
+	int(size=1) Bit, 
+	uint(size=8) HT, int(size=32) SOI
+		==> 
+			int(size=24) Block, bool pEOF :
+
+	uint(size=3) v_read_HT := 0;
+	uint(size=16) cur_val := 0;
+	uint cur_len := 0;
+	uint(size=32) to_read := 0;
+	uint(size=32) to_readHT := 0;
+	uint(size=32) cur_HT;
+	
+	// The indexes of each HT.
+	List(type:uint, size=3) dctab = [0, 1, 1];
+	List(type:uint, size=3) actab = [2, 3, 3];
+	
+	List(type:List(type:uint(size=8), size=256), size=4) ht_lookup_codelen := [[0 : for int i in 0 .. 255] : for int i in 0 .. 3];
+
+	// A huge array is allocated for constant lookup in Huffman table.
+	// This is simple and fast, but clearly not memory efficient.
+	// The length of a code cannot exceed 16 bits, we therefore allocate 4 arrays of size 2^16.
+	List(type:List(type:uint(size=8), size=65536), size=4) ht_lookup_code;
+	
+	List(type:uint(size=8), size=16) ht_codes_len;
+	List(type:uint(size=8), size=256) ht_codes_list;
+	
+	uint cur_count := 0;
+	uint component := 0;
+	List(type:uint, size=3) subsampling = [4, 1, 1];
+	List(type:int, size=3) lastDC := [0, 0, 0];
+	List(type:uint(size=24), size=64) block;
+	uint idx;
+	
+	// Utility action to read a specified number of bits.
+	// This is an unnamed action, ie it is always enabled and has highest priority.
+	action Bit:[b] ==>
+	guard 
+		to_read != 0
+	do
+		// The bit sequence is translated to a decimal number.
+		cur_val := cur_val * 2 + b;
+	   	to_read := to_read - 1;
+	    cur_len := cur_len + 1;
+	end
+	
+	// Procedures
+	procedure generate_HT()
+	var
+		int v,
+		uint(size=8) len,
+		uint(size=8) code_idx,
+		uint(size=16) spread
+	begin
+		v := 0;
+		code_idx := 0;
+		spread := 32768;
+		// Depending on the size of the code, we "spread" the bit sequence on the array so that every value 
+		// prefixed by this sequence refers to the same code.
+		// For example if the code 23 is encoded by 1111110111 (10 bits), in the array all values ranging from
+		// 1111110111000000 (16 bits) to 1111110111111111 (16 bits) refers to code 23.
+		foreach uint(size=4) i in 0 .. 15
+		do
+			foreach uint(size=8) j in 0 .. ht_codes_len[i] - 1
+			do
+				len := i + 1;
+				ht_lookup_codelen[cur_HT][ht_codes_list[code_idx]] := len;
+				foreach uint(size=16) k in 0 .. spread - 1
+				do
+					ht_lookup_code[cur_HT][v] := ht_codes_list[code_idx];
+					v := v + 1;
+				end
+				code_idx := code_idx + 1;
+			end
+			spread := spread >> 1;
+		end
+	end
+	
+	uint code;
+	
+	// Actions
+	int count;
+	int mbcount;
+	
+	getSOI: action SOI:[w, h] ==>
+	do
+		count := 0;
+		mbcount := 6 * (w>>4) * (h>>4);
+	end
+	
+	
+	int ht_idx;
+	
+	receive_HT_len:action HT:[b] repeat 17 ==>
+	var
+		uint sum := 0
+	do
+		ht_idx := 0;
+		// HT selection
+		cur_HT := (b[0] | (b[0] >> 0x03)) & 0x03;
+	
+		foreach int i in 0 .. 15
+		do
+			ht_codes_len[i] := b[i + 1];
+			sum := sum + ht_codes_len[i];
+		end
+		to_readHT := sum;
+	end
+	
+	receive_code:action HT:[b] ==>
+	guard (to_readHT > 0)
+	do
+		ht_codes_list[ht_idx] := b;
+		ht_idx := ht_idx + 1;
+		to_readHT := to_readHT - 1;
+	end
+	
+	build_HT:action ==>
+	guard (to_readHT = 0)
+	do
+		generate_HT();
+		v_read_HT := v_read_HT + 1;
+	end
+	
+		// All 4 HT were read.
+	done_HT:action ==>
+	guard (v_read_HT = 4)
+	do
+		code := 0xFFFF;
+		// Begin with DC Luminance
+		component := 0;
+		cur_HT := dctab[component];
+		cur_val := 0;
+		cur_len := 0;
+		to_read := 16;
+	end
+	
+	DC.done_len:action ==>
+	guard (to_read = 0)
+	do
+		// Even if cur_val is of size 16, it is represented by a BigInteger during Orcc simulation.
+		// A bitand is therefore needed to extract only 16 bits.
+		cur_val := cur_val & 0xFFFF;
+		code := ht_lookup_code[cur_HT][cur_val];
+		to_read := ht_lookup_codelen[cur_HT][code];
+	    cur_len := to_read;
+	end
+	
+	// End of DC, proceed with AC.
+	DC.done:action ==>
+	guard (to_read = 0)
+	var
+		int v
+	do
+		cur_val := cur_val & 0xFFFF;
+		to_read := code & 0xF;
+		cur_len := to_read;
+		// The DC value.
+		v := cur_val >> (16 - to_read);
+	
+		if (v < (1 << (cur_len - 1)))
+		then
+			v := v + (-1 << cur_len) + 1;
+		end
+		v := v + lastDC[component];
+		lastDC[component] := v;
+		cur_len := 0;
+		cur_HT := actab[component];
+		block := [0 : for int i in 0 .. 63];
+		// The position in the current block.
+		idx := 0;
+		block[0] := v;
+	end
+	
+	AC.done_len:action ==>
+	guard (to_read = 0)
+	do
+	    cur_val := cur_val & 0xFFFF;
+		code := ht_lookup_code[cur_HT][cur_val];
+		to_read := ht_lookup_codelen[cur_HT][code];
+		idx := idx + (code >> 4) + 1;
+	
+	    cur_len := to_read;
+	end
+	
+	AC.done:action ==>
+	guard (to_read = 0)
+	var
+		int v
+	do
+		cur_val := cur_val & 0xFFFF;
+		to_read := code & 0xF;
+		cur_len := to_read;
+		v := cur_val >> (15 - to_read + 1);
+	
+		if v < (1 << (cur_len - 1)) then
+			v := v + (-1 << cur_len) + 1;
+		end
+		block[idx] := v;
+		cur_len := 0;
+	end
+	
+	// Received code for EOB or read 63 AC values.
+	EOB:action ==> Block:[block] repeat 64
+	guard ((to_read = 0) and (code = 0 or idx = 63))
+	var
+		int v
+	do
+		cur_count := cur_count + 1;
+		if (cur_count = subsampling[component])
+		then
+			cur_count := 0;
+			component := (component + 1) mod 3;
+		end
+		cur_HT := dctab[component];
+		cur_len := 0;
+		to_read := 0;
+		if (idx > 63)
+		then
+			println("Invalid !");
+		end
+		if (idx = 63 and code != 0)
+		then
+			cur_val := cur_val & 0xFFFF;
+			to_read := code & 0xF;
+			cur_len := to_read;
+			v := cur_val >> (15 - to_read + 1);
+	
+			if (v < (1 << (cur_len - 1))) then
+				v := v + (-1 << cur_len) + 1;
+			end
+			block[idx] := v;
+			cur_len := 0;
+		end
+		count := count + 1;
+	end
+	
+	EOI: action ==>
+	guard count = mbcount
+	do
+	count := 0;
+	mbcount := 0;
+	v_read_HT := 0;
+	cur_val := 0;
+	cur_len := 0;
+	to_read := 0;
+	to_readHT := 0;	
+	lastDC := [0, 0, 0];
+	end
+	
+	flush:action Bit:[b] ==>
+	end
+	
+	flushdone:action ==> pEOF:[true]
+	end
+	
+	// Schedule FSM
+	schedule fsm waitSOI:
+		waitSOI(getSOI) --> wait_HT;
+		
+		wait_HT(receive_HT_len)-->wait_code;
+		wait_HT(done_HT)-->wait_DC_len;
+		
+		wait_code(receive_code)-->wait_code;
+		wait_code(build_HT)-->wait_HT;
+		
+		wait_DC_len(EOI) --> flush;
+		wait_DC_len(DC.done_len)-->wait_DC;
+
+		wait_DC(DC.done)-->wait_AC_len;		
+		wait_AC_len(AC.done_len)-->wait_AC;
+		wait_AC(EOB)-->wait_DC_len;
+		wait_AC(AC.done)-->wait_AC_len;
+	
+		flush(flush)-->flush;
+		flush(flushdone)-->waitSOI;	
+	end
+	
+	priority
+		EOI > DC;
+		EOB > AC.done;
+		flush > flushdone;
+	end
+
+end

@@ -1,0 +1,165 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Authors: Endri Bezati	 	<endri.bezati@epfl.ch>,
+//          Ghislain Roquier	<ghislain.roquieri@epfl.ch>
+
+package jpeg.encoder.sw;
+
+actor RasterToMB()
+	int(size=32) SOI,
+	int(size=10) Y,
+	int(size=10) CbCr
+		==>
+			int(size=10) YCbCr:
+	// hack waiting for list-size parametrization
+	
+	int maxw_in_mb = 256;
+	
+	int currentYLine := 0;
+
+	int currentCbCrLine := 0;
+
+	int mbCount := 0;
+
+	int mbTotalCount := 0;
+
+	int lineType := 0;
+
+	int mbwidth;
+	int mbheight;
+
+		
+	// one line of MB in the worst case
+	List(type: List(type: int(size=8), size=maxw_in_mb * 16), size=16) yTab := [[0 : for int i in 1 .. maxw_in_mb * 16] : for int j in 1 .. 16 ];
+
+	List(type: List(type: int(size=8), size=maxw_in_mb * 8), size=8) cbTab := [[0 : for int i in 1 .. maxw_in_mb * 8] : for int j in 1 .. 8 ];
+
+	List(type: List(type: int(size=8), size=maxw_in_mb * 8), size=8) crTab := [[0 : for int i in 1 .. maxw_in_mb * 8] : for int j in 1 .. 8 ];
+
+	getSz: action SOI:[soi] repeat 2 ==>
+	do
+		mbwidth := (soi[0] + 15) >> 4;
+		mbheight := (soi[1] + 15) >> 4;
+	end
+
+	done: action ==>
+	guard
+		currentYLine = 16
+	do
+		currentYLine := 0;
+		currentCbCrLine := 0;
+	end
+
+	store.Y: action Y:[ y ] repeat 16 ==>
+	guard
+		lineType = 0 or lineType = 2
+	do
+		foreach int i in 0 .. 15 do
+			yTab[currentYLine][mbCount * 16 + i] := y[i];
+		end
+		mbCount := mbCount + 1;
+		if mbCount = mbwidth then
+			mbCount := 0;
+			currentYLine := currentYLine + 1;
+			if lineType = 0 then
+				lineType := 1;
+			else
+				lineType := 0;
+			end
+		end
+	end
+
+	store.CbCr: action CbCr:[ cbcr ] repeat 16 ==>
+	guard
+		lineType = 1
+	do
+		foreach int i in 0 .. 7 do
+			crTab[currentCbCrLine][mbCount * 8 + i] := cbcr[i << 1];
+			cbTab[currentCbCrLine][mbCount * 8 + i] := cbcr[(i << 1) + 1];
+		end
+		mbCount := mbCount + 1;
+		if mbCount = mbwidth then
+			currentCbCrLine := currentCbCrLine + 1;
+			mbCount := 0;
+			lineType := 2;
+		end
+	end
+
+	doneSend.EOI: action ==>
+	guard
+		mbTotalCount = mbwidth * mbheight
+	do
+		mbTotalCount := 0;
+		mbCount := 0;
+		
+		currentYLine := 0;
+		currentCbCrLine := 0;
+		lineType := 0;
+	end
+
+	doneSend.Line: action ==>
+	guard
+		mbCount = mbwidth
+	do
+		mbCount := 0;
+	end
+
+	send: action ==> YCbCr:[ ycbcr ] repeat 384
+	var
+		List(type: int(size=8), size=384) ycbcr
+	do
+		foreach int i in 0 .. 7 do
+			foreach int j in 0 .. 7 do
+				ycbcr[8 * i + j]       := yTab[i][j + 16 * mbCount];
+				ycbcr[8 * i + j + 64]  := yTab[i][(j + 8) + 16 * mbCount];
+				ycbcr[8 * i + j + 128] := yTab[i + 8][j + 16 * mbCount];
+				ycbcr[8 * i + j + 192] := yTab[i + 8][j + 8 + 16 * mbCount];
+				ycbcr[8 * i + j + 256] := cbTab[i][j + (8 * mbCount)];
+				ycbcr[8 * i + j + 320] := crTab[i][j + (8 * mbCount)];
+			end
+		end
+		mbCount := mbCount + 1;
+		mbTotalCount := mbTotalCount + 1;
+	end
+
+	schedule fsm s0 :
+		s0 		( getSz )			--> s1;
+		s1 		( store )			--> s1;
+		s1 		( done )			--> s2;
+		s2 		( send ) 			--> s2;
+		s2 		( doneSend.Line )	--> s1;
+		s2 		( doneSend.EOI )	--> s0;
+	end
+
+	priority
+		done > store;
+		doneSend.EOI > doneSend.Line > send;
+	end
+end

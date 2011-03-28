@@ -1,0 +1,184 @@
+/*
+ * Copyright (c) 2010, Regents of the EPFL, Akatech SA
+ * 
+ * All rights reserved.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Akatech SA, EPFL nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE REGENTS AND CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Author : Ghislain Roquier
+ */
+package jpeg.encoder.hw.fdct;
+
+actor scaled_1d_fdct () 
+	int(size=32) In 
+		==> 
+			int(size=32) Out : 
+
+	int Data;
+	
+	List(type: int(size=32), size=8) InT := [ 0:for int i in 0 .. 7 ];
+	List(type: int(size=32), size=8) OutT := [ 0:for int i in 0 .. 7 ];
+		
+	function pmul_1_1(int X) --> int :
+		X - (X >> 3) - (X >> 7)
+	end
+
+	function pmul_1_2(int X) --> int
+	var
+		int tmp1 = (X >> 3) - (X >> 7),
+		int tmp2 = tmp1 - (X >> 11) :
+		tmp1 + (tmp2 >> 1)
+	end
+
+	function pmul_2_1(int X) --> int
+	var
+		int tmp = (X >> 9) - X :
+		(tmp >> 2) - tmp
+	end
+
+	function pmul_2_2(int X) --> int :
+		X >> 1
+	end
+
+	function pmul_3_1(int X) --> int
+	var
+		int tmp = X + (X >> 5) :
+		(tmp >> 2) + (X >> 4)
+	end
+
+	function pmul_3_2(int X) --> int
+	var
+		int tmp = X + (X >> 5) :
+		tmp - (tmp >> 2)
+	end
+	
+	int Counter := 0;
+	//Read
+	
+	int x0 := 0; 
+	int x1 := 0;
+	int x2 := 0; 
+	int x3 := 0;
+	int x4 := 0; 
+	int x5 := 0;
+	int x6 := 0; 
+	int x7 := 0;
+	int xa := 0;
+	int xb := 0;
+	
+	
+	read.start: action ==>
+	do
+		Counter := 0;
+	end
+
+	read.save: action In:[ x ] ==>
+	guard
+		Counter < 8
+	do
+		InT[Counter] := x;
+		Counter := Counter + 1; 
+	end
+	
+	read.finish: action ==>
+	guard
+		Counter = 8
+	end
+	
+	fdct.calculate: action ==>
+	do
+		Counter := 0;
+		
+		x0 := InT[0] + InT[7];
+		x1 := InT[0] - InT[7];
+		x4 := InT[1] + InT[6];
+		x5 := InT[1] - InT[6];
+		x2 := InT[2] + InT[5];
+		x3 := InT[2] - InT[5];
+		x6 := InT[3] + InT[4];
+		x7 := InT[3] - InT[4];
+		xa := pmul_1_2(x3);
+		x3 := pmul_1_1(x3);
+		xb := pmul_1_2(x5);
+		x5 := pmul_1_1(x5);
+		x3 := x3 + xb;
+		x5 := x5 - xa;
+		xa := pmul_2_2(x1);
+		x1 := pmul_2_1(x1);
+		xb := pmul_2_2(x7);
+		x7 := pmul_2_1(x7);
+		x1 := x1 - xb;
+		x7 := x7 + xa;
+		xa := x1 + x3;
+		x3 := x1 - x3;
+		xb := x7 + x5;
+		x5 := x7 - x5;
+		x1 := xa + xb;
+		x7 := xa - xb;
+		xa := x0 + x6;
+		x6 := x0 - x6;
+		xb := x4 + x2;
+		x2 := x4 - x2;
+		x0 := xa + xb;
+		x4 := xa - xb;
+		xa := pmul_3_2(x2);
+		x2 := pmul_3_1(x2);
+		xb := pmul_3_2(x6);
+		x6 := pmul_3_1(x6);
+		x2 := xb + x2;
+		x6 := x6 - xa;
+		OutT[0] := x0;
+		OutT[1] := x1;
+		OutT[2] := x2;
+		OutT[3] := x3;
+		OutT[4] := x4;
+		OutT[5] := x5;
+		OutT[6] := x6;
+		OutT[7] := x7;
+	end
+	
+	fdct.send: action ==> Out:[Data]
+	guard
+		Counter < 8
+	do
+		Data := OutT[Counter];
+		Counter := Counter + 1;
+	end
+	
+	fdct.finish: action ==>
+	guard
+		Counter = 8
+	end
+	
+	schedule fsm read_Start:
+		read_Start	(read.start)	--> read_Save;
+		read_Save	(read.save)		--> read_Save;
+		read_Save	(read.finish)	--> fdct_Calculate;
+		
+		fdct_Calculate	(fdct.calculate)	--> fdct_Send;
+		fdct_Send		(fdct.send)			--> fdct_Send;
+		fdct_Send		(fdct.finish)		--> read_Start;
+	end
+end
