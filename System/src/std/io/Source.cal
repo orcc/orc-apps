@@ -13,23 +13,94 @@ ISO/IEC gives You a free license to this software module or modifications thereo
 IETR/INSA of Rennes (France) retains full right to modify and use the code for its own purpose, assign or donate the code to a third party and to inhibit third parties from using the code for products that do not conform to MPEG-related ITU Recommendations and/or ISO/IEC International Standards.
 This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
 ***********************************************************************/
-
+//Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
 package std.io;
 
-
 actor Source()
-		==> uint(size=8) O
+		==>
+	uint(size=8) O
 		:
 		
 	native procedure source_init() end
-	native function source_read_file() --> uint(size=8) end
+	native procedure source_readNBytes(uint(size=8) outTable[NB_TOKEN_TO_SENT], uint(size=12) nbTokenToRead) end
+	native function  source_sizeOfFile() --> int(size=32) end
+	native procedure source_rewind() end
+
+	uint(size=32) NB_TOKEN_TO_SENT = 4096;
+
+	uint(size=8)  bytesRead[NB_TOKEN_TO_SENT];
+	uint(size=32) nbIteration;
+	uint(size=32) iterationLoop := 0;
+	uint(size=32) nbByteLeft;
+	uint(size=12) nbByteToSend := 0;
+	uint(size=12) nbByteSent   := 0;
 	
 	initialize ==>
+	var
+		uint(size=32) nbBytes
 	do
 		source_init();
+		nbBytes     := source_sizeOfFile();
+		nbIteration := nbBytes  /  NB_TOKEN_TO_SENT;
+		nbByteLeft  := nbBytes mod NB_TOKEN_TO_SENT;
 	end
-	
-	read: action ==> O : [source_read_file()]
+
+	readNBytes: action ==>
+	guard
+		iterationLoop < nbIteration
+	do
+		source_readNBytes(bytesRead,NB_TOKEN_TO_SENT);
+		nbByteToSend  := NB_TOKEN_TO_SENT;
+		nbByteSent    := 0;
+		iterationLoop := iterationLoop + 1;
 	end
-	
+
+	readEndOfFile: action ==>
+	guard
+		nbByteLeft > 0
+	do
+		source_readNBytes(bytesRead,nbByteLeft);
+		nbByteToSend := nbByteLeft;
+		nbByteSent   := 0;
+	end
+
+	readFileDone: action ==>
+	do
+		iterationLoop := 0;
+		source_rewind();
+	end
+
+	sendData.launch: action ==> O:[Out]
+	guard
+		nbByteToSend > nbByteSent
+	var
+		uint(size=8) Out
+	do
+		Out        := bytesRead[nbByteSent];
+		nbByteSent := nbByteSent + 1;
+	end
+
+	sendData.done: action ==>
+	guard
+		nbByteToSend = nbByteSent
+	end
+
+
+	schedule fsm ReadFile:
+		ReadFile     (readNBytes      )--> SendData;
+		ReadFile     (readEndOfFile   )--> SendLastData;
+		ReadFile     (readFileDone    )--> ReadFile;
+
+		SendData     (sendData.launch )--> SendData;
+		SendData     (sendData.done   )--> ReadFile;
+
+		SendLastData (sendData.launch )--> SendLastData;
+		SendLastData (sendData.done   )--> ReadFileDone;
+
+		ReadFileDone (readFileDone    )--> ReadFile;
+	end
+	priority
+		readNBytes      > readEndOfFile  > readFileDone;
+		sendData.launch > sendData.done;
+	end
 end
