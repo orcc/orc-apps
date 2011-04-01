@@ -1,5 +1,3 @@
-
-
 /**
  * This software module was originally developed by 
  * Paul Schumacher (Xilinx Inc.), 
@@ -82,7 +80,7 @@
 * Revised:
 *  Author: Jia-Wei Liang, MSOC Lab, NCKU
 *  (E-mail: n2697181@mail.ncku.edu.tw)
-* Author: Micka�l Raulet (INSA Rennes)
+* Author: Mickael Raulet (INSA Rennes)
 * 	add RVC-CAL compliancy 
 * */
 // Mgnt_DBF.cal
@@ -90,10 +88,9 @@
 package MPEG.MPEG4.part10;
 
 import MPEG.MPEG4.part10.Common.Imp_MacroBlockInfo.* ;
-
 import MPEG.Common.Imp_PictureInfo.* ;
-
 import std.util.BitOps.* ;
+import std.util.Math.*;
 
 actor Mgnt_DBF_param (int LUMA_CHROMA) uint(size=7) MbLocation,
 	uint(size=6) MbType,
@@ -110,30 +107,20 @@ actor Mgnt_DBF_param (int LUMA_CHROMA) uint(size=7) MbLocation,
 ///////////////
 //FIXME! number of MB per line of picture
 	int SAMPLE_SZ = 16;
-
-	int INT64_MIN = -32768;
-
+	int INT16_MIN = -32768;
 	int MIN_QP = 0;
-
 	int MAX_QP = 51;
 
 	/*
 	 * State Variables
 	 */
 	uint(size=4) left_mb_type;
-
 	int left_cbp_blk;
-
 	uint(size=8) left_QP;
-
 	uint(size=4) up_mb_type;
-
 	int up_cbp_blk;
-
 	uint(size=8) up_QP;
-
 	uint(size=5) blkP;
-
 	uint(size=5) blkQ; //
 	// Image parameters
 	//
@@ -152,51 +139,35 @@ actor Mgnt_DBF_param (int LUMA_CHROMA) uint(size=7) MbLocation,
 	List(type: int, size=16) list0_ref_pic_id := [ 0 : for int i in 0 .. 16 - 1 ];
 
 	List(type: int, size=16) list0_refPicIDX := [ 0 : for int i in 0 .. 16 - 1 ];
-
 	List(type: int, size=16) list0_MV1 := [ 0 : for int i in 0 .. 16 - 1 ];
-
 	List(type: int, size=16) list0_MV0 := [ 0 : for int i in 0 .. 16 - 1 ];
-
 	List(type: int, size=16) left_list0_ref_pic_id := [ 0 : for int i in 0 .. 16 -
 	1 ];
 
 	List(type: int, size=16) left_list0_refPicIDX := [ 0 : for int i in 0 .. 16 -
 	1 ];
-
 	List(type: int, size=16) left_list0_MV1 := [ 0 : for int i in 0 .. 16 - 1 ];
-
 	List(type: int, size=16) left_list0_MV0 := [ 0 : for int i in 0 .. 16 - 1 ];
-
 	List(type: int, size=16) up_list0_ref_pic_id := [ 0 : for int i in 0 .. 16 - 1
 	];
-
 	List(type: int, size=16) up_list0_refPicIDX := [ 0 : for int i in 0 .. 16 - 1
 	];
 
 	List(type: int, size=16) up_list0_MV1 := [ 0 : for int i in 0 .. 16 - 1 ];
-
 	List(type: int, size=16) up_list0_MV0 := [ 0 : for int i in 0 .. 16 - 1 ];
 
 	uint(size=1) StrengthNotZero := 0;
-
 	uint(size=1) useLeft := 0;
-
 	uint(size=1) useUp := 0;
-
 	uint(size=3) mvlimit = 4;
-
 	uint(size=3) edge_curr := 0;
 
 	int xQ := 0;
-
 	int yQ := 0;
-
 	int xP := 0;
-
 	int yP := 0;
 
 	int mb_type_p := 0;
-
 	int cbp_blk_p := 0;
 
 	List(type: uint(size=3), size=32) Strength := [ 0 : for int i in 0 .. 32 - 1
@@ -235,33 +206,10 @@ actor Mgnt_DBF_param (int LUMA_CHROMA) uint(size=7) MbLocation,
 	 * 
 	 * Arithmetic functions
 	 */
-	function abs(int val) --> int :
-		if (val < 0) then
-			-val
-		else
-			val
-		end
-	end
-
-	function mask_one_bit(int v, int n) --> int :
-		((v & (1 << n)) >> n)
-	end
-
-	function Clip(int Min, int Max, int Val) --> int :
-		if (Val < Min) then
-			Min
-		else
-			if (Val > Max) then
-				Max
-			else
-				Val
-			end
-		end
-	end
 
 	function ClipPicId(int Check, int Val) --> int :
 		if (Check < 0) then
-			INT64_MIN
+			INT16_MIN
 		else
 			Val
 		end
@@ -542,8 +490,7 @@ actor Mgnt_DBF_param (int LUMA_CHROMA) uint(size=7) MbLocation,
 							routine[idx] := 2;
 						end
 						if (mb_type_p = 2 and mb_type = 2) then // Check if either P & Q have coeffs in them
-							if ((mask_one_bit(cbp_blk, blkQ) != 0) or (mask_one_bit(cbp_blk_p, blkP)
-							!= 0)) then
+							if ( getFlag(cbp_blk, blkQ) or getFlag(cbp_blk_p, blkP)) then
 								Strength[idx] := 2;
 								routine[idx] := 3;
 							else // if no coefs, but vector difference >= 1 set Strength=1 
@@ -596,20 +543,20 @@ actor Mgnt_DBF_param (int LUMA_CHROMA) uint(size=7) MbLocation,
 		Blist := [ 0 : for int i in 0 .. 3 - 1 ];
 		QP_p := left_QP; //use_left
 		QP_avg := ((QP_p + valQP + 1) >> 1);
-		indexA := Clip(MIN_QP, MAX_QP, QP_avg + alpha_offset);
-		indexB := Clip(MIN_QP, MAX_QP, QP_avg + beta_offset);
+		indexA := clip_i32(QP_avg + alpha_offset, MIN_QP, MAX_QP);
+		indexB := clip_i32(QP_avg + beta_offset, MIN_QP, MAX_QP);
 		Alist[1] := indexA;
 		Blist[1] := indexB;
 		QP_p := up_QP; //use_up
 		QP_avg := ((QP_p + valQP + 1) >> 1);
-		indexA := Clip(MIN_QP, MAX_QP, QP_avg + alpha_offset);
-		indexB := Clip(MIN_QP, MAX_QP, QP_avg + beta_offset);
+		indexA := clip_i32(QP_avg + alpha_offset, MIN_QP, MAX_QP);
+		indexB := clip_i32(QP_avg + beta_offset, MIN_QP, MAX_QP);
 		Alist[2] := indexA;
 		Blist[2] := indexB;
 		QP_p := valQP; // otherwise
 		QP_avg := ((QP_p + valQP + 1) >> 1);
-		indexA := Clip(MIN_QP, MAX_QP, QP_avg + alpha_offset);
-		indexB := Clip(MIN_QP, MAX_QP, QP_avg + beta_offset);
+		indexA := clip_i32(QP_avg + alpha_offset, MIN_QP, MAX_QP);
+		indexB := clip_i32(QP_avg + beta_offset, MIN_QP, MAX_QP);
 		Alist[0] := indexA;
 		Blist[0] := indexB;
 	end // EdgeLoops
