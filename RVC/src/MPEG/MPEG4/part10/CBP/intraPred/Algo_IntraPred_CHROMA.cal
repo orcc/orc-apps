@@ -67,163 +67,200 @@ IETR/INSA of Rennes (France) retains full right to modify and use the code for i
 This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
 
 *****************************************************************************/
-//For making possible to work with ORCC interpreter
-
-package MPEG.MPEG4.part10;
+package MPEG.MPEG4.part10.CBP.intraPred;
 
 import std.util.Math.*;
 import std.util.BitOps.*;
 
-actor Algo_IntraPred_LUMA_16x16 ()
-  int(size=16) Y_LEFT,     // List
-  int(size=16) Y_UP,       // List
-  int(size=16) Y_UP_LEFT,  // point
+actor Algo_IntraPred_CHROMA ()
+		int(size=16) C_LEFT,     // List
+		int(size=16) C_UP,       // List
+		int(size=16) C_UP_LEFT,  // point
+		uint(size=1) AVAIL,              // up, left, up_left availability List
+		uint(size=4) PredMode
+				==> 
+				int(size=9) MPR:
 
-  uint(size=1) AVAIL,              // up, left, up_left availability List
+  int res;
 
-  uint(size = 4) PredMode
-
-  ==> int(size=9) MPR:
-
-
-  // res variable used by procedure sum 
-  int( size = 32 ) res;
-  // sum_temp variable used for summing different sum procedures 
-  int(size=32) sum_temp;
-  
-  
-  procedure summ(List(type:int(size=16), size=16) list, int n)
+  procedure Sum(List(type:int ( size = 16 ), size = 16) list, int n)
   begin
-    res := 0;
-    if n > 0 then
-    	foreach int i in 0 .. n-1 do
+ 	res := 0;
+ 	if n > 0 then   	
+ 	   	foreach int i in 0 .. n-1 do
       		res := res + list[i]; 
      	end
     end
   end
 
-  int(size=2) left_avail;
-  int(size=2) up_avail;
-  int(size=2) up_left_avail;
+  uint(size=1) left_avail;
+  uint(size=1) up_avail;
+  uint(size=1) up_left_avail;
 
-  List(type:int(size=16), size= 16) y_left;
-  List(type:int(size=16), size= 16) y_up;
-  int(size=16)       y_up_left;
-  List( type:int(size=16), size=16*16 ) mpr := [ 0 : for int i in 0 .. 16*16 - 1 ];
-
+  List(type:int(size=16), size=8) c_left;
+  List(type:int(size=16), size=8) c_up;
+  int(size=16)       c_up_left:= 0 ;
+  List( type:int(size=16), size=8*8 ) mpr := [ 0 : for int i in 0 .. 63 ];
+  
   read.avail: action AVAIL:[avail] repeat 3 ==>
   do
     left_avail    := avail[0];
     up_avail      := avail[1];
-    up_left_avail := avail[2];    
+    up_left_avail := avail[2];
+    //println("read.avail "+avail);
   end
 
-  readpix.l.av: action Y_LEFT:[x] repeat 16 ==>
+  readpix.l.av: action C_LEFT:[x] repeat 8 ==>
   guard left_avail = 1
   do
-    y_left := [ x[i] : for int i in 0 .. 15 ];
-   
+    c_left:=[ x[i]: for int i in 0 .. 7 ];
+    //println("c_left "+c_left);
   end
-  readpix.u.av: action Y_UP:[x] repeat 16 ==>
+  readpix.u.av: action C_UP:[x] repeat 8 ==>
   guard up_avail = 1
   do
-    y_up := [ x[i] : for int i in 0 .. 15 ];
+    c_up:=[ x[i]: for int i in 0 .. 7 ];
+    //println("c_up "+c_up);
   end
-  readpix.ul.av: action Y_UP_LEFT:[x] ==>
+  readpix.ul.av: action C_UP_LEFT:[x] ==>
   guard up_left_avail = 1
   do
-    y_up_left:=x ;
+    c_up_left:=x;
+    //println("c_up_left "+c_up_left);
   end
 
   readpix.l.no: action ==>
-  guard left_avail = 0
+  guard 
+    left_avail = 0
   end
   readpix.u.no: action ==>
-  guard up_avail = 0
+  guard 
+    up_avail = 0
   end
   readpix.ul.no: action ==>
-  guard up_left_avail = 0
+  guard 
+    up_left_avail = 0
   end
 
   write.mode0: action PredMode:[mode] ==>
-  	 MPR:[[mpr[16*j+i]: for int i in  0 .. 15, for int j in 0 .. 15]] repeat 16*16
+    MPR:[[mpr[8*j+i]: for int i in  0 .. 7, for int j in 0 .. 7]] repeat 8*8
   guard
-  	mode = 0
-  do
-  	 mpr := [y_up[i]  : for int i in  0 .. 15, for int j in 0 .. 15];
+ 	mode = 0
+  var
+    // mode 0 variables
+    //   +-s0-+-s1-+
+    //  s2 m0 | m1 |
+    //   +----+----+
+    //  s3 m2 | m3 |
+    //   +----+----+
+    int s0 := 0, int s1 := 0, int s2 := 0, int s3 := 0,
+    int m0 := 128, int m1 := 128, int m2 := 128, int m3 := 128,
+    List(type: int(size = 16), size = 7) sum_list
+  	do
+  		if up_avail = 1 then
+    		/*	
+    			s0 := sum([c_up[i]:for int i in 0 .. 3],4);
+    		*/
+    		sum_list := [c_up[i]:for int i in 0 .. 3];//todo
+    		Sum(sum_list,4);
+    		s0 := res;
+    		
+    		/*
+    			s1 := sum([c_up[i]:for int i in 4 .. 7],4);
+    		*/
+    		sum_list := [c_up[i]:for int i in 4 .. 7];
+    		Sum(sum_list,4);
+    		s1 := res;
+    	end
+    	
+    	if left_avail = 1 then
+          	/*
+          		s2 := sum([c_left[i]:for int i in 0 .. 3],4);
+          		s3 := sum([c_left[i]:for int i in 4 .. 7],4);
+          	*/
+          	sum_list := [c_left[i]:for int i in 0 .. 3];
+    		Sum(sum_list,4);
+    		s2 := res;
+    		
+    		sum_list := [c_left[i]:for int i in 4 .. 7];
+    		Sum(sum_list,4);
+    		s3 := res;
+          	
+      	end
+      	
+      	if left_avail = 1 and up_avail = 1 then
+          	m0 := (s0 + s2 + 4) >> 3;
+          	m1 := (s1 + 2) >> 2;
+          	m2 := (s3 + 2) >> 2;
+         	m3 := (s1 + s3 + 4) >> 3;
+      	else 
+      		if left_avail = 1 then
+          	m0 := (s2 + 2) >> 2;
+          	m1 := (s2 + 2) >> 2;
+          	m2 := (s3 + 2) >> 2;
+          	m3 := (s3 + 2) >> 2;
+      		else 
+      			if up_avail = 1  then
+          			m0 := (s0 + 2) >> 2;
+          			m1 := (s1 + 2) >> 2;
+          			m2 := (s0 + 2) >> 2;
+          			m3 := (s1 + 2) >> 2;
+      			end 
+      		end 
+		end
+     mpr := [if j<4 then
+                if i<4 then m0 else m1 end
+              else
+                if i<4 then m2 else m3 end
+              end: for int i in  0 .. 7, for int j in 0 .. 7];
   end
 
- write.mode1: action PredMode:[mode] ==>
- 	MPR:[[mpr[16*j+i]: for int i in  0 .. 15, for int j in 0 .. 15]] repeat 16*16
- guard
+  write.mode1: action PredMode:[mode] ==>
+    MPR:[[mpr[8*j+i]: for int i in  0 .. 7, for int j in 0 .. 7]] repeat 8*8
+  guard
  	mode = 1
- do
- 	mpr := [y_left[j]: for int i in  0 .. 15, for int j in 0 .. 15];
- end
+  do
+    mpr := [c_left[j]: for int i in  0 .. 7, for int j in 0 .. 7];
+  end
  
- write.mode2:  action PredMode:[mode] ==>
- 	MPR:[[mpr[16*j+i]: for int i in  0 .. 15, for int j in 0 .. 15]] repeat 16*16
- guard
+  write.mode2: action PredMode:[mode] ==>
+    MPR:[[mpr[8*j+i]: for int i in  0 .. 7, for int j in 0 .. 7]] repeat 8*8
+  guard
  	mode = 2
- var
- 	int mean
- do
-	if left_avail = 1 and up_avail = 1 then
-    		summ(y_left,16);
-    		sum_temp := res;
-    		summ(y_up,16);
-    		sum_temp := sum_temp + res;
-    		mean := (sum_temp + 16) /32;	 
-    else 
-    	if left_avail = 1 then
-       		summ(y_left,16);
-        	mean := (res  + 8) / 16;
-        else 
-        	if up_avail   = 1  then 
-        		summ(y_up,16);
-        		mean := (res + 8) / 16;
-        	else
-        		mean := 128;
-        	end 
-        end 
-    end
-             
-     mpr := [mean     : for int i in  0 .. 15, for int j in 0 .. 15];
- end
- 
- write.mode3: action PredMode:[mode] ==>
-    MPR:[[mpr[16*j+i]: for int i in  0 .. 15, for int j in 0 .. 15]] repeat 16*16	
- guard
- 	mode = 3
- var
-    int H, int V, int a, int b, int c,
-    List(type: int(size=16), size = 7) sum_list,
-    List(type: int(size=16), size = 7) sum_list2
- do
- 	sum_list := [(i+1)*(y_up[8+i]  -y_up[6-i]  ):for int i in 0 .. 6];
-    summ(sum_list,7);
-    H := res + (7+1)*(y_up[8+7]  -y_up_left);
-           
-    sum_list2 := [(j+1)*(y_left[8+j]-y_left[6-j]):for int j in 0 .. 6];
-    summ(sum_list2,7);
-    V := res + (7+1)*(y_left[8+7]-y_up_left);
-     
-    
-    a:= 16*(y_left[15] + y_up[15]);
-    b:= (5*H + 32) >> 6;
-    c:= (5*V + 32) >> 6;
+  do
+    mpr := [c_up[i]  : for int i in  0 .. 7, for int j in 0 .. 7];
+  end
 
-    mpr := [clip_i32((a + b*(i-7) + c*(j-7) + 16) >> 5, 0, 255): for int i in  0 .. 15, for int j in 0 .. 15];
- end
- 		
+  write.mode3: action PredMode:[mode] ==>
+    MPR:[[mpr[8*j+i]: for int i in  0 .. 7, for int j in 0 .. 7]] repeat 8*8
+  guard
+	mode = 3
+  var
+    int H, int V, int a, int b, int c,
+    List(type: int(size = 16), size = 3) sum_list
+  do
+    sum_list := [(i+1)*(c_up[4+i]  - c_up[2-i]  ):for int i in 0 .. 2];
+    Sum(sum_list,3);
+    H := res + (3+1)*(c_up[4+3]  - c_up_left);
+      
+    sum_list := [(j+1)*(c_left[4+j] - c_left[2-j]):for int j in 0 .. 2];
+    Sum(sum_list,3);
+    V := res + (3+1)*(c_left[4+3] - c_up_left);
+      
+    a:= 16*(c_left[7] + c_up[7]);
+    b:= (34*H + 32) >> 6;
+    c:= (34*V + 32) >> 6;
+
+    mpr := [clip_i32((a + b*(i-3) + c*(j-3) + 16) >> 5, 0, 255 ): for int i in  0 .. 7, for int j in 0 .. 7];
+  end
+
+
   schedule fsm start:
     start    ( read.avail ) --> readpix0;
-
     readpix0 ( readpix.l  ) --> readpix1;
     readpix1 ( readpix.u  ) --> readpix2;
     readpix2 ( readpix.ul ) --> pixdone;
-
     pixdone  ( write      ) --> start;
-
   end
+
 end
