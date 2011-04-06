@@ -100,6 +100,8 @@ actor Algo_Synp_AVC_CBP()
 			int(size=16) HEIGHT,
 			uint(size=8) SizeDPBMax,
 			uint(size=6) MbType,
+			uint(size=4) SubMbType,
+			uint(size=6) MbType4Pred,
 			uint(size=7) MbLocation,
 			bool NeighbourAvail,
 			bool isNewPic,
@@ -2487,6 +2489,7 @@ actor Algo_Synp_AVC_CBP()
 			MvRes:[0,0], 
 			//LAST:[[true: for int t in 0 .. 26 ]] repeat 27,
 			MbType:[BLOCK_TYPE_P_SKIP],
+			MbType4Pred :[BLOCK_TYPE_P_SKIP],
 			enableRead:[true],
 			NeighbourAvail:[Is_MbA_Avail , Is_MbB_Avail , Is_MbC_Avail , Is_MbD_Avail],
 			MbLocation:[mb_x, mb_y]
@@ -2541,6 +2544,7 @@ actor Algo_Synp_AVC_CBP()
 			//LAST:[[true: for int t in 0 .. 25 ]] repeat 26,
 			NeighbourAvail:[Is_MbA_Avail , Is_MbB_Avail , Is_MbC_Avail , Is_MbD_Avail],
 			MbType:[BLOCK_TYPE_P_SKIP],
+			MbType4Pred :[BLOCK_TYPE_P_SKIP],
 			MbLocation:[mb_x, mb_y]
 	guard
 		prevMbSkipped = 1,
@@ -2661,7 +2665,7 @@ actor Algo_Synp_AVC_CBP()
 		val_cbp_blk:=0;
 	end
 
-	send_data_position_information: action 
+	send_data_position_information.intraPred: action 
 		==> 
 			CurrMbAddr:[mb_addr],
 			isNewPic:[false],
@@ -2681,6 +2685,54 @@ actor Algo_Synp_AVC_CBP()
 			MbIntraFlag:[mb_intra_flag],
 			MbType:[vld_mb_type],
 			MbLocation:[mb_x, mb_y]
+	guard
+		IS_Intra_4x4() or
+		IS_Intra_8x8() or
+		IS_Intra_16x16()
+	var 
+		int mb_addr,
+		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y,
+		int MbLocxInSlc, int MbLocyInSlc,
+		bool Is_MbA_Avail, bool Is_MbB_Avail, bool Is_MbC_Avail, bool Is_MbD_Avail
+	do
+		mb_addr:=val_CurrMbAddr;
+		mb_x:=Mb_x;
+		mb_y:=Mb_y;
+		MbLocxInSlc    := (val_CurrMbAddr - first_mb_in_slice) mod PicWidthInMbs;
+		MbLocyInSlc    := (val_CurrMbAddr - first_mb_in_slice)  /  PicWidthInMbs;
+		Is_MbA_Avail := Mb_x != 0 and (MbLocxInSlc != 0 or MbLocyInSlc != 0);
+		Is_MbB_Avail := MbLocyInSlc != 0;
+		Is_MbC_Avail := (MbLocyInSlc >= 1) and (Mb_x + 1 <  PicWidthInMbs);
+		Is_MbD_Avail := (MbLocyInSlc >= 1) and (Mb_x > 0 and (MbLocyInSlc > 1 or MbLocyInSlc = 1 and MbLocxInSlc > 0));
+		NextMbAddress();
+		val_cbp_blk:=0;
+	end
+
+	send_data_position_information.interPred: action 
+		==> 
+			CurrMbAddr:[mb_addr],
+			isNewPic:[false],
+			PicWidthInMb:[PicWidthInMbs],
+			//PicSizeInMb:[PicSizeInMbs],
+			FirstMbInSlice:[first_mb_in_slice],
+			slice_alpha_c0_offset:[val_slice_alpha_c0_offset],
+			slice_beta_offset:[val_slice_beta_offset],
+			LFDisable:[disable_deblocking_filter_idc],
+			ConstrainedIFlag:[constrained_intra_pred_flag[pps_id]],
+			NeighbourAvail:[Is_MbA_Avail , Is_MbB_Avail , Is_MbC_Avail , Is_MbD_Avail],
+			cbp_blk:[cbp_blk_tmp],
+			QP:[val_QP], 
+			QP_Cb:[val_QP_Cb], 
+			QP_Cr:[val_QP_Cr], 
+			ScalingList:[[16: for int s in 0 .. 15 ]] repeat 16,
+			MbIntraFlag:[mb_intra_flag],
+			MbType:[vld_mb_type],
+			MbType4Pred:[vld_mb_type],
+			MbLocation:[mb_x, mb_y]
+	guard
+		not IS_Intra_4x4(),
+		not IS_Intra_8x8(),
+		not IS_Intra_16x16()
 	var 
 		int mb_addr,
 		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y,
@@ -3058,12 +3110,15 @@ actor Algo_Synp_AVC_CBP()
 	end
 
 	//for( mbPartIdx = 0; mbPartIdx < 4; mbPartIdx++ )
-	read_sub_MB_pred_sub_mb_type: action ==> 
+	read_sub_MB_pred_sub_mb_type: action ==> SubMbType :[subMbType]
 	guard
 		vld_end(),
 		mbPartIdx < 4
+	var
+		uint(size=4) subMbType
 	do
 		sub_mb_type[mbPartIdx] := vld_ue();
+		subMbType := sub_mb_type[mbPartIdx];
 		mbPartIdx := mbPartIdx +1;
 		if mbPartIdx < 4 then start_vld(); end
 	end
