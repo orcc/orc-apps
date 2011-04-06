@@ -118,6 +118,7 @@ actor Algo_DecodeSps()
 	List (type:uint(size=2), size=32 ) chroma_format_idc                      := [ 1     : for int i in 0 .. 31 ];
 	List (type:uint(size=5), size=32 ) MbWidthC                               := [ 8     : for int i in 0 .. 31 ];
 	List (type:uint(size=5), size=32 ) MbHeightC                              := [ 8     : for int i in 0 .. 31 ];
+	bool seq_scaling_matrix_present_flag;
 
 	uint(size=5)  sps_id      := 0;
 	uint(size=5)  last_sps_id := 0;
@@ -259,8 +260,7 @@ actor Algo_DecodeSps()
 	//if( profile_idc = = 100 || profile_idc = = 110 ||
 	//    profile_idc = = 122 || profile_idc = = 244 || profile_idc = = 44 ||
 	//    profile_idc = = 83  || profile_idc = = 86 )
-	ReadChromaFormatIdc.Asked: action
-				==>
+	ReadChromaFormatIdc.Asked: action ==>
 			//   chroma_format_idc
 			TypeOfVLD :[VLD_UE]
 		guard
@@ -271,27 +271,48 @@ actor Algo_DecodeSps()
 			or profile_idc[sps_id] = 44 
 			or profile_idc[sps_id] = 83 
 			or profile_idc[sps_id] = 86  )
-		do
-			println("ReadChromaFormatIdc.Asked not implemented yet");
 		end
 
-
-	ReadChromaFormatIdc.Done: action
-			ValVLD :[ValueOfVLD]
-				==>
-		do
-			Chroma_Array_Type[sps_id] := ValueOfVLD;
-			println("read Sps chroma_format_idc not implemented yet");
-		end
-
-	ChromaFomtIdc.IsEqualTo3: action
-				==>
+	ReadChromaFormatIdc.IsEqualTo3: action ValVLD :[ValueOfVLD] ==>
 			//         separate_colour_plane_flag
 			TypeOfVLD    :[ READ_BITS ],
 			NbBitsToRead :[     1     ]
 		guard
-			Chroma_Array_Type[sps_id] = 3
+			ValueOfVLD = 3
+		do
+			Chroma_Array_Type[sps_id] := ValueOfVLD;
+			println("chroma_format_idc = 3 not managed yet !");
 		end
+
+	ReadChromaFormatIdc.IsNotEqualTo3: action ValVLD :[ValueOfVLD] ==>
+			//             bit_dept bit_dept qpprime_y_  seq_scaling
+			TypeOfVLD    :[ VLD_UE , VLD_UE , READ_BITS , READ_BITS ],
+			NbBitsToRead :[                       1     ,     1     ]
+		guard
+			ValueOfVLD != 3
+		do
+			Chroma_Array_Type[sps_id] := ValueOfVLD;
+			if ValueOfVLD != 1 then
+				println("chroma_format_idc = "+ValueOfVLD+" not managed yet !");
+				while true do end
+			end
+		end
+
+	readBitDepth.Done : action ValVLD:[bitDepthLuma , bitDepthChroma , 
+	                                   qprimeY , secScaling] ==>
+	do
+		bit_depth_luma_minus8[sps_id] := bitDepthLuma;
+		bit_depth_chroma_minus8[sps_id] := bitDepthChroma;
+		//qpprime_y_zero_transform_bypass_flag
+		seq_scaling_matrix_present_flag := (secScaling != 0);
+	end
+
+	secScalingFlag.isEqualToTrue: action ==>
+	guard
+		seq_scaling_matrix_present_flag
+	do
+		println("seq_scaling_matrix_present_flag = true is not managed yet !");
+	end
 
 	ReadSeparColourPlane.Done: action
 			ValVLD :[ValueOfVLD]
@@ -603,19 +624,23 @@ actor Algo_DecodeSps()
 		ReadSpsIdDone                (SpsParam.AskedFromPic          )--> SendOff4RefFrameAcc;
 		ReadSpsIdDone                (SpsParam.AskedFromPps          )--> ReadSpsIdDone;
 		ReadSpsIdDone                (SpsParam.AskedFromSvc          )--> ReadSpsIdDone;
-		ReadSpsIdDone                (ReadSpsId.Done                 )--> CheckChromaFormatIdc;
+		ReadSpsIdDone                (ReadSpsId.Done                 )--> CheckProfileIdc;
 
-		SendOff4RefFrameAcc          (SendOff4RefFrameAcc.Launch     )--> SendOff4RefFrameAcc;
-		SendOff4RefFrameAcc          (SendOff4RefFrameAcc.Done       )--> ReadSpsIdDone;
+		SendOff4RefFrameAcc          (SendOff4RefFrameAcc.Launch        )--> SendOff4RefFrameAcc;
+		SendOff4RefFrameAcc          (SendOff4RefFrameAcc.Done          )--> ReadSpsIdDone;
 
-		CheckChromaFormatIdc         (ReadChromaFormatIdc.Asked      )--> ReadChromaFormatIdcDone;
-		CheckChromaFormatIdc         (Read_MaxFrameNum_PocType.Asked )--> Read_MaxFrameNum_PocTypeDone;
+		CheckProfileIdc              (ReadChromaFormatIdc.Asked         )--> ReadChromaFormatIdcDone;
+		CheckProfileIdc              (Read_MaxFrameNum_PocType.Asked    )--> Read_MaxFrameNum_PocTypeDone;
 
-		ReadChromaFormatIdcDone      (ReadChromaFormatIdc.Done       )--> CheckChromaFormatIdc;
+		ReadChromaFormatIdcDone      (ReadChromaFormatIdc.IsEqualTo3    )--> ReadSeparColourPlane;
+		ReadChromaFormatIdcDone      (ReadChromaFormatIdc.IsNotEqualTo3 )--> ReadBitDepthDone;
 
-		CheckChromaFormatIdc         (ChromaFomtIdc.IsEqualTo3       )--> ReadSeparColourPlane;
+		ReadSeparColourPlane         (ReadSeparColourPlane.Done         )-->                             undefined;//Not implemented yet
 
-		ReadSeparColourPlane         (ReadSeparColourPlane.Done      )-->                             undefined;//Not implemented yet
+		ReadBitDepthDone             (readBitDepth.Done                 )--> ChecksecScalingFlag;
+
+		ChecksecScalingFlag          (secScalingFlag.isEqualToTrue     )-->                              undefined;//Not implemented yet
+		ChecksecScalingFlag          (Read_MaxFrameNum_PocType.Asked   )--> Read_MaxFrameNum_PocTypeDone;
 
 		Read_MaxFrameNum_PocTypeDone (Read_MaxFrameNum_PocType.Done  )--> CheckValPocType;
 
@@ -664,5 +689,6 @@ actor Algo_DecodeSps()
 		ReadOffset4RefFrame.Launch   > ReadOffset4RefFrame.Done;
 		FrameMbsOnlyFlag.IsEqualTo0  > ReadDirect8x8.Asked;
 		FrameCroppingFlag.IsEqualTo1 > ReadVuiParameters.Asked;
+		secScalingFlag.isEqualToTrue > Read_MaxFrameNum_PocType.Asked;
 	end
 end
