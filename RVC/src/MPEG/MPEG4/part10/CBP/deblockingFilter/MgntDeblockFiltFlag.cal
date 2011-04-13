@@ -53,25 +53,56 @@ Copyright (c) ISO/IEC 2008.
 *****************************************************************************/
 package MPEG.MPEG4.part10.CBP.deblockingFilter;
 
+import MPEG.Common.Imp_PictureInfo.*;
+import MPEG.MPEG4.part10.CBP.MacroBlockInfo.*;
+
+/**
+ * This actor give informations to the Deblocking Filter.
+ * 
+ * @input MbType
+ * 		give the type of macroblock (Intra4x4, P_Skip, ...)
+ * 
+ * @input DisDbfIdc
+ * 		Flag decoded in the parser which can disable the deblocking filter
+ * 		process
+ * 
+ * @NeighbourAvail
+ * 		Show if the macroblock's neighbours exists
+ * 		(see the SVC's documentation; chapter 6.4.8)
+ * 
+ * @author : Damien de Saint Jorre
+ */
 actor MgntDeblockFiltFlag()
 	uint(size=6) MbType,
 	uint(size=2) DisDbfIdc,
 	bool         NeighbourAvail,
-	uint(size=7) MbLocation
+	uint(size=7) MbLocation,
+	int(size=8)  QpIn
 		==>
 	bool         FilterEdges
 		 :
 
-	bool filterLeft;
-	bool filterInternal;
-	bool filterTop;
 
-	getMbType: action MbType:[mbType], DisDbfIdc :[disDbfIdc],
+	uint(size=6) mbType;
+	uint(size=7) mbLocX;
+	uint(size=7) mbLocY;
+	int (size=8) qpTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK];
+
+
+	/**
+	 * Get informations needed about the current macroblock.
+	 * 
+	 */
+	getMbType: action MbType:[mbTypeVal], DisDbfIdc :[disDbfIdc],
 	                  NeighbourAvail :[isMbaAvail , isMbbAvail 
 	                                 , isMbcAvail , isMbdAvail],
-	                  MbLocation:[mbX, mbY]
+	                  MbLocation :[mbX, mbY]
 	                  ==>
 	                  FilterEdges :[filterLeft, filterInternal, filterTop]
+	var
+		bool filterLeft,
+		bool filterInternal,
+		bool filterTop
 	do
 		filterInternal := (disDbfIdc != 1);
 		filterLeft     :=
@@ -82,16 +113,40 @@ actor MgntDeblockFiltFlag()
 				true
 			end;
 		filterTop :=
-			if((mbY = 0) or (disDbfIdc = 1) or 
+			if((mbY = 0) or (disDbfIdc = 1) or
 			  ((disDbfIdc = 2) and not isMbbAvail))then
 				false
 			else
 				true
 			end;
+		mbLocX := mbX;
+		mbLocY := mbY;
+	end
+
+	/**
+	 * Store the current value of Qp
+	 */
+	getQp.launch: action QpIn :[qpIn] ==>
+	guard
+		mbType != BLOCK_TYPE_I_PCM
+	do
+		qpTable[mbLocX][mbLocY] := qpIn;
+	end
+
+	getQp.done: action ==>
+	guard
+		mbType = BLOCK_TYPE_I_PCM
+	do
+		qpTable[mbLocX][mbLocY] := 0;
 	end
 
 
 	schedule fsm GetMbType:
 		GetMbType (getMbType )--> GetMbType;
+
+		GetQp     (getQp     )--> GetMbType;
+	end
+	priority
+		getQp.launch > getQp.done;
 	end
 end
