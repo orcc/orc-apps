@@ -73,21 +73,48 @@ import MPEG.MPEG4.part10.CBP.MacroBlockInfo.*;
  * @author : Damien de Saint Jorre
  */
 actor MgntDeblockFiltFlag()
-	uint(size=6) MbType,
-	uint(size=2) DisDbfIdc,
-	bool         NeighbourAvail,
-	uint(size=7) MbLocation,
-	int(size=8)  QpIn
+	uint(size=16) CodedBlockPattern,
+	uint(size=2)  DisDbfIdc,
+	uint(size=6)  MbType,
+	uint(size=7)  MbLocation,
+	bool          NeighbourAvail,
+	int(size=8)   QpIn,
+	uint(size=4)  RefIdx
 		==>
 	bool         FilterEdges
 		 :
 
 
-	uint(size=6) mbType;
-	uint(size=7) mbLocX;
-	uint(size=7) mbLocY;
-	int (size=8) qpTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK];
+	uint(size=7)  mbLocX;
+	uint(size=7)  mbLocY;
+	uint(size=6)  mbType[MAX_PICWIDTH_BLK][2];
+	uint(size=16) codBlkPat[MAX_PICWIDTH_BLK][2];
+	uint(size=4)  refIdx[MAX_PICWIDTH_BLK*4][2*4];
+	int (size=8)  qpTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK];
 
+	function computeBoundaryFiltStrength (bool chromaEdgeFlag,
+		bool verticalEdgeFlag, uint(size=8) idxP0X, uint(size=8) idxP0Y,
+		uint(size=8) idxQ0X, uint(size=8) idxQ0Y, bool isMacroBlockEdge)
+			-->
+		uint(size=3)
+	var
+		bool mixedModeEdge = false
+	:
+		if(chromaEdgeFlag) then
+			if(   Mb_IsIntra(mbType[idxP0X][idxP0Y&1])
+			   or Mb_IsIntra(mbType[idxQ0X][idxQ0Y&1])) then
+				if(isMacroBlockEdge)then
+					4
+				else
+					3
+				end
+			else
+				42
+			end
+		else
+			42 //not implemented yet!
+		end
+	end
 
 	/**
 	 * Get informations needed about the current macroblock.
@@ -96,7 +123,8 @@ actor MgntDeblockFiltFlag()
 	getMbType: action MbType:[mbTypeVal], DisDbfIdc :[disDbfIdc],
 	                  NeighbourAvail :[isMbaAvail , isMbbAvail 
 	                                 , isMbcAvail , isMbdAvail],
-	                  MbLocation :[mbX, mbY]
+	                  MbLocation :[mbX, mbY],
+	                  CodedBlockPattern :[codedBlkPattern]
 	                  ==>
 	                  FilterEdges :[filterLeft, filterInternal, filterTop]
 	var
@@ -121,7 +149,8 @@ actor MgntDeblockFiltFlag()
 			end;
 		mbLocX := mbX;
 		mbLocY := mbY;
-		mbType := mbTypeVal;
+		mbType[mbX][mbY&1]    := mbTypeVal;
+		codBlkPat[mbX][mbY&1] := codedBlkPattern;
 	end
 
 	/**
@@ -129,25 +158,41 @@ actor MgntDeblockFiltFlag()
 	 */
 	getQp.launch: action QpIn :[qpIn] ==>
 	guard
-		mbType != BLOCK_TYPE_I_PCM
+		mbType[mbLocX][mbLocY&1] != BLOCK_TYPE_I_PCM
 	do
 		qpTable[mbLocX][mbLocY] := qpIn;
 	end
 
-	getQp.done: action ==>
+	getQp.skip: action ==>
 	guard
-		mbType = BLOCK_TYPE_I_PCM
+		mbType[mbLocX][mbLocY&1] = BLOCK_TYPE_I_PCM
 	do
 		qpTable[mbLocX][mbLocY] := 0;
+	end
+
+	getRefIdx.launch: action RefIdx :[refIdxVal] repeat 16 ==>
+	guard
+		   mbIsPred(mbType[mbLocX][mbLocY&1])
+		or mbIsBiPred(mbType[mbLocX][mbLocY&1])
+	do
+//		refIdx[mbLocX][mbLocY&1] := refIdxVal;
+	end
+
+	getRefIdx.skip: action ==>
+	guard
+		not mbIsPred(mbType[mbLocX][mbLocY&1]),
+		not mbIsBiPred(mbType[mbLocX][mbLocY&1])
+	do
+		//refIdx[mbLocX][mbLocY&1] := 0;
 	end
 
 
 	schedule fsm GetMbType:
 		GetMbType (getMbType )--> GetQp;
-
-		GetQp     (getQp     )--> GetMbType;
+		GetQp     (getQp     )--> GetRefIdx;
+		GetRefIdx (getRefIdx )--> GetMbType;
 	end
 	priority
-		getQp.launch > getQp.done;
+		getQp.launch > getQp.skip;
 	end
 end
