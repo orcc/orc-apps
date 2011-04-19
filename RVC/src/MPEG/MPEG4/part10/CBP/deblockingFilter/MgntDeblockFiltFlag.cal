@@ -55,6 +55,8 @@ package MPEG.MPEG4.part10.CBP.deblockingFilter;
 
 import MPEG.Common.Imp_PictureInfo.*;
 import MPEG.MPEG4.part10.CBP.MacroBlockInfo.*;
+import std.util.BitOps.*;
+import std.util.Math.*;
 
 /**
  * This actor give informations to the Deblocking Filter.
@@ -66,7 +68,7 @@ import MPEG.MPEG4.part10.CBP.MacroBlockInfo.*;
  * 		Flag decoded in the parser which can disable the deblocking filter
  * 		process
  * 
- * @NeighbourAvail
+ * @input NeighbourAvail
  * 		Show if the macroblock's neighbours exists
  * 		(see the SVC's documentation; chapter 6.4.8)
  * 
@@ -75,6 +77,8 @@ import MPEG.MPEG4.part10.CBP.MacroBlockInfo.*;
 actor MgntDeblockFiltFlag()
 	uint(size=16) CodedBlockPattern,
 	uint(size=2)  DisDbfIdc,
+	int (size=6)  FilterOffsetA,
+	int (size=6)  FilterOffsetB,
 	uint(size=7)  MbLocation,
 	uint(size=6)  MbType,
 	int (size=16) Mv,
@@ -85,9 +89,32 @@ actor MgntDeblockFiltFlag()
 	bool         FilterEdges
 		 :
 
+	uint(size=8) ALPHA_PRIME_TAB[64] =
+		[   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+		    0,   0,   0,   0,   0,   0,   4,   4,   5,   6,
+		    7,   8,   9,  10,  12,  13,  15,  17,  20,  22,
+		   25,  28,  32,  36,  40,  45,  50,  56,  63,  71,
+		   80,  90, 101, 113, 127, 144, 162, 182, 203, 226,
+		  255, 255,   0,   0,   0,   0,   0,   0,   0,   0,
+		    0,   0,   0,   0];
 
+	uint(size=8) BETA_PRIME_TAB[64] =
+		[   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+			0,   0,   0,   0,   0,   0,   2,   2,   2,   3,
+			3,   3,   3,   4,   4,   4,   6,   6,   7,   7,
+			8,   8,   9,   9,  10,  10,  11,  11,  12,  12,
+		   13,  13,  14,  14,  15,  15,  16,  16,  17,  17,
+		   18,  18,   0,   0,   0,   0,   0,   0,   0,   0,
+		    0,   0,   0,   0 ];
+
+
+	int (size=6)  filterOffsetA;
+	int (size=6)  filterOffsetB;
 	uint(size=7)  mbLocX;
 	uint(size=7)  mbLocY;
+	bool filterLeft;
+	bool filterInternal;
+	bool filterTop;
 	uint(size=6)  mbType[MAX_PICWIDTH_BLK][2];
 	uint(size=16) codBlkPat[MAX_PICWIDTH_BLK][2];
 	uint(size=4)  refIdx[MAX_PICWIDTH_BLK*4][2*4];
@@ -95,26 +122,42 @@ actor MgntDeblockFiltFlag()
 	int (size=8)  qpTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK];
 
 	function computeBoundaryFiltStrength (bool chromaEdgeFlag,
-		bool verticalEdgeFlag, uint(size=8) idxP0X, uint(size=8) idxP0Y,
-		uint(size=8) idxQ0X, uint(size=8) idxQ0Y, bool isMacroBlockEdge)
+		bool verticalEdgeFlag, uint(size=16) idxP0X, uint(size=16) idxP0Y,
+		uint(size=16) idxQ0X, uint(size=16) idxQ0Y, bool isMacroBlockEdge)
 			-->
 		uint(size=3)
 	var
 		bool mixedModeEdge = false
 	:
 		if(chromaEdgeFlag) then
-			if(   Mb_IsIntra(mbType[idxP0X][idxP0Y&1])
-			   or Mb_IsIntra(mbType[idxQ0X][idxQ0Y&1])) then
+			if(   Mb_IsIntra(mbType[idxP0X/4][(idxP0Y/4) & 1])
+			   or Mb_IsIntra(mbType[idxQ0X/4][(idxQ0Y/4) & 1])) then
 				if(isMacroBlockEdge)then
 					4
 				else
 					3
 				end
 			else
-				42
+				if(nonZeroCoeff(idxP0X,idxP0Y,true) or
+				   nonZeroCoeff(idxQ0X,idxQ0Y,true)) then
+					2
+				else
+					42
+				end
 			end
 		else
 			42 //not implemented yet!
+		end
+	end
+
+	function nonZeroCoeff (uint(size=32) x, uint(size=32) y, bool isLuma)
+			-->
+		bool
+	:
+		if(isLuma)then
+			getFlag(codBlkPat[x/4][(y/4) & 1],(y&3)*2 + x&3)
+		else
+			false
 		end
 	end
 
@@ -126,13 +169,11 @@ actor MgntDeblockFiltFlag()
 	                  NeighbourAvail :[isMbaAvail , isMbbAvail 
 	                                 , isMbcAvail , isMbdAvail],
 	                  MbLocation :[mbX, mbY],
-	                  CodedBlockPattern :[codedBlkPattern]
+	                  CodedBlockPattern :[codedBlkPattern],
+	                  FilterOffsetA :[filtOffAVal],
+	                  FilterOffsetB :[filtOffBVal]
 	                  ==>
 	                  FilterEdges :[filterLeft, filterInternal, filterTop]
-	var
-		bool filterLeft,
-		bool filterInternal,
-		bool filterTop
 	do
 		filterInternal := (disDbfIdc != 1);
 		filterLeft     :=
@@ -153,6 +194,8 @@ actor MgntDeblockFiltFlag()
 		mbLocY := mbY;
 		mbType[mbX][mbY&1]    := mbTypeVal;
 		codBlkPat[mbX][mbY&1] := codedBlkPattern;
+		filterOffsetA := filtOffAVal;
+		filterOffsetB := filtOffBVal;
 	end
 
 	/**
@@ -172,6 +215,9 @@ actor MgntDeblockFiltFlag()
 		qpTable[mbLocX][mbLocY] := 0;
 	end
 
+	/**
+	 * Get the prediction's values
+	 */
 	getRefIdx.launch: action RefIdx :[refIdxVal] repeat 16,
 		Mv :[mvVal] repeat 32 ==>
 	guard
@@ -183,9 +229,8 @@ actor MgntDeblockFiltFlag()
 			foreach int x in 0 .. 3
 			do
 				refIdx[mbLocX*4+x][(mbLocY&1)*4+y] := refIdxVal[y*4+x];
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][0] := refIdxVal[2*(y*4+x)];
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][1] := refIdxVal[2*(y*4+x) + 1];
-				
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][0]  := refIdxVal[y*4+x];
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][1]  := refIdxVal[y*4+x + 16];
 			end
 		end
 	end
@@ -198,11 +243,39 @@ actor MgntDeblockFiltFlag()
 		//refIdx[mbLocX][mbLocY&1] := 0;
 	end
 
+	sendDeblockFiltInfo: action ==>
+	var
+		uint(size=16) qpAv,
+		int (size=7)  indexA,
+		int (size=7)  indexB,
+		uint(size=8)  alphaPrime,
+		uint(size=8)  betaPrime,
+		uint(size=16) alpha,
+		uint(size=16) beta,
+		uint(size=4)  BitDepth = 8
+	do
+		if(filterLeft)then
+			qpAv := (qpTable[mbLocX-1][mbLocY&1] + qpTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			indexA     := clip_i32(qpAv+filterOffsetA,0,51);
+			alphaPrime := ALPHA_PRIME_TAB[indexA];
+			alpha      := alphaPrime *(1 <<(BitDepth - 8));
+
+			indexB     := clip_i32(qpAv+filterOffsetB,0,51);
+			betaPrime  := BETA_PRIME_TAB[indexB];
+			beta       := betaPrime *(1<<(BitDepth - 8));
+/*			foreach int i in 0 .. 15
+			do
+
+			end*/
+		end
+	end
 
 	schedule fsm GetMbType:
-		GetMbType (getMbType )--> GetQp;
-		GetQp     (getQp     )--> GetRefIdx;
-		GetRefIdx (getRefIdx )--> GetMbType;
+		GetMbType           (getMbType           )--> GetQp;
+		GetQp               (getQp               )--> GetRefIdx;
+		GetRefIdx           (getRefIdx           )--> sendDeblockFiltInfo;
+		sendDeblockFiltInfo (sendDeblockFiltInfo )--> GetMbType;
 	end
 	priority
 		getQp.launch > getQp.skip;
