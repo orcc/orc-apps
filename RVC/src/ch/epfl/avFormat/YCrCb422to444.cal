@@ -33,7 +33,7 @@
  *			alhadi.abrahman@epfl.ch - modified to work with CAL2HDL
  *
  * Create Date:   11/31/2008
- * Design Name:   YCrCb420to422
+ * Design Name:   YCrCb422to444
  * Project Name:  Chroma Resampler
  * Tool versions:  Orcc
  * Description:   
@@ -45,126 +45,129 @@
  * Revision:
  * 		Revision 0.10
  * Additional Comments:
- * 		This actor is a 2:1 vertical up conversion operation. 
- *		By default, this is achieved using a 2-tap 2-phase structure with
- *		coefficients equivalent to [0.25 0.75] represented in 3-bit
- *		form by the integer set [1 3]. The second phase is achieved
- *		by reversing these coefficients. This actor manages the edge effect.
+ *		This actor is a 2:1 horizontal up conversion operation by using a 2-phase
+ *		polyphase structure.
+ * 		For the first phase, the default coefficients are equivalent to [0.5 0.5].
+ *		These coefficients are represented in 2-bit form such that the integer
+ *		representations are [1 1]. For the second phase, the coefficient for that
+ *		phase being equal to 1 for one tap and zero for the others.
+ *		This actor manages the edge effect.
  * Notes:
- *  (1)original[in RGB] --> YCrCb444 -->  YCrCb422 --> YCrCb420 --> YCrCb422 --> YCrCb444 --> (2)displayed[in RGB]
+ *  (1)original[in RGB] --> YCrCb444 --> YCrCb422 --> YCrCb444 --> (2)displayed[in RGB]
  *	original 			displayed 	 			SNR[dB]		PSNR[dB]	RMSE	MAE   
- *  (1)lena 512x512 	(2)lena420 512x512		36.148		43.617		1.616	1.209
+ *  (1)lena 512x512 	(2)lena422 512x512		37.887		45.356		1.322	1.012
  */
 
+package ch.epfl.avFormat;
 
-package avFormat;
-
-actor YCrCb420to422()
-	int(size=16) WIDTH,
-    int(size=16) HEIGHT,
-	int(size=10) CrCb420
+actor YCrCb422to444()
+    int(size=10) CrCb422,
+   int(size=16) WIDTH,
+    int(size=16) HEIGHT
 		==>
-			int(size=10) CrCb422 :
+			int(size=10) Cr,
+			int(size=10) Cb:
+			
        
-	//Parameters
-	int WidthMAX = 1024; //change to set max length 128
-   	
     //function getWidth(int(size=32) sizeOfImage) --> int(size=16): (sizeOfImage & 65535) end
-    
     //function getHeight(int(size=32) sizeOfImage) --> int(size=16): (sizeOfImage >> 16) end
-   	
-   	function tap(int(size=10) a, int(size=10) b) --> int(size=10) : 
-   		((a << 1)+a+b) >> 2 //(3*a+b)/4
-   	end 
-   	
-   	bool beginning := true;		
+    function tap(int(size=10) a,int(size=10) b) --> int(size=10) : (a + b)/2 end
+   
+   	int(size=11) ChromaR0 := 0;
+   	int(size=11) ChromaB0 := 0;
+   	int(size=11) ChromaR1 := 0;
+   	int(size=11) ChromaB1 := 0;
+    
     int(size=16) width := 0;
     int(size=16) height := 0; 
     
     int(size=16) i := 0;
     int(size=16) j := 0; 
-	
-	bool getSz := true;
-	bool nextPhaseStart := false;
-	bool nextPhase2Start := false;
-	bool phaseAStart := false;
-	bool phaseBStart := false;
-	
-	//List(type: int(size=10), size=WidthMAX) Line1;
-	//List(type: int(size=10), size=WidthMAX) Line0;
-	//memory declaration for CAL2HDL
-	List(type:int(size=10), size = WidthMAX) Line1 := [0 : for int k in 1 .. WidthMAX];
-	List(type:int(size=10), size = WidthMAX) Line0 := [0 : for int k in 1 .. WidthMAX];
-	
-	YCrCb420to422.SizeOfImage : action WIDTH:[w],HEIGHT:[h] ==>
-	guard 
-		getSz = true
+    
+    int CrOut := 0;
+    int CbOut := 0;
+    
+    bool getSz := true;
+    bool cr1Start := false;
+    bool cr2Start := false;
+    bool cbStart := false;
+    
+    int Cr_CoefA := 0;
+    int Cr_CoefB := 0;
+    int Cb_CoefA := 0;
+    int Cb_CoefB := 0;
+    
+    YCrCb422to444.SizeOfImage : action WIDTH:[w],HEIGHT:[h] ==>
+    guard 
+    	getSz = true
 	do
 		width := w;
 		height := h;
 		i := 0;
 		j := 0;
 		getSz := false;
-		phaseAStart := true;
+		cr1Start := true;
 	end
-
-	YCrCb420to422.NextPhase : action ==>
+   
+	YCrCb422to444.Cr1Start : action CrCb422:[ChromaR] ==>
 	guard 
-		nextPhaseStart = true
+		cr1Start = true
 	do
-		i := 0;
-		j := j + 1;
-		nextPhaseStart := false;
-		phaseBStart := true;
+		ChromaR0 := ChromaR;
+		cr1Start := false;
+		cbStart := true;
 	end
 	
-	YCrCb420to422.NextPhase2 : action ==>
+	YCrCb422to444.CbStart : action CrCb422:[ChromaB] ==> Cr:[CrOut],
+														 Cb:[CbOut]
 	guard 
-		nextPhase2Start = true
+		cbStart = true
 	do
-		i := 0;
-		j := j + 1;
-		nextPhase2Start := false;
-		phaseAStart := true;
+		ChromaB0 := ChromaB;
+		if (i = 0) then
+			Cr_CoefA := ChromaR0;
+			Cr_CoefB := ChromaR0;
+			Cb_CoefA := ChromaB;
+			Cb_CoefB := ChromaB;
+		else
+			Cr_CoefA := ChromaR0;
+			Cr_CoefB := ChromaR1;
+			Cb_CoefA := ChromaB0;
+			Cb_CoefB := ChromaB1; 
+		end 
+		//println("coeffs Cr "+Cr_CoefA+" "+Cr_CoefB);
+		//println("coeffs Cb "+Cb_CoefA+" "+Cb_CoefB);
+		CrOut := tap(Cr_CoefA,Cr_CoefB);
+		CbOut := tap(Cb_CoefA,Cb_CoefB);
+		
+		//println("CrOut "+CrOut);
+		//println("CbOut "+CbOut);
+		
+		ChromaR1 := ChromaR0;
+		ChromaB1 := ChromaB0;
+		
+		cbStart := false;
+		cr2Start := true;
+		
 	end
-	 
-	 YCrCb420to422.PhaseA : action
-        CrCb420:[ChromaX]
-        ==>
-        CrCb422:[q]
-     guard 
-     	phaseAStart = true
-     var 
-     	int(size=10) q 
-     do
-     	if beginning then
-     		Line1[i] := ChromaX;       	
-     	end
-     	q := tap(Line1[i],ChromaX);
-     	Line0[i] := ChromaX;
-     	//println("outA: "+q);
-		i := i + 1;
-		if (i >= width) then
-			phaseAStart := false;
-			nextPhaseStart := true;
+	
+	YCrCb422to444.Cr2Start : action CrCb422:[ChromaR] ==> Cr:[CrOut],Cb:[CbOut]
+	guard 
+		cr2Start = true
+	do
+		ChromaR0 := ChromaR;
+		CrOut := ChromaR1;
+		CbOut := ChromaB1;
+		//println("ChromaROut "+CrOut);
+		//println("ChromaBOut "+CbOut);
+		i := i + 2;
+		if i >= width then
+			i := 0;
+			j := j + 1;
 		end
-     end
+		
+		cbStart := true;
+		cr2Start := false;
+	end
 
-	 YCrCb420to422.PhaseB : action ==> CrCb422:[q]
-     guard 
-     	phaseBStart = true
-     var 
-     	int(size=10) q
-     do
-       	beginning := false;
-     	q := tap(Line0[i],Line1[i]);
-     	Line1[i] := Line0[i];
-     	//println("outB: "+q);
-		i := i + 1;
-		if (i >= width) then
-			phaseBStart := false;
-			nextPhase2Start := true;
-		end
-     end
-     
 end
