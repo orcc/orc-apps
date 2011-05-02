@@ -1,7 +1,7 @@
 /* 
 BEGINCOPYRIGHT X
 	
-	Copyright (c) 2006, Xilinx Inc.
+	Copyright (c) 2004-2005, Xilinx Inc.
 	All rights reserved.
 	
 	Redistribution and use in source and binary forms, 
@@ -35,87 +35,52 @@ BEGINCOPYRIGHT X
 	
 ENDCOPYRIGHT
 */
-// Zigzag.cal
+// FairMerge.cal
 //
 // Author: David B. Parlour (dave.parlour@xilinx.com)
 //
+// Multiplexer in idct2d pipeline. Alternates row, column bursts
+// (4 sample pairs each) into the shared idct1d. During start-up
+// or wind-down of a burst of video it will break the pattern
+// as needed.
+package com.xilinx.iDCT;
 
-package Proprietary.Xilinx.MPEG4_part2;
+actor FairMerge () int(size=rsz) R0, int(size=rsz) R1, int(size=csz) C0, int(size=csz) C1
+==> int(size=csz) Y0 , int(size=csz) Y1 , bool ROWOUT :
 
-actor Zigzag () int(size=SAMPLE_SZ) AC, int(size=3) START, int(size=7) ADDR ==>
-int(size=SAMPLE_SZ) OUT :
+	int rsz = 13;
 
-	int SAMPLE_SZ = 13;
+	int csz = 16;
 
-	int BUF_SIZE = 128;
-
-	int(size=8) count := 1;
-
-	bool half := false;
-
-	List(type: int(size=SAMPLE_SZ), size=BUF_SIZE) buf := [ 0 : for int k in 1 .. BUF_SIZE ];
-
-	skip: action START:[ s ] ==>
-	guard
-		s < 0
+	row: action R0:[ a ], R1:[ b ] ==> Y0:[ a ], Y1:[ b ], ROWOUT:[ true ]
 	end
 
-	start: action START:[ s ] ==>
+	col: action C0:[ a ], C1:[ b ] ==> Y0:[ a ], Y1:[ b ], ROWOUT:[ false ]
 	end
 
-	done: action ==>
-	guard
-		count = 64
-	do
-		count := 1;
-		half := not half;
+	row_low: action R0:[ a ], R1:[ b ] ==> Y0:[ a ], Y1:[ b ], ROWOUT:[ true ]
 	end
 
-	function wa() --> int :
-		(count & 63) | if half then 64 else 0 end
+	col_low: action C0:[ a ], C1:[ b ] ==> Y0:[ a ], Y1:[ b ], ROWOUT:[ false ]
 	end
 
-	function ra(int addr) --> int :
-		(addr & 63) | if half then 0 else 64 end
-	end
-
-	// If there is not a block in the buffer already, just read in the block
-	read_only: action AC:[ ac ] ==>
-	do
-		buf[wa()] := ac;
-		count := count + 1;
-	end
-
-	// If there is a block in the buffer already but no new arrival, just write it out
-	write_only: action ADDR:[ addr ] ==> OUT:[ buf[ra(addr)] ]
-	do
-		count := count + 1;
-	end
-
-	read_write: action ADDR:[ addr ], AC:[ ac ] ==> OUT:[ buf[ra(addr)] ]
-	do
-		buf[wa()] := ac;
-		count := count + 1;
-	end
-
-	schedule fsm empty :
-		empty ( skip ) --> empty;
-		empty ( start ) --> read;
-		full ( skip ) --> drain;
-		full ( start ) --> both;
-		read ( read_only ) --> read;
-		read ( done ) --> full;
-		drain ( write_only ) --> drain;
-		drain ( done ) --> empty;
-		both ( read_write ) --> both;
-		both ( done ) --> full;
+	schedule fsm r0 :
+		r0 ( row ) --> r1;
+		r1 ( row ) --> r2;
+		r2 ( row ) --> r3;
+		r3 ( row ) --> c0;
+		c0 ( col ) --> c1;
+		c1 ( col ) --> c2;
+		c2 ( col ) --> c3;
+		c3 ( col ) --> r0;
+		// low priority transitions fire if other type of input not available    
+		r0 ( col_low ) --> c1;
+		c0 ( row_low ) --> r1;
 	end
 
 	priority
-		skip > start;
-		done > read_only;
-		done > write_only;
-		done > read_write;
+		col > row_low;
+		row > col_low;
 	end
 
 end

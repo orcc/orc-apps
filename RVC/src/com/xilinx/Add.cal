@@ -35,33 +35,103 @@ BEGINCOPYRIGHT X
 	
 ENDCOPYRIGHT
 */
-// Separate.cal
+// Add.cal
 //
 // Author: David B. Parlour (dave.parlour@xilinx.com)
-//
-// Deinterleave row, col streams
+// Add motion and texture to produce pixels
 
-package Proprietary.Xilinx.MPEG4_part2.iDCT;
+package com.xilinx;
 
-actor Separate () int(size=isz) X0, int(size=isz) X1, int(size=isz) X2, int(size=isz) X3,
-bool ROW ==> int(size=rsz) R0 , int(size=rsz) R1 , int(size=rsz) R2 , int(size=rsz) R3 ,
-int(size=csz) C0 , int(size=csz) C1 , int(size=csz) C2 , int(size=csz) C3 :
+actor Add () int(size=PIX_SZ) MOT, int(size=PIX_SZ) TEX, int(size=BTYPE_SZ) BTYPE ==>
+int(size=PIX_SZ) VID :
 
-	int isz = 16;
+	int PIX_SZ = 9;
 
-	int rsz = 16;
+	int BTYPE_SZ = 12;
 
-	int csz = 10;
+	int NEWVOP = 2048;
 
-	action X0:[ a ], X1:[ b ], X2:[ c ], X3:[ d ], ROW:[ r ] ==> R0:[ a ], R1:[ b ], R2:[ c ], R3:[ d ]
+	int INTRA = 1024;
+
+	int ACCODED = 2;
+
+	// Ignore new VOP command
+	cmd.newVop: action BTYPE:[ cmd ] ==>
 	guard
-		r
+		(cmd & NEWVOP) != 0
 	end
 
-	action X0:[ a ], X1:[ b ], X2:[ c ], X3:[ d ], ROW:[ r ] ==> C0:[ (a >> 6) ], C1:[ (b >> 6) ], C2
-		:[ (c >> 6) ], C3:[ (d >> 6) ]
+	int(size=8) count := 0;
+
+	// Pure texture
+	cmd.textureOnly: action BTYPE:[ cmd ] ==>
 	guard
-		not r
+		(cmd & INTRA) != 0
+	end
+
+	// Pure motion
+	cmd.motionOnly: action BTYPE:[ cmd ] ==>
+	guard
+		(cmd & ACCODED) = 0
+	end
+
+	// Mixed texture and motion
+	// (Also used to skip vop w,h)
+	cmd.other: action BTYPE:[ cmd ] ==>
+	end
+
+	done: action ==>
+	guard
+		count = 64
+	do
+		count := 0;
+	end
+
+	texture: action TEX:[ tex ] ==> VID:[ tex ]
+	do
+		count := count + 1;
+	end
+
+	motion: action MOT:[ mot ] ==> VID:[ mot ]
+	do
+		count := count + 1;
+	end
+
+	combine: action MOT:[ mot ], TEX:[ tex ] ==> VID:[ if s < 0 then
+			0
+		else
+			if s > 255 then
+				255
+			else
+				s
+			end
+		end ]
+	var
+		int(size=PIX_SZ + 1) s = tex + mot
+	do
+		count := count + 1;
+	end
+
+	schedule fsm cmd :
+		cmd ( cmd.newVop ) --> skipw;
+		cmd ( cmd.textureOnly ) --> texture;
+		cmd ( cmd.motionOnly ) --> motion;
+		cmd ( cmd.other ) --> combine;
+		texture ( done ) --> cmd;
+		texture ( texture ) --> texture;
+		motion ( done ) --> cmd;
+		motion ( motion ) --> motion;
+		combine ( done ) --> cmd;
+		combine ( combine ) --> combine;
+		skipw ( cmd.other ) --> skiph;
+		skiph ( cmd.other ) --> cmd;
+	end
+
+	priority
+		cmd.newVop > cmd.textureOnly > cmd.motionOnly > cmd.other;
+		done > combine;
+		done > texture;
+		done > motion;
 	end
 
 end
