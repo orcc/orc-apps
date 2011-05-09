@@ -89,7 +89,8 @@ actor MgntDeblockFiltFlag()
 	uint(size=16) Alpha,
 	uint(size=16) Beta,
 	uint(size=3)  BS,
-	bool          FilterEdges
+	bool          FilterEdges,
+	uint(size=6)  IndexA
 		 :
 	//Delete me when it will be useless !
 	bool DEBUG_BS = false;
@@ -127,12 +128,12 @@ actor MgntDeblockFiltFlag()
 	int (size=8)  qpTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK];
 
 	function computeBoundaryFiltStrength (bool chromaEdgeFlag,
-		bool verticalEdgeFlag, uint(size=16) idxP0X, uint(size=16) idxP0Y,
+		uint(size=16) idxP0X, uint(size=16) idxP0Y,
 		uint(size=16) idxQ0X, uint(size=16) idxQ0Y, bool isMacroBlockEdge)
 			-->
 		uint(size=3)
-	var
-		bool mixedModeEdge = false
+//	var
+//		bool mixedModeEdge = false
 	:
 		if(not chromaEdgeFlag) then
 			if(   Mb_IsIntra(mbType[idxP0X/4][(idxP0Y/4) & 1])
@@ -147,7 +148,12 @@ actor MgntDeblockFiltFlag()
 				   nonZeroCoeff(idxQ0X,idxQ0Y,true)) then
 					2
 				else
-					42
+					if(    hasDifferentRefPicOrNumMv(idxP0X, idxP0Y, idxQ0X, idxQ0Y)
+					    or mvGapGreaterThan4(idxP0X, idxP0Y, idxQ0X, idxQ0Y)) then
+					    1
+					else
+						0
+					end
 				end
 			end
 		else
@@ -163,6 +169,37 @@ actor MgntDeblockFiltFlag()
 			getFlag(codBlkPat[x/4][(y/4) & 1],(y&3)*2 + x&3)
 		else
 			false // not implemented yet!
+		end
+	end
+
+	//Implemented for P-slice. Have to be reimplemented in order to support
+	//B-slice
+	function hasDifferentRefPicOrNumMv(uint(size=16) idxP0X, uint(size=16) idxP0Y,
+		uint(size=16) idxQ0X, uint(size=16) idxQ0Y)
+			-->
+		bool
+	:
+		if(refIdx[idxP0X][idxP0Y & 7] != refIdx[idxQ0X][idxQ0Y & 7])then
+			true
+		else
+			false
+		end
+	end
+
+	function mvGapGreaterThan4(uint(size=16) idxP0X, uint(size=16) idxP0Y,
+		uint(size=16) idxQ0X, uint(size=16) idxQ0Y)
+			-->
+		bool
+	:
+		if(mbIsPred(mbType[idxP0X/4][(idxP0Y/4)&1]) and mbIsPred(mbType[idxQ0X/4][(idxQ0Y/4)&1]))then
+			if(    abs(mv[idxP0X][idxP0Y & 7][0] - mv[idxQ0X][idxQ0Y & 7][0]) >= 4
+			    or abs(mv[idxP0X][idxP0Y & 7][1] - mv[idxQ0X][idxQ0Y & 7][1]) >= 4)then
+				true
+			else
+				false
+			end
+		else
+			false
 		end
 	end
 
@@ -201,6 +238,8 @@ actor MgntDeblockFiltFlag()
 		codBlkPat[mbX][mbY&1] := codedBlkPattern;
 		filterOffsetA := filtOffAVal;
 		filterOffsetB := filtOffBVal;
+//		println("\nNewMb");
+//		println("A : "+isMbaAvail+" ; B : "+isMbbAvail+" ; C : "+isMbcAvail+" ; D : "+isMbdAvail+" mbLocX : "+mbLocX+" ; mbLocY : "+mbLocY);
 	end
 
 	/**
@@ -234,8 +273,8 @@ actor MgntDeblockFiltFlag()
 			foreach int x in 0 .. 3
 			do
 				refIdx[mbLocX*4+x][(mbLocY&1)*4+y] := refIdxVal[y*4+x];
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][0]  := refIdxVal[y*4+x];
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][1]  := refIdxVal[y*4+x + 16];
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][0]  := mvVal[y*4+x];
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][1]  := mvVal[y*4+x + 16];
 			end
 		end
 	end
@@ -245,11 +284,20 @@ actor MgntDeblockFiltFlag()
 		not mbIsPred(mbType[mbLocX][mbLocY&1]),
 		not mbIsBiPred(mbType[mbLocX][mbLocY&1])
 	do
-		//refIdx[mbLocX][mbLocY&1] := 0;
+		//Delet me : it should work without that.
+		refIdx[mbLocX][mbLocY&1] := -1;
+		foreach int y in 0 .. 3
+		do
+			foreach int x in 0 .. 3
+			do
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][0] := -1;
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][1] := -1;
+			end
+		end
 	end
 
 	sendDeblockFiltInfo: action ==> Alpha :[alpha]repeat 3, Beta :[beta]repeat 3,
-		BS:[bsTable] repeat 32
+		BS:[bsTable] repeat 32, IndexA :[indexA]repeat 3
 	var
 		uint(size=4)  BitDepth = 8,
 
@@ -270,23 +318,40 @@ actor MgntDeblockFiltFlag()
 			        + 1) >> 1;
 			foreach int i in 0 .. 3
 			do
-				bsTable[4*i] := computeBoundaryFiltStrength (false, true,
+				bsTable[4*i] := computeBoundaryFiltStrength (false,
 					4*mbLocX - 1, 4*mbLocY + i, 4*mbLocX, 4*mbLocY + i, true);
 			end
-		else//Delete the else part !
+/*			if hasDifferentRefPicOrNumMv(4*mbLocX - 1, 4*mbLocY, 4*mbLocX, 4*mbLocY) then
+				println(" ; hasDiff ;");
+			end
+			if mvGapGreaterThan4(4*mbLocX - 1, 4*mbLocY, 4*mbLocX, 4*mbLocY) then
+				println(" ; mvGap ");
+				println("mv : "+mv[4*mbLocX - 1][(4*mbLocY) & 7][0]+" ; "+ mv[4*mbLocX][(4*mbLocY) & 7][0] +
+				" ; "+mv[4*mbLocX - 1][(4*mbLocY) & 7][1]+" ; "+ mv[4*mbLocX][(4*mbLocY) & 7][1]);
+			end
+*/		else//Delete the else part !
 			foreach int i in 0 .. 3
 			do
 				bsTable[4*i] := 0;
 			end
 		end
+
 		if(filterInternal)then
 			qpAv[1] := (2* qpTable[mbLocX][mbLocY&1] + 1) >> 1;
 			foreach int y in 0 .. 3
 			do
 				foreach int x in 1 .. 3
 				do
-					bsTable[4*y+x] := computeBoundaryFiltStrength (false, true,
+					bsTable[4*y+x] := computeBoundaryFiltStrength (false,
 						4*mbLocX +x-1, 4*mbLocY +y, 4*mbLocX +x, 4*mbLocY +y, false);
+				end
+			end
+			foreach int y in 1 .. 3
+			do
+				foreach int x in 0 .. 3
+				do
+					bsTable[4*y+x + 16] := computeBoundaryFiltStrength (false,
+						4*mbLocX +x, 4*mbLocY +y-1, 4*mbLocX +x, 4*mbLocY +y, false);
 				end
 			end
 		else//Delete the else part !
@@ -297,9 +362,28 @@ actor MgntDeblockFiltFlag()
 					bsTable[4*y+x] := 0;
 				end
 			end
+			foreach int y in 1 .. 3
+			do
+				foreach int x in 0 .. 3
+				do
+					bsTable[4*y+x + 16] := 0;
+				end
+			end
 		end
+
 		if(filterTop)then
-			//not implemented yet !
+			qpAv[2] := (qpTable[mbLocX][(mbLocY-1)&1] + qpTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			foreach int i in 0 .. 3
+			do
+				bsTable[i+16] := computeBoundaryFiltStrength (false,
+					4*mbLocX + i, 4*mbLocY - 1, 4*mbLocX + i, 4*mbLocY, true);
+			end
+		else//Delete the else part !
+			foreach int i in 0 .. 3
+			do
+				bsTable[i+16] := 0;
+			end
 		end
 		foreach int i in 0 .. 2
 		do
@@ -313,16 +397,25 @@ actor MgntDeblockFiltFlag()
 				beta[i]    := betaPrime *(1<<(BitDepth - 8));
 			end
 		end
+
 		if(DEBUG_BS)then
-			print("New way : BS = [");
-			foreach int i in 0 .. 31
+			print("Old way"+" "+lineNum+" : BS = [");
+			lineNum := lineNum + 1;
+			foreach int i in 0 .. 15
 			do
 				print(" "+bsTable[i]);
+			end
+			foreach int x in 0 .. 3
+			do
+				foreach int y in 0 .. 3
+				do
+					print(" "+bsTable[y*4+x+16]);
+				end
 			end
 			println("];");
 		end
 	end
-
+uint(size=32) lineNum := 1;
 	schedule fsm GetMbType:
 		GetMbType           (getMbType           )--> GetQp;
 		GetQp               (getQp               )--> GetRefIdx;
