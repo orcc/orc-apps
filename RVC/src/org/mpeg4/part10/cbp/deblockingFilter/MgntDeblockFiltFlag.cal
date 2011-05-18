@@ -83,15 +83,22 @@ actor MgntDeblockFiltFlag()
 	uint(size=6)  MbType,
 	int (size=16) Mv,
 	bool          NeighbourAvail,
-	int(size=8)   QpIn,
+	int(size=8)   QpYIn,
+	int(size=8)   QpCbIn,
+	int(size=8)   QpCrIn,
 	uint(size=4)  RefIdx
 		==>
 	uint(size=16) Alpha,
 	uint(size=16) Beta,
 	uint(size=3)  BS,
 	bool          FilterEdges,
-	int(size=8)   QpOut,
-	uint(size=6)  IndexA
+	int(size=8)   QpYOut,
+	int(size=8)   QpCbOut,
+	int(size=8)   QpCrOut,
+	uint(size=6)  IndexA,
+	//delete me!!
+	uint(size=6) DbfInfoCb_Old,
+	uint(size=6) DbfInfoCr_Old
 		 :
 	//Delete me when it will be useless !
 	bool DEBUG_BS = false;
@@ -126,7 +133,9 @@ actor MgntDeblockFiltFlag()
 	uint(size=16) codBlkPat[MAX_PICWIDTH_BLK][2];
 	uint(size=4)  refIdx[MAX_PICWIDTH_BLK*4][2*4];
 	int (size=16) mv[MAX_PICWIDTH_BLK*4][2*4][2];
-	int (size=8)  qpTable[MAX_PICWIDTH_BLK][2];
+	int (size=8)  qpYTable[MAX_PICWIDTH_BLK][2];
+	int (size=8)  qpCrTable[MAX_PICWIDTH_BLK][2];
+	int (size=8)  qpCbTable[MAX_PICWIDTH_BLK][2];
 
 	function computeBoundaryFiltStrength (bool chromaEdgeFlag,
 		uint(size=16) idxP0X, uint(size=16) idxP0Y,
@@ -244,26 +253,33 @@ actor MgntDeblockFiltFlag()
 	/**
 	 * Store the current value of Qp
 	 */
-	getQp.launch.forward: action QpIn :[qp] ==> QpOut :[qp]
+	getQp.launch.forward: action QpYIn :[qpY], QpCrIn :[qpCr], QpCbIn :[qpCb]
+		==> QpYOut :[qpY], QpCrOut :[qpCr], QpCbOut :[qpCb]
 	guard
 		mbType[mbLocX][mbLocY&1] != BLOCK_TYPE_I_PCM,
 		mbType[mbLocX][mbLocY&1] != BLOCK_TYPE_P_SKIP
 	do
-		qpTable[mbLocX][mbLocY&1] := qp;
+		qpYTable [mbLocX][mbLocY&1] := qpY;
+		qpCrTable[mbLocX][mbLocY&1] := qpCr;
+		qpCbTable[mbLocX][mbLocY&1] := qpCb;
 	end
 
-	getQp.launch.dontForward: action QpIn :[qp] ==>
+	getQp.launch.dontForward: action QpYIn :[qpY], QpCrIn :[qpCr], QpCbIn :[qpCb] ==>
 	guard
 		mbType[mbLocX][mbLocY&1] = BLOCK_TYPE_P_SKIP
 	do
-		qpTable[mbLocX][mbLocY&1] := qp;
+		qpYTable [mbLocX][mbLocY&1] := qpY;
+		qpCrTable[mbLocX][mbLocY&1] := qpCr;
+		qpCbTable[mbLocX][mbLocY&1] := qpCb;
 	end
 
 	getQp.skip: action ==>
 	guard
 		mbType[mbLocX][mbLocY&1] = BLOCK_TYPE_I_PCM
 	do
-		qpTable[mbLocX][mbLocY&1] := 0;
+		qpYTable [mbLocX][mbLocY&1] := 0;
+		qpCrTable[mbLocX][mbLocY&1] := 0;
+		qpCbTable[mbLocX][mbLocY&1] := 0;
 	end
 
 	/**
@@ -307,25 +323,41 @@ actor MgntDeblockFiltFlag()
 		end
 	end
 
-	sendDeblockFiltInfo: action ==> Alpha :[alpha]repeat 3, Beta :[beta]repeat 3,
-		BS:[bsTable] repeat 32, IndexA :[indexA]repeat 3
+	sendDeblockFiltInfo: action ==>
+		Alpha  :[alpha[0][0],alpha[0][1],alpha[0][2]],
+		Beta   :[beta[0][0], beta[0][1], beta[0][2]],
+		BS     :[bsTable] repeat 32,
+		IndexA :[indexA[0][0], indexA[0][1], indexA[0][2]],
+		DbfInfoCb_Old :[DbfInfoCbOld]repeat 6,
+		DbfInfoCr_Old :[DbfInfoCrOld]repeat 6
 	var
 		uint(size=4)  BitDepth = 8,
 
-		uint(size=16) alpha[3] := [0: for int i in 0 .. 2],
+		uint(size=16) alpha[3][3] := [[0: for int i in 0 .. 2]:for int j in 0 .. 2],
 		uint(size=8)  alphaPrime,
-		uint(size=16) beta[3]  := [0: for int i in 0 .. 2],
+		uint(size=16) beta[3][3]  := [[0: for int i in 0 .. 2]:for int j in 0 .. 2],
 		uint(size=8)  betaPrime,
 		uint(size=3)  bsTable[32],
 		bool          filterFlag[3] = [filterLeft, filterInternal, filterTop],
-		int (size=7)  indexA[3] := [0: for int i in 0 .. 2],
+		int (size=7)  indexA[3][3] := [[0: for int i in 0 .. 2]:for int j in 0 .. 2],
 		int (size=7)  indexB,
-		uint(size=16) qpAv[3]
+		uint(size=16) qpAv[3][3],
+		uint(size=2) Y_COMPONENT = 0,
+		uint(size=2) CR_COMPONENT = 1,
+		uint(size=2) CB_COMPONENT = 2,
+
+		//delete me!
+		uint(size=6) DbfInfoCbOld[6],
+		uint(size=6) DbfInfoCrOld[6]
 	do
 		//We can't create a procedure for this algo because parameters are not
 		//reference.
 		if(filterLeft)then
-			qpAv[0] := (qpTable[mbLocX-1][mbLocY&1] + qpTable[mbLocX][mbLocY&1]
+			qpAv[Y_COMPONENT][0] := (qpYTable[mbLocX-1][mbLocY&1] + qpYTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CR_COMPONENT][0] := (qpCrTable[mbLocX-1][mbLocY&1] + qpCrTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CB_COMPONENT][0] := (qpCbTable[mbLocX-1][mbLocY&1] + qpCbTable[mbLocX][mbLocY&1]
 			        + 1) >> 1;
 			foreach int i in 0 .. 3
 			do
@@ -340,7 +372,9 @@ actor MgntDeblockFiltFlag()
 		end
 
 		if(filterInternal)then
-			qpAv[1] := (2* qpTable[mbLocX][mbLocY&1] + 1) >> 1;
+			qpAv[Y_COMPONENT] [1] := (2* qpYTable [mbLocX][mbLocY&1] + 1) >> 1;
+			qpAv[CR_COMPONENT][1] := (2* qpCrTable[mbLocX][mbLocY&1] + 1) >> 1;
+			qpAv[CB_COMPONENT][1] := (2* qpCbTable[mbLocX][mbLocY&1] + 1) >> 1;
 			foreach int y in 0 .. 3
 			do
 				foreach int x in 1 .. 3
@@ -375,7 +409,11 @@ actor MgntDeblockFiltFlag()
 		end
 
 		if(filterTop)then
-			qpAv[2] := (qpTable[mbLocX][(mbLocY-1)&1] + qpTable[mbLocX][mbLocY&1]
+			qpAv[Y_COMPONENT][2] := (qpYTable[mbLocX][(mbLocY-1)&1] + qpYTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CR_COMPONENT][2] := (qpCrTable[mbLocX][(mbLocY-1)&1] + qpCrTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CB_COMPONENT][2] := (qpCbTable[mbLocX][(mbLocY-1)&1] + qpCbTable[mbLocX][mbLocY&1]
 			        + 1) >> 1;
 			foreach int i in 0 .. 3
 			do
@@ -391,19 +429,50 @@ actor MgntDeblockFiltFlag()
 		foreach int i in 0 .. 2
 		do
 			if(filterFlag[i])then
-				indexA[i]  := clip_i32(qpAv[i]+filterOffsetA,0,51);
-				alphaPrime := ALPHA_PRIME_TAB[indexA[i]];
-				alpha[i]   := alphaPrime *(1 <<(BitDepth - 8));
-	
-				indexB     := clip_i32(qpAv[i]+filterOffsetB,0,51);
-				betaPrime  := BETA_PRIME_TAB[indexB];
-				beta[i]    := betaPrime *(1<<(BitDepth - 8));
+				foreach uint component in 0 .. 2
+				do
+					indexA[component][i]  := clip_i32(qpAv[component][i]+filterOffsetA,0,51);
+					alphaPrime := ALPHA_PRIME_TAB[indexA[component][i]];
+					alpha[component][i]   := alphaPrime *(1 <<(BitDepth - 8));
+		
+					indexB     := clip_i32(qpAv[component][i]+filterOffsetB,0,51);
+					betaPrime  := BETA_PRIME_TAB[indexB];
+					beta[component][i]    := betaPrime *(1<<(BitDepth - 8));
+					//delete me!
+					if(component = CB_COMPONENT)then
+						if(i=0)then
+							DbfInfoCbOld[1] := indexA[component][i];
+							DbfInfoCbOld[4] := indexB;
+						else
+							if(i=1)then
+								DbfInfoCbOld[0] := indexA[component][i];
+								DbfInfoCbOld[3] := indexB;
+							else
+								DbfInfoCbOld[2] := indexA[component][i];
+								DbfInfoCbOld[5] := indexB;
+							end
+						end
+					end
+					if(component = CR_COMPONENT)then
+						if(i=0)then
+							DbfInfoCrOld[1] := indexA[component][i];
+							DbfInfoCrOld[4] := indexB;
+						else
+							if(i=1)then
+								DbfInfoCrOld[0] := indexA[component][i];
+								DbfInfoCrOld[3] := indexB;
+							else
+								DbfInfoCrOld[2] := indexA[component][i];
+								DbfInfoCrOld[5] := indexB;
+							end
+						end
+					end
+				end
 			end
 		end
 
 		if(DEBUG_BS)then
 			print("Old way : BS = [");
-			lineNum := lineNum + 1;
 			foreach int i in 0 .. 15
 			do
 				print(" "+bsTable[i]);
@@ -418,7 +487,7 @@ actor MgntDeblockFiltFlag()
 			println("];");
 		end
 	end
-uint(size=32) lineNum := 1;
+
 	schedule fsm GetMbType:
 		GetMbType           (getMbType           )--> GetQp;
 		GetQp               (getQp               )--> GetRefIdx;
