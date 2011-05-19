@@ -101,13 +101,8 @@ actor MgntDeblockFiltFlag()
 	int(size=8)   QpCrOut,
 	uint(size=6)  IndexAY,
 	uint(size=6)  IndexACr,
-	uint(size=6)  IndexACb,
-	//delete me!!
-	uint(size=6) DbfInfoCb_Old,
-	uint(size=6) DbfInfoCr_Old
+	uint(size=6)  IndexACb
 		 :
-	//Delete me when it will be useless !
-	bool DEBUG_BS = false;
 
 	uint(size=8) ALPHA_PRIME_TAB[64] =
 		[   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
@@ -143,49 +138,41 @@ actor MgntDeblockFiltFlag()
 	int (size=8)  qpCrTable[MAX_PICWIDTH_BLK][2];
 	int (size=8)  qpCbTable[MAX_PICWIDTH_BLK][2];
 
-	function computeBoundaryFiltStrength (bool chromaEdgeFlag,
-		uint(size=16) idxP0X, uint(size=16) idxP0Y,
-		uint(size=16) idxQ0X, uint(size=16) idxQ0Y, bool isMacroBlockEdge)
+	function computeBoundaryFiltStrength (uint(size=16) idxP0X,
+		uint(size=16) idxP0Y, uint(size=16) idxQ0X,
+		uint(size=16) idxQ0Y, bool isMacroBlockEdge)
 			-->
 		uint(size=3)
 //	var
 //		bool mixedModeEdge = false
 	:
-		if(not chromaEdgeFlag) then
-			if(   Mb_IsIntra(mbType[idxP0X/4][(idxP0Y/4) & 1])
-			   or Mb_IsIntra(mbType[idxQ0X/4][(idxQ0Y/4) & 1])) then
-				if(isMacroBlockEdge)then
-					4
-				else
-					3
-				end
+		if(   Mb_IsIntra(mbType[idxP0X/4][(idxP0Y/4) & 1])
+		   or Mb_IsIntra(mbType[idxQ0X/4][(idxQ0Y/4) & 1])) then
+			if(isMacroBlockEdge)then
+				4
 			else
-				if(nonZeroCoeff(idxP0X,idxP0Y,true) or
-				   nonZeroCoeff(idxQ0X,idxQ0Y,true)) then
-					2
-				else
-					if(    hasDifferentRefPicOrNumMv(idxP0X, idxP0Y, idxQ0X, idxQ0Y)
-					    or mvGapGreaterThan4(idxP0X, idxP0Y, idxQ0X, idxQ0Y)) then
-					    1
-					else
-						0
-					end
-				end
+				3
 			end
 		else
-			42 //not implemented yet!
+			if(nonZeroCoeff(idxP0X,idxP0Y) or
+			   nonZeroCoeff(idxQ0X,idxQ0Y)) then
+				2
+			else
+				if(    hasDifferentRefPicOrNumMv(idxP0X, idxP0Y, idxQ0X, idxQ0Y)
+				    or mvGapGreaterThan4(idxP0X, idxP0Y, idxQ0X, idxQ0Y)) then
+				    1
+				else
+					0
+				end
+			end
 		end
 	end
 
-	function nonZeroCoeff (uint(size=32) x, uint(size=32) y, bool isLuma)
+	function nonZeroCoeff (uint(size=32) x, uint(size=32) y)
 			-->
 		bool
 	:
-		if(isLuma)then
-			getFlag(codBlkPat[x/4][(y/4) & 1],(y&3)*4 + (x&3))
-		else
-			false // not implemented yet!
-		end
+		getFlag(codBlkPat[x/4][(y/4) & 1],(y&3)*4 + (x&3))
 	end
 
 	//Implemented for P-slice. Have to be reimplemented in order to support
@@ -195,11 +182,7 @@ actor MgntDeblockFiltFlag()
 			-->
 		bool
 	:
-		if(refIdx[idxP0X][idxP0Y & 7] != refIdx[idxQ0X][idxQ0Y & 7])then
-			true
-		else
-			false
-		end
+		refIdx[idxP0X][idxP0Y & 7] != refIdx[idxQ0X][idxQ0Y & 7]
 	end
 
 	function mvGapGreaterThan4(uint(size=16) idxP0X, uint(size=16) idxP0Y,
@@ -316,17 +299,6 @@ actor MgntDeblockFiltFlag()
 	guard
 		not mbIsPred(mbType[mbLocX][mbLocY&1]),
 		not mbIsBiPred(mbType[mbLocX][mbLocY&1])
-	do
-		//Delet me : it should work without that.
-		refIdx[mbLocX][mbLocY&1] := -1;
-		foreach int y in 0 .. 3
-		do
-			foreach int x in 0 .. 3
-			do
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][0] := -1;
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][1] := -1;
-			end
-		end
 	end
 
 	sendDeblockFiltInfo: action ==>
@@ -348,9 +320,7 @@ actor MgntDeblockFiltFlag()
 		IndexACr :[indexA[CR_COMPONENT][0], indexA[CR_COMPONENT][1],
 			indexA[CR_COMPONENT][2]],
 		IndexACb :[indexA[CB_COMPONENT][0], indexA[CB_COMPONENT][1],
-			indexA[CB_COMPONENT][2]],
-		DbfInfoCb_Old :[DbfInfoCbOld]repeat 6,
-		DbfInfoCr_Old :[DbfInfoCrOld]repeat 6
+			indexA[CB_COMPONENT][2]]
 	var
 		uint(size=4)  BitDepth = 8,
 
@@ -365,11 +335,7 @@ actor MgntDeblockFiltFlag()
 		uint(size=16) qpAv[3][3],
 		uint(size=2) Y_COMPONENT = 0,
 		uint(size=2) CR_COMPONENT = 1,
-		uint(size=2) CB_COMPONENT = 2,
-
-		//delete me!
-		uint(size=6) DbfInfoCbOld[6],
-		uint(size=6) DbfInfoCrOld[6]
+		uint(size=2) CB_COMPONENT = 2
 	do
 		//We can't create a procedure for this algo because parameters are not
 		//reference.
@@ -382,13 +348,8 @@ actor MgntDeblockFiltFlag()
 			        + 1) >> 1;
 			foreach int i in 0 .. 3
 			do
-				bsTable[4*i] := computeBoundaryFiltStrength (false,
+				bsTable[4*i] := computeBoundaryFiltStrength (
 					4*mbLocX - 1, 4*mbLocY + i, 4*mbLocX, 4*mbLocY + i, true);
-			end
-		else//Delete the else part !
-			foreach int i in 0 .. 3
-			do
-				bsTable[4*i] := 0;
 			end
 		end
 
@@ -400,7 +361,7 @@ actor MgntDeblockFiltFlag()
 			do
 				foreach int x in 1 .. 3
 				do
-					bsTable[4*y+x] := computeBoundaryFiltStrength (false,
+					bsTable[4*y+x] := computeBoundaryFiltStrength (
 						4*mbLocX +x-1, 4*mbLocY +y, 4*mbLocX +x, 4*mbLocY +y, false);
 				end
 			end
@@ -408,23 +369,8 @@ actor MgntDeblockFiltFlag()
 			do
 				foreach int x in 0 .. 3
 				do
-					bsTable[4*y+x + 16] := computeBoundaryFiltStrength (false,
+					bsTable[4*y+x + 16] := computeBoundaryFiltStrength (
 						4*mbLocX +x, 4*mbLocY +y-1, 4*mbLocX +x, 4*mbLocY +y, false);
-				end
-			end
-		else//Delete the else part !
-			foreach int y in 0 .. 3
-			do
-				foreach int x in 1 .. 3
-				do
-					bsTable[4*y+x] := 0;
-				end
-			end
-			foreach int y in 1 .. 3
-			do
-				foreach int x in 0 .. 3
-				do
-					bsTable[4*y+x + 16] := 0;
 				end
 			end
 		end
@@ -438,15 +384,11 @@ actor MgntDeblockFiltFlag()
 			        + 1) >> 1;
 			foreach int i in 0 .. 3
 			do
-				bsTable[i+16] := computeBoundaryFiltStrength (false,
+				bsTable[i+16] := computeBoundaryFiltStrength (
 					4*mbLocX + i, 4*mbLocY - 1, 4*mbLocX + i, 4*mbLocY, true);
 			end
-		else//Delete the else part !
-			foreach int i in 0 .. 3
-			do
-				bsTable[i+16] := 0;
-			end
 		end
+
 		foreach int i in 0 .. 2
 		do
 			if(filterFlag[i])then
@@ -459,53 +401,8 @@ actor MgntDeblockFiltFlag()
 					indexB     := clip_i32(qpAv[component][i]+filterOffsetB,0,51);
 					betaPrime  := BETA_PRIME_TAB[indexB];
 					beta[component][i]    := betaPrime *(1<<(BitDepth - 8));
-					//delete me!
-					if(component = CB_COMPONENT)then
-						if(i=0)then
-							DbfInfoCbOld[1] := indexA[component][i];
-							DbfInfoCbOld[4] := indexB;
-						else
-							if(i=1)then
-								DbfInfoCbOld[0] := indexA[component][i];
-								DbfInfoCbOld[3] := indexB;
-							else
-								DbfInfoCbOld[2] := indexA[component][i];
-								DbfInfoCbOld[5] := indexB;
-							end
-						end
-					end
-					if(component = CR_COMPONENT)then
-						if(i=0)then
-							DbfInfoCrOld[1] := indexA[component][i];
-							DbfInfoCrOld[4] := indexB;
-						else
-							if(i=1)then
-								DbfInfoCrOld[0] := indexA[component][i];
-								DbfInfoCrOld[3] := indexB;
-							else
-								DbfInfoCrOld[2] := indexA[component][i];
-								DbfInfoCrOld[5] := indexB;
-							end
-						end
-					end
 				end
 			end
-		end
-
-		if(DEBUG_BS)then
-			print("Old way : BS = [");
-			foreach int i in 0 .. 15
-			do
-				print(" "+bsTable[i]);
-			end
-			foreach int x in 0 .. 3
-			do
-				foreach int y in 0 .. 3
-				do
-					print(" "+bsTable[y*4+x+16]);
-				end
-			end
-			println("];");
 		end
 	end
 
