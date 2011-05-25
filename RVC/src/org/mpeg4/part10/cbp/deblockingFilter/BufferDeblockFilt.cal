@@ -129,6 +129,119 @@ actor BufferDeblockFilt (int MB_WIDTH, bool ChromaEdgeFlag)
 		abs(picture[q1X][q1Y] - picture[q0X][q0Y]) < beta
 	end
 
+	procedure filterMB(uint(size=8) xBlk, uint(size=8) yBlk)
+	var
+		uint(size=3) bS,
+		uint(size=3) chromaArrayType = 1,
+		bool filterLeft     = filterEdges[xBlk][yBlk][0],
+		bool filterInternal = filterEdges[xBlk][yBlk][1],
+		bool filterTop      = filterEdges[xBlk][yBlk][2],
+		uint(size=12) mbLocxInPix = xBlk * MB_WIDTH,
+		uint(size=12) mbLocyInPix = yBlk * MB_WIDTH,
+		uint(size=3) PARTITION_WIDTH = MB_WIDTH/4,
+		uint(size=2) partitionMin,
+		uint(size=2) partitionMax
+	begin
+		if(not ChromaEdgeFlag)then
+			partitionMin := 1;
+			partitionMax := 3;
+		else
+			if(chromaArrayType=1)then
+				partitionMin := 2;
+				partitionMax := 2;
+			else
+				partitionMin := 42;
+				partitionMax := 42;
+			end
+		end
+		//Filtering vertical edges
+		if(filterLeft)then
+			foreach uint y in 0 .. MB_WIDTH - 1
+			do
+				bS := bSTable[xBlk][yBlk][(y/PARTITION_WIDTH) * 4];
+				if(computeFilterSamples(mbLocxInPix, mbLocyInPix +y,
+					true, bS, alphaTable[xBlk][yBlk][0],
+					betaTable[xBlk][yBlk][0]))then
+
+					if(bS < 4)then
+						filterEdgeBSLessThan4(mbLocxInPix, mbLocyInPix + y,
+							true, bS, indexATable[xBlk][yBlk][0],
+							betaTable[xBlk][yBlk][0]);
+					else
+						filterEdgeBSEqualTo4(mbLocxInPix, mbLocyInPix + y, true,
+							alphaTable[xBlk][yBlk][0], betaTable[xBlk][yBlk][0]);
+					end
+				end
+			end
+		end
+		if(filterInternal)then
+			foreach uint y in 0 .. MB_WIDTH - 1
+			do
+				foreach uint xPartition in partitionMin .. partitionMax
+				do
+					bS := bSTable[xBlk][yBlk][(y/PARTITION_WIDTH) * 4 +xPartition];
+					if(computeFilterSamples(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix +y,
+						true, bS, alphaTable[xBlk][yBlk][1],
+						betaTable[xBlk][yBlk][1]))then
+
+						if(bS < 4)then
+							filterEdgeBSLessThan4(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix + y,
+								true, bS, indexATable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						else
+							filterEdgeBSEqualTo4(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix + y,
+								true, alphaTable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						end
+					end
+				end
+			end
+		end
+		//Filtering Horizontal Edges
+		if(filterTop)then
+			foreach uint x in 0 .. MB_WIDTH - 1
+			do
+				bS := bSTable[xBlk][yBlk][x/PARTITION_WIDTH +16];
+				if(computeFilterSamples(mbLocxInPix +x, mbLocyInPix,
+					false, bS, alphaTable[xBlk][yBlk][2],
+					betaTable[xBlk][yBlk][2]))then
+
+					if(bS < 4)then
+						filterEdgeBSLessThan4(mbLocxInPix +x, mbLocyInPix,
+							false, bS, indexATable[xBlk][yBlk][2],
+							betaTable[xBlk][yBlk][2]);
+					else
+						filterEdgeBSEqualTo4(mbLocxInPix +x, mbLocyInPix,
+							false, alphaTable[xBlk][yBlk][2],
+							betaTable[xBlk][yBlk][2]);
+					end
+				end
+			end
+		end
+		if(filterInternal)then
+			foreach uint x in 0 .. MB_WIDTH - 1
+			do
+				foreach uint yPartition in partitionMin .. partitionMax
+				do
+					bS := bSTable[xBlk][yBlk][yPartition * 4 +x/PARTITION_WIDTH +16];
+					if(computeFilterSamples(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
+						false, bS, alphaTable[xBlk][yBlk][1],
+						betaTable[xBlk][yBlk][1]))then
+
+						if(bS < 4)then
+							filterEdgeBSLessThan4(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
+								false, bS, indexATable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						else
+							filterEdgeBSEqualTo4(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
+								false, alphaTable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						end
+					end
+				end
+			end
+		end
+	end
 
 	procedure filterEdgeBSLessThan4(uint(size=12) q0X, uint(size=12) q0Y,
 		bool verticalEdge, uint(size=3) bS, uint(size=6) indexA,
@@ -335,126 +448,12 @@ actor BufferDeblockFilt (int MB_WIDTH, bool ChromaEdgeFlag)
 	end
 
 	filterPicture: action ==>
-	var
-		uint(size=3) bS,
-		uint(size=3) chromaArrayType = 1,
-		bool filterLeft ,
-		bool filterInternal,
-		bool filterTop,
-		uint(size=12) mbLocxInPix ,
-		uint(size=12) mbLocyInPix ,
-		uint(size=3) PARTITION_WIDTH = MB_WIDTH/4,
-		uint(size=2) partitionMin,
-		uint(size=2) partitionMax
 	do
 		foreach uint yBlk in 0 .. nbLineInPic-1
 		do
 			foreach uint xBlk in 0 .. picWidthInMb-1
 			do
-		filterLeft     := filterEdges[xBlk][yBlk][0];
-		filterInternal := filterEdges[xBlk][yBlk][1];
-		filterTop      := filterEdges[xBlk][yBlk][2];
-		mbLocxInPix := xBlk * MB_WIDTH;
-		mbLocyInPix := yBlk * MB_WIDTH;
-		if(not ChromaEdgeFlag)then
-			partitionMin := 1;
-			partitionMax := 3;
-		else
-			if(chromaArrayType=1)then
-				partitionMin := 2;
-				partitionMax := 2;
-			else
-				partitionMin := 42;
-				partitionMax := 42;
-			end
-		end
-		//Filtering vertical edges
-		if(filterLeft)then
-			foreach uint y in 0 .. MB_WIDTH - 1
-			do
-				bS := bSTable[xBlk][yBlk][(y/PARTITION_WIDTH) * 4];
-				if(computeFilterSamples(mbLocxInPix, mbLocyInPix +y,
-					true, bS, alphaTable[xBlk][yBlk][0],
-					betaTable[xBlk][yBlk][0]))then
-
-					if(bS < 4)then
-						filterEdgeBSLessThan4(mbLocxInPix, mbLocyInPix + y,
-							true, bS, indexATable[xBlk][yBlk][0],
-							betaTable[xBlk][yBlk][0]);
-					else
-						filterEdgeBSEqualTo4(mbLocxInPix, mbLocyInPix + y, true,
-							alphaTable[xBlk][yBlk][0], betaTable[xBlk][yBlk][0]);
-					end
-				end
-			end
-		end
-		if(filterInternal)then
-			foreach uint y in 0 .. MB_WIDTH - 1
-			do
-				foreach uint xPartition in partitionMin .. partitionMax
-				do
-					bS := bSTable[xBlk][yBlk][(y/PARTITION_WIDTH) * 4 +xPartition];
-					if(computeFilterSamples(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix +y,
-						true, bS, alphaTable[xBlk][yBlk][1],
-						betaTable[xBlk][yBlk][1]))then
-
-						if(bS < 4)then
-							filterEdgeBSLessThan4(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix + y,
-								true, bS, indexATable[xBlk][yBlk][1],
-								betaTable[xBlk][yBlk][1]);
-						else
-							filterEdgeBSEqualTo4(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix + y,
-								true, alphaTable[xBlk][yBlk][1],
-								betaTable[xBlk][yBlk][1]);
-						end
-					end
-				end
-			end
-		end
-		//Filtering Horizontal Edges
-		if(filterTop)then
-			foreach uint x in 0 .. MB_WIDTH - 1
-			do
-				bS := bSTable[xBlk][yBlk][x/PARTITION_WIDTH +16];
-				if(computeFilterSamples(mbLocxInPix +x, mbLocyInPix,
-					false, bS, alphaTable[xBlk][yBlk][2],
-					betaTable[xBlk][yBlk][2]))then
-
-					if(bS < 4)then
-						filterEdgeBSLessThan4(mbLocxInPix +x, mbLocyInPix,
-							false, bS, indexATable[xBlk][yBlk][2],
-							betaTable[xBlk][yBlk][2]);
-					else
-						filterEdgeBSEqualTo4(mbLocxInPix +x, mbLocyInPix,
-							false, alphaTable[xBlk][yBlk][2],
-							betaTable[xBlk][yBlk][2]);
-					end
-				end
-			end
-		end
-		if(filterInternal)then
-			foreach uint x in 0 .. MB_WIDTH - 1
-			do
-				foreach uint yPartition in partitionMin .. partitionMax
-				do
-					bS := bSTable[xBlk][yBlk][yPartition * 4 +x/PARTITION_WIDTH +16];
-					if(computeFilterSamples(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
-						false, bS, alphaTable[xBlk][yBlk][1],
-						betaTable[xBlk][yBlk][1]))then
-
-						if(bS < 4)then
-							filterEdgeBSLessThan4(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
-								false, bS, indexATable[xBlk][yBlk][1],
-								betaTable[xBlk][yBlk][1]);
-						else
-							filterEdgeBSEqualTo4(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
-								false, alphaTable[xBlk][yBlk][1],
-								betaTable[xBlk][yBlk][1]);
-						end
-					end
-				end
-			end
-		end
+				filterMB(xBlk,yBlk);
 			end
 		end
 	end
