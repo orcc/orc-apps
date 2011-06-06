@@ -3,8 +3,8 @@ RVC-CAL Implementation of Linear Congruential Generator (LCG)
 **********************************************************
 
 Junaid Jameel Ahmad, Shujun Li @ Uni-Konstanz
-26 August, 2010
 
+Last modified on 06 June, 2011
 **********************************************************
 There are two testbeds for 32-bit and 64 bit numbers. Both of these testbeds have been tested under Orcc.
 

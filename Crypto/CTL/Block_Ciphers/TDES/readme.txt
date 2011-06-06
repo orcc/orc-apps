@@ -4,7 +4,7 @@ RVC-CAL Implementation of TDES (FIPS 46-3)
 
 Junaid Jameel Ahmad, Shujun Li @ Uni-Konstanz
 
-14 August, 2010
+Last modified on 06 June, 2011
 
 **********************************************************
 

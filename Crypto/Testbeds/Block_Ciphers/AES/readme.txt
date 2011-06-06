@@ -4,7 +4,7 @@ Testbeds of RVC-CAL Implementation of AES (Rijndael)
 
 Shujun Li, Junaid Jameel Ahmad @ Uni-Konstanz
 
-16 August, 2010
+Last modified on 06 June, 2011
 
 **********************************************************
 

@@ -4,8 +4,7 @@ RVC-CAL Implementation of eStreams' Rabbit Stream Cipher
 
 Junaid Jameel Ahmad @ Uni-Konstanz
 
-09 September, 2010
-
+Last modified on 06 June, 2011
 **********************************************************
 
 eStreams' Rabbit stream cipher has been implemented by following their specification in

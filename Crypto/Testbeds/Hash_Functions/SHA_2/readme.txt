@@ -3,8 +3,8 @@ RVC-CAL Implementation of Secure Hash Algorithm (SHA-2)
 **********************************************************
 
 Junaid Jameel Ahmad @ Uni-Konstanz
-03 September, 2010
 
+Last modified on 06 June, 2011
 **********************************************************
 This folder contains the testbed files for SHA-2 and they have been verified using Orcc. Test vectors and their 
 golden response for SHA-224 and SHA-256 are taken from [1] and [2] respectively. 

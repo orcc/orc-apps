@@ -3,8 +3,8 @@ RVC-CAL Implementation of Linear Forward Shift Register (LFSR)
 **********************************************************
 
 Junaid Jameel Ahmad, Shujun Li @ Uni-Konstanz
-26 August, 2010
 
+Last modified on 06 June, 2011
 **********************************************************
 
 This is testbed for LFSR and it has been tested under Orcc.
