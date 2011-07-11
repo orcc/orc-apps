@@ -1,0 +1,138 @@
+/********************************************************************************
+
+This software module was originally developed by Florian Decologne IETR/INSA of Rennes (France), 
+in the course of development of the ISO/IEC 23002-4 for reference purposes and its performance may 
+not have been optimized. This software module is an implementation of one or more tools as specified 
+by the ISO/IEC 23002-4.
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, 
+and make derivative works of this software module or modifications thereof for use in implementations 
+of the ISO/IEC 23002-4  in products that satisfy conformance criteria (if any).
+Those intending to use this software module in products are advised that its use may infringe existing 
+patents. ISO/IEC have no liability for use of this software module or modifications thereof.
+Copyright is not released for products that do not conform to audiovisual and image-coding related ITU 
+Recommendations and/or ISO/IEC International Standards.
+Assurance that the originally developed software module can be used (1) in the ISO/IEC 23002-4 once 
+the ISO/IEC 23002-4 has been adopted; and (2) to develop the ISO/IEC 23002-4:
+
+IETR/INSA of Rennes (France) grants ISO/IEC all rights necessary to include the originally developed 
+software module or modifications thereof in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a 
+royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works 
+for use in implementations of the ISO/IEC 23002-4 in products that satisfy conformance criteria (if any), 
+and to the extent that such originally developed software module or portions of it are included in 
+the ISO/IEC 23002-4.  To the extent that IETR/INSA of Rennes (France) owns patent rights that would be 
+required to make, use, or sell the originally developed software module or portions thereof included in 
+the ISO/IEC 23002-4 in a conforming product,  IETR/INSA of Rennes (France) will assure the ISO/IEC that 
+it is willing to negotiate licenses under reasonable and non-discriminatory terms and conditions with 
+applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications thereof for the sole 
+purpose of developing the ISO/IEC 23002-4
+
+IETR/INSA of Rennes (France) retains full right to modify and use the code for its own purpose, assign 
+or donate the code to a third party and to inhibit third parties from using the code for products that 
+do not conform to MPEG-related ITU Recommendations and/or ISO/IEC International Standards.
+
+This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
+
+ 
+
+*****************************************************************************/
+package org.mpeg4.part10.svc;
+import std.util.BitOps.*;
+
+actor Algo_MVU_dyadic() int(size=32) In_NAL, int(size=32) MV_Base ==> int (size=16)MV_Current 
+:
+  
+  int n:=0;
+  int n_out:=0;
+  int n_mv_base:=0;
+  int refW;
+  int refH;
+  int scaledW;
+  int scaledH;
+   
+  //non_diadic, is_cropping, RefLayerPicWidthInSamples, RefLayerPicHeightInSamples, ScaledRefLayerPicWidthInSamples, ScaledRefLayerPicHeightInSamples
+  List( type:int(size=32), size=6 ) in_nal := [ 0 : for int i in 1 .. 6 ]; 
+  List( type:int(size=16), size=8 ) mv_base := [ 0 : for int i in 1 .. 8 ];
+  // Addr, AvailA, AvailB, AvailC, AvailD, AvailE, AvailF, AvailG, AvailH
+  List( type:int(size=32), size=32 ) mv_current := [ 0 : for int i in 1 .. 32 ];
+
+  function SIGN (int x) --> int:
+    if x > 0 then 1 else -1 end
+  end
+  
+  function MV_CAL (int x, int y, int z) --> int:
+   (x * y + SIGN(x) * rshift(z,1)) / z
+  end
+  
+  get_In_NAL: action In_NAL:[v] ==>
+  guard
+    n < 6
+  do
+    in_nal[n] := v;
+    n := n+1;
+    if n = 6 then
+      refW := in_nal[2];
+      refH := in_nal[3];
+  	  scaledW := in_nal[4];
+      scaledH := in_nal[5];
+    end
+  end
+  
+  get_MV_Base : action MV_Base:[v] ==>
+  guard
+    n_mv_base < 8
+  do
+    mv_base[n_mv_base] := v;
+    n_mv_base := n_mv_base + 1;
+  end
+    
+  get_done : action ==>
+  guard
+    n = 6 and n_mv_base = 8
+  do
+    println("get_done");
+  end
+  
+  get_mv_curr : action ==>
+  var int index_mv, int index
+  do
+     foreach int Idx in 0 .. 3 do
+		foreach int Sub_Idx in 0 .. 3 do
+			index_mv := 2*(Sub_Idx/2) + 4*(Idx/2);
+			index := 8 * Idx + 2*Sub_Idx;	
+			mv_current [index] := MV_CAL(mv_base[index_mv], scaledW, refW); 
+			mv_current [index+1] := MV_CAL(mv_base[index_mv + 1],  scaledH, refH);
+		end
+	 end	  
+  end
+  
+  mv_current_out: action ==> MV_Current:[v]
+  guard
+    n_out < 32
+  var int v
+  do
+    v := mv_current[n_out];
+    n_out := n_out +1;
+  end
+  
+  out_done: action ==>
+  guard
+    n_out = 32
+  do
+    n_out := 0;
+    n:=0;
+    n_mv_base :=0;       
+  end
+  
+  schedule fsm get_init:
+
+    get_init  	 			( get_In_NAL     		  ) --> get_init;
+    get_init  	 			( get_MV_Base			  ) --> get_init;
+    get_init     		 	( get_done 				  ) --> upsampling;  
+    upsampling			    ( get_mv_curr 			  ) --> out;
+	out 		 			( mv_current_out 	      ) --> out;
+	out 		 			( out_done 				  ) --> get_init;
+  end
+
+end

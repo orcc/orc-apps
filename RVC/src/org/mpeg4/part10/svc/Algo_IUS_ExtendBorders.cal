@@ -1,0 +1,350 @@
+/********************************************************************************
+
+This software module was originally developed by Florian Decologne IETR/INSA of Rennes (France), 
+in the course of development of the ISO/IEC 23002-4 for reference purposes and its performance may 
+not have been optimized. This software module is an implementation of one or more tools as specified 
+by the ISO/IEC 23002-4.
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, 
+and make derivative works of this software module or modifications thereof for use in implementations 
+of the ISO/IEC 23002-4  in products that satisfy conformance criteria (if any).
+Those intending to use this software module in products are advised that its use may infringe existing 
+patents. ISO/IEC have no liability for use of this software module or modifications thereof.
+Copyright is not released for products that do not conform to audiovisual and image-coding related ITU 
+Recommendations and/or ISO/IEC International Standards.
+Assurance that the originally developed software module can be used (1) in the ISO/IEC 23002-4 once 
+the ISO/IEC 23002-4 has been adopted; and (2) to develop the ISO/IEC 23002-4:
+
+IETR/INSA of Rennes (France) grants ISO/IEC all rights necessary to include the originally developed 
+software module or modifications thereof in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a 
+royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works 
+for use in implementations of the ISO/IEC 23002-4 in products that satisfy conformance criteria (if any), 
+and to the extent that such originally developed software module or portions of it are included in 
+the ISO/IEC 23002-4.  To the extent that IETR/INSA of Rennes (France) owns patent rights that would be 
+required to make, use, or sell the originally developed software module or portions thereof included in 
+the ISO/IEC 23002-4 in a conforming product,  IETR/INSA of Rennes (France) will assure the ISO/IEC that 
+it is willing to negotiate licenses under reasonable and non-discriminatory terms and conditions with 
+applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications thereof for the sole 
+purpose of developing the ISO/IEC 23002-4
+
+IETR/INSA of Rennes (France) retains full right to modify and use the code for its own purpose, assign 
+or donate the code to a third party and to inhibit third parties from using the code for products that 
+do not conform to MPEG-related ITU Recommendations and/or ISO/IEC International Standards.
+
+This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
+
+ 
+
+*****************************************************************************/
+
+package org.mpeg4.part10.svc;
+import std.util.BitOps.*;
+
+actor Algo_IUS_ExtendBorders(bool luma) int(size=32) In_NAL, int (size=16)Base_Block, int Base_Luma_Chroma  ==> int (size=16)Tmp_Luma_Chroma 
+:
+  
+  int n := 0;
+  int n_base_luma_chroma := 0;
+  int n_base_block := 0;
+  int n_out := 0;
+  int refW;
+  int refH;
+  int sizeMB :=0;
+  int x_y_size :=0;    
+  //non_diadic, is_cropping, RefLayerPicWidthInSamples, RefLayerPicHeightInSamples, ScaledRefLayerPicWidthInSamples, ScaledRefLayerPicHeightInSamples
+  List( type:int(size=32), size=6 ) in_nal := [ 0 : for int i in 1 .. 6 ]; 
+  // Addr, AvailA, AvailB, AvailC, AvailD, AvailE, AvailF, AvailG, AvailH
+  List( type:int(size=32), size=9 ) base_block := [ 0 : for int i in 1 .. 9 ];
+  List( type:int(size=16), size=576 ) base_luma_chroma := [ 0 : for int i in 1 .. 576 ];
+  List( type:int(size=16), size=576 ) tmp_luma_chroma := [ 0 : for int i in 1 .. 576 ];
+  List( type:int(size=32), size=9 ) pPelH := [ 0 : for int i in 1 .. 9 ];
+  List( type:int(size=32), size=9 ) pPelV := [ 0 : for int i in 1 .. 9 ];
+  
+  
+  procedure merge (int xsize, int ysize, int WidthInPix, int addr_src, int addr_dest, int corner, int stride, int add)
+  var 
+    int x0, int iOffset
+    
+  begin
+	foreach int x in 0 .. xsize do
+		pPelH[x] := base_luma_chroma[addr_src + (x - 1) * (add)];
+    end
+	foreach int y in 0 .. ysize do
+		pPelV[y] := base_luma_chroma[addr_src + y * WidthInPix - add];
+	end
+	if corner = 0 then
+		pPelH[0] := rshift(pPelH[1] + pPelV[1] + 1, 1);
+		pPelV[0] := pPelH[0];
+	end
+	foreach int y in 0 .. ysize-1 do
+		x0 := 0;
+		foreach int x in 0 .. xsize-1 do
+			iOffset := x - y;
+			if iOffset > 0 then
+				tmp_luma_chroma[addr_dest + x0] := rshift(pPelH[ iOffset-1] + 2*pPelH[ iOffset] + pPelH[ iOffset+1] + 2, 2);
+
+			else
+				if iOffset < 0 then
+					tmp_luma_chroma[addr_dest + x0] := rshift(pPelV[-iOffset-1] + 2*pPelV[-iOffset] + pPelV[-iOffset+1] + 2, 2);
+				else
+					tmp_luma_chroma[addr_dest + x0] := rshift(pPelH[x + 1] + 2*pPelV[0] + pPelV[y + 1] + 2, 2);
+				end
+			end
+			x0 := x0 + add;
+		end
+		addr_dest := addr_dest + stride;
+	end
+  end
+  
+  procedure copy_1d(int y_size, int x_size, int src_width, int dst_width,int src_inc, int addr_src, int addr_dest)
+  begin
+	foreach int i in 0 .. y_size-1 do
+		foreach int j in 0 .. x_size-1 do
+			tmp_luma_chroma[addr_dest + i * dst_width + j] := base_luma_chroma[addr_src + i * src_width + j * src_inc];
+		end
+	end
+  end
+  
+  init_luma_chroma: action ==>
+  do
+  	if(luma) then
+	  sizeMB :=16;
+	  x_y_size :=8;
+	else //name = chroma
+	  sizeMB :=8;
+	  x_y_size :=4;
+	end
+  end
+	  
+  get_In_NAL: action In_NAL:[v] ==>
+  guard
+    n < 6
+  do
+    in_nal[n] := v;
+    n := n+1;
+    if n = 6 then
+      refW := in_nal[2];
+      refH := in_nal[3];
+    end
+  end
+  
+  get_Base_Block : action Base_Block:[v] ==>
+  guard
+    n_base_block < 9 
+  do
+    base_block[n_base_block] := v;
+    n_base_block := n_base_block + 1;
+  end
+  
+  get_Base_Luma_Chroma : action Base_Luma_Chroma:[v] ==>
+  guard
+    n_base_luma_chroma < (4+sizeMB+4)*(4+sizeMB+4)
+  do 
+    base_luma_chroma[n_base_luma_chroma] := v;
+    n_base_luma_chroma := n_base_luma_chroma +1;
+  end
+  
+  get_done : action ==>
+  guard
+    n = 6 and n_base_block = 9 and n_base_luma_chroma = (4+sizeMB+4)*(4+sizeMB+4)
+  end
+  
+  copy_tmp_luma_chroma : action ==>
+  do
+    foreach int i in 0 .. (4+sizeMB+4)*(4+sizeMB+4)-1 do
+      tmp_luma_chroma[i] := base_luma_chroma[i];
+     end
+  end
+  
+  edges_limit : action ==>
+  var 
+  	int left, 
+  	int right, 
+  	int top, 
+  	int bottom, 
+  	int top_left, 
+  	int top_right, 
+  	int bottom_left, 
+  	int bottom_right, 
+  	int width, 
+  	int addr_MB_curr
+  do
+      left := base_block[1];
+      right := base_block[5];
+      top := base_block[2];
+      bottom := base_block[7];
+      top_left := base_block[4];
+      top_right := base_block[3];
+      bottom_left := base_block[6];
+      bottom_right := base_block[8];
+      width := 4 + sizeMB + 4;
+      addr_MB_curr := 4 + 4 * width;
+           
+	  //Get the left extension border
+	if left = 0 then
+		if top_left = 1 then
+			merge(4, x_y_size, width, addr_MB_curr - 1 - width, addr_MB_curr - 1, top, width, -1);
+		else
+			copy_1d(x_y_size, 4,width, width, 0, addr_MB_curr + 0,   addr_MB_curr - 4) ;
+		end
+
+		//Second sub macroblock of the left one
+		if bottom_left = 1 then
+			merge(4, x_y_size,  -width, addr_MB_curr - 1 + sizeMB *width,  addr_MB_curr - 1 + (sizeMB-1) *width,  bottom, -width,-1);
+		else
+			copy_1d(x_y_size, 4,width, width,0,addr_MB_curr + (sizeMB/2) * width,   addr_MB_curr - 4 + (sizeMB/2) * width) ;
+		end
+	end
+	
+	//Get the right extension border
+	if right = 0 then
+		//First Part of the macroblock
+		if top_right = 1 then
+			merge(4, x_y_size, width, addr_MB_curr + sizeMB - width,  addr_MB_curr + sizeMB,  top, width,1);
+		else
+			//Extension of the pixel of the line of the current macroblock
+			copy_1d(x_y_size ,4,width, width,0,addr_MB_curr + sizeMB-1,   addr_MB_curr + sizeMB) ;
+		end
+
+		//Second Part of the macroblock
+		if bottom_right = 1 then
+			merge(4, x_y_size, -width, addr_MB_curr + sizeMB + sizeMB * width, addr_MB_curr + sizeMB + (sizeMB-1) * width,  bottom, -width,1);
+		else
+			copy_1d(x_y_size, 4,width, width,0,addr_MB_curr + sizeMB-1 + (sizeMB/2) * width,   addr_MB_curr + sizeMB + (sizeMB/2) * width);
+		end
+	end
+	
+    //Get the top extension border
+	if top = 0 then 
+		if top_left =1 then
+			merge(x_y_size, 4,-width, addr_MB_curr + 0,   addr_MB_curr - width,  left, -width,1);
+    	else
+			copy_1d(4, x_y_size,0, width,1,addr_MB_curr + 0,  addr_MB_curr - 4 * width) ;
+		end
+
+		if top_right = 1 then
+			merge(x_y_size, 4, - width, addr_MB_curr + sizeMB-1,  addr_MB_curr + sizeMB-1 - width,  right, -width,-1);
+		else
+			copy_1d(4, x_y_size,0, width,1,addr_MB_curr + (sizeMB/2),  addr_MB_curr + (sizeMB/2) - 4 * width) ;
+		end
+	end
+	
+	if top_left = 0 then
+		if left =1 then
+			if top = 1 then
+				merge(4,4, - width, addr_MB_curr -  1,   addr_MB_curr -  1 - width,  1, -width,-1);
+			else
+				copy_1d(4,4,0, width,1,addr_MB_curr - 4,   addr_MB_curr -  4 - 4 * width) ;
+			end
+		else
+			//moyen d'enlever le test, car soit l'expansion a ete faite soit le macro est available
+			if top = 1 then
+				//Extension of the pixel of the line of the current macroblock
+				copy_1d(4,4,width, width,0,addr_MB_curr -  4 * width,   addr_MB_curr -  4 - 4 * width) ;
+			else
+				copy_1d(4,4,0, width,0,addr_MB_curr + 0,   addr_MB_curr - 4 - 4 * width) ;
+			end
+		end
+	end
+	
+	if top_right = 0 then
+		if right = 1 then
+			if top = 1 then
+				merge(4, 4,-width, addr_MB_curr + sizeMB,  addr_MB_curr + sizeMB - width,  1, -width,1);
+			else
+				copy_1d(4,4,0, width,1,addr_MB_curr + sizeMB,   addr_MB_curr + sizeMB - 4 * width) ;
+			end
+		else
+			//moyen d'enlever le test, car soit l'expansion a ete faite soit le macro est available
+			if top = 1 then
+				copy_1d(4,4,width, width,0,addr_MB_curr + sizeMB-1 - 4 * width,   addr_MB_curr + sizeMB  - 4 * width) ;
+			else
+				copy_1d(4,4,0, width,0,addr_MB_curr + sizeMB-1,   addr_MB_curr + sizeMB - 4 * width) ;
+			end
+		end
+	end
+	
+	if bottom = 0 then
+		if bottom_left =1 then
+			merge(x_y_size, 4, width, addr_MB_curr + (sizeMB-1) * width,  addr_MB_curr + sizeMB * width,  left, width,1);
+		else
+			copy_1d(4, x_y_size,0, width,1,addr_MB_curr + (sizeMB-1) * width,   addr_MB_curr + sizeMB * width) ;
+		end
+
+		if bottom_right =1 then
+			merge(x_y_size ,4, width, addr_MB_curr + (sizeMB-1) + (sizeMB-1) * width,  addr_MB_curr + (sizeMB-1) + sizeMB * width,  right, width,-1);
+		else
+			copy_1d(4,x_y_size ,0, width,1,addr_MB_curr + (sizeMB/2) + (sizeMB-1) * width,   addr_MB_curr + (sizeMB/2) + sizeMB * width) ;
+		end
+	end
+
+
+	if bottom_left =0 then
+		if left = 1 then
+			if bottom = 1 then
+				merge(4,4, width, addr_MB_curr - 1 + (sizeMB-1) * width,  addr_MB_curr - 1 + sizeMB * width,  1, width,-1);
+			else
+				copy_1d(4,4,0, width,1,addr_MB_curr - 4 + (sizeMB-1) * width,   addr_MB_curr - 4 + sizeMB * width) ;
+			end
+		else
+			if bottom = 1 then
+				copy_1d(4,4,width, width,0,addr_MB_curr + sizeMB * width,   addr_MB_curr - 4 + sizeMB * width) ;
+			else
+				copy_1d(4,4,0, width,0,addr_MB_curr + (sizeMB-1) * width,   addr_MB_curr - 4 + sizeMB * width) ;
+			end
+		end
+	end
+
+
+	if bottom_right = 0 then
+		if right = 1 then
+			if bottom = 1 then
+				merge(4,4, width, addr_MB_curr + sizeMB + (sizeMB-1)*width,  addr_MB_curr + sizeMB + sizeMB * width,  1, width,1);
+			else
+				copy_1d(4,4,0, width,1,addr_MB_curr + sizeMB + (sizeMB-1) * width,   addr_MB_curr + sizeMB + sizeMB * width) ;
+			end
+		else
+			if bottom =1 then
+				copy_1d(4,4,width, width,0,addr_MB_curr + (sizeMB-1) + sizeMB * width,  addr_MB_curr + sizeMB + sizeMB * width) ;
+			else
+				copy_1d(4,4,0, width,0,addr_MB_curr + (sizeMB-1) + (sizeMB-1) * width,  addr_MB_curr + sizeMB + sizeMB * width) ;
+			end
+		end
+	end		
+	   
+  end
+  
+  tmp_luma_chroma_out: action ==> Tmp_Luma_Chroma:[v]
+  guard
+    n_out < (4+sizeMB+4)*(4+sizeMB+4)
+  var 
+  	int v
+  do
+    v := tmp_luma_chroma[n_out];
+    n_out := n_out +1;
+  end
+  
+  out_done: action ==>
+  guard
+    n_out = (4+sizeMB+4)*(4+sizeMB+4)
+  do
+    n_out := 0;
+    n:=0;
+    n_base_block := 0;
+    n_base_luma_chroma :=0;       
+  end
+  
+  schedule fsm init_luma_chroma:
+	init_luma_chroma		( init_luma_chroma			) --> get_init;
+    get_init  	 			( get_In_NAL     		  	) --> get_init;
+    get_init  	 			( get_Base_Block 			) --> get_init;
+    get_init  	 			( get_Base_Luma_Chroma 		) --> get_init;
+    get_init     		 	( get_done 				  	) --> copy_samples;  
+    copy_samples	  		( copy_tmp_luma_chroma  	) --> calc_edges;
+	calc_edges	 		 	( edges_limit 	      		) --> out;
+	out 		 			( tmp_luma_chroma_out		) --> out;
+	out 		 			( out_done 				  	) --> get_init;
+  end
+  
+end

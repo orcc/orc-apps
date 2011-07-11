@@ -1,0 +1,192 @@
+/********************************************************************************
+
+This software module was originally developed by Florian Decologne IETR/INSA of Rennes (France), 
+in the course of development of the ISO/IEC 23002-4 for reference purposes and its performance may 
+not have been optimized. This software module is an implementation of one or more tools as specified 
+by the ISO/IEC 23002-4.
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, 
+and make derivative works of this software module or modifications thereof for use in implementations 
+of the ISO/IEC 23002-4  in products that satisfy conformance criteria (if any).
+Those intending to use this software module in products are advised that its use may infringe existing 
+patents. ISO/IEC have no liability for use of this software module or modifications thereof.
+Copyright is not released for products that do not conform to audiovisual and image-coding related ITU 
+Recommendations and/or ISO/IEC International Standards.
+Assurance that the originally developed software module can be used (1) in the ISO/IEC 23002-4 once 
+the ISO/IEC 23002-4 has been adopted; and (2) to develop the ISO/IEC 23002-4:
+
+IETR/INSA of Rennes (France) grants ISO/IEC all rights necessary to include the originally developed 
+software module or modifications thereof in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a 
+royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works 
+for use in implementations of the ISO/IEC 23002-4 in products that satisfy conformance criteria (if any), 
+and to the extent that such originally developed software module or portions of it are included in 
+the ISO/IEC 23002-4.  To the extent that IETR/INSA of Rennes (France) owns patent rights that would be 
+required to make, use, or sell the originally developed software module or portions thereof included in 
+the ISO/IEC 23002-4 in a conforming product,  IETR/INSA of Rennes (France) will assure the ISO/IEC that 
+it is willing to negotiate licenses under reasonable and non-discriminatory terms and conditions with 
+applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications thereof for the sole 
+purpose of developing the ISO/IEC 23002-4
+
+IETR/INSA of Rennes (France) retains full right to modify and use the code for its own purpose, assign 
+or donate the code to a third party and to inhibit third parties from using the code for products that 
+do not conform to MPEG-related ITU Recommendations and/or ISO/IEC International Standards.
+
+This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
+
+ 
+
+*****************************************************************************/
+package org.mpeg4.part10.svc;
+import std.util.BitOps.*;
+
+actor Mgnt_IUS_Addr() int(size=32) In_NAL, int(size=32) Residu_mb_type_name, int Mb_addr ==> int (size=16)Base_Block 
+:
+  
+  int n:=0;
+  int n_out:=0;
+  int nb_MB:=0;
+  int refW;
+  int refH;
+  int scaledW;
+  int scaledH;
+  int init_done:=0;
+  int PicSizeInMbs :=0 ;
+  int PicWidthInMbs :=0;
+  int pos_x_InPix :=0;
+  int pos_y_InPix :=0;
+   
+  //non_diadic, is_cropping, RefLayerPicWidthInSamples, RefLayerPicHeightInSamples, ScaledRefLayerPicWidthInSamples, ScaledRefLayerPicHeightInSamples
+  List( type:int(size=32), size=6 ) in_nal := [ 0 : for int i in 1 .. 6 ]; 
+  List( type:int(size=16), size=1920*1080/256 ) residu_mb_type_name := [ 0 : for int i in 1 .. 1920*1080/256 ];
+  // Addr, AvailA, AvailB, AvailC, AvailD, AvailE, AvailF, AvailG, AvailH
+  List( type:int(size=32), size=9 ) base_block := [ 0 : for int i in 1 .. 9 ];
+
+  function IS_I_SVC (int mb_type_name) --> int :
+  // 1: INTRA_4x4    2: INTRA_8x8    3: INTRA_16x16    4: I_PCM    26: I_BL
+  if mb_type_name > 0 and mb_type_name <5 or mb_type_name = 26 then 1 else 0 end
+  end
+  
+  function svc_neighbour_avail (int mb_addr) --> int :
+  if mb_addr < 0 or mb_addr > PicSizeInMbs then 0 else 1 end
+  end
+  
+  get_In_NAL: action In_NAL:[v] ==>
+  guard
+    n < 6
+  do
+    in_nal[n] := v;
+    n := n+1;
+    if n = 6 then
+      refW := in_nal[2];
+      refH := in_nal[3];
+  	  PicSizeInMbs := rshift(refW * refH , 8);
+      PicWidthInMbs := rshift(refW , 4);
+    end
+  end
+  
+  get_Residu_mb_type_name : action Residu_mb_type_name:[v] ==>
+  guard
+    n = 6 and nb_MB < PicSizeInMbs and init_done = 0
+  do
+    residu_mb_type_name[nb_MB] := v;
+    nb_MB := nb_MB + 1;
+  end
+  
+  get_Mb_addr : action Mb_addr:[v] ==>
+  guard
+    n = 6 and nb_MB = PicSizeInMbs and init_done = 0
+  do
+    base_block[0] := v;
+    init_done :=1;
+  end
+  
+  get_done : action ==>
+  guard
+    init_done = 1
+  //do
+    //println("get_done");
+  end
+  
+  get_base_neighbourhood : action ==>
+  var int x_base, int y_base, int mbAddrA, int mbAddrB, int mbAddrC, int mbAddrD, int mbAddrE, int mbAddrF, int mbAddrG, int mbAddrH
+  do
+      x_base := base_block[0] mod PicWidthInMbs ;
+      y_base := base_block[0] / PicWidthInMbs ;
+            
+      mbAddrA := base_block[0] - 1 ;
+	  mbAddrE := base_block[0] + 1;
+	  mbAddrD := base_block[0] - PicWidthInMbs - 1;
+	  mbAddrB := base_block[0] - PicWidthInMbs;
+	  mbAddrC := base_block[0] - PicWidthInMbs + 1;
+	  mbAddrF := base_block[0] + PicWidthInMbs - 1;
+	  mbAddrG := base_block[0] + PicWidthInMbs;
+	  mbAddrH := base_block[0] + PicWidthInMbs + 1 ;
+	  
+	  if svc_neighbour_avail(mbAddrA) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrA]) =1 and x_base != 0 then base_block[1] :=1; else base_block[1] := 0; end
+	  else base_block[1] := 0; end
+	  if  svc_neighbour_avail(mbAddrF) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrF]) =1 and x_base != 0 then base_block[6] :=1; else base_block[6] := 0; end
+	  else base_block[6] := 0;end
+	  if  svc_neighbour_avail(mbAddrD) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrD]) =1 and x_base != 0 then base_block[4] :=1; else base_block[4] := 0; end
+	  else base_block[4] := 0; end
+	  if  svc_neighbour_avail(mbAddrC) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrC]) =1 and x_base != PicWidthInMbs - 1 then base_block[3] :=1; else base_block[3] :=0; end
+	  else base_block[3] := 0;end
+	  if  svc_neighbour_avail(mbAddrE) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrE]) =1 and x_base != PicWidthInMbs - 1 then base_block[5] :=1; else base_block[5] :=0; end
+	  else base_block[5] := 0;end
+	  if  svc_neighbour_avail(mbAddrH) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrH]) =1 and x_base != PicWidthInMbs - 1 then base_block[8] :=1; else base_block[8] :=0; end
+	  else base_block[8] := 0;end
+	  if  svc_neighbour_avail(mbAddrG) =1 then
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrG]) =1 then base_block[7] := 1; else base_block[7] :=0; end
+	  else base_block[7] := 0;end
+	  if  svc_neighbour_avail(mbAddrB) =1 then	
+	  	if IS_I_SVC(residu_mb_type_name[mbAddrB]) =1 then base_block[2] := 1; else base_block[2] :=0; end
+	  else base_block[2] := 0;end
+	  
+	  //println("base_block "+nb_MB+" / "+PicSizeInMbs+" : "+base_block);   
+  end
+  
+  base_block_out: action ==> Base_Block:[v]
+  guard
+    n_out < 9
+  var int v
+  do
+    v := base_block[n_out];
+    n_out := n_out +1;
+  
+    //println("send base_block "nb_MB+" / "+PicSizeInMbs+" done");
+  end
+  
+  out_done: action ==>
+  guard
+    n_out = 9
+  do
+    println("send base_block done"); 
+    n_out := 0;
+    n:=0;
+    nb_MB :=0;
+    init_done :=0;
+       
+  end
+  
+  schedule fsm get_init:
+
+    get_init  	 			( get_In_NAL     		  ) --> get_init;
+    get_init  	 			( get_Residu_mb_type_name ) --> get_init;
+    get_init  	 			( get_Mb_addr 			  ) --> get_init;
+    get_init     		 	( get_done 				  ) --> MB_base_neighbourhood;  
+    MB_base_neighbourhood   ( get_base_neighbourhood  ) --> out;
+	out 		 			( base_block_out 	      ) --> out;
+	out 		 			( out_done 				  ) --> get_init;
+  end
+  
+  priority
+    out_done > base_block_out ;
+  end
+
+end
