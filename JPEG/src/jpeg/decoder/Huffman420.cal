@@ -33,10 +33,10 @@
 package jpeg.decoder;
  
 actor Huffman420() 
-	int(size=1) Bit, 
+	int(size=8) Bit, 
 	uint(size=8) HT, int(size=32) SOI
 		==> 
-			int(size=24) Block, bool pEOF :
+			int(size=24) Block :
 
 	uint(size=3) v_read_HT := 0;
 	uint(size=16) cur_val := 0;
@@ -68,14 +68,33 @@ actor Huffman420()
 	
 	// Utility action to read a specified number of bits.
 	// This is an unnamed action, ie it is always enabled and has highest priority.
+	int bitcount := 0;
+	
+	int(size=8) bits;
+	
 	action Bit:[b] ==>
 	guard 
-		to_read != 0
+		to_read != 0, bitcount = 0
 	do
+		bits := b;
 		// The bit sequence is translated to a decimal number.
-		cur_val := cur_val * 2 + b;
+		cur_val := cur_val * 2 + ((bits >> 7) & 1);
 	   	to_read := to_read - 1;
 	    cur_len := cur_len + 1;
+	    
+	    bitcount := bitcount + 1;
+	end
+
+	action ==>
+	guard 
+		to_read != 0, bitcount != 0
+	do
+		// The bit sequence is translated to a decimal number.
+		cur_val := cur_val * 2 + ((bits >> 7 - bitcount) & 1);
+	   	to_read := to_read - 1;
+	    cur_len := cur_len + 1;
+	    
+	     bitcount := (bitcount + 1) & 7;
 	end
 	
 	// Procedures
@@ -118,7 +137,6 @@ actor Huffman420()
 	
 	getSOI: action SOI:[w, h] ==>
 	do
-		count := 0;
 		mbcount := 6 * (w>>4) * (h>>4);
 	end
 	
@@ -273,6 +291,7 @@ actor Huffman420()
 	guard count = mbcount
 	do
 	count := 0;
+	bitcount := 0;
 	mbcount := 0;
 	v_read_HT := 0;
 	cur_val := 0;
@@ -281,13 +300,7 @@ actor Huffman420()
 	to_readHT := 0;	
 	lastDC := [0, 0, 0];
 	end
-	
-	flush:action Bit:[b] ==>
-	end
-	
-	flushdone:action ==> pEOF:[true]
-	end
-	
+		
 	// Schedule FSM
 	schedule fsm waitSOI:
 		waitSOI(getSOI) --> wait_HT;
@@ -298,22 +311,21 @@ actor Huffman420()
 		wait_code(receive_code)-->wait_code;
 		wait_code(build_HT)-->wait_HT;
 		
-		wait_DC_len(EOI) --> flush;
+		wait_DC_len(EOI) --> waitSOI;
 		wait_DC_len(DC.done_len)-->wait_DC;
 
-		wait_DC(DC.done)-->wait_AC_len;		
+		wait_DC(DC.done)-->wait_AC_len;
+
 		wait_AC_len(AC.done_len)-->wait_AC;
+
 		wait_AC(EOB)-->wait_DC_len;
 		wait_AC(AC.done)-->wait_AC_len;
-	
-		flush(flush)-->flush;
-		flush(flushdone)-->waitSOI;	
 	end
 	
 	priority
+		done_HT > receive_HT_len;
 		EOI > DC;
 		EOB > AC.done;
-		flush > flushdone;
 	end
 
 end
