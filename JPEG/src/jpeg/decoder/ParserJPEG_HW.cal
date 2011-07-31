@@ -33,9 +33,9 @@
 package jpeg.decoder;
 
 actor ParserJPEG_HW() 
-	int(size=9) Byte, bool pEOF
+	int(size=9) Byte
 		==> 
-		int(size=1) Bits, 
+		int(size=8) Bits, 
 		uint(size=8) QT, 
 		uint(size=8) HT, 
 		int(size=32) SOI,
@@ -51,8 +51,6 @@ actor ParserJPEG_HW()
 		
 	// Actions
 	
-	nextFrame: action pEOF:[isEnable] ==>
-	end
 
 	aSOI:action Byte:[b] repeat 2 ==>
 	do
@@ -141,7 +139,7 @@ actor ParserJPEG_HW()
 		//print_marker("SOS (Start of Scan)", "xFFDA", offset - 4);
 	end
 	
-	scan_data:action Byte:[b] ==> Bits:[[((b >> 7 - i) & 1) : for uint i in 0 .. 7]] repeat 8
+	scan_data:action Byte:[b] ==> Bits:[b]
 	guard (b != 0xFF)
 	do
 		offset := offset + 1;
@@ -156,7 +154,7 @@ actor ParserJPEG_HW()
 	
 	// In the entropy-coded data, 0x00 is inserted after 0xFF as a stuffing byte.
 	// Therefore if 0x00 is encountered after 0xFF, output 0xFF
-	stuffing:action Byte:[b] ==> Bits:[[1 : for int i in 0 .. 7]] repeat 8
+	stuffing:action Byte:[b] ==> Bits:[0xff]
 	guard (b = 0x00)
 	do
 		sent := sent + 1;
@@ -171,7 +169,7 @@ actor ParserJPEG_HW()
 		padding := true;
 	end
 	
-	padding16:action ==> Bits:[[0 : for uint i in 0 .. 15]] repeat 16
+	padding16:action ==> Bits:[0x00, 0x00]
 	guard (padding)
 	do
 		// The Huffman need data to be 16 bits aligned.
@@ -185,8 +183,6 @@ actor ParserJPEG_HW()
 	
 	// Schedule FSM
 	schedule fsm wait_SOI:
-		nextFrame(nextFrame)-->wait_SOI;
-
 		wait_SOI(aSOI)-->wait_marker;
 		
 		wait_marker(receive_marker)-->handle_marker;
@@ -215,8 +211,8 @@ actor ParserJPEG_HW()
 		wait_scan_data(receive_FF)-->is_stuffing;
 		is_stuffing(stuffing)-->wait_scan_data;
 		is_stuffing(EOI)-->finish;
-		finish(padding16)-->nextFrame;
-		finish(done_parse)-->nextFrame;
+		finish(padding16)-->wait_SOI;
+		finish(done_parse)-->wait_SOI;
 	end
 
 end
