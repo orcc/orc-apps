@@ -1,0 +1,127 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+// Author: Richard Thavot <richard.thavot@epfl.ch>
+package org.epfl.awt;
+
+import std.io.AccessImage.* ;
+
+/**
+ * The actor is a standard implmentation for writting tile pixel from an Image.
+ */
+actor ImageWriter (String fileName) uint(size=16) Resolution,
+	uint(size=8) Stream
+	==> :
+
+	int desc;
+	
+	int colorSpace = CS_RGB;
+
+	uint(size=16) resolution [ IRSIZE ];
+	
+	int image [IWSIZE][IHSIZE][ICSIZE];
+	
+	int x;
+	int y;
+	int c;
+	
+	bool EOI;
+
+	initialize ==>
+	do
+		desc := 0;
+		resolution := [ 0, 0 ];
+		EOI := true;
+		c := 0;
+		x := 0;
+		y := 0;
+	end
+
+	/*
+	 * Opens the Image given by the path
+	 */
+	openImage: action ==>
+	do
+		desc := openImage(fileName, colorSpace);
+	end
+
+	recvResolution: action Resolution:[ res ] repeat 2 ==>
+	do
+		resolution[0] := res[0];
+		resolution[1] := res[1];
+		EOI := false;
+	end
+
+	recvImage : action Stream:[ macroPixel ] ==>
+	do
+		image[x][y][c] := macroPixel;
+		if( colorSpace=CS_RGB) then
+			c := c + 1;
+		end
+		if(c = ICSIZE) then
+			c := 0;
+			x := x + 1;
+		end
+		if (x = resolution[0]) then
+			x := 0;
+			y := y + 1;
+		end
+		if (y = resolution[1]) then
+			x := 0;
+			y := 0;
+			EOI := true;	
+		end
+	end
+	
+	writeImage : action ==>
+	guard EOI
+	do
+		setImageResolution(desc, resolution);
+		writeImage(desc,image);
+	end
+	
+	closeImage: action ==>
+	do
+		desc := closeImage(desc);
+		println("close");
+	end
+	
+	schedule fsm open :
+		open ( openImage ) --> res;
+		res ( recvResolution ) --> recv;
+		recv( recvImage ) --> recv;
+		recv ( writeImage ) --> close;
+		close ( closeImage ) --> open;
+	end
+	
+	priority
+		writeImage > recvImage;
+	end
+	
+end
