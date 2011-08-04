@@ -33,12 +33,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 	int (size=9)  Coef_ACR_Inter
 		:
 
-
-	bool AcrSent;
-	bool CstrISent;
-	bool IsIntraSent;
-	bool IsNeighbourSent;
-
 	List( type:bool, size=MAX_PICWIDTH_BLK) is_intra := [false : for int i in 0 .. MAX_PICWIDTH_BLK-1];
 	bool          intra_top_left := false;	
 	uint(size=13) curr_pos       := 0;
@@ -57,11 +51,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 		guard
 			ValMBType = BLOCK_TYPE_I_PCM
 		do
-			AcrSent         := true;
-			CstrISent       := true;
-			IsNeighbourSent := true;
-			IsIntraSent := false;
-
 			CurrValIsIntra := true;
 		end
 
@@ -73,11 +62,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 			ValMBType <= BLOCK_TYPE_INTRA_MAX,
 			ValMBType != BLOCK_TYPE_I_PCM
 		do
-			AcrSent         := false;
-			CstrISent       := false;
-			IsIntraSent     := false;
-			IsNeighbourSent := false;
-
 			CurrValIsIntra := true;	
 			
 		end
@@ -86,10 +70,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 			Coef_ACR           :[ValCoef] repeat 64
 				==>
 			Coef_ACR_Intra     :[ValCoef] repeat 64
-		guard
-			not AcrSent
-		do
-			AcrSent := true;
 		end
 
 	SendNeighbourIntra: action
@@ -98,8 +78,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 			NeighbourAvail :[NeighbourA , NeighbourB , NeighbourC , NeighbourD]
 				==>
 			NeighbourAvail_Intra  :[NeighA, NeighB, NeighC, NeighD]
-		guard
-			not IsNeighbourSent
 		var
 			bool NeighA,
 			bool NeighB,
@@ -107,9 +85,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 			bool NeighD
 		do
 			curr_pos    := MbLocxInPic;
-			IsIntraSent := true;
-			IsNeighbourSent := true;
-			CstrISent := true;
 			NeighA := NeighbourA && (is_intra[(curr_pos-1) & 0x3F] or not (c_intra_flag));
 			NeighB := NeighbourB && (is_intra[curr_pos & 0x3F] or not(c_intra_flag));
 			NeighC := NeighbourC && (is_intra[(curr_pos+1) & 0x3F] or not(c_intra_flag)) && NeighB;
@@ -117,11 +92,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 		end
 
 	SendInfosDone: action ==>
-		guard
-			AcrSent,
-			CstrISent,
-			IsIntraSent,
-			IsNeighbourSent
 		do
 			intra_top_left     := is_intra[curr_pos];
 			is_intra[curr_pos] := CurrValIsIntra;
@@ -133,11 +103,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 		guard
 			ValMBType > BLOCK_TYPE_INTRA_MAX
 		do
-			AcrSent         := false;
-			CstrISent       := false;
-			IsIntraSent     := false;
-			IsNeighbourSent := true;
-
 			CurrValIsIntra := false;
 		end
 
@@ -149,11 +114,6 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 		guard
 			ValMBType = BLOCK_TYPE_P_SKIP
 		do
-			CstrISent       := false;
-			IsIntraSent     := false;
-			IsNeighbourSent := true;
-			AcrSent := true;
-
 			CurrValIsIntra := false;
 		end
 
@@ -161,49 +121,38 @@ actor Algo_DemuxParserInfoForBlocks_Chroma()
 			Coef_ACR       :[ValCoef] repeat 64
 				==>
 			Coef_ACR_Inter :[ValCoef] repeat 64
-		guard
-			not AcrSent
-		do
-			AcrSent := true;
 		end
 
 	GetConstrIAndFstMbInter: action
 			ConstrainedIFlag :[c_intra_flag]	
 				==>
-		guard
-			not CstrISent
-		do
-			CstrISent := true;	
 		end	
 
 	UpdateIsIntra: action
 			MbLocation     :[MbLocxInPic , MbLocyInPic],
 			NeighbourAvail :[NeighbourA , NeighbourB , NeighbourC , NeighbourD]
 				==>
-		guard
-			not IsIntraSent
 		do
 			curr_pos    := MbLocxInPic;
-			IsIntraSent := true;
 		end	
 
 	schedule fsm CheckMbType:
-		CheckMbType    (MBTypeIsInterPSkip      )--> SendInterInfos;
-		CheckMbType    (MBTypeIsInter           )--> SendInterInfos;
-		CheckMbType    (MBTypeIsPCM             )--> SendPCMInfos;
-		CheckMbType    (MBTypeIsIntra           )--> SendIntraInfos;
+		CheckMbType    (MBTypeIsInterPSkip      )--> SendInterInfos2;
+		CheckMbType    (MBTypeIsInter           )--> SendInterInfos1;
+		CheckMbType    (MBTypeIsPCM             )--> SendPCMInfos1;
+		CheckMbType    (MBTypeIsIntra           )--> SendIntraInfos1;
 
-		SendIntraInfos (SendAcrIntra            )--> SendIntraInfos;
-		SendIntraInfos (SendNeighbourIntra      )--> SendIntraInfos;
-		SendIntraInfos (SendInfosDone           )--> CheckMbType;
+		SendIntraInfos1 (SendAcrIntra            )--> SendIntraInfos2;
+		SendIntraInfos2 (SendNeighbourIntra      )--> SendIntraInfos3;
+		SendIntraInfos3 (SendInfosDone           )--> CheckMbType;
 
-		SendInterInfos (SendAcrInter            )--> SendInterInfos;
-		SendInterInfos (GetConstrIAndFstMbInter )--> SendInterInfos;
-		SendInterInfos (UpdateIsIntra           )--> SendInterInfos;
-		SendInterInfos (SendInfosDone           )--> CheckMbType;
+		SendInterInfos1 (SendAcrInter            )--> SendInterInfos2;
+		SendInterInfos2 (GetConstrIAndFstMbInter )--> SendInterInfos3;
+		SendInterInfos3 (UpdateIsIntra           )--> SendInterInfos4;
+		SendInterInfos4 (SendInfosDone           )--> CheckMbType;
 
-		SendPCMInfos   (UpdateIsIntra           )--> SendPCMInfos;
-		SendPCMInfos   (SendInfosDone           )--> CheckMbType;
+		SendPCMInfos1   (UpdateIsIntra           )--> SendPCMInfos2;
+		SendPCMInfos2   (SendInfosDone           )--> CheckMbType;
 	end
 
 	priority
