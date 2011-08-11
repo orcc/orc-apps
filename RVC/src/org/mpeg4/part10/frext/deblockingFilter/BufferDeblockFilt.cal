@@ -1,0 +1,511 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.frext.deblockingFilter;
+
+import org.mpeg4.part10.Imp_PictureInfo.*;
+import std.util.Math.*;
+
+actor BufferDeblockFilt (int MB_WIDTH, bool ChromaEdgeFlag)
+	uint(size=16) Alpha,
+	uint(size=16) Beta,
+	uint(size=3)  BS,
+	bool          FilterEdges,
+	uint(size=6)  IndexA,
+	bool          IsNewPicOrMb,
+	uint(size=7)  MbLocation,
+	uint(size=7)  PicWidthInMb,
+	uint(size=8)  PixValue
+		==>
+	uint(size=32) CurrPicInfo,
+	uint(size=8)  CurrMbVal
+		:
+
+	bool IS_NEW_MB    = false;
+	bool IS_NEW_PIC   = true;
+
+	uint(size=5) tPrimeC0[3][52] =
+	[
+		[ 0,  0, 0, 0, 0, 0, 0, 0, 0,  0,
+		  0,  0, 0, 0, 0, 0, 0, 0, 0,  0,
+		  0,  0, 0, 1, 1, 1, 1, 1, 1,  1,
+		  1,  1, 1, 2, 2, 2, 2, 3, 3,  3,
+		  4,  4, 4, 5, 6, 6, 7, 8, 9, 10,
+		 11, 13],
+		[ 0,  0, 0, 0, 0, 0,  0,  0,  0,  0,
+		  0,  0, 0, 0, 0, 0,  0,  0,  0,  0,
+		  0,  1, 1, 1, 1, 1,  1,  1,  1,  1,
+		  1,  2, 2, 2, 2, 3,  3,  3,  4,  4,
+		  5,  5, 6, 7, 8, 8, 10, 11, 12, 13,
+		 15, 17],
+		[  0,  0, 0,  0,  0,  0,  0,  0,  0,  0,
+		   0,  0, 0,  0,  0,  0,  0,  1,  1,  1,
+		   1,  1, 1,  1,  1,  1,  1,  2,  2,  2,
+		   2,  3, 3,  3,  4,  4,  4,  5,  6,  6,
+		   7,  8, 9, 10, 11, 13, 14, 16, 18, 20,
+		  23, 25]
+	];
+
+	int(size=9)  picture [MAX_PICWIDTH_PX][MAX_PICHEIGHT_PX];
+	uint(size=4)  bSTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK][32];
+	bool          filterEdges[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK][3];
+	uint(size=16) alphaTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK][3];
+	uint(size=16) betaTable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK][3];
+	uint(size=16) indexATable[MAX_PICWIDTH_BLK][MAX_PICHEIGHT_BLK][3];
+	uint(size=32) nbMacroBlocksWritten := 0;
+	uint(size=8)  nbLineInPic;
+	uint(size=12) locXSent;
+	uint(size=12) locYSent;
+	uint(size=12) mbLocxInPix;
+	uint(size=12) mbLocyInPix;
+	uint(size=7)  picWidthInMb;
+
+	//Computing of filterSamples, @see 8.7.2.2
+	function computeFilterSamples(uint(size=12) q0X, uint(size=12) q0Y, 
+		bool verticalEdge, uint(size=5) bSValue, uint(size=16) alpha, uint(size=16) beta)
+			-->
+		bool
+	var
+		uint(size=12) p0X = if(verticalEdge)then q0X-1 else q0X   end,
+		uint(size=12) p0Y = if(verticalEdge)then q0Y   else q0Y-1 end,
+		uint(size=12) p1X = if(verticalEdge)then q0X-2 else q0X   end,
+		uint(size=12) p1Y = if(verticalEdge)then q0Y   else q0Y-2 end,
+		uint(size=12) q1X = if(verticalEdge)then q0X+1 else q0X   end,
+		uint(size=12) q1Y = if(verticalEdge)then q0Y   else q0Y+1 end
+	:
+		bSValue != 0 and
+		abs(picture[p0X][p0Y] - picture[q0X][q0Y]) < alpha and
+		abs(picture[p1X][p1Y] - picture[p0X][p0Y]) < beta  and
+		abs(picture[q1X][q1Y] - picture[q0X][q0Y]) < beta
+	end
+
+	procedure filterMB(uint(size=8) xBlk, uint(size=8) yBlk)
+	var
+		uint(size=3) bS:=0,
+		uint(size=3) chromaArrayType = 1,
+		bool filterLeft     = filterEdges[xBlk][yBlk][0],
+		bool filterInternal = filterEdges[xBlk][yBlk][1],
+		bool filterTop      = filterEdges[xBlk][yBlk][2],
+		uint(size=12) mbLocxInPix = xBlk * MB_WIDTH,
+		uint(size=12) mbLocyInPix = yBlk * MB_WIDTH,
+		uint(size=3) PARTITION_WIDTH = MB_WIDTH/4,
+		uint(size=8) partitionMin,
+		uint(size=8) partitionMax
+	begin
+		if(not ChromaEdgeFlag)then
+			partitionMin := 1;
+			partitionMax := 3;
+		else
+			if(chromaArrayType=1)then
+				partitionMin := 2;
+				partitionMax := 2;
+			else
+				partitionMin := 42;
+				partitionMax := 42;
+			end
+		end
+		//Filtering vertical edges
+		if(filterLeft)then
+			foreach uint y in 0 .. MB_WIDTH - 1
+			do
+				bS := bSTable[xBlk][yBlk][(y/PARTITION_WIDTH) * 4];
+				if(computeFilterSamples(mbLocxInPix, mbLocyInPix +y,
+					true, bS, alphaTable[xBlk][yBlk][0],
+					betaTable[xBlk][yBlk][0]))then
+
+					if(bS < 4)then
+						filterEdgeBSLessThan4(mbLocxInPix, mbLocyInPix + y,
+							true, bS, indexATable[xBlk][yBlk][0],
+							betaTable[xBlk][yBlk][0]);
+					else
+						filterEdgeBSEqualTo4(mbLocxInPix, mbLocyInPix + y, true,
+							alphaTable[xBlk][yBlk][0], betaTable[xBlk][yBlk][0]);
+					end
+				end
+			end
+		end
+		if(filterInternal)then
+			foreach uint y in 0 .. MB_WIDTH - 1
+			do
+				foreach uint xPartition in partitionMin .. partitionMax
+				do
+					bS := bSTable[xBlk][yBlk][(y/PARTITION_WIDTH) * 4 +xPartition];
+					if(computeFilterSamples(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix +y,
+						true, bS, alphaTable[xBlk][yBlk][1],
+						betaTable[xBlk][yBlk][1]))then
+
+						if(bS < 4)then
+							filterEdgeBSLessThan4(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix + y,
+								true, bS, indexATable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						else
+							filterEdgeBSEqualTo4(mbLocxInPix +xPartition*PARTITION_WIDTH, mbLocyInPix + y,
+								true, alphaTable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						end
+					end
+				end
+			end
+		end
+		//Filtering Horizontal Edges
+		if(filterTop)then
+			foreach uint x in 0 .. MB_WIDTH - 1
+			do
+				bS := bSTable[xBlk][yBlk][x/PARTITION_WIDTH +16];
+				if(computeFilterSamples(mbLocxInPix +x, mbLocyInPix,
+					false, bS, alphaTable[xBlk][yBlk][2],
+					betaTable[xBlk][yBlk][2]))then
+
+					if(bS < 4)then
+						filterEdgeBSLessThan4(mbLocxInPix +x, mbLocyInPix,
+							false, bS, indexATable[xBlk][yBlk][2],
+							betaTable[xBlk][yBlk][2]);
+					else
+						filterEdgeBSEqualTo4(mbLocxInPix +x, mbLocyInPix,
+							false, alphaTable[xBlk][yBlk][2],
+							betaTable[xBlk][yBlk][2]);
+					end
+				end
+			end
+		end
+		if(filterInternal)then
+			foreach uint x in 0 .. MB_WIDTH - 1
+			do
+				foreach uint yPartition in partitionMin .. partitionMax
+				do
+					bS := bSTable[xBlk][yBlk][yPartition * 4 +x/PARTITION_WIDTH +16];
+					if(computeFilterSamples(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
+						false, bS, alphaTable[xBlk][yBlk][1],
+						betaTable[xBlk][yBlk][1]))then
+
+						if(bS < 4)then
+							filterEdgeBSLessThan4(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
+								false, bS, indexATable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						else
+							filterEdgeBSEqualTo4(mbLocxInPix +x, mbLocyInPix + yPartition*PARTITION_WIDTH,
+								false, alphaTable[xBlk][yBlk][1],
+								betaTable[xBlk][yBlk][1]);
+						end
+					end
+				end
+			end
+		end
+	end
+
+	procedure filterEdgeBSLessThan4(uint(size=12) q0X, uint(size=12) q0Y,
+		bool verticalEdge, uint(size=3) bS, uint(size=6) indexA,
+		uint(size=16) beta)
+	var
+		uint(size=8)  aP,
+		uint(size=8)  aQ,
+		uint(size=5)  bitDepth = 8,
+		bool          chromaStyleFiltering = ChromaEdgeFlag,
+		int(size=8)   delta,
+		uint(size=12) p0X = if verticalEdge then q0X-1 else q0X   end,
+		uint(size=12) p0Y = if verticalEdge then q0Y   else q0Y-1 end,
+		uint(size=12) p1X = if verticalEdge then q0X-2 else q0X   end,
+		uint(size=12) p1Y = if verticalEdge then q0Y   else q0Y-2 end,
+		uint(size=12) p2X = if verticalEdge then q0X-3 else q0X   end,
+		uint(size=12) p2Y = if verticalEdge then q0Y   else q0Y-3 end,
+		uint(size=12) q1X = if verticalEdge then q0X+1 else q0X   end,
+		uint(size=12) q1Y = if verticalEdge then q0Y   else q0Y+1 end,
+		uint(size=12) q2X = if verticalEdge then q0X+2 else q0X   end,
+		uint(size=12) q2Y = if verticalEdge then q0Y   else q0Y+2 end,
+		int(size=9)  p0  = picture[p0X][p0Y],
+		int(size=9)  p1  = picture[p1X][p1Y],
+		int(size=9)  p2  = picture[p2X][p2Y],
+		int(size=9)  q0  = picture[q0X][q0Y],
+		int(size=9)  q1  = picture[q1X][q1Y],
+		int(size=9)  q2  = picture[q2X][q2Y],
+		uint(size=5)  tC,
+		uint(size=5)  tC0
+	begin
+		tC0 := tPrimeC0[bS-1][indexA] *(1 <<(bitDepth-8));
+		if(not chromaStyleFiltering)then
+			aP := abs(p2 - p0);
+			aQ := abs(q2 - q0);
+			tC :=
+				if(aP<beta and aQ<beta)then
+					tC0 + 2
+				else
+					if(aP<beta or aQ< beta)then
+						tC0 + 1
+					else
+						tC0
+					end
+				end;
+			if(aP<beta)then
+				picture[p1X][p1Y] := //p'1
+					p1 + clip_i32((p2 +((p0+q0+1)>>1)-(p1<<1))>>1, -tC0, tC0);
+			end
+			if(aQ<beta)then
+				picture[q1X][q1Y] := //q'1
+					q1 + clip_i32((q2 +((p0+q0+1)>>1)-(q1<<1))>>1, -tC0, tC0);
+			end
+		else
+			tC := tC0 + 1;
+		end
+
+		delta := clip_i32(((((q0-p0)<<2)+(p1-q1)+4)>>3), -tC, tC);
+
+		picture[p0X][p0Y] := clip_i32(p0+delta, 0, 255);//p'0
+		picture[q0X][q0Y] := clip_i32(q0-delta, 0, 255);//q'O
+	end
+
+	procedure filterEdgeBSEqualTo4(uint(size=12) q0X, uint(size=12) q0Y, bool verticalEdge, uint(size=16) alpha, uint(size=16) beta)
+	var
+		uint(size=8)  aP,
+		uint(size=8)  aQ,
+		bool          chromaStyleFiltering = ChromaEdgeFlag,
+		uint(size=12) p0X = if verticalEdge then q0X-1 else q0X   end,
+		uint(size=12) p0Y = if verticalEdge then q0Y   else q0Y-1 end,
+		uint(size=12) p1X = if verticalEdge then q0X-2 else q0X   end,
+		uint(size=12) p1Y = if verticalEdge then q0Y   else q0Y-2 end,
+		uint(size=12) p2X = if verticalEdge then q0X-3 else q0X   end,
+		uint(size=12) p2Y = if verticalEdge then q0Y   else q0Y-3 end,
+		uint(size=12) p3X = if verticalEdge then q0X-4 else q0X   end,
+		uint(size=12) p3Y = if verticalEdge then q0Y   else q0Y-4 end,
+		uint(size=12) q1X = if verticalEdge then q0X+1 else q0X   end,
+		uint(size=12) q1Y = if verticalEdge then q0Y   else q0Y+1 end,
+		uint(size=12) q2X = if verticalEdge then q0X+2 else q0X   end,
+		uint(size=12) q2Y = if verticalEdge then q0Y   else q0Y+2 end,
+		uint(size=12) q3X = if verticalEdge then q0X+3 else q0X   end,
+		uint(size=12) q3Y = if verticalEdge then q0Y   else q0Y+3 end,
+		int(size=9)  p0  = picture[p0X][p0Y],
+		int(size=9)  p1  = picture[p1X][p1Y],
+		int(size=9)  p2  = picture[p2X][p2Y],
+		int(size=9)  p3  = picture[p3X][p3Y],
+		int(size=9)  q0  = picture[q0X][q0Y],
+		int(size=9)  q1  = picture[q1X][q1Y],
+		int(size=9)  q2  = picture[q2X][q2Y],
+		int(size=9)  q3  = picture[q3X][q3Y],
+		bool filteringFirstWay
+	begin
+		//Filtering p'X
+		if(not chromaStyleFiltering)then
+			aP := abs(p2 - p0);
+			filteringFirstWay := (aP<beta and abs(p0-q0)<((alpha>>2)+2));
+		else
+			filteringFirstWay := false;
+		end
+		if(filteringFirstWay)then
+			picture[p0X][p0Y] := (p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4)>>3;//p'0
+			picture[p1X][p1Y] := (p2 + p1 + p0 + q0 + 2)>>2;//p'1
+			picture[p2X][p2Y] := (2*p3 + 3*p2 + p1 + p0 + q0 + 4)>>3;//p'2
+		else
+			picture[p0X][p0Y] := (2*p1 + p0 + q1 + 2)>>2;
+		end
+		//Filtering q'X
+		if(not chromaStyleFiltering)then
+			aQ := abs(q2 - q0);
+			filteringFirstWay := (aQ<beta and abs(p0-q0)<((alpha>>2)+2));
+		else
+			filteringFirstWay := false;
+		end
+		if(filteringFirstWay)then
+			picture[q0X][q0Y] := (p1 + 2*p0 + 2*q0 + 2*q1 + q2 + 4)>>3;//p'0
+			picture[q1X][q1Y] := (p0 + q0 + q1 + q2 + 2)>>2;//p'1
+			picture[q2X][q2Y] := (2*q3 + 3*q2 + q1 + q0 + p0 + 4)>>3;//p'2
+		else
+			picture[q0X][q0Y] := (2*q1 + q0 + p1 + 2)>>2;
+		end
+	end
+
+	getIsNewPic: action IsNewPicOrMb:[isNewPic] ==>
+	end
+
+	writePictureDone: action
+		IsNewPicOrMb:[isNewPicOrMb]
+			==>
+		CurrPicInfo :[nbMacroBlocksWritten, picWidthInMb]
+	guard
+		isNewPicOrMb = IS_NEW_PIC
+	do
+		nbLineInPic := nbMacroBlocksWritten / picWidthInMb;
+		locXSent    := 0;
+		locYSent    := 0;
+	end
+
+	getWriteAddr: action
+		PicWidthInMb :[valPicWidthInMb],
+		IsNewPicOrMb :[isNewPicOrMb]
+			==>
+	guard
+		isNewPicOrMb = IS_NEW_MB
+	do
+		nbMacroBlocksWritten := nbMacroBlocksWritten + 1;
+		picWidthInMb         := valPicWidthInMb;
+	end
+
+	writeData.Chroma : action 
+		MbLocation :[MbLocxInPic , MbLocyInPic],
+		PixValue   :[pixValue] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+			==>
+	guard
+		MB_WIDTH = MB_WIDTH_CHROMA
+	do
+		foreach uint y in 0 .. MB_WIDTH - 1
+		do
+			foreach int x in 0 .. MB_WIDTH - 1
+			do
+				picture[MbLocxInPic * MB_WIDTH + x][MbLocyInPic * MB_WIDTH + y] := pixValue[y * MB_WIDTH + x];
+			end
+		end
+		mbLocxInPix := MbLocxInPic * MB_WIDTH;
+		mbLocyInPix := MbLocyInPic * MB_WIDTH;
+
+	end
+
+	writeData.Luma : action
+		MbLocation :[MbLocxInPic , MbLocyInPic],
+		PixValue   :[pixValue] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
+			==>
+	guard
+		MB_WIDTH = MB_WIDTH_LUMA
+	do
+		foreach uint y in 0 .. MB_WIDTH - 1
+		do
+			foreach int x in 0 .. MB_WIDTH - 1
+			do
+				picture[MbLocxInPic * MB_WIDTH + x][MbLocyInPic * MB_WIDTH + y] := pixValue[y * MB_WIDTH + x];
+			end
+		end
+		mbLocxInPix := MbLocxInPic * MB_WIDTH;
+		mbLocyInPix := MbLocyInPic * MB_WIDTH;
+	end
+
+	getFilterInfo: action FilterEdges :[filterLeft, filterInternal, filterTop],
+		Alpha:[alpha] repeat 3, Beta:[beta] repeat 3, BS :[bsTableVal]repeat 32,
+		IndexA:[indexA]repeat 3
+		==>
+	var
+		uint(size=8) mbLocxInBlk = mbLocxInPix / MB_WIDTH,
+		uint(size=8) mbLocyInBlk = mbLocyInPix / MB_WIDTH
+	do
+		foreach int i in 0 .. 31
+		do
+			bSTable[mbLocxInBlk][mbLocyInBlk][i] := bsTableVal[i];
+		end
+		filterEdges[mbLocxInBlk][mbLocyInBlk] := [filterLeft, filterInternal,
+			filterTop];
+		foreach int i in 0 .. 2
+		do
+			alphaTable  [mbLocxInBlk][mbLocyInBlk][i] := alpha[i];
+			betaTable   [mbLocxInBlk][mbLocyInBlk][i] := beta[i];
+			indexATable [mbLocxInBlk][mbLocyInBlk][i] := indexA[i];
+		end
+	end
+
+	filterPicture: action ==>
+	do
+		foreach uint yBlk in 0 .. nbLineInPic-1
+		do
+			foreach uint xBlk in 0 .. picWidthInMb-1
+			do
+				filterMB(xBlk,yBlk);
+			end
+		end
+	end
+
+	sendPicture.launch.Chroma : action
+			==>
+		CurrMbVal :[currMbVal] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+	guard
+		locYSent < nbLineInPic,
+		MB_WIDTH = MB_WIDTH_CHROMA
+	var
+		uint(size=8) currMbVal[MB_WIDTH_CHROMA*MB_WIDTH_CHROMA]
+	do
+		foreach uint y in 0 .. MB_WIDTH - 1
+		do
+			foreach int x in 0 .. MB_WIDTH - 1
+			do
+				currMbVal[y * MB_WIDTH + x] := picture[locXSent * MB_WIDTH + x][locYSent * MB_WIDTH + y];
+			end
+		end
+		locXSent := locXSent + 1;
+		if(locXSent = picWidthInMb)then
+			locXSent := 0;
+			locYSent := locYSent + 1;
+		end
+	end
+
+	sendPicture.launch.Luma : action
+			==>
+		CurrMbVal :[currMbVal] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
+	guard
+		locYSent < nbLineInPic,
+		MB_WIDTH = MB_WIDTH_LUMA
+	var
+		uint(size=8) currMbVal[MB_WIDTH_LUMA*MB_WIDTH_LUMA]
+	do
+		foreach uint y in 0 .. MB_WIDTH - 1
+		do
+			foreach uint x in 0 .. MB_WIDTH - 1
+			do
+				currMbVal[y * MB_WIDTH + x] := picture[locXSent * MB_WIDTH + x][locYSent * MB_WIDTH + y];
+			end
+		end
+		locXSent := locXSent + 1;
+		if(locXSent = picWidthInMb)then
+			locXSent := 0;
+			locYSent := locYSent + 1;
+		end
+	end
+
+	sendPicture.done : action ==>
+	guard
+		locYSent = nbLineInPic
+	do
+		nbMacroBlocksWritten := 0;
+	end
+
+
+	schedule fsm  GetIsNewPic:
+		GetIsNewPic   (getIsNewPic        )--> GetNextMb;
+
+		GetNextMb     (getWriteAddr       )--> WriteMb;
+		GetNextMb     (writePictureDone   )--> FilterPicture;
+
+		WriteMb       (writeData          )--> GetFilterInfo;
+
+		GetFilterInfo (getFilterInfo      )--> GetNextMb;
+
+		FilterPicture (filterPicture      )--> SendPicture;
+
+		SendPicture   (sendPicture.launch )--> SendPicture;
+		SendPicture   (sendPicture.done   )--> GetNextMb;
+	end
+	priority
+		getWriteAddr       > writePictureDone;
+		sendPicture.launch > sendPicture.done;
+	end
+end
