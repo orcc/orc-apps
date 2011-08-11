@@ -133,7 +133,7 @@ actor MgntDeblockFiltFlag()
 	uint(size=6)  mbType[MAX_PICWIDTH_BLK][2];
 	uint(size=16) codBlkPat[MAX_PICWIDTH_BLK][2];
 	int (size=32) readFrameLists[2][MAX_PICWIDTH_BLK*4][2*4];
-	int (size=16) mv[MAX_PICWIDTH_BLK*4][2*4][2];
+	int (size=16) mv[2][MAX_PICWIDTH_BLK*4][2*4][2];
 	int (size=8)  qpYTable[MAX_PICWIDTH_BLK][2];
 	int (size=8)  qpCrTable[MAX_PICWIDTH_BLK][2];
 	int (size=8)  qpCbTable[MAX_PICWIDTH_BLK][2];
@@ -175,14 +175,36 @@ actor MgntDeblockFiltFlag()
 		getFlag(codBlkPat[x/4][(y/4) & 1],(y&3)*4 + (x&3))
 	end
 
+	function numberOfRefPic(uint(size=16) x, uint(size=16) y) --> uint(size=2) :
+		uint(size=2) refPicL0  = if(readFrameLists[0][x][y & 7] != -1)then 1 else 0 end;
+		uint(size=2) refPicL1  = if(readFrameLists[1][x][y & 7] != -1)then 1 else 0 end;
+		
+		refPicL0 + refPicL1
+	end
+
 	//Implemented for P-slice. Have to be reimplemented in order to support
 	//B-slice
 	function hasDifferentRefPicOrNumMv(uint(size=16) idxP0X, uint(size=16) idxP0Y,
-		uint(size=16) idxQ0X, uint(size=16) idxQ0Y)
-			-->
-		bool
-	:
-		readFrameLists[0][idxP0X][idxP0Y & 7] != readFrameLists[0][idxQ0X][idxQ0Y & 7]
+		uint(size=16) idxQ0X, uint(size=16) idxQ0Y)--> bool:
+		uint(size=2) numRefPicP0 = numberOfRefPic(idxP0X, idxP0Y);
+		uint(size=2) numRefPicQ0 = numberOfRefPic(idxQ0X, idxQ0Y);
+
+		if(numRefPicP0 != numRefPicQ0)then
+			true
+		else
+			if(readFrameLists[0][idxP0X][idxP0Y & 7] = readFrameLists[0][idxQ0X][idxQ0Y & 7]
+					and
+				readFrameLists[1][idxP0X][idxP0Y & 7] = readFrameLists[1][idxQ0X][idxQ0Y & 7]
+					or
+				readFrameLists[0][idxP0X][idxP0Y & 7] = readFrameLists[1][idxQ0X][idxQ0Y & 7]
+					and
+				readFrameLists[1][idxP0X][idxP0Y & 7] = readFrameLists[0][idxQ0X][idxQ0Y & 7]
+			) then
+				false
+			else
+				true
+			end
+		end
 	end
 
 	function mvGapGreaterThan4(uint(size=16) idxP0X, uint(size=16) idxP0Y,
@@ -191,8 +213,8 @@ actor MgntDeblockFiltFlag()
 		bool
 	:
 		if(mbIsPred(mbType[idxP0X/4][(idxP0Y/4)&1]) and mbIsPred(mbType[idxQ0X/4][(idxQ0Y/4)&1]))then
-			if(    abs(mv[idxP0X][idxP0Y & 7][0] - mv[idxQ0X][idxQ0Y & 7][0]) >= 4
-			    or abs(mv[idxP0X][idxP0Y & 7][1] - mv[idxQ0X][idxQ0Y & 7][1]) >= 4)then
+			if(    abs(mv[0][idxP0X][idxP0Y & 7][0] - mv[0][idxQ0X][idxQ0Y & 7][0]) >= 4
+			    or abs(mv[0][idxP0X][idxP0Y & 7][1] - mv[0][idxQ0X][idxQ0Y & 7][1]) >= 4)then
 				true
 			else
 				false
@@ -276,8 +298,8 @@ actor MgntDeblockFiltFlag()
 	/**
 	 * Get the prediction's values
 	 */
-	getRefIdx.launch: action ReadFrame :[refIdxVal] repeat 16,
-		Mv :[mvVal] repeat 32 ==>
+	getRefIdx.launch: action ReadFrame :[refIdxVal] repeat 32,
+		Mv :[mvVal] repeat 64 ==>
 	guard
 		   mbIsPred(mbType[mbLocX][mbLocY&1])
 		or mbIsBiPred(mbType[mbLocX][mbLocY&1])
@@ -286,13 +308,19 @@ actor MgntDeblockFiltFlag()
 		uint(size=4) InverseScan4x4Tab[16] =
 			[ 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ]
 	do
-		foreach int y in 0 .. 3
+		foreach int numList in 0 .. 1
 		do
-			foreach int x in 0 .. 3
+			foreach int y in 0 .. 3
 			do
-				readFrameLists[0][mbLocX*4+x][(mbLocY&1)*4+y] := refIdxVal[InverseScan4x4Tab[y*4+x]];
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][0]  := mvVal[InverseScan4x4Tab[y*4+x]];
-				mv[mbLocX*4+x][(mbLocY&1)*4+y][1]  := mvVal[InverseScan4x4Tab[y*4+x] + 16];
+				foreach int x in 0 .. 3
+				do
+					readFrameLists[numList][mbLocX*4+x][(mbLocY&1)*4+y] :=
+						refIdxVal[numList*16 + InverseScan4x4Tab[y*4+x]];
+					mv[numList][mbLocX*4+x][(mbLocY&1)*4+y][0] :=
+						mvVal[numList*32 + InverseScan4x4Tab[y*4+x]];
+					mv[numList][mbLocX*4+x][(mbLocY&1)*4+y][1] :=
+						mvVal[numList*32 + InverseScan4x4Tab[y*4+x] + 16];
+				end
 			end
 		end
 	end
