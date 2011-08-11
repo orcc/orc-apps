@@ -1,0 +1,397 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>/
+package org.mpeg4.part10.frext.deblockingFilter;
+
+import org.mpeg4.part10.Imp_PictureInfo.*;
+import org.mpeg4.part10.cbp.MacroBlockInfo.*;
+import std.util.BitOps.*;
+import std.util.Math.*;
+
+/**
+ * This actor give informations to the Deblocking Filter.
+ * 
+ * @input MbType
+ * 		give the type of macroblock (Intra4x4, P_Skip, ...)
+ * 
+ * @input DisDbfIdc
+ * 		Flag decoded in the parser which can disable the deblocking filter
+ * 		process
+ * 
+ * @input NeighbourAvail
+ * 		Show if the macroblock's neighbours exists
+ * 		(see the SVC's documentation; chapter 6.4.8)
+ * 
+ * @author : Damien de Saint Jorre
+ */
+actor MgntDeblockFiltFlag()
+	uint(size=16) CodedBlockPattern,
+	uint(size=2)  DisDbfIdc,
+	int (size=6)  FilterOffsetA,
+	int (size=6)  FilterOffsetB,
+	uint(size=7)  MbLocation,
+	uint(size=6)  MbType,
+	int (size=16) Mv,
+	bool          NeighbourAvail,
+	int(size=8)   QpYIn,
+	int(size=8)   QpCbIn,
+	int(size=8)   QpCrIn,
+	uint(size=4)  RefIdx
+		==>
+	uint(size=16) AlphaY,
+	uint(size=16) AlphaCr,
+	uint(size=16) AlphaCb,
+	uint(size=16) BetaY,
+	uint(size=16) BetaCr,
+	uint(size=16) BetaCb,
+	uint(size=3)  BS,
+	bool          FilterEdges,
+	int(size=8)   QpYOut,
+	int(size=8)   QpCbOut,
+	int(size=8)   QpCrOut,
+	uint(size=6)  IndexAY,
+	uint(size=6)  IndexACr,
+	uint(size=6)  IndexACb
+		 :
+
+	uint(size=8) ALPHA_PRIME_TAB[64] =
+		[   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+		    0,   0,   0,   0,   0,   0,   4,   4,   5,   6,
+		    7,   8,   9,  10,  12,  13,  15,  17,  20,  22,
+		   25,  28,  32,  36,  40,  45,  50,  56,  63,  71,
+		   80,  90, 101, 113, 127, 144, 162, 182, 203, 226,
+		  255, 255,   0,   0,   0,   0,   0,   0,   0,   0,
+		    0,   0,   0,   0];
+
+	uint(size=8) BETA_PRIME_TAB[64] =
+		[   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+			0,   0,   0,   0,   0,   0,   2,   2,   2,   3,
+			3,   3,   3,   4,   4,   4,   6,   6,   7,   7,
+			8,   8,   9,   9,  10,  10,  11,  11,  12,  12,
+		   13,  13,  14,  14,  15,  15,  16,  16,  17,  17,
+		   18,  18,   0,   0,   0,   0,   0,   0,   0,   0,
+		    0,   0,   0,   0 ];
+
+
+	int (size=6)  filterOffsetA;
+	int (size=6)  filterOffsetB;
+	uint(size=7)  mbLocX;
+	uint(size=7)  mbLocY;
+	bool filterLeft;
+	bool filterInternal;
+	bool filterTop;
+	uint(size=6)  mbType[MAX_PICWIDTH_BLK][2];
+	uint(size=16) codBlkPat[MAX_PICWIDTH_BLK][2];
+	uint(size=4)  refIdx[MAX_PICWIDTH_BLK*4][2*4];
+	int (size=16) mv[MAX_PICWIDTH_BLK*4][2*4][2];
+	int (size=8)  qpYTable[MAX_PICWIDTH_BLK][2];
+	int (size=8)  qpCrTable[MAX_PICWIDTH_BLK][2];
+	int (size=8)  qpCbTable[MAX_PICWIDTH_BLK][2];
+
+	function computeBoundaryFiltStrength (uint(size=16) idxP0X,
+		uint(size=16) idxP0Y, uint(size=16) idxQ0X,
+		uint(size=16) idxQ0Y, bool isMacroBlockEdge)
+			-->
+		uint(size=3)
+//	var
+//		bool mixedModeEdge = false
+	:
+		if(   Mb_IsIntra(mbType[idxP0X/4][(idxP0Y/4) & 1])
+		   or Mb_IsIntra(mbType[idxQ0X/4][(idxQ0Y/4) & 1])) then
+			if(isMacroBlockEdge)then
+				4
+			else
+				3
+			end
+		else
+			if(nonZeroCoeff(idxP0X,idxP0Y) or
+			   nonZeroCoeff(idxQ0X,idxQ0Y)) then
+				2
+			else
+				if(    hasDifferentRefPicOrNumMv(idxP0X, idxP0Y, idxQ0X, idxQ0Y)
+				    or mvGapGreaterThan4(idxP0X, idxP0Y, idxQ0X, idxQ0Y)) then
+				    1
+				else
+					0
+				end
+			end
+		end
+	end
+
+	function nonZeroCoeff (uint(size=32) x, uint(size=32) y)
+			-->
+		bool
+	:
+		getFlag(codBlkPat[x/4][(y/4) & 1],(y&3)*4 + (x&3))
+	end
+
+	//Implemented for P-slice. Have to be reimplemented in order to support
+	//B-slice
+	function hasDifferentRefPicOrNumMv(uint(size=16) idxP0X, uint(size=16) idxP0Y,
+		uint(size=16) idxQ0X, uint(size=16) idxQ0Y)
+			-->
+		bool
+	:
+		refIdx[idxP0X][idxP0Y & 7] != refIdx[idxQ0X][idxQ0Y & 7]
+	end
+
+	function mvGapGreaterThan4(uint(size=16) idxP0X, uint(size=16) idxP0Y,
+		uint(size=16) idxQ0X, uint(size=16) idxQ0Y)
+			-->
+		bool
+	:
+		if(mbIsPred(mbType[idxP0X/4][(idxP0Y/4)&1]) and mbIsPred(mbType[idxQ0X/4][(idxQ0Y/4)&1]))then
+			if(    abs(mv[idxP0X][idxP0Y & 7][0] - mv[idxQ0X][idxQ0Y & 7][0]) >= 4
+			    or abs(mv[idxP0X][idxP0Y & 7][1] - mv[idxQ0X][idxQ0Y & 7][1]) >= 4)then
+				true
+			else
+				false
+			end
+		else
+			false
+		end
+	end
+
+	/**
+	 * Get informations needed about the current macroblock.
+	 * 
+	 */
+	getMbType: action MbType:[mbTypeVal], DisDbfIdc :[disDbfIdc],
+	                  NeighbourAvail :[isMbaAvail , isMbbAvail 
+	                                 , isMbcAvail , isMbdAvail],
+	                  MbLocation :[mbX, mbY],
+	                  CodedBlockPattern :[codedBlkPattern],
+	                  FilterOffsetA :[filtOffAVal],
+	                  FilterOffsetB :[filtOffBVal]
+	                  ==>
+	                  FilterEdges :[filterLeft, filterInternal, filterTop]
+	do
+		filterInternal := (disDbfIdc != 1);
+		filterLeft     :=
+			if((mbX = 0) or (disDbfIdc = 1) or 
+			  ((disDbfIdc = 2) and not isMbaAvail))then
+				false
+			else
+				true
+			end;
+		filterTop :=
+			if((mbY = 0) or (disDbfIdc = 1) or
+			  ((disDbfIdc = 2) and not isMbbAvail))then
+				false
+			else
+				true
+			end;
+		mbLocX := mbX;
+		mbLocY := mbY;
+		mbType[mbX][mbY&1]    := mbTypeVal;
+		codBlkPat[mbX][mbY&1] := codedBlkPattern;
+		filterOffsetA := filtOffAVal;
+		filterOffsetB := filtOffBVal;
+	end
+
+	/**
+	 * Store the current value of Qp
+	 */
+	getQp.launch.forward: action QpYIn :[qpY], QpCrIn :[qpCr], QpCbIn :[qpCb]
+		==> QpYOut :[qpY], QpCrOut :[qpCr], QpCbOut :[qpCb]
+	guard
+		mbType[mbLocX][mbLocY&1] != BLOCK_TYPE_I_PCM,
+		mbType[mbLocX][mbLocY&1] != BLOCK_TYPE_P_SKIP,
+		mbType[mbLocX][mbLocY&1] != BLOCK_TYPE_B_SKIP
+	do
+		qpYTable [mbLocX][mbLocY&1] := qpY;
+		qpCrTable[mbLocX][mbLocY&1] := qpCr;
+		qpCbTable[mbLocX][mbLocY&1] := qpCb;
+	end
+
+	getQp.launch.dontForward: action QpYIn :[qpY], QpCrIn :[qpCr], QpCbIn :[qpCb] ==>
+	guard
+		   mbType[mbLocX][mbLocY&1] = BLOCK_TYPE_P_SKIP
+		or mbType[mbLocX][mbLocY&1] = BLOCK_TYPE_B_SKIP
+	do
+		qpYTable [mbLocX][mbLocY&1] := qpY;
+		qpCrTable[mbLocX][mbLocY&1] := qpCr;
+		qpCbTable[mbLocX][mbLocY&1] := qpCb;
+	end
+
+	getQp.skip: action ==>
+	guard
+		mbType[mbLocX][mbLocY&1] = BLOCK_TYPE_I_PCM
+	do
+		qpYTable [mbLocX][mbLocY&1] := 0;
+		qpCrTable[mbLocX][mbLocY&1] := 0;
+		qpCbTable[mbLocX][mbLocY&1] := 0;
+	end
+
+	/**
+	 * Get the prediction's values
+	 */
+	getRefIdx.launch: action RefIdx :[refIdxVal] repeat 16,
+		Mv :[mvVal] repeat 32 ==>
+	guard
+		   mbIsPred(mbType[mbLocX][mbLocY&1])
+		or mbIsBiPred(mbType[mbLocX][mbLocY&1])
+	var
+		//Clean me : the actor in mvReconstr should be modified
+		uint(size=4) InverseScan4x4Tab[16] =
+			[ 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ]
+	do
+		foreach int y in 0 .. 3
+		do
+			foreach int x in 0 .. 3
+			do
+				refIdx[mbLocX*4+x][(mbLocY&1)*4+y] := refIdxVal[InverseScan4x4Tab[y*4+x]];
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][0]  := mvVal[InverseScan4x4Tab[y*4+x]];
+				mv[mbLocX*4+x][(mbLocY&1)*4+y][1]  := mvVal[InverseScan4x4Tab[y*4+x] + 16];
+			end
+		end
+	end
+
+	getRefIdx.skip: action ==>
+	guard
+		not mbIsPred(mbType[mbLocX][mbLocY&1]),
+		not mbIsBiPred(mbType[mbLocX][mbLocY&1])
+	end
+
+	sendDeblockFiltInfo: action ==>
+		AlphaY  :[alpha[Y_COMPONENT][0],alpha[Y_COMPONENT][1],
+			alpha[Y_COMPONENT][2]],
+		AlphaCr  :[alpha[CR_COMPONENT][0],alpha[CR_COMPONENT][1],
+			alpha[CR_COMPONENT][2]],
+		AlphaCb  :[alpha[CB_COMPONENT][0],alpha[CB_COMPONENT][1],
+			alpha[CB_COMPONENT][2]],
+		BetaY   :[beta[Y_COMPONENT][0], beta[Y_COMPONENT][1],
+			beta[Y_COMPONENT][2]],
+		BetaCr   :[beta[CR_COMPONENT][0], beta[CR_COMPONENT][1],
+			beta[CR_COMPONENT][2]],
+		BetaCb   :[beta[CB_COMPONENT][0], beta[CB_COMPONENT][1],
+			beta[CB_COMPONENT][2]],
+		BS      :[bsTable] repeat 32,
+		IndexAY :[indexA[Y_COMPONENT][0], indexA[Y_COMPONENT][1],
+			indexA[Y_COMPONENT][2]],
+		IndexACr :[indexA[CR_COMPONENT][0], indexA[CR_COMPONENT][1],
+			indexA[CR_COMPONENT][2]],
+		IndexACb :[indexA[CB_COMPONENT][0], indexA[CB_COMPONENT][1],
+			indexA[CB_COMPONENT][2]]
+	var
+		uint(size=4)  BitDepth = 8,
+
+		uint(size=16) alpha[3][3] := [[0: for int i in 0 .. 2]:for int j in 0 .. 2],
+		uint(size=8)  alphaPrime,
+		uint(size=16) beta[3][3]  := [[0: for int i in 0 .. 2]:for int j in 0 .. 2],
+		uint(size=8)  betaPrime,
+		uint(size=3)  bsTable[32],
+		bool          filterFlag[3] = [filterLeft, filterInternal, filterTop],
+		int (size=7)  indexA[3][3] := [[0: for int i in 0 .. 2]:for int j in 0 .. 2],
+		int (size=7)  indexB,
+		uint(size=16) qpAv[3][3],
+		uint(size=2) Y_COMPONENT = 0,
+		uint(size=2) CR_COMPONENT = 1,
+		uint(size=2) CB_COMPONENT = 2
+	do
+		//We can't create a procedure for this algo because parameters are not
+		//reference.
+		if(filterLeft)then
+			qpAv[Y_COMPONENT][0] := (qpYTable[mbLocX-1][mbLocY&1] + qpYTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CR_COMPONENT][0] := (qpCrTable[mbLocX-1][mbLocY&1] + qpCrTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CB_COMPONENT][0] := (qpCbTable[mbLocX-1][mbLocY&1] + qpCbTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			foreach int i in 0 .. 3
+			do
+				bsTable[4*i] := computeBoundaryFiltStrength (
+					4*mbLocX - 1, 4*mbLocY + i, 4*mbLocX, 4*mbLocY + i, true);
+			end
+		end
+
+		if(filterInternal)then
+			qpAv[Y_COMPONENT] [1] := (2* qpYTable [mbLocX][mbLocY&1] + 1) >> 1;
+			qpAv[CR_COMPONENT][1] := (2* qpCrTable[mbLocX][mbLocY&1] + 1) >> 1;
+			qpAv[CB_COMPONENT][1] := (2* qpCbTable[mbLocX][mbLocY&1] + 1) >> 1;
+			foreach int y in 0 .. 3
+			do
+				foreach int x in 1 .. 3
+				do
+					bsTable[4*y+x] := computeBoundaryFiltStrength (
+						4*mbLocX +x-1, 4*mbLocY +y, 4*mbLocX +x, 4*mbLocY +y, false);
+				end
+			end
+			foreach int y in 1 .. 3
+			do
+				foreach int x in 0 .. 3
+				do
+					bsTable[4*y+x + 16] := computeBoundaryFiltStrength (
+						4*mbLocX +x, 4*mbLocY +y-1, 4*mbLocX +x, 4*mbLocY +y, false);
+				end
+			end
+		end
+
+		if(filterTop)then
+			qpAv[Y_COMPONENT][2] := (qpYTable[mbLocX][(mbLocY-1)&1] + qpYTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CR_COMPONENT][2] := (qpCrTable[mbLocX][(mbLocY-1)&1] + qpCrTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			qpAv[CB_COMPONENT][2] := (qpCbTable[mbLocX][(mbLocY-1)&1] + qpCbTable[mbLocX][mbLocY&1]
+			        + 1) >> 1;
+			foreach int i in 0 .. 3
+			do
+				bsTable[i+16] := computeBoundaryFiltStrength (
+					4*mbLocX + i, 4*mbLocY - 1, 4*mbLocX + i, 4*mbLocY, true);
+			end
+		end
+
+		foreach int i in 0 .. 2
+		do
+			if(filterFlag[i])then
+				foreach uint component in 0 .. 2
+				do
+					indexA[component][i]  := clip_i32(qpAv[component][i]+filterOffsetA,0,51);
+					alphaPrime := ALPHA_PRIME_TAB[indexA[component][i]];
+					alpha[component][i]   := alphaPrime *(1 <<(BitDepth - 8));
+		
+					indexB     := clip_i32(qpAv[component][i]+filterOffsetB,0,51);
+					betaPrime  := BETA_PRIME_TAB[indexB];
+					beta[component][i]    := betaPrime *(1<<(BitDepth - 8));
+				end
+			end
+		end
+	end
+
+	schedule fsm GetMbType:
+		GetMbType           (getMbType           )--> GetQp;
+		GetQp               (getQp               )--> GetRefIdx;
+		GetRefIdx           (getRefIdx           )--> sendDeblockFiltInfo;
+		sendDeblockFiltInfo (sendDeblockFiltInfo )--> GetMbType;
+	end
+	priority
+		getQp.launch > getQp.skip;
+	end
+end
