@@ -75,6 +75,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 	int (size=16) SubMbPredMvRes,
 
 	bool          colZeroFlag,
+	int (size=32) TemporalPredInfo,
 
 	bool          DirectSpatialMvPredFlag,
 	bool          DirectPredLX_In
@@ -127,6 +128,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 	bool          direct_pred_lx;
 	uint(size=11) Mbx_in_pix;
 	uint(size=11) Mby_in_pix;
+	bool          isTemporalPred;
 
 		List(type: int (size=16),size=2) MvA;
 		List(type: int (size=16),size=2) MvB;
@@ -332,6 +334,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 
 	CheckMbType.IsBSkip_BDirect16x16: action
 		colZeroFlag      :[TabColZero] repeat 4,
+		TemporalPredInfo :[temporalInfo] repeat 20,
 		CurrMbAddr       :[Curr_Mb_Addr],
 		MbLocation       :[MbLocxInPic , MbLocyInPic],
 		NeighbourAvail   :[NeighbourA_Avail , NeighbourB_Avail , NeighbourC_Avail , NeighbourD_Avail],
@@ -340,10 +343,11 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		DirectPredLX_Out :[ListDirectPred] repeat 16
 	guard
 		mbType = BLOCK_TYPE_B_SKIP or mbType = BLOCK_TYPE_B_DIRECT_16x16
-	var
-		List(type: bool, size=16) ListDirectPred,
-		int(size=5) RefIdxLX_Direct
 	do
+		List(type: bool, size=16) ListDirectPred;
+		int(size=5) RefIdxLX_Direct;
+		uint(size=4) idxOffset;
+
 		Mbx_in_pix  := MbLocxInPic*16;
 		Mby_in_pix  := MbLocyInPic*16;
 		Idx_CurrBlk := Curr_Mb_Addr & MASK_POW2_PICWIDTH_BLK_PLUS1;
@@ -372,6 +376,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		end
 
 		if(direct_spatial_mv_pred)then // spatial prediction
+			isTemporalPred := false;
 			GetNeighbourBlockParameters (0,16);
 			RefIdxLX_Direct := minPositive(RefIdxA,minPositive(RefIdxB,RefIdxC));
 			direct_pred_lx := (RefIdxLX_Direct >= 0);
@@ -397,8 +402,28 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 				end
 			end
 		else //temporal prediction
-	//		println("GetMbType.B_Skip_B_Direct_16x16 : temporal prediction for B_Skip not implemented yet !!");
+			isTemporalPred := true;
 			direct_pred_lx := true;
+			foreach int i in 0 .. 3
+			do
+				idxOffset :=
+					if(IsPredL0) then
+						4
+					else
+						12
+					end;
+				foreach int j in 0 .. 3
+				do
+					RefIdxTab[Idx_CurrBlk][4*i+j] :=
+						if(IsPredL0)then
+							temporalInfo[i]
+						else
+							0
+						end;
+					MvTab[Idx_CurrBlk][4*i+j][0] := temporalInfo[idxOffset + 2*i];
+					MvTab[Idx_CurrBlk][4*i+j][1] := temporalInfo[idxOffset + 2*i +1];
+				end
+			end
 		end
 	end
 
@@ -422,7 +447,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 			RefIdxOut :[ListRefIdx]   repeat 16,
 			NewMb_o  :[TrueList]    repeat 16
 		guard
-			direct_pred_lx
+			direct_pred_lx or isTemporalPred
 		var
 			List(type: uint(size=11), size=32) ListLocation,
 			List(type:  int(size=16), size=32) ListMv,
@@ -444,7 +469,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 
 	SendMv4Direct.Skip: action ==>
 		guard
-			not direct_pred_lx
+			not direct_pred_lx and not isTemporalPred
 		end
 
 	SendSubMv4Direct.Launch: action
