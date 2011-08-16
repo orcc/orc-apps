@@ -204,20 +204,44 @@ actor Algo_MvBuffer()
 		direct_8x8_inference_flag   := Direct8x8InferFlag;
 	end
 
-	getMbType: action MbType :[macroBlkType], NewPic :[isNewPic] ==>
+	getMbType: action MbType :[macroBlkType], NewPic :[isNewPic],
+		CurrMbAddr :[Mb_Addr], PicWidthInMb :[pic_width] ==>
 	guard
 		not isNewPic
 	do
 		mb_type := macroBlkType;
+
+		Mbx := Mb_Addr mod pic_width;
+		Mby := Mb_Addr  /  pic_width;
+		//There are 16 Partitions in a macroblock
+		Mbx := Mbx * 4;
+		Mby := Mby * 4;
+
+		MbPartIdx    := 0;
+		MbPartIdxMax := NumMbPart(mb_type);
+		SizeMbMv     := SizeMbPart(mb_type);
 	end
 
 	checkMbType.macroBlkIorSI: action ==>
 	guard
 		Mb_IsIntra(mb_type)
+	do
+		foreach int i in Mbx .. Mbx + 3
+		do
+			foreach int j in Mby .. Mby + 3
+			do
+				ListRefIdxL0[WriteListIdx][i][j]    := -1;
+				ListRefIdxL1[WriteListIdx][i][j]    := -1;
+				ListMvL0    [WriteListIdx][i][j][0] :=  0;
+				ListMvL0    [WriteListIdx][i][j][1] :=  0;
+				ListMvL1    [WriteListIdx][i][j][0] :=  0;
+				ListMvL1    [WriteListIdx][i][j][1] :=  0;
+			end
+		end
 	end
 
-	checkMbType.B_Skip_B_Direct_16x16: action CurrMbAddr :[Curr_Mb_Addr],
-		PicWidthInMb :[PicWidth] ==> ColZeroFlag  :[isColZero] repeat 16,
+	checkMbType.B_Skip_B_Direct_16x16: action ==>
+		ColZeroFlag :[isColZero] repeat 16,
 		TemporalInfo :[temporalInfo] repeat 80
 	guard
 		mb_type = BLOCK_TYPE_B_SKIP or mb_type = BLOCK_TYPE_B_DIRECT_16x16
@@ -226,14 +250,6 @@ actor Algo_MvBuffer()
 		int (size=32) temporalInfo[80];
 		uint(size=2)  blkIdx;
 
-		MbPartIdx    := 0;
-		MbPartIdxMax := 16;
-		SizeMbMv     := SZ_4x4;
-		Mbx := Curr_Mb_Addr mod PicWidth;
-		Mby := Curr_Mb_Addr  /  PicWidth;
-		//There are 16 Partitions in a macroblock
-		Mbx := Mbx * 4;
-		Mby := Mby * 4;
 		foreach uint j in 0 .. 3
 		do
 			foreach uint i in 0 .. 3
@@ -250,51 +266,18 @@ actor Algo_MvBuffer()
 		end
 	end
 
-	checkMbType.others: action CurrMbAddr :[Curr_Mb_Addr],
-		PicWidthInMb :[PicWidth] ==>
+	checkMbType.others: action ==>
 	guard
 		not Mb_IsIntra(mb_type) and mb_type != BLOCK_TYPE_B_SKIP,
 		mb_type != BLOCK_TYPE_B_DIRECT_16x16
 	do
-		MbPartIdx    := 0;
-		MbPartIdxMax := NumMbPart(mb_type);
-		SizeMbMv     := SizeMbPart(mb_type);
 		Idx_Sub_Tab  :=
 			if mbIsBiPred(mb_type) then
 				0
 			else
 				1
 			end;
-		Mbx := Curr_Mb_Addr mod PicWidth;
-		Mby := Curr_Mb_Addr  /  PicWidth;
-		//There are 16 Partitions in a macroblock
-		Mbx := Mbx * 4;
-		Mby := Mby * 4;
 	end
-
-	EatTokens: action
-			CurrMbAddr     :[Mb_Addr],
-			PicWidthInMb   :[pic_width]
-				==>
-		do
-			Mbx := Mb_Addr mod pic_width;
-			Mby := Mb_Addr  /  pic_width;
-			//There are 16 Partitions in a macroblock
-			Mbx := Mbx * 4;
-			Mby := Mby * 4;
-			foreach int i in Mbx .. Mbx + 3
-			do
-				foreach int j in Mby .. Mby + 3
-				do
-					ListRefIdxL0[WriteListIdx][i][j]    := -1;
-					ListRefIdxL1[WriteListIdx][i][j]    := -1;
-					ListMvL0    [WriteListIdx][i][j][0] :=  0;
-					ListMvL0    [WriteListIdx][i][j][1] :=  0;
-					ListMvL1    [WriteListIdx][i][j][0] :=  0;
-					ListMvL1    [WriteListIdx][i][j][1] :=  0;
-				end
-			end
-		end
 
 	function GetDirect8x8InfIdx(uint Idx)
 				-->
@@ -800,11 +783,9 @@ actor Algo_MvBuffer()
 		GetMbType          (getNewPic                       )--> ReadSizeRefList0;
 		GetMbType          (getMbType                       )--> CheckMbType;
 
-		CheckMbType        (checkMbType.macroBlkIorSI         )--> EatTokens;
+		CheckMbType        (checkMbType.macroBlkIorSI         )--> GetMbType;
 		CheckMbType        (checkMbType.B_Skip_B_Direct_16x16 )--> GetMbParameters;
 		CheckMbType        (checkMbType.others                )--> GetMbParameters;
-
-		EatTokens          (EatTokens                       )--> GetMbType;
 
 		GetMbParameters    (GetMbParameters                 )--> GetBlockInfo4Mb;
 		GetMbParameters    (LaunchGetSubMbParameters        )--> GetSubMbParameters;
