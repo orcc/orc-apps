@@ -135,14 +135,14 @@ actor Algo_MvBuffer()
 	procedure computeMvComponent4Temporal(int(size=32) ref0)
 	begin
 		int(size=32) curPicOrField = listPicOrdCnt[WriteListIdx];
-		int(size=32) pic0 := 0;
-		int(size=32) pic1 := 0;
 
 		bool isLongTermRef := false;
 		int (size=8)  td;
 		int (size=8)  tb;
 		uint(size=14) tx;
-		int(size=11)  distScaleFactor;
+		int (size=11) distScaleFactor;
+		int (size=32) pic0 := 0;
+		int (size=32) pic1 := 0;
 		
 		isLongTermRef := false;
 		foreach int i in 0 .. 15
@@ -165,7 +165,7 @@ actor Algo_MvBuffer()
 		if(isLongTermRef or pic0 = pic1)then
 			mvL0[0] := mvCol[0];
 			mvL0[1] := mvCol[1];
-			mvL1 := [0,0];
+			mvL1    := [0,0];
 		else
 			tb := clip_i32(curPicOrField - pic0,-128,127);
 			td := clip_i32(pic1 - pic0,-128,127);
@@ -178,44 +178,99 @@ actor Algo_MvBuffer()
 		end
 	end
 
-	GetNewPic: action
-			NewPic             :[IsNewPic],
-			FrameNum           :[frameNum],
-			Poc                :[poc],
-			Direct8x8Inference :[Direct8x8InferFlag]
-				==>
-		guard
-			IsNewPic
-		var
-			bool EndLoop//Delete me when the bug in Orcc will be solved
+	getNewPic: action NewPic:[IsNewPic], FrameNum :[frameNum], Poc :[poc],
+			Direct8x8Inference :[Direct8x8InferFlag] ==>
+	guard
+		IsNewPic
+	var
+		bool EndLoop//Delete me when the bug in Orcc will be solved
+	do
+		foreach int i in 0 .. 15
 		do
-			foreach int i in 0 .. 15
-			do
-				if(listFrameNum[i] = frameNum)then
-					IsReference[i] := false;
-				end
+			if(listFrameNum[i] = frameNum)then
+				IsReference[i] := false;
 			end
-			WriteListIdx := 0;
-			EndLoop := IsReference[0];
-			while( EndLoop /*IsReference[WriteListIdx]*/ and WriteListIdx < 15)
-			do
-				WriteListIdx := WriteListIdx + 1;
-				EndLoop := IsReference[WriteListIdx];
-			end
-			IsReference [WriteListIdx]  := true;
-			listFrameNum[WriteListIdx]  := frameNum;
-			listPicOrdCnt[WriteListIdx] := poc;
-			direct_8x8_inference_flag   := Direct8x8InferFlag;
 		end
+		WriteListIdx := 0;
+		EndLoop := IsReference[0];
+		while( EndLoop /*IsReference[WriteListIdx]*/ and WriteListIdx < 15)
+		do
+			WriteListIdx := WriteListIdx + 1;
+			EndLoop := IsReference[WriteListIdx];
+		end
+		IsReference [WriteListIdx]  := true;
+		listFrameNum[WriteListIdx]  := frameNum;
+		listPicOrdCnt[WriteListIdx] := poc;
+		direct_8x8_inference_flag   := Direct8x8InferFlag;
+	end
 
-	GetMbType.MacroBlkIorSI: action
-			MbType :[MacroBlkType],
-			NewPic  :[IsNewPic]
-				==>
-		guard
-			MacroBlkType >= BLOCK_TYPE_INTRA_MIN and MacroBlkType <= BLOCK_TYPE_INTRA_MAX,
-			not IsNewPic
+	getMbType: action MbType :[macroBlkType], NewPic :[isNewPic] ==>
+	guard
+		not isNewPic
+	do
+		mb_type := macroBlkType;
+	end
+
+	checkMbType.macroBlkIorSI: action ==>
+	guard
+		Mb_IsIntra(mb_type)
+	end
+
+	checkMbType.B_Skip_B_Direct_16x16: action CurrMbAddr :[Curr_Mb_Addr],
+		PicWidthInMb :[PicWidth] ==> ColZeroFlag  :[isColZero] repeat 16,
+		TemporalInfo :[temporalInfo] repeat 80
+	guard
+		mb_type = BLOCK_TYPE_B_SKIP or mb_type = BLOCK_TYPE_B_DIRECT_16x16
+	do
+		bool          isColZero[16];
+		int (size=32) temporalInfo[80];
+		uint(size=2)  blkIdx;
+
+		MbPartIdx    := 0;
+		MbPartIdxMax := 16;
+		SizeMbMv     := SZ_4x4;
+		Mbx := Curr_Mb_Addr mod PicWidth;
+		Mby := Curr_Mb_Addr  /  PicWidth;
+		//There are 16 Partitions in a macroblock
+		Mbx := Mbx * 4;
+		Mby := Mby * 4;
+		foreach uint j in 0 .. 3
+		do
+			foreach uint i in 0 .. 3
+			do
+				computeColInfo(Mbx+i,Mby+j);
+				blkIdx := 4*j+i;
+				isColZero[blkIdx]    := colZeroFlag;
+				temporalInfo[blkIdx] := refIdxL0Temporal;
+				temporalInfo[16+ 2*blkIdx]    := mvL0[0];
+				temporalInfo[16+ 2*blkIdx +1] := mvL0[1];
+				temporalInfo[48+ 2*blkIdx]    := mvL1[0];
+				temporalInfo[48+ 2*blkIdx +1] := mvL1[1];
+			end
 		end
+	end
+
+	checkMbType.others: action CurrMbAddr :[Curr_Mb_Addr],
+		PicWidthInMb :[PicWidth] ==>
+	guard
+		not Mb_IsIntra(mb_type) and mb_type != BLOCK_TYPE_B_SKIP,
+		mb_type != BLOCK_TYPE_B_DIRECT_16x16
+	do
+		MbPartIdx    := 0;
+		MbPartIdxMax := NumMbPart(mb_type);
+		SizeMbMv     := SizeMbPart(mb_type);
+		Idx_Sub_Tab  :=
+			if mbIsBiPred(mb_type) then
+				0
+			else
+				1
+			end;
+		Mbx := Curr_Mb_Addr mod PicWidth;
+		Mby := Curr_Mb_Addr  /  PicWidth;
+		//There are 16 Partitions in a macroblock
+		Mbx := Mbx * 4;
+		Mby := Mby * 4;
+	end
 
 	EatTokens: action
 			CurrMbAddr     :[Mb_Addr],
@@ -311,75 +366,6 @@ actor Algo_MvBuffer()
 		computeMvComponent4Temporal(refList0[refIdxL0Temporal]);
 	end
 
-	GetMbType.B_Skip_B_Direct_16x16: action
-			MbType       :[MacroBlkType],
-			NewPic       :[IsNewPic],
-			CurrMbAddr   :[Curr_Mb_Addr],
-			PicWidthInMb :[PicWidth]
-				==>
-			ColZeroFlag  :[IsColZero] repeat 16,
-			TemporalInfo :[temporalInfo] repeat 80
-		guard
-			MacroBlkType = BLOCK_TYPE_B_SKIP or MacroBlkType = BLOCK_TYPE_B_DIRECT_16x16,
-			not IsNewPic
-		var
-			bool IsColZero[16],
-			int (size=32) temporalInfo[80],
-			uint(size=2)  blkIdx
-		do
-			mb_type      := MacroBlkType;
-			MbPartIdx    := 0;
-			MbPartIdxMax := 16;
-			SizeMbMv     := SZ_4x4;
-			Mbx := Curr_Mb_Addr mod PicWidth;
-			Mby := Curr_Mb_Addr  /  PicWidth;
-			//There are 16 Partitions in a macroblock
-			Mbx := Mbx * 4;
-			Mby := Mby * 4;
-			foreach uint j in 0 .. 3
-			do
-				foreach uint i in 0 .. 3
-				do
-					computeColInfo(Mbx+i,Mby+j);
-					blkIdx := 4*j+i;
-					IsColZero[blkIdx]    := colZeroFlag;
-					temporalInfo[blkIdx] := refIdxL0Temporal;
-					temporalInfo[16+ 2*blkIdx]    := mvL0[0];
-					temporalInfo[16+ 2*blkIdx +1] := mvL0[1];
-					temporalInfo[48+ 2*blkIdx]    := mvL1[0];
-					temporalInfo[48+ 2*blkIdx +1] := mvL1[1];
-				end
-			end
-		end
-
-	GetMbType.Others: action
-			MbType       :[MacroBlkType],
-			NewPic       :[IsNewPic],
-			CurrMbAddr   :[Curr_Mb_Addr],
-			PicWidthInMb :[PicWidth]
-				==>
-		guard
-			not(MacroBlkType >= BLOCK_TYPE_INTRA_MIN and MacroBlkType <= BLOCK_TYPE_INTRA_MAX),
-			MacroBlkType != BLOCK_TYPE_B_SKIP,
-			MacroBlkType != BLOCK_TYPE_B_DIRECT_16x16,
-			not IsNewPic
-		do
-			mb_type      := MacroBlkType;
-			MbPartIdx    := 0;
-			MbPartIdxMax := NumMbPart(MacroBlkType);
-			SizeMbMv     := SizeMbPart(MacroBlkType);
-			Idx_Sub_Tab  :=
-				if(MacroBlkType >= BLOCK_TYPE_B_MIN and MacroBlkType <= BLOCK_TYPE_B_MAX) then
-					0
-				else
-					1
-				end;
-			Mbx := Curr_Mb_Addr mod PicWidth;
-			Mby := Curr_Mb_Addr  /  PicWidth;
-			//There are 16 Partitions in a macroblock
-			Mbx := Mbx * 4;
-			Mby := Mby * 4;
-		end
 
 	GetMbParameters.Block16x16: action
 				==>
@@ -811,10 +797,12 @@ actor Algo_MvBuffer()
 
 	schedule fsm GetMbType:
 
-		GetMbType          (GetNewPic                       )--> ReadSizeRefList0;
-		GetMbType          (GetMbType.MacroBlkIorSI         )--> EatTokens;
-		GetMbType          (GetMbType.B_Skip_B_Direct_16x16 )--> GetMbParameters;
-		GetMbType          (GetMbType.Others                )--> GetMbParameters;
+		GetMbType          (getNewPic                       )--> ReadSizeRefList0;
+		GetMbType          (getMbType                       )--> CheckMbType;
+
+		CheckMbType        (checkMbType.macroBlkIorSI         )--> EatTokens;
+		CheckMbType        (checkMbType.B_Skip_B_Direct_16x16 )--> GetMbParameters;
+		CheckMbType        (checkMbType.others                )--> GetMbParameters;
 
 		EatTokens          (EatTokens                       )--> GetMbType;
 
