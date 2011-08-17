@@ -96,17 +96,12 @@ actor Algo_MvBuffer()
 	int (size=32) refList0 [16];
 	int (size=32) refList1 [16];
 
-	uint(size=3)  MbPartIdxMax;
 	uint(size=3)  MbPartIdx;
 	uint(size=3)  SizeMbMv;
-	uint(size=3)  SubMbPartIdxMax;
 	uint(size=3)  SubMbPartIdx;
-	uint(size=3)  SizeSubMbMv;
 	uint(size=1)  Idx_Sub_Tab;
 	uint(size=6)  mb_type;
 	uint(size=6)  sub_mb_type;
-	bool          IsPredL0;
-	bool          IsPredL1;
 	uint(size=5)  Size_RefList;
 	uint(size=5)  Idx_RefList;
 	uint(size=5)  WriteListIdx;
@@ -116,9 +111,6 @@ actor Algo_MvBuffer()
 	uint(size=32) Mby;
 	bool          direct_8x8_inference_flag;
 
-	uint(size=4)  NbPartitionsToWrite;
-	uint(size=32) Partition_Mbx[16];
-	uint(size=32) Partition_Mby[16];
 	bool          colZeroFlag;
 	int (size=32) refIdxL0Temporal;
 	int (size=16) mvCol[2];
@@ -276,7 +268,6 @@ actor Algo_MvBuffer()
 		Mby := mbLocY * 4;
 
 		MbPartIdx    := 0;
-		MbPartIdxMax := NumMbPart(mb_type);
 		SizeMbMv     := SizeMbPart(mb_type);
 	end
 
@@ -288,17 +279,17 @@ actor Algo_MvBuffer()
 		do
 			foreach int j in Mby .. Mby + 3
 			do
-				refIdxList[WriteListIdx][0][i][j]    := -1;
-				refIdxList[WriteListIdx][1][i][j]    := -1;
-				mvList[WriteListIdx][0][i][j][0] :=  0;
-				mvList[WriteListIdx][0][i][j][1] :=  0;
-				mvList[WriteListIdx][1][i][j][0] :=  0;
-				mvList[WriteListIdx][1][i][j][1] :=  0;
+				refIdxList[WriteListIdx][0][i][j] := -1;
+				refIdxList[WriteListIdx][1][i][j] := -1;
+				mvList[WriteListIdx][0][i][j][0]  :=  0;
+				mvList[WriteListIdx][0][i][j][1]  :=  0;
+				mvList[WriteListIdx][1][i][j][0]  :=  0;
+				mvList[WriteListIdx][1][i][j][1]  :=  0;
 			end
 		end
 	end
 
-	checkMbType.B_Skip_B_Direct_16x16: action ==>
+	checkMbType.isBSkipOrBDirect16x16: action ==>
 		ColZeroFlag :[isColZero] repeat 16,
 		TemporalInfo :[temporalInfo] repeat 80
 	guard
@@ -337,302 +328,18 @@ actor Algo_MvBuffer()
 			end;
 	end
 
-	GetMbParameters.Block16x16: action
-				==>
-		guard
-			MbPartIdx < MbPartIdxMax,
-			SizeMbMv  = SZ_16x16
-		var
-			uint(size=4) Idx := 0
-		do
-			NbPartitionsToWrite := 16;
-			foreach int i in Mbx .. Mbx + 3
-			do
-				foreach int j in Mby .. Mby + 3
-				do
-					Partition_Mbx[Idx] := i;
-					Partition_Mby[Idx] := j;
-					Idx                := Idx + 1;
-				end
-			end
-			IsPredL0  := Mb_Is_PredL0(mb_type, MbPartIdx);
-			IsPredL1  := Mb_Is_PredL1(mb_type, MbPartIdx);
-			MbPartIdx := MbPartIdx + 1;
-		end
-
-	GetMbParameters.Block16x8: action
-				==>
-		guard
-			MbPartIdx < MbPartIdxMax,
-			SizeMbMv  = SZ_16x8
-		var
-			uint(size=4) Idx := 0
-		do
-			NbPartitionsToWrite := 8;
-			foreach int i in Mbx .. Mbx + 3
-			do
-				foreach int j in Mby + 2* (MbPartIdx&1) .. Mby + 2* (MbPartIdx&1) + 1
-				do
-					Partition_Mbx[Idx] := i;
-					Partition_Mby[Idx] := j;
-					Idx                := Idx + 1;
-				end
-			end
-			IsPredL0  := Mb_Is_PredL0(mb_type, MbPartIdx);
-			IsPredL1  := Mb_Is_PredL1(mb_type, MbPartIdx);
-			MbPartIdx := MbPartIdx + 1;
-		end
-
-	GetMbParameters.Block8x16: action
-				==>
-		guard
-			MbPartIdx < MbPartIdxMax,
-			SizeMbMv  = SZ_8x16
-		var
-			uint(size=4) Idx := 0
-		do
-			NbPartitionsToWrite := 8;
-			foreach int i in Mbx + 2* (MbPartIdx&1) .. Mbx + 2* (MbPartIdx&1) + 1
-			do
-				foreach int j in Mby .. Mby + 3
-				do
-					Partition_Mbx[Idx] := i;
-					Partition_Mby[Idx] := j;
-					Idx                := Idx + 1;
-				end
-			end
-			IsPredL0  := Mb_Is_PredL0(mb_type, MbPartIdx);
-			IsPredL1  := Mb_Is_PredL1(mb_type, MbPartIdx);
-			MbPartIdx := MbPartIdx + 1;
-		end
-
-	GetMbParameters.Launch_B_Direct: action
-				==>
-		guard
-			MbPartIdx < MbPartIdxMax,
-			   mb_type = BLOCK_TYPE_B_SKIP
-			or mb_type = BLOCK_TYPE_B_DIRECT_16x16
-		var
-			uint(size=3) localMbPartIdx    = MbPartIdx  /  4,
-			uint(size=3) localSubMbPartIdx = MbPartIdx mod 4
-		do
-			NbPartitionsToWrite := 1;
-			Partition_Mbx[0]    := Mbx + 2* (localMbPartIdx&1)      + (localSubMbPartIdx&1);
-			Partition_Mby[0]    := Mby + 2* ((localMbPartIdx>>1)&1) + ((localSubMbPartIdx>>1)&1);
-			IsPredL0  := false;
-			IsPredL1  := false;
-			MbPartIdx := MbPartIdx + 1;
-		end
-
-	LaunchGetSubMbParameters: action
-			SubMbType :[ValSubMbType]
-				==>
-		guard
-			MbPartIdx  < MbPartIdxMax,
-			SizeMbMv   = SZ_8x8
-		do
-			SubMbPartIdx    :=  0;
-			SubMbPartIdxMax :=  NumSubMbPart(mb_type,ValSubMbType);
-			SizeSubMbMv     :=  SizeSubMbPart(mb_type,ValSubMbType);
-			IsPredL0        := (SubMbPartPredMode[Idx_Sub_Tab][ValSubMbType & 15] & PRED_L0) != 0;
-			IsPredL1        := (SubMbPartPredMode[Idx_Sub_Tab][ValSubMbType & 15] & PRED_L1) != 0;
-			sub_mb_type     := ValSubMbType;
-		end
-
-	GetMbParametersFinished: action ==>
-		guard
-			MbPartIdx = MbPartIdxMax
-		end
-
-	GetSubMbParameters.Launch_B_Direct_8x8: action
-				==>
-			ColZeroFlag  :[IsColZero],
-			TemporalInfo :[temporalInfo] repeat 5
-		guard
-			SubMbPartIdx < SubMbPartIdxMax,
-			mb_type     = BLOCK_TYPE_B_8x8,
-			sub_mb_type = B_DIRECT_8x8
-		do
-			bool         IsColZero;
-			int(size=32) temporalInfo[5];
-
-			computeColInfo(Mbx + 2* (MbPartIdx&1) + (SubMbPartIdx&1) ,Mby + 2* ((MbPartIdx >>1)&1) +  ((SubMbPartIdx >>1)&1));
-			IsColZero := colZeroFlag;
-			temporalInfo[0] := refIdxL0Temporal;
-			temporalInfo[1] := mvL0[0];
-			temporalInfo[2] := mvL0[1];
-			temporalInfo[3] := mvL1[0];
-			temporalInfo[4] := mvL1[1];
-
-			NbPartitionsToWrite := 1;
-			Partition_Mbx[0] := Mbx + 2* (MbPartIdx&1) + (SubMbPartIdx&1);
-			Partition_Mby[0] := Mby + 2* ((MbPartIdx>>1)&1) +  ((SubMbPartIdx >>1)&1);
-
-			SubMbPartIdx := SubMbPartIdx + 1;
-		end
-
-	GetSubMbParameters.Launch8x8: action
-				==>
-		guard
-			SubMbPartIdx < SubMbPartIdxMax,
-			SizeSubMbMv  = SZ_8x8,
-			   mb_type     != BLOCK_TYPE_B_8x8
-			or sub_mb_type != B_DIRECT_8x8
-		var
-			uint(size=4) Idx := 0
-		do
-			NbPartitionsToWrite := 4;
-			foreach int i in Mbx + 2* (MbPartIdx&1) .. Mbx + 2* (MbPartIdx&1) + 1
-			do
-				foreach int j in Mby + 2* ((MbPartIdx>>1)&1) .. Mby + 2* ((MbPartIdx>>1)&1) + 1
-				do
-					Partition_Mbx[Idx] := i;
-					Partition_Mby[Idx] := j;
-					Idx                := Idx + 1;
-				end
-			end
-			SubMbPartIdx := SubMbPartIdx + 1;
-		end
-
-	GetSubMbParameters.Launch8x4: action
-				==>
-		guard
-			SubMbPartIdx < SubMbPartIdxMax,
-			SizeSubMbMv  = SZ_8x4
-		do
-			NbPartitionsToWrite := 2;
-			Partition_Mbx[0]    := Mbx + 2* (MbPartIdx&1);
-			Partition_Mby[0]    := Mby + 2* ((MbPartIdx>>1)&1) + (SubMbPartIdx&1);
-			Partition_Mbx[1]    := Mbx + 2* (MbPartIdx&1) + 1;
-			Partition_Mby[1]    := Mby + 2* ((MbPartIdx>>1)&1) + (SubMbPartIdx&1);
-			SubMbPartIdx := SubMbPartIdx + 1;
-		end
-
-	GetSubMbParameters.Launch4x8: action
-				==>
-		guard
-			SubMbPartIdx < SubMbPartIdxMax,
-			SizeSubMbMv  = SZ_4x8
-		do
-			NbPartitionsToWrite := 2;
-			Partition_Mbx[0]    := Mbx + 2* (MbPartIdx&1) + (SubMbPartIdx&1);
-			Partition_Mby[0]    := Mby + 2* ((MbPartIdx>>1)&1);
-			Partition_Mbx[1]    := Mbx + 2* (MbPartIdx&1) + (SubMbPartIdx&1);
-			Partition_Mby[1]    := Mby + 2* ((MbPartIdx>>1)&1) + 1;
-			SubMbPartIdx := SubMbPartIdx + 1;
-		end
-
-	GetSubMbParameters.Launch4x4: action
-				==>
-		guard
-			SubMbPartIdx < SubMbPartIdxMax,
-			SizeSubMbMv  = SZ_4x4
-		do
-			NbPartitionsToWrite := 1;
-			Partition_Mbx[0]    := Mbx + 2* (MbPartIdx&1)      + (SubMbPartIdx&1);
-			Partition_Mby[0]    := Mby + 2* ((MbPartIdx>>1)&1) + ((SubMbPartIdx>>1)&1);
-			SubMbPartIdx := SubMbPartIdx + 1;
-		end
-
-	GetSubMbParametersFinished: action ==>
-		guard
-			SubMbPartIdx = SubMbPartIdxMax
-		do
-			MbPartIdx := MbPartIdx + 1;
-		end
-
-	ReadDelList.Launch: action
-			DelList:[DelFrame]
-				==>
-		guard
-			DelFrame != SENT_DONE
-		do
-			foreach int i in 0 .. 15
-			do
-				if(DelFrame = listFrameNum[i] and i != WriteListIdx)then
-					IsReference[i] := false;
-				end
-			end
-		end
-
-	ReadDelList.Done: action
-			DelList   :[DelVal],
-			Empty_DPB :[EmptyList]
-				==>
-		guard
-			DelVal = SENT_DONE
-		do
-			if(EmptyList)then
-				foreach int i in 0 .. 15
-				do
-					if(i != WriteListIdx)then
-						IsReference[i] := false;
-					end
-				end
-			end
-		end
-
-	ReadSizeRefList0: action RefList0 :[SizeRefList] ==>
-	do
-		Size_RefList := SizeRefList;
-		Idx_RefList  := 0;
-		refList0     := [-1 : for int i in 0 .. 15];
-	end
-
-	ReadRefList0.Launch: action RefList0 :[ValRefList] ==>
+	check8x8Pred.isTrue: action SubMbType :[valSubMbType] ==>
 	guard
-		Idx_RefList < Size_RefList
+		MbPartIdx  < 4,
+		SizeMbMv   = SZ_8x8
 	do
-		refList0[Idx_RefList] := ValRefList;
-		Idx_RefList := Idx_RefList + 1;
+		SubMbPartIdx    :=  0;
+		sub_mb_type     := valSubMbType;
 	end
 
-	ReadRefList0.Done: action ==>
+	check8x8Pred.isFalse: action ==>
 	guard
-		Idx_RefList = Size_RefList
-	end
-
-	ReadSizeRefList1: action RefList1 :[SizeRefList] ==>
-	do
-		Size_RefList := SizeRefList;
-		Idx_RefList  := 0;
-		refList1     := [-1 : for int i in 0 .. 15];
-	end
-
-	ReadRefList1.Launch: action RefList1 :[ValRefList] ==>
-	guard
-		Idx_RefList < Size_RefList
-	var
-		bool IdxNotFound//Delete me when the bug in Orcc will be solved
-	do
-		if(Idx_RefList   = 0)then
-			ReadListIdx := 0;
-			IdxNotFound := (listFrameNum[ReadListIdx] != ValRefList) or (not IsReference[ReadListIdx]);
-			while(/*(ListPoc[ReadListIdx] != ValRefList) or (not IsReference[ReadListIdx])*/IdxNotFound and ReadListIdx < 15)
-			do
-				ReadListIdx := ReadListIdx + 1;
-				IdxNotFound := (listFrameNum[ReadListIdx] != ValRefList)  or (not IsReference[ReadListIdx]);
-			end
-		end
-		refList1[Idx_RefList] := ValRefList;
-		Idx_RefList := Idx_RefList + 1;
-	end
-
-	ReadRefList1.Done: action ==>
-	guard
-		Idx_RefList = Size_RefList
-	end
-
-	ReadLTList: action LongTermList :[LTList] repeat 16 ==>
-	do
-		colPic_IsShortTermRef := true;
-		foreach int i in 0 .. 15
-		do
-			longTermList[i] := LTList[i];
-			if(LTList[i] = listFrameNum[ReadListIdx])then
-				colPic_IsShortTermRef := false;
-			end
-		end
+		MbPartIdx = 4 or SizeMbMv != SZ_8x8
 	end
 
 	getMvVectors: action Mv:[mv] repeat 64, RefIdx :[refIdx] repeat 32 ==>
@@ -658,35 +365,152 @@ actor Algo_MvBuffer()
 		end
 	end
 
+	checkSubMb.isBDirect8x8: action ==> ColZeroFlag :[IsColZero],
+		TemporalInfo :[temporalInfo] repeat 5
+	guard
+		SubMbPartIdx < 4,
+		mb_type     = BLOCK_TYPE_B_8x8,
+		sub_mb_type = B_DIRECT_8x8
+	do
+		bool         IsColZero;
+		int(size=32) temporalInfo[5];
+
+		computeColInfo(Mbx + 2* (MbPartIdx&1) + (SubMbPartIdx&1) ,Mby + 2* ((MbPartIdx >>1)&1) +  ((SubMbPartIdx >>1)&1));
+		IsColZero := colZeroFlag;
+		temporalInfo[0] := refIdxL0Temporal;
+		temporalInfo[1] := mvL0[0];
+		temporalInfo[2] := mvL0[1];
+		temporalInfo[3] := mvL1[0];
+		temporalInfo[4] := mvL1[1];
+
+		SubMbPartIdx := SubMbPartIdx + 1;
+	end
+
+	checkSubMb.isNotBDirect8x8: action ==>
+	guard
+		SubMbPartIdx = 4 or mb_type != BLOCK_TYPE_B_8x8
+		or sub_mb_type != B_DIRECT_8x8
+	do
+		MbPartIdx := MbPartIdx + 1;
+	end
+
+	readDelList.launch: action DelList:[DelFrame] ==>
+	guard
+		DelFrame != SENT_DONE
+	do
+		foreach int i in 0 .. 15
+		do
+			if(DelFrame = listFrameNum[i] and i != WriteListIdx)then
+				IsReference[i] := false;
+			end
+		end
+	end
+
+	readDelList.done: action DelList :[DelVal], Empty_DPB :[EmptyList] ==>
+	guard
+		DelVal = SENT_DONE
+	do
+		if(EmptyList)then
+			foreach int i in 0 .. 15
+			do
+				if(i != WriteListIdx)then
+					IsReference[i] := false;
+				end
+			end
+		end
+	end
+
+	readSizeRefList0: action RefList0 :[SizeRefList] ==>
+	do
+		Size_RefList := SizeRefList;
+		Idx_RefList  := 0;
+		refList0     := [-1 : for int i in 0 .. 15];
+	end
+
+	readRefList0.launch: action RefList0 :[ValRefList] ==>
+	guard
+		Idx_RefList < Size_RefList
+	do
+		refList0[Idx_RefList] := ValRefList;
+		Idx_RefList := Idx_RefList + 1;
+	end
+
+	readRefList0.done: action ==>
+	guard
+		Idx_RefList = Size_RefList
+	end
+
+	readSizeRefList1: action RefList1 :[SizeRefList] ==>
+	do
+		Size_RefList := SizeRefList;
+		Idx_RefList  := 0;
+		refList1     := [-1 : for int i in 0 .. 15];
+	end
+
+	readRefList1.launch: action RefList1 :[ValRefList] ==>
+	guard
+		Idx_RefList < Size_RefList
+	var
+		bool IdxNotFound//Delete me when the bug in Orcc will be solved
+	do
+		if(Idx_RefList   = 0)then
+			ReadListIdx := 0;
+			IdxNotFound := (listFrameNum[ReadListIdx] != ValRefList) or (not IsReference[ReadListIdx]);
+			while(/*(ListPoc[ReadListIdx] != ValRefList) or (not IsReference[ReadListIdx])*/IdxNotFound and ReadListIdx < 15)
+			do
+				ReadListIdx := ReadListIdx + 1;
+				IdxNotFound := (listFrameNum[ReadListIdx] != ValRefList)  or (not IsReference[ReadListIdx]);
+			end
+		end
+		refList1[Idx_RefList] := ValRefList;
+		Idx_RefList := Idx_RefList + 1;
+	end
+
+	readRefList1.done: action ==>
+	guard
+		Idx_RefList = Size_RefList
+	end
+
+	readLTList: action LongTermList :[LTList] repeat 16 ==>
+	do
+		colPic_IsShortTermRef := true;
+		foreach int i in 0 .. 15
+		do
+			longTermList[i] := LTList[i];
+			if(LTList[i] = listFrameNum[ReadListIdx])then
+				colPic_IsShortTermRef := false;
+			end
+		end
+	end
+
 	schedule fsm GetMbType:
 
 		GetMbType          (getNewPic                       )--> ReadSizeRefList0;
 		GetMbType          (getMbType                       )--> CheckMbType;
 
 		CheckMbType        (checkMbType.macroBlkIorSI         )--> GetMbType;
-		CheckMbType        (checkMbType.B_Skip_B_Direct_16x16 )--> GetMbParameters;
-		CheckMbType        (checkMbType.others                )--> GetMbParameters;
+		CheckMbType        (checkMbType.isBSkipOrBDirect16x16 )--> GetMvVectors;
+		CheckMbType        (checkMbType.others                )--> Check8x8Mb;
 
-		GetMbParameters    (GetMbParameters                 )--> GetMbParameters;
-		GetMbParameters    (LaunchGetSubMbParameters        )--> GetSubMbParameters;
-		GetMbParameters    (GetMbParametersFinished         )--> GetMvVectors;
+		Check8x8Mb    (check8x8Pred.isTrue        )--> CheckSubMb;
+		Check8x8Mb    (check8x8Pred.isFalse         )--> GetMvVectors;
 
 		GetMvVectors       (getMvVectors                    )--> GetMbType;
 
-		GetSubMbParameters (GetSubMbParameters              )--> GetSubMbParameters;
-		GetSubMbParameters (GetSubMbParametersFinished      )--> GetMbParameters;
+		CheckSubMb (checkSubMb.isBDirect8x8              )--> CheckSubMb;
+		CheckSubMb (checkSubMb.isNotBDirect8x8      )--> Check8x8Mb;
 
-		ReadSizeRefList0   (ReadSizeRefList0                 )--> ReadRefList0;
-		ReadRefList0       (ReadRefList0.Launch              )--> ReadRefList0;
-		ReadRefList0       (ReadRefList0.Done                )--> ReadSizeRefList1;
+		ReadSizeRefList0 (readSizeRefList0                 )--> ReadRefList0;
+		ReadRefList0       (readRefList0.launch              )--> ReadRefList0;
+		ReadRefList0       (readRefList0.done                )--> ReadSizeRefList1;
 
-		ReadSizeRefList1   (ReadSizeRefList1                 )--> ReadRefList1;
-		ReadRefList1       (ReadRefList1.Launch              )--> ReadRefList1;
-		ReadRefList1       (ReadRefList1.Done                )--> ReadLTList;
+		ReadSizeRefList1 (readSizeRefList1                 )--> ReadRefList1;
+		ReadRefList1       (readRefList1.launch              )--> ReadRefList1;
+		ReadRefList1       (readRefList1.done                )--> ReadLTList;
 
-		ReadLTList         (ReadLTList                      )--> ReadDelList;
+		ReadLTList         (readLTList                      )--> ReadDelList;
 
-		ReadDelList        (ReadDelList.Launch              )--> ReadDelList;
-		ReadDelList        (ReadDelList.Done                )--> GetMbType;
+		ReadDelList        (readDelList.launch              )--> ReadDelList;
+		ReadDelList        (readDelList.done                )--> GetMbType;
 	end
 end
