@@ -51,94 +51,134 @@ Standards.
 This copyright notice must be included in all copies or derivative works. 
 Copyright (c) ISO/IEC 2008.
 *****************************************************************************/
-package org.ietr.mpeg4.part10.svc;
+package org.mpeg4.part10.svc.synParser.modular.decodeSps;
 
-import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
-
-actor Decode_Hrd_Parameters()
-	int (size=32) ValVLD
+actor SplitSpsInfo()
+	uint(size=2) SenderOfRequest,
+	int (size=32) Parameters
 		==>
-	uint(size=5)  TypeOfVLD,
-	int (size=32) VldParam
+	int (size=32) SubSpsParameters,
+	uint(size=32) PpsParameters,
+	int (size=32) HeaderParameters,
+	uint(size=32) DataParameters
 		:
 
-	bool DEBUG_FLAG_DECODED = true;
+	uint(size=2) GET_SPS_FROM_PIC = 0;
+	uint(size=2) GET_SPS_FROM_PPS = 1;
+	uint(size=2) GET_SPS_FROM_SVC = 2;
 
-	uint(size=6) cpb_cnt;
-	uint(size=6) iLoop;
+	uint(size=32) NbValLeft;
 
-	ReadCpbBitRate.Asked: action
+	SelectOutput.Pic: action
+			SenderOfRequest :[sender],
+			Parameters      :[SizeOfHeaderList]
 				==>
-			TypeOfVLD :[VLD_UE , READ_BITS , READ_BITS],
-			VldParam  :[             4     ,     4    ]
-		end
-
-	ReadCpbBitRate.Done: action
-			ValVLD :[cpb_cnt_minus1 , bit_rate_scale , cpb_size_scale]
-				==>
-		do
-			if(DEBUG_FLAG_DECODED)then
-				println("cpb_cnt_minus1 : "+cpb_cnt_minus1);
-				println("bit_rate_scale : "+bit_rate_scale);
-				println("cpb_size_scale : "+cpb_size_scale);
-			end
-			cpb_cnt := cpb_cnt_minus1 + 1;
-			iLoop := 0;
-		end
-
-	LaunchLoop: action
-				==>
-			TypeOfVLD :[VLD_UE , VLD_UE , READ_BITS],
-			VldParam  :[                      1    ]
 		guard
-			iLoop < cpb_cnt
-		end
-
-	ReadBitRate.Done: action
-			ValVLD :[bit_rate_value_minus1 , cpb_size_value_minus1 , cbr_flag]
-				==>
+			sender = GET_SPS_FROM_PIC
 		do
-			if(DEBUG_FLAG_DECODED)then
-				println("bit_rate_value_minus1["+iLoop+"] : "+bit_rate_value_minus1);
-				println("cpb_size_value_minus1["+iLoop+"] : "+cpb_size_value_minus1);
-				println("cbr_flag["+iLoop+"] : "+cbr_flag);
-			end
-			iLoop := iLoop + 1;
+			NbValLeft := SizeOfHeaderList;
 		end
 
-	ReadParametersLeft.Asked: action
+	SelectOutput.Pps: action
+			SenderOfRequest :[sender],
+			Parameters      :[SizeOfList]
 				==>
-			TypeOfVLD :[READ_BITS , READ_BITS , READ_BITS , READ_BITS],
-			VldParam  :[    5     ,     5     ,     5     ,     5    ]
-		end
-
-	ReadParametersLeft.Done: action
-			ValVLD :[initial_cpb , cpb_removal_delay , dpb_output_delay , time_offset_length]
-				==>
-			TypeOfVLD :[SKIP_NAL]
+		guard
+			sender = GET_SPS_FROM_PPS
 		do
-			if(DEBUG_FLAG_DECODED)then
-				println("initial_cpb_removal_delay_length_minus1 : "+initial_cpb);
-				println("cpb_removal_delay_length_minus1 : "+cpb_removal_delay);
-				println("dpb_output_delay_length_minus1 : "+dpb_output_delay);
-				println("time_offset_length : "+time_offset_length);
-			end
+			NbValLeft := SizeOfList;
 		end
 
-	schedule fsm AskReadCpbBitRate:
-		AskReadCpbBitRate  (ReadCpbBitRate.Asked     )--> ReadCpbBitRateDone;
+	SelectOutput.Svc: action
+			SenderOfRequest :[sender],
+			Parameters      :[SizeOfList]
+				==>
+		guard
+			sender = GET_SPS_FROM_SVC
+		do
+			NbValLeft := SizeOfList;
+		end
 
-		ReadCpbBitRateDone (ReadCpbBitRate.Done      )--> CheckLoop;
+	GetInfoForSvc.Launch: action
+			Parameters       :[ParameterValue]
+				==>
+			SubSpsParameters :[ParameterValue]
+		guard
+			NbValLeft > 0
+		do
+			NbValLeft := NbValLeft - 1;
+		end
 
-		CheckLoop          (LaunchLoop               )--> ReadBitRateDone;
-		CheckLoop          (ReadParametersLeft.Asked )--> EndOfHrdParam;
+	GetInfoForSvc.Done: action ==>
+		guard
+			NbValLeft = 0
+		end
 
-		ReadBitRateDone    (ReadBitRate.Done         )--> CheckLoop;
+	GetInfoForPps.Launch: action
+			Parameters    :[ParameterValue]
+				==>
+			PpsParameters :[ParameterValue]
+		guard
+			NbValLeft > 0
+		do
+			NbValLeft := NbValLeft - 1;
+		end
 
-		EndOfHrdParam      (ReadParametersLeft.Done  )--> AskReadCpbBitRate;
-	end
+	GetInfoForPps.Done: action ==>
+		guard
+			NbValLeft = 0
+		end
 
-	priority
-		LaunchLoop > ReadParametersLeft.Asked;
+	GetInfoForHeader.Launch: action
+			Parameters       :[ParameterValue]
+				==>
+			HeaderParameters :[ParameterValue]
+		guard
+			NbValLeft > 0
+		do
+			NbValLeft := NbValLeft - 1;
+		end
+
+	GetInfoForHeader.Done: action
+			Parameters      :[SizeOfDataList]
+				==>
+		guard
+			NbValLeft = 0
+		do
+			NbValLeft := SizeOfDataList;
+		end
+
+	GetInfoForData.Launch: action
+			Parameters     :[ParameterValue]
+				==>
+			DataParameters :[ParameterValue]
+		guard
+			NbValLeft > 0
+		do
+			NbValLeft := NbValLeft - 1;
+		end
+
+	GetInfoForData.Done: action
+				==>
+		guard
+			NbValLeft = 0
+		end
+
+	schedule fsm SelectOutput:
+		SelectOutput     (SelectOutput.Pic        )--> GetInfoForHeader;
+		SelectOutput     (SelectOutput.Pps        )--> GetInfoForPps;
+		SelectOutput     (SelectOutput.Svc        )--> GetInfoForSvc;
+
+		GetInfoForSvc    (GetInfoForSvc.Launch    )--> GetInfoForSvc;
+		GetInfoForSvc    (GetInfoForSvc.Done      )--> SelectOutput;
+
+		GetInfoForPps    (GetInfoForPps.Launch    )--> GetInfoForPps;
+		GetInfoForPps    (GetInfoForPps.Done      )--> SelectOutput;
+
+		GetInfoForHeader (GetInfoForHeader.Launch )--> GetInfoForHeader;
+		GetInfoForHeader (GetInfoForHeader.Done   )--> GetInfoForData;
+
+		GetInfoForData   (GetInfoForData.Launch   )--> GetInfoForData;
+		GetInfoForData   (GetInfoForData.Done     )--> SelectOutput;
 	end
 end
