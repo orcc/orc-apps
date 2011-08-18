@@ -18,7 +18,7 @@ package org.mpeg4.part10.cbp.synParser.modular.decodePicture;
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import std.util.BitOps.*;
 
-actor Algo_DecodeSliceHeader()
+actor Algo_DecodeSliceHeaderPart1()
 	int (size=32) ValVLD,
 	bool          IsAnIdrPic,
 	uint(size=2)  NalRefIdc,
@@ -29,19 +29,14 @@ actor Algo_DecodeSliceHeader()
 	uint(size=31) FramNumCurrPic,
 	int (size=6)  TypeOfVLD,
 	int (size=32) VLDParam,
-	bool          DecodeNextNal,
 	uint(size=8)  GetPps,
-	bool          RefPicMrk_IsNewPic,
 	uint(size=4)  SliceType,
 	bool          Others_IsNewPic,
 	uint(size=32) Poc,
-	int (size=14) SliceDataParam,
+	uint(size=32)  Header2Param,
     int (size=16) Width,
     int (size=16) Height
 		:
-	uint(size=4) SLICE_TYPE_I  = 2;
-	uint(size=4) SLICE_TYPE_SP = 3;
-	uint(size=4) SLICE_TYPE_SI = 4;
 	bool DEBUG_FLAG_DECODED = false;
 
 	//Parameters read
@@ -61,14 +56,6 @@ actor Algo_DecodeSliceHeader()
 	int (size=32) pic_order_cnt_lsb             := 0;
 	int (size=32) delta_pic_order_cnt_bottom    := 0;
 	uint(size=7)  redundant_pic_cnt             := 0;
-	uint(size=2)  cabac_init_idc                := 0;
-	//int (size=32) slice_qp_delta;
-	bool          sp_for_switch_flag;
-	uint(size=6)  slice_qs_delta;
-	uint(size=2)  disable_deblocking_filter_idc := 0;
-	int(size=6)   slice_alpha_c0_offset         := 0;
-	int(size=6)   slice_beta_offset             := 0;
-	uint(size=32) slice_group_change_cycle      := 0;
 	//Sps Parameters
 	uint(size=6)  log2_max_frame_num;
 	bool          frame_mbs_only_flag;
@@ -83,12 +70,6 @@ actor Algo_DecodeSliceHeader()
 	//PpsParameters
 	bool          pic_order_present_flag;
 	bool          redundant_pic_cnt_present_flag;
-	bool          entropy_coding_mode_flag;
-	bool          deblocking_filter_control_present_flag;
-	uint(size=4)  num_slice_groups;
-	uint(size=3)  slice_group_map_type;
-	int (size=32) SzSliceGroupChgCycle;
-	int (size=8)  ValPicInitQp;
 	//Poc parameters
 	int (size=32) prev_frame_num         := 0;
 	int (size=32) frame_num_offset       := 0;
@@ -117,16 +98,12 @@ actor Algo_DecodeSliceHeader()
 
 	//                                          first_ , slice_ , pic_par
 	ReadSliceType.Asked: action ==> TypeOfVLD :[VLD_UE , VLD_UE , VLD_UE]
-	do
-		disable_deblocking_filter_idc := 0;
-		slice_alpha_c0_offset         := 0;
-		slice_beta_offset             := 0;
 	end
 
 	ReadSliceType.Done: action
 		ValVLD         :[ValueOfVLD] repeat 3
 			==>
-		SliceDataParam  :[slice_type,ValueOfVLD[0]],
+		Header2Param    :[slice_type, first_mb_in_slice],
 		GetPps          :[ValueOfVLD[2]],
 		SliceType       :[slice_type],
 		Others_IsNewPic :[IsNewPic]
@@ -189,14 +166,8 @@ actor Algo_DecodeSliceHeader()
 	guard
 		IsNewPic
 	do
-		num_slice_groups                       := PpsParam[0];
-		ValPicInitQp                           := PpsParam[1];
-		SzSliceGroupChgCycle                   := PpsParam[2];
-		slice_group_map_type                   := PpsParam[3];
-		deblocking_filter_control_present_flag := getFlag(PpsParam[4],0);
 		pic_order_present_flag                 := getFlag(PpsParam[4],1);
 		redundant_pic_cnt_present_flag         := getFlag(PpsParam[4],2);
-		entropy_coding_mode_flag               := getFlag(PpsParam[4],3);
 		prev_frame_num                         := frame_num;
 		Idr_flag                               := IdrPic;
 		nal_ref_idc                            := ValNalRefIdc;
@@ -216,14 +187,8 @@ actor Algo_DecodeSliceHeader()
 	guard
 		not IsNewPic
 	do
-		num_slice_groups                       := PpsParam[0];
-		ValPicInitQp                           := PpsParam[1];
-		SzSliceGroupChgCycle                   := PpsParam[2];
-		slice_group_map_type                   := PpsParam[3];
-		deblocking_filter_control_present_flag := getFlag(PpsParam[4],0);
 		pic_order_present_flag                 := getFlag(PpsParam[4],1);
 		redundant_pic_cnt_present_flag         := getFlag(PpsParam[4],2);
-		entropy_coding_mode_flag               := getFlag(PpsParam[4],3);
 		Idr_flag                               := IdrPic;
 		nal_ref_idc                            := ValNalRefIdc;
 		prev_frame_num                         := frame_num;
@@ -290,26 +255,34 @@ actor Algo_DecodeSliceHeader()
 	end
 
 
-	IdrFlag.IsEqualToFalse: action ==>
+	IdrFlag.IsEqualToFalse: action ==> Header2Param :[header2Param]
 	guard
 		Idr_flag = false
 	do
+		uint(size=4) header2Param;
+
 		if(frame_num < prev_frame_num) then
 			frame_num_offset := frame_num_offset + (1 << log2_max_frame_num);
 		end
+		header2Param := setFlag(MbaffFrameFlag, 0, 0);
+		header2Param := setFlag(IsNewPic, 1, header2Param);
 	end
 
-	//                                           idr_pic_id
-	IdrFlag.IsEqualToTrue: action ==> TypeOfVLD :[ VLD_UE ]
+	IdrFlag.IsEqualToTrue: action ==> Header2Param :[header2Param],
+		TypeOfVLD :[VLD_UE] // idr_pic_id
 	guard
 		Idr_flag = true
 	do
+		uint(size=4) header2Param;
+
 		frame_num_offset := 0;
 		frame_num        := 0;
 		prev_frame_num   := 0;
-		PicOrderCntMsb         := 0;
-		prevPicOrderCntLsb     := 0;
-		expectedpoc            := 0;
+		PicOrderCntMsb     := 0;
+		prevPicOrderCntLsb := 0;
+		expectedpoc        := 0;
+		header2Param := setFlag(MbaffFrameFlag, 0, 0);
+		header2Param := setFlag(IsNewPic, 1, header2Param);
 	end
 
 	ReadIdrPicId.Done: action ValVLD :[ValueOfVLD] ==>
@@ -490,148 +463,7 @@ actor Algo_DecodeSliceHeader()
 		end
 	end
 
-	RefPicList.Launch: action
-			==>
-		TypeOfVLD :[LAUNCH_ACTOR],
-		VLDParam  :[REF_PIC_LIST]
-	end
-
-	SendSliceDataParameters: action
-			==>
-		SliceDataParam :[if MbaffFrameFlag then 1 else 0 end]
-	end
-
-	DecRefPicMarking.Launch: action
-			==>
-		TypeOfVLD          :[LAUNCH_ACTOR],
-		VLDParam           :[DEC_REF_PIC_MARKING],
-		RefPicMrk_IsNewPic :[IsNewPic]
-	end
-
-	//                                         cabac_init_idc
-	ReadCabacInitDc.Asked: action ==> TypeOfVLD :[ VLD_UE ]
-	guard
-		entropy_coding_mode_flag  = true,
-		slice_type               != SLICE_TYPE_I,
-		slice_type               != SLICE_TYPE_SI
-	end
-
-	ReadCabacInitDc.Done: action ValVLD :[VLDecoding] ==>
-	do
-		cabac_init_idc := VLDecoding;
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tcabac_init_idc: "+cabac_init_idc);
-		end
-	end
-
-	//                                         slice_qp_delta
-	ReadSliceQpDelta.Asked: action ==> TypeOfVLD :[ VLD_SE ]
-	end
-
-	ReadSliceQpDelta.Done: action ValVLD :[VLDec] ==> SliceDataParam :[ValOfQp]
-	var
-		int(size=8) ValOfQp
-	do
-		//slice_qp_delta := VLDecoding;
-		ValOfQp      := VLDec + ValPicInitQp;
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tslice_qp_delta: "+VLDec);
-		end
-	end
-
-	Slice_Type.IsEqualToSP: action
-			==>
-		//              sp_for_sw , slice_q
-		TypeOfVLD :[ READ_BITS , VLD_SE ],
-		VLDParam  :[     1              ]
-	guard
-		slice_type = SLICE_TYPE_SP
-	end
-
-	ReadSliceSpParameters.Done: action ValVLD :[VLDecoding] repeat 2 ==>
-	do
-		sp_for_switch_flag :=
-			if(VLDecoding[0] = 0)then
-				false
-			else
-				true
-			end;
-		slice_qs_delta := VLDecoding[1];
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tsp_for_switch_flag: "+sp_for_switch_flag);
-			println("\t\tslice_qs_delta: "+slice_qs_delta);
-		end
-	end
-
-	//                                          slice_qs_delta
-	Slice_Type.IsEqualToSI: action ==> TypeOfVLD :[ VLD_SE ]
-	guard
-		slice_type = SLICE_TYPE_SP
-	end
-
-	ReadSliceSiParameters.Done: action ValVLD :[VLDecoding] ==>
-	do
-		slice_qs_delta := VLDecoding;
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tslice_qs_delta: "+slice_qs_delta);
-		end
-	end
-
-	//                                       slice_qs_delta
-	DeblocFilterPresent: action ==> TypeOfVLD :[ VLD_UE ]
-	guard
-		deblocking_filter_control_present_flag = true
-	end
-
-	ReadDisDeblocFilterIdc.Done: action ValVLD :[VLDecoding] ==>
-	do
-		disable_deblocking_filter_idc := VLDecoding;
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tdisable_deblocking_filter_idc: "+disable_deblocking_filter_idc);
-		end
-	end
-
-	//                                                       slice_ , slice_
-	DisDeblocFilterIdc.IsNotEqualTo1: action ==> TypeOfVLD :[VLD_SE , VLD_SE]
-	guard
-		disable_deblocking_filter_idc != 1
-	end
-
-	ReadSliceAlphaAndBeta: action ValVLD :[VLDecoding] repeat 2 ==>
-	do
-		slice_alpha_c0_offset := VLDecoding[0] * 2;
-		slice_beta_offset     := VLDecoding[1] * 2;
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tslice_alpha_c0_offset_div2: "+VLDecoding[0]);
-			println("\t\tslice_beta_offset_div2: "+VLDecoding[1]);
-		end
-	end
-
-	ReadSlcGrpChgCycl.Asked: action
-			==>
-		//            slice_group_change_cycle
-		TypeOfVLD :[       READ_BITS      ],
-		VLDParam  :[ SzSliceGroupChgCycle ]
-	guard
-		num_slice_groups     >  1,
-		slice_group_map_type >= 3,
-		slice_group_map_type <= 5
-	end
-
-	ReadSlcGrpChgCycl.Done: action ValVLD :[VLDecoding] ==>
-	do
-		slice_group_change_cycle := VLDecoding;
-		if(DEBUG_FLAG_DECODED)then
-			println("\t\tslice_group_change_cycle: "+slice_group_change_cycle);
-		end
-	end
-
-	SendEndSliceHeader: action
-			==>
-		SliceDataParam :[disable_deblocking_filter_idc , slice_beta_offset,
-		                 slice_alpha_c0_offset],
-		TypeOfVLD              :[SKIP_NAL],
-		DecodeNextNal          :[true]
+	SendEndSliceHeader: action ==> TypeOfVLD :[SKIP_NAL]
 	end
 
 	schedule fsm ReadSliceTypeAsked:
@@ -660,7 +492,7 @@ actor Algo_DecodeSliceHeader()
 		CheckFieldPicFlag              (IdrFlag.IsEqualToFalse            )--> CheckPocType;
 		CheckFieldPicFlag              (IdrFlag.IsEqualToTrue             )--> ReadIdrPicIdDone;
 
-		ReadBottomFieldDone            (ReadBottomField.Done              )-->CheckIdrFlag;
+		ReadBottomFieldDone            (ReadBottomField.Done              )--> CheckIdrFlag;
 
 		CheckIdrFlag                   (IdrFlag.IsEqualToFalse            )--> CheckPocType;
 		CheckIdrFlag                   (IdrFlag.IsEqualToTrue             )--> ReadIdrPicIdDone;
@@ -675,7 +507,7 @@ actor Algo_DecodeSliceHeader()
 
 		Check4DeltPicOrdCntBot         (Check_PicOrPres_FieldPic          )--> ReadDeltaPicOrderCntBottomDone;
 		Check4DeltPicOrdCntBot         (RedundPicCntPres.IsEqualToTrue    )--> ReadRedunPicCntDone;
-		Check4DeltPicOrdCntBot         (RefPicList.Launch                 )--> SendSliceDataParameters;
+		Check4DeltPicOrdCntBot         (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
 
 		ReadDeltaPicOrderCntBottomDone (ReadDeltaPicOrderCntBottom.Done   )--> CheckRedundPicCntPres;
 
@@ -692,52 +524,9 @@ actor Algo_DecodeSliceHeader()
 		CalcPOC4PocType1               (CalcPOC4PocType1                  )--> CheckRedundPicCntPres;
 
 		CheckRedundPicCntPres          (RedundPicCntPres.IsEqualToTrue    )--> ReadRedunPicCntDone;
-		CheckRedundPicCntPres          (RefPicList.Launch                 )--> SendSliceDataParameters;
+		CheckRedundPicCntPres          (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
 
-		ReadRedunPicCntDone            (ReadRedunPicCnt.Done              )--> DecodeRefPicList;
-
-		DecodeRefPicList               (RefPicList.Launch                 )--> SendSliceDataParameters;
-
-		SendSliceDataParameters        (SendSliceDataParameters           )-->                             DecodeDecRefPicMarking;//DecodeWeightedPred;
-		//DecodeWeightedPred           (LaunchWeightedPred                )--> ...;
-
-		DecodeDecRefPicMarking         (DecRefPicMarking.Launch           )--> CheckEntropyCodingMode;
-
-		CheckEntropyCodingMode         (ReadCabacInitDc.Asked             )--> ReadCabacInitIdc;
-		CheckEntropyCodingMode         (ReadSliceQpDelta.Asked            )--> ReadSliceQpDeltaDone;
-
-		ReadCabacInitIdc               (ReadCabacInitDc.Done              )--> ReadSliceQpDeltaAsked;
-
-		ReadSliceQpDeltaAsked          (ReadSliceQpDelta.Asked            )--> ReadSliceQpDeltaDone;
-
-		ReadSliceQpDeltaDone           (ReadSliceQpDelta.Done             )--> CheckSliceType;
-
-		CheckSliceType                 (Slice_Type.IsEqualToSP            )--> ReadSliceSpParameters;
-		CheckSliceType                 (Slice_Type.IsEqualToSI            )--> ReadSliceSiParameters;
-		CheckSliceType                 (DeblocFilterPresent               )--> ReadDisDeblocFilterIdc;
-		CheckSliceType                 (ReadSlcGrpChgCycl.Asked           )--> ReadSlcGrpChgCycl;
-		CheckSliceType                 (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
-
-		ReadSliceSpParameters          (ReadSliceSpParameters.Done        )--> CheckDeblocFilterControl;
-
-		ReadSliceSiParameters          (ReadSliceSiParameters.Done        )--> CheckDeblocFilterControl;
-
-		CheckDeblocFilterControl       (DeblocFilterPresent               )--> ReadDisDeblocFilterIdc;
-		CheckDeblocFilterControl       (ReadSlcGrpChgCycl.Asked           )--> ReadSlcGrpChgCycl;
-		CheckDeblocFilterControl       (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
-
-		ReadDisDeblocFilterIdc         (ReadDisDeblocFilterIdc.Done       )--> CheckDisDeblocFilterIdc;
-
-		CheckDisDeblocFilterIdc        (DisDeblocFilterIdc.IsNotEqualTo1  )--> ReadSliceAlphaAndBeta;
-		CheckDisDeblocFilterIdc        (ReadSlcGrpChgCycl.Asked           )--> ReadSlcGrpChgCycl;
-		CheckDisDeblocFilterIdc        (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
-
-		ReadSliceAlphaAndBeta          (ReadSliceAlphaAndBeta             )--> CheckNumSliceGroups;
-
-		CheckNumSliceGroups            (ReadSlcGrpChgCycl.Asked           )--> ReadSlcGrpChgCycl;
-		CheckNumSliceGroups            (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
-
-		ReadSlcGrpChgCycl              (ReadSlcGrpChgCycl.Done            )--> EndSliceHeader;
+		ReadRedunPicCntDone            (ReadRedunPicCnt.Done              )--> EndSliceHeader;
 
 		EndSliceHeader                 (SendEndSliceHeader                )--> ReadResetPrevFrameNum;
 	end
@@ -750,11 +539,6 @@ actor Algo_DecodeSliceHeader()
 		PocType.IsEqualTo1               > PocType.IsEqualTo2;
 		ReadDeltaPicOrCnt0.Asked         > CalcPOC4PocType1;
 		Check_PicOrPres_FieldPic         > CalcPOC4PocType1;
-		RedundPicCntPres.IsEqualToTrue   > RefPicList.Launch;
-		ReadCabacInitDc.Asked            > ReadSliceQpDelta.Asked;
-		Slice_Type.IsEqualToSP           > Slice_Type.IsEqualToSI         > DeblocFilterPresent;
-		DeblocFilterPresent              > ReadSlcGrpChgCycl.Asked;
-		DisDeblocFilterIdc.IsNotEqualTo1 > ReadSlcGrpChgCycl.Asked;
-		ReadSlcGrpChgCycl.Asked          > SendEndSliceHeader;
+		RedundPicCntPres.IsEqualToTrue   > SendEndSliceHeader;
 	end
 end
