@@ -62,9 +62,7 @@ actor CheckNaluType()
 
 	bool         PpsSkipNal,
 
-	bool         PicSkipNal,
-
-	bool         SvcPicSkipNal
+	bool         PicSkipNal
 		==>
 	uint(size=8) SpsRbsp,
 	bool         SpsNewNal,
@@ -77,10 +75,7 @@ actor CheckNaluType()
 	bool         PicNewNal,
 	bool         PicIsAnIdr,
 	uint(size=2) PicNalRefIdc,
-	uint(size=8) SvcPicRbsp,
-	bool         SvcPicNewNal,
-	bool         SvcPicIsAnIdr,
-	uint(size=2) SvcPicNalRefIdc
+	bool         PicIsSvc
 	
 		:
 
@@ -162,35 +157,23 @@ actor CheckNaluType()
 			end	
 		end
 
-	IsAvcSlice: action
-				==>
-			PicIsAnIdr   :[isIdrSlice],
-			PicNalRefIdc :[nal_ref_idc]
-		guard
-			nal_unit_type = NAL_SLICE_IDR or nal_unit_type = NAL_SLICE_NON_IDR
-		do
-			bool isIdrSlice = (nal_unit_type = NAL_SLICE_IDR);
-			
-			if(DEBUG_FLAG_DECODED)then
-				if(isIdrSlice) then
-					println("Is SliceIdr");
-				else
-					println("Is SliceNonIdr");
-				end
-			end	
-		end
-
-	IsSvcSlice: action
-				==>
-			SvcPicIsAnIdr   :[true],
-			SvcPicNalRefIdc :[nal_ref_idc]
-		guard
-			nal_unit_type = NAL_SVC_SLICE
-		do
-			if(DEBUG_FLAG_DECODED)then
-				println("Is SvcSlice");
-			end	
-		end
+	IsAvcSlice: action ==> PicIsAnIdr:[isIdrSlice],	PicNalRefIdc:[nal_ref_idc],
+		PicIsSvc     :[isSvc]
+	guard
+		nal_unit_type = NAL_SLICE_IDR or nal_unit_type = NAL_SLICE_NON_IDR
+		or nal_unit_type = NAL_SVC_SLICE
+	do
+		bool isIdrSlice = (nal_unit_type = NAL_SLICE_IDR);
+		bool isSvc = (nal_unit_type = NAL_SVC_SLICE);
+		
+		if(DEBUG_FLAG_DECODED)then
+			if(isIdrSlice) then
+				println("Is SliceIdr");
+			else
+				println("Is SliceNonIdr");
+			end
+		end	
+	end
 
 	NalUnitType_Unknown: action ==>
 		do
@@ -274,31 +257,6 @@ actor CheckNaluType()
 			EndOfProcessing = true
 		end
 
-	SvcSlice.ReadData: action
-			NewNal    :[IsNewNal],
-			RbspByte  :[ValRbsp]
-				==>
-			SvcPicNewNal :[false],
-			SvcPicRbsp   :[ValRbsp]
-		guard
-			IsNewNal   = false
-		end
-
-	SvcSlice.EndOfNal: action
-			NewNal    :[IsNewNal]
-				==>
-			SvcPicNewNal :[true]
-		guard
-			IsNewNal = true
-		end
-
-	SvcSlice.EndOfProcess: action
-			SvcPicSkipNal:[EndOfProcessing]
-				==>
-		guard
-			EndOfProcessing = true
-		end
-
 	schedule fsm WaitForNewNal:
 		WaitForNewNal        (WaitForNewNal            )--> WaitForNewNal;
 		WaitForNewNal        (NewNalDetected           )--> ReadNaluType;
@@ -306,7 +264,6 @@ actor CheckNaluType()
 		ReadNaluType         (ReadNaluType             )--> CheckNaluType;
 
 		CheckNaluType        (IsAvcSlice               )--> ReadData4Slice;
-		CheckNaluType        (IsSvcSlice               )--> ReadData4SvcSlice;
 		CheckNaluType        (IsSps                    )--> ReadData4Sps;
 		CheckNaluType        (IsPps                    )--> ReadData4Pps;
 		CheckNaluType        (NalUnitType_Unknown      )--> WaitForNewNal;
@@ -324,11 +281,11 @@ actor CheckNaluType()
 		ReadData4Slice       (SliceHAndS.ReadData      )--> ReadData4Slice;
 		ReadData4Slice       (SliceHAndS.EndOfNal      )--> SliceWaitEndOfProcess;
 
-		SliceWaitEndOfProcess( SliceHAndS.EndOfProcess )--> ReadNaluType;
+		SliceWaitEndOfProcess (SliceHAndS.EndOfProcess )--> ReadNaluType;
 	end
 	priority
 		WaitForNewNal       > NewNalDetected;	
-		IsAvcSlice          > IsSvcSlice > IsPps  >  IsSps  >  NalUnitType_Unknown;
+		IsAvcSlice          > IsPps  >  IsSps  >  NalUnitType_Unknown;
 		Sps.ReadData        > Sps.EndOfNal;
 		Pps.ReadData        > Pps.EndOfNal;
 		SliceHAndS.ReadData > SliceHAndS.EndOfNal;
