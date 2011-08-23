@@ -80,7 +80,8 @@ actor CheckNaluType()
 	bool         PicNewNal,
 	bool         PicIsAnIdr,
 	uint(size=2) PicNalRefIdc,
-	bool         PicIsSvc
+	bool         PicIsSvc,
+	uint(size=4) QualityId
 	
 		:
 
@@ -95,6 +96,7 @@ actor CheckNaluType()
 	uint(size=5) NAL_SEI           =  6;
 	uint(size=5) NAL_SPS           =  7;
 	uint(size=5) NAL_PPS           =  8;
+	uint(size=5) NAL_PREFIX_NAL    = 14;
 	uint(size=5) NAL_SUBSET_SPS    = 15;
 	uint(size=5) NAL_SVC_SLICE     = 20;
 
@@ -116,61 +118,68 @@ actor CheckNaluType()
 *
 */
 
-	WaitForNewNal: action
-			NewNal       :[IsNewNal],
-			RbspByte     :[ValRbsp]
-				==>
-		guard
-			IsNewNal = false
+	WaitForNewNal: action NewNal:[IsNewNal], RbspByte:[ValRbsp] ==>
+	guard
+		IsNewNal = false
+	end
+
+	NewNalDetected: action NewNal:[IsNewNal] ==>
+	guard
+		IsNewNal = true
+	end
+
+	ReadNaluType: action NewNal:[IsNewNal], RbspByte:[ValRbsp] ==>
+	do
+		nal_unit_type := (ValRbsp & 0x1F);
+		nal_ref_idc   := (ValRbsp >> 5) & 0x03;
+		if(DEBUG_FLAG_DECODED)then
+			println("nal_unit_type:"+nal_unit_type+"; nal_ref_idc:"+nal_ref_idc);
 		end
+	end
 
-
-	NewNalDetected: action
-			NewNal :[IsNewNal]
-				==>
-		end
-
-
-	ReadNaluType: action
-			NewNal       :[IsNewNal],
-			RbspByte     :[ValRbsp]
-				==>
-		do
-			nal_unit_type := (ValRbsp & 0x1F);
-			nal_ref_idc   := (ValRbsp >> 5) & 0x03;
-			if(DEBUG_FLAG_DECODED)then
-				println("nal_unit_type:"+nal_unit_type+"; nal_ref_idc:"+nal_ref_idc);
-			end
-		end
-
-	IsSps: action
-				==>
-			SpsNalUnitType :[nal_unit_type]
-		guard
-			(nal_unit_type = NAL_SPS) or (nal_unit_type = NAL_SUBSET_SPS) 
-		do
-			if(DEBUG_FLAG_DECODED)then
-				println("Is Sps");
-			end	
-		end
+	IsSps: action ==> SpsNalUnitType:[nal_unit_type]
+	guard
+		(nal_unit_type = NAL_SPS) or (nal_unit_type = NAL_SUBSET_SPS) 
+	do
+		if(DEBUG_FLAG_DECODED)then
+			println("Is Sps");
+		end	
+	end
 
 	IsPps: action ==>
-		guard
-			nal_unit_type = NAL_PPS
-		do
-			if(DEBUG_FLAG_DECODED)then
-				println("Is Pps");
-			end	
-		end
+	guard
+		nal_unit_type = NAL_PPS
+	do
+		if(DEBUG_FLAG_DECODED)then
+			println("Is Pps");
+		end	
+	end
 
-	IsSlice: action ==> PicIsAnIdr:[isIdrSlice],	PicNalRefIdc:[nal_ref_idc],
-		PicIsSvc     :[isSvc]
+	IsAvcSlice: action ==> PicIsAnIdr:[isIdrSlice],	PicNalRefIdc:[nal_ref_idc],
+		PicIsSvc:[false]
 	guard
 		nal_unit_type = NAL_SLICE_IDR or nal_unit_type = NAL_SLICE_NON_IDR
 		or nal_unit_type = NAL_SVC_SLICE
 	do
 		bool isIdrSlice = (nal_unit_type = NAL_SLICE_IDR);
-		bool isSvc = (nal_unit_type = NAL_SVC_SLICE);
+		
+		if(DEBUG_FLAG_DECODED)then
+			if(isIdrSlice) then
+				println("Is SliceIdr");
+			else
+				println("Is SliceNonIdr");
+			end
+		end	
+	end
+
+	IsSvcSlice: action NewNal:[IsNewNal] repeat 3, RbspByte:[ValRbsp]repeat 3
+		==> PicIsAnIdr:[isIdrSlice], PicNalRefIdc:[nal_ref_idc],
+		PicIsSvc:[true], QualityId:[qualityId]
+	guard
+		nal_unit_type = NAL_SVC_SLICE
+	do
+		bool isIdrSlice = ( (ValRbsp[0]&0x20) != 0 );
+		uint(size=4) qualityId = (ValRbsp[1] & 0x0F);
 		
 		if(DEBUG_FLAG_DECODED)then
 			if(isIdrSlice) then
@@ -187,11 +196,13 @@ actor CheckNaluType()
 	end
 
 	NalUnitType_Unknown: action ==>
-		do
-			if(DEBUG_FLAG_DECODED)then
-				println("NalUnitType_Unknown");
-			end
+	guard
+		nal_unit_type != NAL_SVC_SLICE and nal_unit_type != NAL_PREFIX_NAL
+	do
+		if(DEBUG_FLAG_DECODED)then
+			println("NalUnitType_Unknown");
 		end
+	end
 
 	Sps.ReadData: action
 			NewNal    :[IsNewNal],
@@ -299,7 +310,8 @@ actor CheckNaluType()
 
 		ReadNaluType         (ReadNaluType             )--> CheckNaluType;
 
-		CheckNaluType        (IsSlice                  )--> ReadData4Slice;
+		CheckNaluType        (IsAvcSlice               )--> ReadData4Slice;
+		CheckNaluType        (IsSvcSlice               )--> ReadData4Slice;
 		CheckNaluType        (IsSps                    )--> ReadData4Sps;
 		CheckNaluType        (IsPps                    )--> ReadData4Pps;
 		CheckNaluType        (NalUnitType_Unknown      )--> WaitForNewNal;
@@ -321,7 +333,8 @@ actor CheckNaluType()
 	end
 	priority
 		WaitForNewNal       > NewNalDetected;	
-		IsSlice             > IsPps  >  IsSps  >  NalUnitType_Unknown;
+		IsSvcSlice          > IsAvcSlice > IsPps  >  IsSps;
+		IsSps               > NalUnitType_Unknown;
 		Sps.ReadData        > Sps.EndOfNal;
 		Pps.ReadData        > Pps.EndOfNal;
 		SliceHAndS.ReadData > SliceHAndS.EndOfNal;
