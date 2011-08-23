@@ -70,6 +70,10 @@ actor DecodeScalabilityInfo()
 	uint(size=5)  numSubSps;
 	uint(size=5)  numSps;
 	bool          paramSetInfoPres;
+	bool          priorityIdSetting;
+	bool          priorityLayInfoPres;
+	uint(size=12) prNum;
+	uint(size=12) prNumDId;
 	bool          profileLvlInfoPres;
 	bool          rewritingInfo;
 	bool          subPicLayer;
@@ -82,6 +86,8 @@ actor DecodeScalabilityInfo()
 	getTemporalId: action ValVLD:[temporalId, priorityLayer, priorityId,
 		numLayerMinus1] ==>
 	do
+		priorityLayInfoPres := (priorityLayer != 0);
+		priorityIdSetting   := (priorityId != 0);
 		numLayer := numLayerMinus1 + 1;
 		iLoop := 0;
 	end
@@ -370,6 +376,54 @@ actor DecodeScalabilityInfo()
 		iLoop := iLoop + 1;
 	end
 
+	askPrNumDId: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		priorityLayInfoPres
+	end
+
+	getPrNumDId: action ValVLD:[prNumDIdMinus1] ==>
+	do
+		prNumDId := prNumDIdMinus1 + 1;
+		iLoop := 0;
+	end
+
+	askPrDepId: action ==> TypeOfVLD:[READ_BITS, VLD_UE], VLD_Param:[3]
+	guard
+		iLoop < prNumDId
+	end
+
+	getPrDepId: action ValVLD:[prDepId, prNumMinus1] ==>
+	do
+		prNum := prNumMinus1 + 1;
+		jLoop := 0;
+	end
+
+	askPrId: action ==> TypeOfVLD:[VLD_UE, READ_BITS, READ_BITS, READ_BITS],
+		VLD_Param:[24, 16, 16]
+	guard
+		jLoop < prNum
+	end
+
+	getPrId: action ValVLD:[prId, prProfLvlIdc, prAvg, prMaxBitrate] ==>
+	do
+		jLoop := jLoop + 1;
+	end
+
+	askPriorIdSetting: action ==> TypeOfVLD:[READ_BITS], VLD_Param:[8]
+	guard
+		priorityIdSetting
+	end
+
+	whileLoop.continue: action ValVLD:[priorIdSettingUri] ==> TypeOfVLD:[READ_BITS], VLD_Param:[8]
+	guard
+		priorIdSettingUri != 0
+	end
+
+	whileLoop.stop: action ValVLD:[priorIdSettingUri] ==>
+	guard
+		priorIdSettingUri = 0
+	end
+
 	endDecodeScalInfo: action ==> TypeOfVLD:[SKIP_NAL]
 	end
 
@@ -377,7 +431,9 @@ actor DecodeScalabilityInfo()
 		AskTemporalId     (askTemporalId     )--> GetTemporalId;
 		GetTemporalId     (getTemporalId     )--> CheckLoopNumLayer;
 		CheckLoopNumLayer (askLayerId        )--> GetLayerId;
-		CheckLoopNumLayer (endDecodeScalInfo )--> AskTemporalId;
+		CheckPriorLayInfo (askPrNumDId       )--> GetPrNumDId;
+		CheckPriorLayInfo (askPriorIdSetting )--> CheckWhileLoop;
+		CheckPriorLayInfo (endDecodeScalInfo )--> AskTemporalId;
 
 		GetLayerId       (getLayerId         )--> CheckSubPicLayer;
 		CheckSubPicLayer (askExactSample     )--> GetExactSample;
@@ -485,9 +541,25 @@ actor DecodeScalabilityInfo()
 		CheckRewritInfo (askRewritProfil.skip   )--> AskRewritInfo;
 
 		GetRewritProfil (getRewritProfil )--> AskRewritInfo;
+
+		GetPrNumDId (getPrNumDId       )--> AskPrDepId;
+		AskPrDepId  (askPrDepId        )--> GetPrDepId;
+		AskPrDepId  (askPriorIdSetting )--> CheckWhileLoop;
+		AskPrDepId  (endDecodeScalInfo )--> AskTemporalId;
+
+		GetPrDepId (getPrDepId )--> AskPrId;
+		AskPrId    (askPrId    )--> GetPrId;
+		AskPrId    (incILoop   )--> AskPrDepId;
+
+		GetPrId (getPrId )--> AskPrId;
+
+		CheckWhileLoop (whileLoop.continue )--> CheckWhileLoop;
+		CheckWhileLoop (whileLoop.stop     )--> EndDecodeScalInfo;
+
+		EndDecodeScalInfo (endDecodeScalInfo )--> AskTemporalId;
 	end
 	priority
-		getLayerId       > endDecodeScalInfo;
+		askLayerId       > askPrNumDId > askPriorIdSetting > endDecodeScalInfo;
 		askExactSample   > askLayerConversion;
 		askLayerProfil   > askAvgBitrate > askConstantFrm > flags.areEqualToFalse;
 		askFrmWidth      > askBaseRegion > askRoiId       > flags.areEqualToFalse;
@@ -504,5 +576,7 @@ actor DecodeScalabilityInfo()
 		askConvTypeIdc   > incILoop;
 		askRewritInfo    > incILoop;
 		askRewritProfil.launch > askRewritProfil.skip;
+		askPrDepId       > askPriorIdSetting;
+		askPrId          > incILoop;
 	end
 end
