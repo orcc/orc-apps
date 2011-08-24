@@ -34,8 +34,9 @@ import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import std.util.BitOps.*;
 
 actor DecodeSliceHeaderPart2()
-	int (size=32) PpsParameters,
+	uint(size=32) Header1Param,
 	uint(size=4)  HeadSvcExt,
+	int (size=32) PpsParameters,
 	uint(size=2)  SpsExtParam,
 	uint(size=32) SpsParameters,
 	int (size=32) ValVLD
@@ -43,6 +44,8 @@ actor DecodeSliceHeaderPart2()
 	int (size=6)  TypeOfVLD,
 	int (size=32) VLDParam
 		:
+
+	uint(size=4) SLICE_TYPE_EI  = 2;
 
 	bool          adaptBaseMode;
 	bool          adaptMotionPred;
@@ -62,11 +65,15 @@ actor DecodeSliceHeaderPart2()
 	bool          slcHeadRestr;
 	uint(size=3)  slcGrpMapType;
 	bool          sliceSkip;
+	uint(size=4)  sliceType;
 	uint(size=32) szSlcGrpChgCycle;
 
-	getParameters: action HeadSvcExt:[qualId, noIntLayPred], PpsParameters:[ppsParam] repeat 5,
-		SpsParameters:[spsParam] repeat 9, SpsExtParam:[spsExtParam] repeat 2 ==>
+	getParameters: action Header1Param:[header1Param] repeat 3,
+		HeadSvcExt:[qualId, noIntLayPred], PpsParameters:[ppsParam] repeat 5,
+		SpsParameters:[spsParam] repeat 9, SpsExtParam:[spsExtParam] repeat 2
+		==>
 	do
+		sliceType := header1Param[0];
 		qualityId := qualId;
 		numSliceGrp         := ppsParam[0];
 		szSlcGrpChgCycle    := ppsParam[2];
@@ -85,13 +92,13 @@ actor DecodeSliceHeaderPart2()
 		qualityId = 0
 	end
 
-	DecRefPicMarking.Launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+	decRefPicMarking.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
 		VLDParam:[DEC_REF_PIC_MARKING]//, RefPicMrk_IsNewPic:[IsNewPic]
 	end
 
 	askCabacInitIdc: action ==> TypeOfVLD:[VLD_UE]
 	guard
-		entropyCodingMode
+		entropyCodingMode and sliceType != SLICE_TYPE_EI
 	end
 
 	getCabacInitIdc: action ValVLD:[cabacInitIdc] ==>
@@ -259,5 +266,18 @@ actor DecodeSliceHeaderPart2()
 	end
 
 	getScanIdx: action ValVLD:[scanIdxStart, scanIdxEnd] ==>
+	end
+
+	schedule fsm GetParameters:
+		GetParameters          (getParameters    )--> LaunchRefPicList;
+		                                  //should be LaunchPredWeightTable;
+		LaunchRefPicList       (refPicList       )--> LaunchDecRefPicMarking;
+		//LaunchPredWeightTable  (predWeightTable  )--> LaunchDecRefPicMarking;
+		LaunchDecRefPicMarking (decRefPicMarking )--> CheckEntropCodMode;
+		CheckEntropCodMode     (askCabacInitIdc  )--> GetCabacInitIdc;
+		CheckEntropCodMode     (askSlcQpDelt     )--> GetSlcQpDelt;
+	end
+	priority
+		askCabacInitIdc > askSlcQpDelt;
 	end
 end
