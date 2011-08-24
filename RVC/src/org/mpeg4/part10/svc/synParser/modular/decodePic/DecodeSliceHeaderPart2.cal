@@ -55,10 +55,10 @@ actor DecodeSliceHeaderPart2()
 	bool          deblockFiltCtrlPres;
 	bool          defaultBaseMode;
 	uint(size=2)  disDeblocFiltIdc;
-	bool          disIntLayCtrlPres;
-	bool          disIntLayDbfIdc;
+	uint(size=3)  disIntLayDbfIdc;
 	bool          entropyCodingMode;
 	uint(size=2)  extSpatScal;
+	bool          intLayDbfCtrlPres;
 	bool          noInterLayPred;
 	uint(size=4)  numSliceGrp;
 	uint(size=4)  qualityId;
@@ -82,8 +82,9 @@ actor DecodeSliceHeaderPart2()
 		entropyCodingMode   := getFlag(ppsParam[4],3);
 		chromaArrayType     := spsParam[2];
 		extSpatScal         := spsExtParam[0];
-		adaptTcoeffLvlPred  := getFlag(spsExtParam[1],0);
-		slcHeadRestr        := getFlag(spsExtParam[1],1);
+		intLayDbfCtrlPres   := getFlag(spsExtParam[1],0);
+		adaptTcoeffLvlPred  := getFlag(spsExtParam[1],1);
+		slcHeadRestr        := getFlag(spsExtParam[1],2);
 	end
 
 	refPicList.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
@@ -130,7 +131,7 @@ actor DecodeSliceHeaderPart2()
 
 	askSlcGrpChg: action ==> TypeOfVLD:[READ_BITS], VLDParam:[szSlcGrpChgCycle]
 	guard
-		qualityId = 0 and numSliceGrp > 0 and slcGrpMapType >=3 and slcGrpMapType <=5
+		qualityId = 0 and numSliceGrp > 1 and slcGrpMapType >=3 and slcGrpMapType <=5
 	end
 
 	getSlcGrpChg: action ValVLD:[sliceGrpChgCycle] ==>
@@ -146,17 +147,17 @@ actor DecodeSliceHeaderPart2()
 
 	askDisIntLayDbfIdc: action ==> TypeOfVLD:[VLD_UE]
 	guard
-		disIntLayCtrlPres
+		intLayDbfCtrlPres
 	end
 	
 	getDisIntLayDbfIdc: action ValVLD:[disInterLayDbfIdc] ==>
 	do
-		disIntLayDbfIdc := (disInterLayDbfIdc != 0);
+		disIntLayDbfIdc := disInterLayDbfIdc;
 	end
 
 	askIntLaySlcAlpha: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
 	guard
-		disIntLayDbfIdc
+		disIntLayDbfIdc != 1
 	end
 
 	getIntLaySlcAlpha: action ValVLD:[intLaySlcAlpha, intLaySlcBeta] ==>
@@ -252,6 +253,9 @@ actor DecodeSliceHeaderPart2()
 		adaptResidualPred
 	end
 
+	getDefResPred: action ValVLD:[defResidualPred] ==>
+	end
+
 	askTcoeffLvlPred: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
 	guard
 		adaptTcoeffLvlPred
@@ -262,10 +266,16 @@ actor DecodeSliceHeaderPart2()
 
 	askScanIdx: action ==> TypeOfVLD:[READ_BITS, READ_BITS], VLDParam:[4, 4]
 	guard
-		slcHeadRestr
+		not slcHeadRestr
 	end
 
 	getScanIdx: action ValVLD:[scanIdxStart, scanIdxEnd] ==>
+	end
+
+	conditions.areFalse:action ==>
+	end
+
+	endOfSliceHeader: action ==> TypeOfVLD:[SKIP_NAL]
 	end
 
 	schedule fsm GetParameters:
@@ -276,8 +286,102 @@ actor DecodeSliceHeaderPart2()
 		LaunchDecRefPicMarking (decRefPicMarking )--> CheckEntropCodMode;
 		CheckEntropCodMode     (askCabacInitIdc  )--> GetCabacInitIdc;
 		CheckEntropCodMode     (askSlcQpDelt     )--> GetSlcQpDelt;
+
+		GetCabacInitIdc  (getCabacInitIdc     )--> AskSlcQpDelt;
+		AskSlcQpDelt     (askSlcQpDelt        )--> GetSlcQpDelt;
+		GetSlcQpDelt     (getSlcQpDelt        )--> CheckDbfCtrlPres;
+		CheckDbfCtrlPres (askDisDbfIdc        )--> GetDisDbfIdc;
+		CheckDbfCtrlPres (askSlcGrpChg        )--> GetSlcGrpChg;
+		CheckDbfCtrlPres (askRefLayDqId       )--> GetRefLayDqId;
+		CheckDbfCtrlPres (conditions.areFalse )--> CheckNoInterLayPred;
+
+		GetDisDbfIdc   (getDisDbfIdc          )--> CheckDisDbfIdc;
+		CheckDisDbfIdc (askSlcAlphaOff        )--> GetSlcAlphaOff;
+		CheckDisDbfIdc (askSlcGrpChg          )--> GetSlcGrpChg;
+		CheckDisDbfIdc (askRefLayDqId         )--> GetRefLayDqId;
+		CheckDisDbfIdc (conditions.areFalse   )--> CheckNoInterLayPred;
+
+		GetSlcAlphaOff  (getSlcAlphaOff        )--> CheckSliceGroup;
+		CheckSliceGroup (askSlcGrpChg          )--> GetSlcGrpChg;
+		CheckSliceGroup (askRefLayDqId         )--> GetRefLayDqId;
+		CheckSliceGroup (conditions.areFalse   )--> CheckNoInterLayPred;
+
+		GetSlcGrpChg  (getSlcGrpChg          )--> AskRefLayDqId;
+		AskRefLayDqId (askRefLayDqId         )--> GetRefLayDqId;
+		AskRefLayDqId (conditions.areFalse   )--> CheckNoInterLayPred;
+
+		GetRefLayDqId        (getRefLayDqIdc       )--> CheckInterLayDbfCtrl;
+		CheckInterLayDbfCtrl (askDisIntLayDbfIdc   )--> GetDisIntLayDbfIdc;
+		CheckInterLayDbfCtrl (askConstrIntraResamp )--> GetConstrIntraResamp;
+
+		GetDisIntLayDbfIdc   (getDisIntLayDbfIdc   )--> CheckDisIntLayDbfIdc;
+		CheckDisIntLayDbfIdc (askIntLaySlcAlpha    )--> GetIntLaySlcAlpha;
+		CheckDisIntLayDbfIdc (askConstrIntraResamp )--> GetConstrIntraResamp;
+
+		GetIntLaySlcAlpha    (getIntLaySlcAlpha    )--> AskConstrIntraResamp;
+		AskConstrIntraResamp (askConstrIntraResamp )--> GetConstrIntraResamp;
+		GetConstrIntraResamp (getConstrIntraResamp )--> CheckExtendSpatScal;
+
+		CheckExtendSpatScal (askRefLayChrPhase   )--> GetRefLayChrPhase;
+		CheckExtendSpatScal (askScaleRefLay      )--> GetScaleRefLay;
+		CheckExtendSpatScal (conditions.areFalse )--> CheckNoInterLayPred;
+
+		GetRefLayChrPhase (getRefLayChrPhase )--> AskScaleRefLay;
+		AskScaleRefLay    (askScaleRefLay    )--> GetScaleRefLay;
+		GetScaleRefLay    (getScaleRefLay    )--> CheckNoInterLayPred;
+
+		CheckNoInterLayPred (askSliceSkipFlag )--> GetSliceSkipFlag;
+		CheckNoInterLayPred (askScanIdx       )--> GetScanIdx;
+		CheckNoInterLayPred (endOfSliceHeader )--> GetParameters;
+
+		GetSliceSkipFlag   (getSliceSkipFlag )--> CheckSliceSkipFlag;
+		CheckSliceSkipFlag (askNumMbsSlc     )--> GetNumMbsSlc;
+		CheckSliceSkipFlag (askAdaptBaseMode )--> GetAdaptBaseMode;
+
+		GetNumMbsSlc (getNumMbsSlc )--> CheckAdaptTcoefLvl;
+
+		GetAdaptBaseMode   (getAdaptBaseMode )--> CheckAdaptBaseMode;
+		CheckAdaptBaseMode (askDefBaseFlag   )--> GetDefBaseFlag;
+		CheckAdaptBaseMode (askAdaptMotPred  )--> GetAdaptMotPred;
+		CheckAdaptBaseMode (askAdaptResPred  )--> GetAdaptResPred;
+
+		GetDefBaseFlag  (getDefBaseFlag  )--> CheckDefBaseMod;
+		CheckDefBaseMod (askAdaptMotPred )--> GetAdaptMotPred;
+		CheckDefBaseMod (askAdaptResPred )--> GetAdaptResPred;
+
+		GetAdaptMotPred   (getAdaptMotPred )--> CheckAdaptMotPred;
+		CheckAdaptMotPred (askDefMotPred   )--> GetDefMotPred;
+		CheckAdaptMotPred (askAdaptResPred )--> GetAdaptResPred;
+
+		GetAdaptResPred   (getAdaptResPred  )--> CheckAdaptResPred;
+		CheckAdaptResPred (askDefResPred    )--> GetDefResPred;
+		CheckAdaptResPred (askTcoeffLvlPred )--> GetTcoeffLvlPred;
+		CheckAdaptResPred (askScanIdx       )--> GetScanIdx;
+		CheckAdaptResPred (endOfSliceHeader )--> GetParameters;
+
+		GetDefResPred      (getDefResPred    )--> CheckAdaptTcoefLvl;
+		CheckAdaptTcoefLvl (askTcoeffLvlPred )--> GetTcoeffLvlPred;
+		CheckAdaptTcoefLvl (askScanIdx       )--> GetScanIdx;
+		CheckAdaptTcoefLvl (endOfSliceHeader )--> GetParameters;
+
+		GetTcoeffLvlPred  (getTcoeffLvlPred )--> CheckSlcHeadRestr;
+		CheckSlcHeadRestr (askScanIdx       )--> GetScanIdx;
+		CheckSlcHeadRestr (endOfSliceHeader )--> GetParameters;
+
+		GetScanIdx       (getScanIdx       )--> EndOfSliceHeader;
+		EndOfSliceHeader (endOfSliceHeader )--> GetParameters;
 	end
 	priority
 		askCabacInitIdc > askSlcQpDelt;
+		askDisDbfIdc    > askSlcGrpChg > askRefLayDqId > conditions.areFalse;
+		askSlcAlphaOff  > askSlcGrpChg;
+		askDisIntLayDbfIdc > askConstrIntraResamp;
+		askIntLaySlcAlpha  > askConstrIntraResamp;
+		askRefLayChrPhase  > askScaleRefLay > conditions.areFalse;
+		askSliceSkipFlag   > askScanIdx > endOfSliceHeader;
+		askNumMbsSlc       > askAdaptBaseMode;
+		askDefBaseFlag     > askAdaptMotPred > askAdaptResPred;
+		askDefMotPred      > askAdaptResPred;
+		askDefResPred > askTcoeffLvlPred > askScanIdx > endOfSliceHeader;
 	end
 end
