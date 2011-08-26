@@ -99,7 +99,12 @@ actor MgntLayer()
 
 	findOutNextActor.isSliceHeader2Avc: action ==>
 	guard
-		callStack[stackIdx] = SLICE_HEADER2
+		callStack[stackIdx] = SLICE_HEADER2 and not isSvc
+	end
+
+	findOutNextActor.isSliceHeader2Svc: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER2 and isSvc
 	end
 
 	findOutNextActor.isRefPicMark: action ==>
@@ -199,7 +204,7 @@ actor MgntLayer()
 		Function = SKIP_NAL
 	end
 
-	SliceHeader2.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
+	SlcHead2Avc.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
 		Header2AvcValVLD :[VLDecoding]
 	guard
 		nbParamToDecod > 0
@@ -207,17 +212,17 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod - 1;
 	end
 
-	SliceHeader2.GetVLDVal.Done: action ==>
+	SlcHead2Avc.GetVLDVal.Done: action ==>
 	guard
 		nbParamToDecod = 0
 	end
 
-	SliceHeader2.WaitVLDVal: action ==>
+	SlcHead2Avc.WaitVLDVal: action ==>
 	guard
 		nbParamToDecod > 0
 	end
 
-	SliceHeader2.FunctionWithoutParam: action Header2AvcTypeOfVLD :[ValTypeOfVLD] ==>
+	SlcHead2Avc.FunctionWithoutParam: action Header2AvcTypeOfVLD :[ValTypeOfVLD] ==>
 		TypeOfVLD :[ValTypeOfVLD]
 	guard
 		NbParamForFunction(ValTypeOfVLD) = 0,
@@ -228,7 +233,7 @@ actor MgntLayer()
 		end
 	end
 
-	SliceHeader2.FunctionWith1Param: action
+	SlcHead2Avc.FunctionWith1Param: action
 		Header2AvcTypeOfVLD :[ValTypeOfVLD],
 		Header2AvcVLDParam  :[Param]
 			==>
@@ -240,7 +245,7 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod + 1;
 	end
 
-	SliceHeader2.LaunchActor: action
+	SlcHead2Avc.LaunchActor: action
 		Header2AvcTypeOfVLD :[Function],
 		Header2AvcVLDParam  :[Actor]
 			==>
@@ -251,7 +256,66 @@ actor MgntLayer()
 		callStack[stackIdx] := Actor;
 	end
 
-	SliceHeader2.Done: action Header2AvcTypeOfVLD :[Function] ==>
+	SlcHead2Avc.Done: action Header2AvcTypeOfVLD :[Function] ==>
+	guard
+		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	SlcHead2Svc.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
+		Header2SvcValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	SlcHead2Svc.GetVLDVal.Done: action ==>
+	guard
+		nbParamToDecod = 0
+	end
+
+	SlcHead2Svc.WaitVLDVal: action ==>
+	guard
+		nbParamToDecod > 0
+	end
+
+	SlcHead2Svc.FunctionWithoutParam: action Header2SvcTypeOfVLD :[ValTypeOfVLD] ==>
+		TypeOfVLD :[ValTypeOfVLD]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 0,
+		ValTypeOfVLD  != SKIP_NAL
+	do
+		if(ValTypeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	SlcHead2Svc.FunctionWith1Param: action
+		Header2SvcTypeOfVLD :[ValTypeOfVLD],
+		Header2SvcVLDParam  :[Param]
+			==>
+		TypeOfVLD       :[ValTypeOfVLD],
+		VLD_Param       :[Param]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	SlcHead2Svc.LaunchActor: action
+		Header2SvcTypeOfVLD :[Function],
+		Header2SvcVLDParam  :[Actor]
+			==>
+	guard
+		Function = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := Actor;
+	end
+
+	SlcHead2Svc.Done: action Header2SvcTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
 	do
@@ -677,6 +741,7 @@ actor MgntLayer()
 
 		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
+		FindOutNextActor (findOutNextActor.isSliceHeader2Svc )--> LaunchSlcHead2Svc;
 		FindOutNextActor (findOutNextActor.isRefPicMark      )--> LaunchRefPicMark;
 		FindOutNextActor (findOutNextActor.isRefPicList      )--> LaunchRefPicList;
 		FindOutNextActor (findOutNextActor.isSliceData       )--> LaunchSliceData;
@@ -694,13 +759,21 @@ actor MgntLayer()
 			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Launch )--> LaunchSliceHeaderGetVLDVal;
 			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Done   )--> LaunchSlcHead;
 
-		LaunchSlcHead2Avc (SliceHeader2.FunctionWithoutParam )--> LaunchSlcHead2Avc;
-		LaunchSlcHead2Avc (SliceHeader2.FunctionWith1Param   )--> LaunchSlcHead2Avc;
-		LaunchSlcHead2Avc (SliceHeader2.WaitVLDVal           )--> LaunchSlcHead2AvcGetVLDVal;
-		LaunchSlcHead2Avc (SliceHeader2.LaunchActor          )--> FindOutNextActor;
-		LaunchSlcHead2Avc (SliceHeader2.Done                 )--> FindOutNextActor;
-			LaunchSlcHead2AvcGetVLDVal (SliceHeader2.GetVLDVal.Launch )--> LaunchSlcHead2AvcGetVLDVal;
-			LaunchSlcHead2AvcGetVLDVal (SliceHeader2.GetVLDVal.Done   )--> LaunchSlcHead2Avc;
+		LaunchSlcHead2Avc (SlcHead2Avc.FunctionWithoutParam )--> LaunchSlcHead2Avc;
+		LaunchSlcHead2Avc (SlcHead2Avc.FunctionWith1Param   )--> LaunchSlcHead2Avc;
+		LaunchSlcHead2Avc (SlcHead2Avc.WaitVLDVal           )--> LaunchSlcHead2AvcGetVLDVal;
+		LaunchSlcHead2Avc (SlcHead2Avc.LaunchActor          )--> FindOutNextActor;
+		LaunchSlcHead2Avc (SlcHead2Avc.Done                 )--> FindOutNextActor;
+			LaunchSlcHead2AvcGetVLDVal (SlcHead2Avc.GetVLDVal.Launch )--> LaunchSlcHead2AvcGetVLDVal;
+			LaunchSlcHead2AvcGetVLDVal (SlcHead2Avc.GetVLDVal.Done   )--> LaunchSlcHead2Avc;
+
+		LaunchSlcHead2Svc (SlcHead2Svc.FunctionWithoutParam )--> LaunchSlcHead2Svc;
+		LaunchSlcHead2Svc (SlcHead2Svc.FunctionWith1Param   )--> LaunchSlcHead2Svc;
+		LaunchSlcHead2Svc (SlcHead2Svc.WaitVLDVal           )--> LaunchSlcHead2SvcGetVLDVal;
+		LaunchSlcHead2Svc (SlcHead2Svc.LaunchActor          )--> FindOutNextActor;
+		LaunchSlcHead2Svc (SlcHead2Svc.Done                 )--> FindOutNextActor;
+			LaunchSlcHead2SvcGetVLDVal (SlcHead2Svc.GetVLDVal.Launch )--> LaunchSlcHead2SvcGetVLDVal;
+			LaunchSlcHead2SvcGetVLDVal (SlcHead2Svc.GetVLDVal.Done   )--> LaunchSlcHead2Svc;
 	
 		LaunchRefPicMark (RefPicMark.FunctionWithoutParam )--> LaunchRefPicMark;
 		LaunchRefPicMark (RefPicMark.FunctionWith1Param   )--> LaunchRefPicMark;
@@ -762,9 +835,13 @@ actor MgntLayer()
 		SliceHeader1.LaunchActor      > SliceHeader1.Done;
 		SliceHeader1.GetVLDVal.Launch > SliceHeader1.GetVLDVal.Done;
 
-		SliceHeader2.FunctionWithoutParam > SliceHeader2.FunctionWith1Param > SliceHeader2.WaitVLDVal > SliceHeader2.LaunchActor;
-		SliceHeader2.LaunchActor > SliceHeader2.Done;
-		SliceHeader2.GetVLDVal.Launch > SliceHeader2.GetVLDVal.Done;
+		SlcHead2Avc.FunctionWithoutParam > SlcHead2Avc.FunctionWith1Param > SlcHead2Avc.WaitVLDVal > SlcHead2Avc.LaunchActor;
+		SlcHead2Avc.LaunchActor > SlcHead2Avc.Done;
+		SlcHead2Avc.GetVLDVal.Launch > SlcHead2Avc.GetVLDVal.Done;
+
+		SlcHead2Svc.FunctionWithoutParam > SlcHead2Svc.FunctionWith1Param > SlcHead2Svc.WaitVLDVal > SlcHead2Svc.LaunchActor;
+		SlcHead2Svc.LaunchActor > SlcHead2Svc.Done;
+		SlcHead2Svc.GetVLDVal.Launch > SlcHead2Svc.GetVLDVal.Done;
 
 		RefPicMark.FunctionWithoutParam  > RefPicMark.FunctionWith1Param  > RefPicMark.WaitVLDVal > RefPicMark.Done;
 		RefPicMark.GetVLDVal.Launch > RefPicMark.GetVLDVal.Done;
