@@ -76,12 +76,70 @@ actor MgntLayer()
 	int (size=32) ResBlkCavlcValVLD
 		:
 
+	bool          isSvc;
+	uint(size=8)  callStack[16];
 	uint(size=32) nbParamToDecod := 0;
-	bool isSvcSlice;
+	uint(size=3)  stackIdx;
 
-	getNewSlice: action IsSvcSlice :[isSvc] ==>
+	initialize ==>
 	do
-		isSvcSlice := isSvc;
+		stackIdx := 0;
+		callStack[0] := SLICE_HEADER1;
+	end
+
+	getNewSlice: action IsSvcSlice:[isSvcSlice] ==>
+	do
+		isSvc :=isSvcSlice;
+	end
+
+	findOutNextActor.isSliceHeader1: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER1
+	end
+
+	findOutNextActor.isSliceHeader2Avc: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER2
+	end
+
+	findOutNextActor.isRefPicMark: action ==>
+	guard
+		callStack[stackIdx] = REF_PIC_MARKING
+	end
+
+	findOutNextActor.isRefPicList: action ==>
+	guard
+		callStack[stackIdx] = REF_PIC_LIST
+	end
+
+	findOutNextActor.isSliceData: action ==>
+	guard
+		callStack[stackIdx] = SLICE_DATA
+	end
+
+	findOutNextActor.isMbLayer: action ==>
+	guard
+		callStack[stackIdx] = MB_LAYER
+	end
+
+	findOutNextActor.isMbPred: action ==>
+	guard
+		callStack[stackIdx] = MB_PRED
+	end
+
+	findOutNextActor.isSubMbPred: action ==>
+	guard
+		callStack[stackIdx] = SUB_MB_PRED
+	end
+
+	findOutNextActor.isResidual: action ==>
+	guard
+		callStack[stackIdx] = RESIDUAL
+	end
+
+	findOutNextActor.isResidualCavlc: action ==>
+	guard
+		callStack[stackIdx] = RESIDUAL_BLOCK_CAVLC
 	end
 
 	SliceHeader1.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
@@ -125,19 +183,20 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod + 1;
 	end
 
+	SliceHeader1.LaunchActor: action
+		Header1TypeOfVLD :[Function],
+		Header1VLDParam  :[Actor]
+			==>
+	guard
+		Function = LAUNCH_ACTOR
+	do
+		stackIdx       := (stackIdx + 1) &0x0F;
+		callStack[stackIdx] := Actor;
+	end
+
 	SliceHeader1.Done: action Header1TypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
-	end
-
-	slice.isAvc: action ==>
-	guard
-		not isSvcSlice
-	end
-
-	slice.isSvc: action ==>
-	guard
-		isSvcSlice
 	end
 
 	SliceHeader2.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
@@ -181,29 +240,22 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod + 1;
 	end
 
-	SliceHeader2.LaunchRefPicMark: action
+	SliceHeader2.LaunchActor: action
 		Header2AvcTypeOfVLD :[Function],
 		Header2AvcVLDParam  :[Actor]
 			==>
 	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = REF_PIC_MARKING,
-		nbParamToDecod = 0
-	end
-
-	SliceHeader2.LaunchRefPicList: action
-		Header2AvcTypeOfVLD :[Function],
-		Header2AvcVLDParam  :[Actor]
-			==>
-	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = REF_PIC_LIST,
-		nbParamToDecod = 0
+		Function = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := Actor;
 	end
 
 	SliceHeader2.Done: action Header2AvcTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	RefPicMark.GetVLDVal.Launch: action
@@ -254,6 +306,8 @@ actor MgntLayer()
 	RefPicMark.Done: action DecRefPicMarkingTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	RefPicList.GetVLDVal.Launch: action
@@ -304,6 +358,8 @@ actor MgntLayer()
 	RefPicList.Done: action RefPicListTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	SliceData.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
@@ -349,19 +405,22 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod + 1;
 	end
 
-	SliceData.LaunchMbLayer: action
+	SliceData.LaunchActor: action
 		DataTypeOfVLD :[Function],
 		DataVLDParam  :[Actor]
 			==>
 	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = MB_LAYER,
-		nbParamToDecod = 0
+		Function = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := Actor;
 	end
 
 	SliceData.Done: action DataTypeOfVLD :[Function] ==> TypeOfVLD :[SKIP_NAL]
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	MbLayer.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==> MbLayerValVLD :[VLDecoding]
@@ -406,34 +465,15 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod + 1;
 	end
 
-	MbLayer.LaunchSubMbPred: action
+	MbLayer.LaunchActor : action
 		MbLayerTypeOfVLD :[Function],
 		MbLayerVLDParam  :[Actor]
 			==>
 	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = SUB_MB_PRED,
-		nbParamToDecod = 0
-	end
-
-	MbLayer.LaunchMbPred: action
-		MbLayerTypeOfVLD :[Function],
-		MbLayerVLDParam  :[Actor]
-			==>
-	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = MB_PRED,
-		nbParamToDecod = 0
-	end
-
-	MbLayer.LaunchResidual: action
-		MbLayerTypeOfVLD :[Function],
-		MbLayerVLDParam  :[Actor]
-			==>
-	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = RESIDUAL,
-		nbParamToDecod = 0
+		Function = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := Actor;
 	end
 
 	MbLayer.Done: action
@@ -441,6 +481,8 @@ actor MgntLayer()
 			==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	MbPred.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
@@ -487,6 +529,8 @@ actor MgntLayer()
 	MbPred.Done: action MbPredTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	SubMbPred.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
@@ -536,17 +580,20 @@ actor MgntLayer()
 			==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 
-	Residual.LaunchResBlkCavlc: action
+	Residual.LaunchActor: action
 		ResTypeOfVLD     :[Function],
 		ResActorLaunched :[Actor]
 			==>
 	guard
-		Function = LAUNCH_ACTOR,
-		Actor    = RESIDUAL_BLOCK_CAVLC,
-		nbParamToDecod = 0
+		Function = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := Actor;
 	end
 
 	Residual.Done: action
@@ -554,6 +601,8 @@ actor MgntLayer()
 			==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
 	ResBlkCavlc.GetVLDVal.Launch: action
@@ -619,95 +668,102 @@ actor MgntLayer()
 			==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
-
 	schedule fsm GetNewSlice:
-		GetNewSlice       (getNewSlice                       )--> LaunchSliceHeader;
-		LaunchSliceHeader (SliceHeader1.FunctionWithoutParam )--> LaunchSliceHeader;
-		LaunchSliceHeader (SliceHeader1.FunctionWith1Param   )--> LaunchSliceHeader;
-		LaunchSliceHeader (SliceHeader1.WaitVLDVal           )--> LaunchSliceHeaderGetVLDVal;
-		LaunchSliceHeader (SliceHeader1.Done                 )--> LaunchSliceHeader2;
+		GetNewSlice (getNewSlice )--> LaunchSlcHead;
+
+		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
+		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
+		FindOutNextActor (findOutNextActor.isRefPicMark      )--> LaunchRefPicMark;
+		FindOutNextActor (findOutNextActor.isRefPicList      )--> LaunchRefPicList;
+		FindOutNextActor (findOutNextActor.isSliceData       )--> LaunchSliceData;
+		FindOutNextActor (findOutNextActor.isMbLayer         )--> LaunchMbLayer;
+		FindOutNextActor (findOutNextActor.isMbPred          )--> LaunchMbPred;
+		FindOutNextActor (findOutNextActor.isSubMbPred       )--> LaunchSubMbPred;
+		FindOutNextActor (findOutNextActor.isResidual        )--> LaunchResidual;
+		FindOutNextActor (findOutNextActor.isResidualCavlc   )--> LaunchResBlkCavlc;
+
+		LaunchSlcHead (SliceHeader1.FunctionWithoutParam )--> LaunchSlcHead;
+		LaunchSlcHead (SliceHeader1.FunctionWith1Param   )--> LaunchSlcHead;
+		LaunchSlcHead (SliceHeader1.WaitVLDVal           )--> LaunchSliceHeaderGetVLDVal;
+		LaunchSlcHead (SliceHeader1.LaunchActor          )--> FindOutNextActor;
+		LaunchSlcHead (SliceHeader1.Done                 )--> GetNewSlice;
 			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Launch )--> LaunchSliceHeaderGetVLDVal;
-			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Done   )--> LaunchSliceHeader;
+			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Done   )--> LaunchSlcHead;
 
-		CheckSlice (slice.isAvc )--> LaunchSliceHeader2;
-		CheckSlice (slice.isSvc )--> LaunchSliceHeader2Svc;
-
-		LaunchSliceHeader2 (SliceHeader2.FunctionWithoutParam )--> LaunchSliceHeader2;
-		LaunchSliceHeader2 (SliceHeader2.FunctionWith1Param   )--> LaunchSliceHeader2;
-		LaunchSliceHeader2 (SliceHeader2.WaitVLDVal           )--> LaunchSliceHeader2GetVLDVal;
-		LaunchSliceHeader2 (SliceHeader2.LaunchRefPicMark     )--> LaunchRefPicMark;
-		LaunchSliceHeader2 (SliceHeader2.LaunchRefPicList     )--> LaunchRefPicList;
-		LaunchSliceHeader2 (SliceHeader2.Done                 )--> LaunchSliceData;
-			LaunchSliceHeader2GetVLDVal (SliceHeader2.GetVLDVal.Launch )--> LaunchSliceHeader2GetVLDVal;
-			LaunchSliceHeader2GetVLDVal (SliceHeader2.GetVLDVal.Done   )--> LaunchSliceHeader2;
-
-			LaunchRefPicMark (RefPicMark.FunctionWithoutParam )--> LaunchRefPicMark;
-			LaunchRefPicMark (RefPicMark.FunctionWith1Param   )--> LaunchRefPicMark;
-			LaunchRefPicMark (RefPicMark.WaitVLDVal           )--> LaunchRefPicMarkGetVLDVal;
-			LaunchRefPicMark (RefPicMark.Done                 )--> LaunchSliceHeader2;
-				LaunchRefPicMarkGetVLDVal (RefPicMark.GetVLDVal.Launch )--> LaunchRefPicMarkGetVLDVal;
-				LaunchRefPicMarkGetVLDVal (RefPicMark.GetVLDVal.Done   )--> LaunchRefPicMark;
+		LaunchSlcHead2Avc (SliceHeader2.FunctionWithoutParam )--> LaunchSlcHead2Avc;
+		LaunchSlcHead2Avc (SliceHeader2.FunctionWith1Param   )--> LaunchSlcHead2Avc;
+		LaunchSlcHead2Avc (SliceHeader2.WaitVLDVal           )--> LaunchSlcHead2AvcGetVLDVal;
+		LaunchSlcHead2Avc (SliceHeader2.LaunchActor          )--> FindOutNextActor;
+		LaunchSlcHead2Avc (SliceHeader2.Done                 )--> FindOutNextActor;
+			LaunchSlcHead2AvcGetVLDVal (SliceHeader2.GetVLDVal.Launch )--> LaunchSlcHead2AvcGetVLDVal;
+			LaunchSlcHead2AvcGetVLDVal (SliceHeader2.GetVLDVal.Done   )--> LaunchSlcHead2Avc;
 	
-			LaunchRefPicList (RefPicList.FunctionWithoutParam )--> LaunchRefPicList;
-			LaunchRefPicList (RefPicList.FunctionWith1Param   )--> LaunchRefPicList;
-			LaunchRefPicList (RefPicList.WaitVLDVal           )--> LaunchRefPicListGetVLDVal;
-			LaunchRefPicList (RefPicList.Done                 )--> LaunchSliceHeader2;
-				LaunchRefPicListGetVLDVal (RefPicList.GetVLDVal.Launch )--> LaunchRefPicListGetVLDVal;
-				LaunchRefPicListGetVLDVal (RefPicList.GetVLDVal.Done   )--> LaunchRefPicList;
-
+		LaunchRefPicMark (RefPicMark.FunctionWithoutParam )--> LaunchRefPicMark;
+		LaunchRefPicMark (RefPicMark.FunctionWith1Param   )--> LaunchRefPicMark;
+		LaunchRefPicMark (RefPicMark.WaitVLDVal           )--> LaunchRefPicMarkGetVLDVal;
+		LaunchRefPicMark (RefPicMark.Done                 )--> LaunchSlcHead2Avc;
+			LaunchRefPicMarkGetVLDVal (RefPicMark.GetVLDVal.Launch )--> LaunchRefPicMarkGetVLDVal;
+			LaunchRefPicMarkGetVLDVal (RefPicMark.GetVLDVal.Done   )--> LaunchRefPicMark;
+		
+		LaunchRefPicList (RefPicList.FunctionWithoutParam )--> LaunchRefPicList;
+		LaunchRefPicList (RefPicList.FunctionWith1Param   )--> LaunchRefPicList;
+		LaunchRefPicList (RefPicList.WaitVLDVal           )--> LaunchRefPicListGetVLDVal;
+		LaunchRefPicList (RefPicList.Done                 )--> LaunchSlcHead2Avc;
+			LaunchRefPicListGetVLDVal (RefPicList.GetVLDVal.Launch )--> LaunchRefPicListGetVLDVal;
+			LaunchRefPicListGetVLDVal (RefPicList.GetVLDVal.Done   )--> LaunchRefPicList;
+	
 		LaunchSliceData   (SliceData.FunctionWithoutParam   )--> LaunchSliceData;
 		LaunchSliceData   (SliceData.FunctionWith1Param     )--> LaunchSliceData;
 		LaunchSliceData   (SliceData.WaitVLDVal             )--> LaunchSliceDataGetVLDVal;
-		LaunchSliceData   (SliceData.LaunchMbLayer          )--> LaunchMbLayer;
-		LaunchSliceData   (SliceData.Done                   )--> GetNewSlice;
+		LaunchSliceData   (SliceData.LaunchActor            )--> FindOutNextActor;
+		LaunchSliceData   (SliceData.Done                   )--> FindOutNextActor;
 			LaunchSliceDataGetVLDVal   (SliceData.GetVLDVal.Launch )--> LaunchSliceDataGetVLDVal;
 			LaunchSliceDataGetVLDVal   (SliceData.GetVLDVal.Done   )--> LaunchSliceData;
+		
+		LaunchMbLayer    (MbLayer.FunctionWithoutParam    )--> LaunchMbLayer;
+		LaunchMbLayer    (MbLayer.FunctionWith1Param      )--> LaunchMbLayer;
+		LaunchMbLayer    (MbLayer.WaitVLDVal              )--> LaunchMbLayerGetVLDVal;
+		LaunchMbLayer    (MbLayer.Done                    )--> FindOutNextActor;
+		LaunchMbLayer    (MbLayer.LaunchActor             )--> FindOutNextActor;
+			LaunchMbLayerGetVLDVal    (MbLayer.GetVLDVal.Launch    )--> LaunchMbLayerGetVLDVal;
+			LaunchMbLayerGetVLDVal    (MbLayer.GetVLDVal.Done      )--> LaunchMbLayer;
+		
+		LaunchMbPred    (MbPred.FunctionWithoutParam    )--> LaunchMbPred;
+		LaunchMbPred    (MbPred.FunctionWith1Param      )--> LaunchMbPred;
+		LaunchMbPred    (MbPred.WaitVLDVal              )--> LaunchMbPredGetVLDVal;
+		LaunchMbPred    (MbPred.Done                    )--> FindOutNextActor;
+			LaunchMbPredGetVLDVal    (MbPred.GetVLDVal.Launch )--> LaunchMbPredGetVLDVal;
+			LaunchMbPredGetVLDVal    (MbPred.GetVLDVal.Done   )--> LaunchMbPred;
+		
+		LaunchSubMbPred (SubMbPred.FunctionWithoutParam )--> LaunchSubMbPred;
+		LaunchSubMbPred (SubMbPred.FunctionWith1Param   )--> LaunchSubMbPred;
+		LaunchSubMbPred (SubMbPred.WaitVLDVal           )--> LaunchSubMbPredGetVLDVal;
+		LaunchSubMbPred (SubMbPred.Done                 )--> FindOutNextActor;
+			LaunchSubMbPredGetVLDVal (SubMbPred.GetVLDVal.Launch )--> LaunchSubMbPredGetVLDVal;
+			LaunchSubMbPredGetVLDVal (SubMbPred.GetVLDVal.Done   )--> LaunchSubMbPred;
 	
-			LaunchMbLayer    (MbLayer.FunctionWithoutParam    )--> LaunchMbLayer;
-			LaunchMbLayer    (MbLayer.FunctionWith1Param      )--> LaunchMbLayer;
-			LaunchMbLayer    (MbLayer.WaitVLDVal              )--> LaunchMbLayerGetVLDVal;
-			LaunchMbLayer    (MbLayer.Done                    )--> LaunchSliceData;
-			LaunchMbLayer    (MbLayer.LaunchSubMbPred         )--> LaunchSubMbPred;
-			LaunchMbLayer    (MbLayer.LaunchMbPred            )--> LaunchMbPred;
-			LaunchMbLayer    (MbLayer.LaunchResidual          )--> LaunchResidual;
-				LaunchMbLayerGetVLDVal    (MbLayer.GetVLDVal.Launch    )--> LaunchMbLayerGetVLDVal;
-				LaunchMbLayerGetVLDVal    (MbLayer.GetVLDVal.Done      )--> LaunchMbLayer;
+		LaunchResidual  (Residual.Done                  )--> FindOutNextActor;
+		LaunchResidual  (Residual.LaunchActor           )--> FindOutNextActor;
 	
-				LaunchMbPred    (MbPred.FunctionWithoutParam    )--> LaunchMbPred;
-				LaunchMbPred    (MbPred.FunctionWith1Param      )--> LaunchMbPred;
-				LaunchMbPred    (MbPred.WaitVLDVal              )--> LaunchMbPredGetVLDVal;
-				LaunchMbPred    (MbPred.Done                    )--> LaunchMbLayer;
-					LaunchMbPredGetVLDVal    (MbPred.GetVLDVal.Launch )--> LaunchMbPredGetVLDVal;
-					LaunchMbPredGetVLDVal    (MbPred.GetVLDVal.Done   )--> LaunchMbPred;
-	
-				LaunchSubMbPred (SubMbPred.FunctionWithoutParam )--> LaunchSubMbPred;
-				LaunchSubMbPred (SubMbPred.FunctionWith1Param   )--> LaunchSubMbPred;
-				LaunchSubMbPred (SubMbPred.WaitVLDVal           )--> LaunchSubMbPredGetVLDVal;
-				LaunchSubMbPred (SubMbPred.Done                 )--> LaunchMbLayer;
-					LaunchSubMbPredGetVLDVal (SubMbPred.GetVLDVal.Launch )--> LaunchSubMbPredGetVLDVal;
-					LaunchSubMbPredGetVLDVal (SubMbPred.GetVLDVal.Done   )--> LaunchSubMbPred;
-
-				LaunchResidual  (Residual.Done                  )--> LaunchMbLayer;
-				LaunchResidual  (Residual.LaunchResBlkCavlc     )--> LaunchResBlkCavlc;
-
-	
-					LaunchResBlkCavlc (ResBlkCavlc.FunctionWithoutParam )--> LaunchResBlkCavlc;
-					LaunchResBlkCavlc (ResBlkCavlc.FunctionWith1Param   )--> LaunchResBlkCavlc;
-					LaunchResBlkCavlc (ResBlkCavlc.FunctionWith2Param   )--> LaunchResBlkCavlc;
-					LaunchResBlkCavlc (ResBlkCavlc.WaitVLDVal        )--> LaunchResBlkCavlcGetVLDVal;
-					LaunchResBlkCavlc (ResBlkCavlc.Done                 )--> LaunchResidual;
-						LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Launch      )--> LaunchResBlkCavlcGetVLDVal;
-						LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Done        )--> LaunchResBlkCavlc;
+		LaunchResBlkCavlc (ResBlkCavlc.FunctionWithoutParam )--> LaunchResBlkCavlc;
+		LaunchResBlkCavlc (ResBlkCavlc.FunctionWith1Param   )--> LaunchResBlkCavlc;
+		LaunchResBlkCavlc (ResBlkCavlc.FunctionWith2Param   )--> LaunchResBlkCavlc;
+		LaunchResBlkCavlc (ResBlkCavlc.WaitVLDVal           )--> LaunchResBlkCavlcGetVLDVal;
+		LaunchResBlkCavlc (ResBlkCavlc.Done                 )--> FindOutNextActor;
+			LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Launch      )--> LaunchResBlkCavlcGetVLDVal;
+			LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Done        )--> LaunchResBlkCavlc;
 	end
-
 	priority
-		SliceHeader1.FunctionWithoutParam > SliceHeader1.FunctionWith1Param > SliceHeader1.WaitVLDVal > SliceHeader1.Done;
+		SliceHeader1.FunctionWithoutParam > SliceHeader1.FunctionWith1Param > SliceHeader1.WaitVLDVal > SliceHeader1.LaunchActor;
+		SliceHeader1.LaunchActor      > SliceHeader1.Done;
 		SliceHeader1.GetVLDVal.Launch > SliceHeader1.GetVLDVal.Done;
 
-		SliceHeader2.FunctionWithoutParam > SliceHeader2.FunctionWith1Param > SliceHeader2.WaitVLDVal > SliceHeader2.LaunchRefPicMark;
-		SliceHeader2.LaunchRefPicMark > SliceHeader2.LaunchRefPicList     > SliceHeader2.Done;
+		SliceHeader2.FunctionWithoutParam > SliceHeader2.FunctionWith1Param > SliceHeader2.WaitVLDVal > SliceHeader2.LaunchActor;
+		SliceHeader2.LaunchActor > SliceHeader2.Done;
 		SliceHeader2.GetVLDVal.Launch > SliceHeader2.GetVLDVal.Done;
 
 		RefPicMark.FunctionWithoutParam  > RefPicMark.FunctionWith1Param  > RefPicMark.WaitVLDVal > RefPicMark.Done;
@@ -715,10 +771,9 @@ actor MgntLayer()
 		RefPicList.FunctionWithoutParam  > RefPicList.FunctionWith1Param  > RefPicList.WaitVLDVal > RefPicList.Done;
 		RefPicList.GetVLDVal.Launch > RefPicList.GetVLDVal.Done;
 
-		SliceData.FunctionWithoutParam   > SliceData.FunctionWith1Param   > SliceData.WaitVLDVal          > SliceData.LaunchMbLayer        > SliceData.Done;
+		SliceData.FunctionWithoutParam   > SliceData.FunctionWith1Param   > SliceData.WaitVLDVal          > SliceData.LaunchActor        > SliceData.Done;
 		SliceData.GetVLDVal.Launch       > SliceData.GetVLDVal.Done;
-		MbLayer.FunctionWithoutParam     > MbLayer.FunctionWith1Param     > MbLayer.WaitVLDVal             > MbLayer.LaunchMbPred;
-		MbLayer.LaunchMbPred             > MbLayer.LaunchSubMbPred        > MbLayer.LaunchResidual         > MbLayer.Done;
+		MbLayer.FunctionWithoutParam     > MbLayer.FunctionWith1Param     > MbLayer.WaitVLDVal             > MbLayer.LaunchActor         > MbLayer.Done;
 		MbLayer.GetVLDVal.Launch         > MbLayer.GetVLDVal.Done;
 		MbPred.FunctionWithoutParam      > MbPred.FunctionWith1Param      > MbPred.WaitVLDVal              > MbPred.Done;
 		MbPred.GetVLDVal.Launch          > MbPred.GetVLDVal.Done;
