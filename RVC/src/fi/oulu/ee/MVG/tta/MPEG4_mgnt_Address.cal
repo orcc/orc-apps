@@ -10,7 +10,7 @@
 //              IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR
 //              A PARTICULAR PURPOSE, OR AGAINST INFRINGEMENT.
 // Frame buffer address generation for motion compensation
-package Proprietary.MVG;
+package fi.oulu.ee.MVG.tta;
 
 actor MPEG4_mgnt_Address (int INTRA,
 	int MOTION,
@@ -131,10 +131,6 @@ int(size=ADDR_SZ) WA , int(size=FLAG_SZ) halfpel :
 
 	// Values used to form motion-compensation addresses
 	int(size=8) read_count;
-
-	int(size=5) read_row;
-
-	int(size=5) read_col;
 
 	int(size=8) write_count;
 
@@ -365,8 +361,6 @@ int(size=ADDR_SZ) WA , int(size=FLAG_SZ) halfpel :
 	do
 		mvy := (y >> 1);
 		read_count := 0;
-		read_row := 0;
-		read_col := 0;
 		write_count := 0;
 	end
 
@@ -376,8 +370,6 @@ int(size=ADDR_SZ) WA , int(size=FLAG_SZ) halfpel :
 		mvx := 0;
 		mvy := 0;
 		read_count := 0;
-		read_row := 0;
-		read_col := 0;
 		write_count := 0;
 	end
 
@@ -394,13 +386,41 @@ int(size=ADDR_SZ) WA , int(size=FLAG_SZ) halfpel :
 
 	// Generate write addresses. Priorities are use to make this alternate
 	// with the read address generation action (to keep the queues balanced).
+
+	wr_prod: action ==> WA:[ [generate_write_addr((i & 7), (i >> 3)): for int i in 0 .. 63 ]] repeat 64
+	do
+		write_count := 64;
+	end
+
+	rd_prod: action ==> RA:[ r ] repeat 81
+	var
+		List(type: int, size=81) r,
+		int(size=8) index
+	do
+
+		foreach int read_row in 0 .. 8 do
+			foreach int read_col in 0 .. 8 do
+				r[index] := generate_read_addr(mvx + read_col, mvy + read_row);
+				index := index + 1;
+			end
+		end
+		
+		read_count := 81;
+	end
+
+	rd_skip: action ==> 
+	guard
+		read_count = 81
+	end
+	
+/*	
 	write_addr: action ==> WA:[ a ]
 	guard
 		write_count < 64,
 		write_count < read_count // this makes these two actions alternate
 
 	var
-		int a = generate_write_addr((write_count & 7), (write_count >> 3))
+		int a = generate_write_addr(bitand(write_count, 7), rshift(write_count, 3))
 	do
 		write_count := write_count + 1;
 	end
@@ -418,17 +438,23 @@ int(size=ADDR_SZ) WA , int(size=FLAG_SZ) halfpel :
 			read_row := read_row + 1;
 		end
 	end
-
+*/
 	schedule fsm cmd :
 		cmd ( cmd.newVop ) --> getw;
 		cmd ( cmd.noMotion ) --> init;
 		cmd ( cmd.motion ) --> getmvx;
-		//    cmd          ( cmd.both        ) --> init;
 		cmd ( cmd.neither ) --> init;
-		init ( init ) --> generate;
-		generate ( done ) --> cmd;
-		generate ( write_addr ) --> generate;
-		generate ( read_addr ) --> generate;
+
+		init ( init ) --> generate_rd;
+		generate_rd ( rd_skip ) --> generate_wr;
+		generate_rd ( rd_prod ) --> generate_wr;
+		generate_wr ( wr_prod ) --> cmd;
+		generate_wr ( done ) --> cmd;
+		
+		//generate ( write_addr ) --> generate;
+		//generate ( read_addr ) --> generate;
+
+
 		getw ( getw ) --> geth;
 		geth ( geth ) --> cmd;
 		getmvx ( getmvx ) --> getmvy;
@@ -437,7 +463,8 @@ int(size=ADDR_SZ) WA , int(size=FLAG_SZ) halfpel :
 
 	priority
 		cmd.newVop > cmd.noMotion > cmd.motion > cmd.neither;
-		done > write_addr > read_addr;
+		rd_skip > rd_prod;
+		done > wr_prod;
 	end
 
 end
