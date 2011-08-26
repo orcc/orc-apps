@@ -1,3 +1,4 @@
+// Algo_DCRinvpred_luma_16x16
 //
 // Created By:  David B. Parlour (dave.parlour@xilinx.com)
 // Modified By: Andrew Kinane (kinanea@eeng.dcu.ie)
@@ -28,13 +29,13 @@
 // specify the coding mode of the current 8x8 block. For details on the structure of the
 // BTYPE token, refer to ParseHeaders.cal
 //
-// int(size=MB_COORD_SZ) A
+// int(size=MB_COORD_SZ+2) A
 // The address of the 8x8 block neighbour to the left of the current 8x8 block.
 //
-// int(size=MB_COORD_SZ) B
+// int(size=MB_COORD_SZ+2) B
 // The address of the 8x8 block neighbour to the above left of the current 8x8 block.
 //
-// int(size=MB_COORD_SZ) C
+// int(size=MB_COORD_SZ+2) C
 // The address of the 8x8 block neighbour to the above of the current 8x8 block.
 //
 // int(size=SAMPLE_SZ) QFS_DC
@@ -67,16 +68,16 @@
 // Modifications:
 // * Re-named output port START to AC_PRED_DIR
 // * Function dc_scaler() is now luminance specific. 
-// * In advance action, indices adjust after every component instead of 6 since now
-//   dealing with a single 8x8 block rather than 6 8x8 blocks.
+// * In advance action, indices adjust after every 4 components instead of 6 since now
+//   dealing with 4 8x8 blocks rather than 6 8x8 blocks.
 
-package Proprietary.GUC;
+package ie.dcu.eeng.GUC;
 
 import std.util.BitOps.*;
 
-actor GUC_Algo_DCRinvpred_chroma_8x8 () bool NEW_VOP, int(size=16) WIDTH, bool AC_CODED, int(size=MB_COORD_SZ) A, int(size=MB_COORD_SZ) B,
-int(size=MB_COORD_SZ) C, int(size=SAMPLE_SZ) QFS_DC, int(size=QUANT_SZ) QP, int (size=2)BTYPE, bool AC_PRED ==>
-int(size=SAMPLE_SZ) QF_DC , int(size=MB_COORD_SZ) PTR , int(size=3) AC_PRED_DIR , bool
+actor GUC_Algo_DCRinvpred_luma_16x16 () bool NEW_VOP, int(size=16) WIDTH, bool AC_CODED, int(size=MB_COORD_SZ + 2) A, int(size=MB_COORD_SZ +
+2) B, int(size=MB_COORD_SZ + 2) C, int(size=SAMPLE_SZ) QFS_DC, int(size=QUANT_SZ) QP, int (size=2)BTYPE, bool AC_PRED ==>
+int(size=SAMPLE_SZ) QF_DC , int(size=MB_COORD_SZ + 2) PTR , int(size=3) AC_PRED_DIR , bool
 SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 
 // Port size declaration
@@ -91,45 +92,49 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 
 	int DCVAL = 128*8;
 
+	
 	// Use 3 address lines for component index to save address calculation effort
 	// Also, location 0 is reserved for all uncoded blocks. This protocol must
-	// be identical to the buffer addressing in Reconstruct.cal, since pointer
-	// values are passed on ports A, B, C.   
+	// be identical to the buffer addressing in DCR_addressing_16x16.cal and IAP_16x16.cal, 
+	// since pointer values are passed on ports A, B, C.     
 	int SCALER_SZ = 7;
 
 	// Bitwidth needed for 'dc_scalar' - see ISO/IEC 14496-2
 	int(size=QUANT_SZ) s_qp;
 
-	// Decoded 'quantiser_scale' - see ISO/IEC 14496-2 
+	// Decoded 'quantiser_scale' - see ISO/IEC 14496-2
 	int(size=QUANT_SZ) s_prev_qp;
 
-	// Decoded previous 'quantiser_scale' 
+	// previous Decoded 'quantiser_scale'
 	int(size=2) round;
 
-	// Flag to indicate whether 'quantiser_scale' is even or odd            
-	int BUF_SIZE = (MAXW_IN_MB + 2);
+	// Flag to indicate whether 'quantiser_scale' is even or odd
+	int BUF_SIZE = (MAXW_IN_MB + 2) * 4;
 
-	// Have 4 8x8 blocks per MB                                             
-	int ptr := 1;
+	// Have 4 8x8 blocks per MB
+	int ptr := 4;
 
-	// Pointer to current 8x8 block on current row                          
+	// Pointer to current 8x8 block on current row
 	// using circular buffer addressing. Start at 4, since 0-3 are reserved.
+	int(size=4) comp := 0;
+
+	// 8x8 block component in macroblock index  // JWJ: increased size
 	// Initialize to the dummy values needed for uncoded blocks (always mapped to index 0)
 	List(type: int(size=SAMPLE_SZ), size=BUF_SIZE) dc_buf := [ DCVAL : for int k in 1 .. BUF_SIZE ];
 
 	int(size=SAMPLE_SZ) dc_pred;
 
-	// Decoded DC prediction value          
+	// Decoded DC prediction value
 	int(size=SCALER_SZ) scaler;
 
-	// Decoded 'dc_scalar'                  
+	// Decoded 'dc_scalar'
 	bool is_signed;
 
 	// Flag to indicate INTER or INTRA block
 	int(size=SAMPLE_SZ) dc_val;
 
 	// Reconstructed DC coefficient  
-	List(type: int(size=QUANT_SZ), size=BUF_SIZE) buf_qp := [ 0 : for int k in 1 .. BUF_SIZE ];
+	List(type: int(size=QUANT_SZ), size=BUF_SIZE * 4) buf_qp := [ 0 : for int k in 1 .. BUF_SIZE * 4 ];
 
 	int(size=MB_COORD_SZ) mbwidth := 0;
 
@@ -138,12 +143,13 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 
 	// Pointer to current 8x8 block
 	// Check for NEWVOP flag
-	// A -ve means there is no data, so the inverse zigzag may flush its buffer
-	start: action NEW_VOP:[ newvop ] ==> AC_PRED_DIR:[ -2 ]
+	// A -ve flag  means there is no data, so the inverse zigzag may flush its buffer
+	start: action NEW_VOP:[newvop] ==> AC_PRED_DIR:[ -2 ]
 	guard
 		newvop
 	do
-		ptr := 1;
+		comp := 0;
+		ptr := 4;
 	end
 
 	// Used to get Width BTYPE token
@@ -153,9 +159,12 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 	end
 
 	// Check for an INTER block with coded AC coefficients
-	read.inter_ac: action NEW_VOP:[ newvop ], AC_CODED:[ac_coded],AC_PRED:[acp], QP:[ qp ], BTYPE:[btype] ==> AC_PRED_DIR:[ 0 ], PTR:[ 0 ], SIGNED:[ true ], QUANT:[ s_qp ], PREV_QUANT:[ s_prev_qp ]
+	read.inter_ac: action NEW_VOP:[newvop], AC_CODED:[ac_coded], AC_PRED:[ac_pred], QP:[ qp ], BTYPE:[btype] ==> AC_PRED_DIR:[ 0 ], PTR:[ 0 ], SIGNED:[ true ],
+		QUANT:[ s_qp ], PREV_QUANT:[ s_prev_qp ]
 	guard
-		btype=1, ac_coded
+		btype=1,
+		ac_coded,
+		not(newvop)
 	do
 		s_qp := qp;
 		round := ((s_qp & 1) ^ 1);
@@ -165,9 +174,11 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 	end
 
 	// Any other block except INTRA
-	read.other: action NEW_VOP:[ newvop ], BTYPE:[btype], AC_CODED:[ac_coded], AC_PRED: [acp], QP:[ qp ] ==> AC_PRED_DIR:[ -1 ]
+	read.other: action NEW_VOP:[newvop], AC_CODED:[ac_coded], AC_PRED:[ac_pred], QP:[ qp ], BTYPE:[btype] ==> AC_PRED_DIR:[ -1 ]
 	guard
-		btype!=2
+		not ac_coded,
+		btype!=2,
+		not(newvop)
 	end
 
 	// Function to return absolute value
@@ -179,42 +190,51 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 		end
 	end
 
-	// Calculate DC scaler for INTRA blocks
-	// Note that this function is specific to chrominance 8x8 blocks!!!
+	// Calculate DC scaler for INTRA blocks.
+	// Note that this function is specific to luminance 8x8 blocks!!!
 	function dc_scaler() --> int(size=SCALER_SZ) :
-	// UV component
+	// Y component
 		if s_qp > 0 and s_qp < 5 then
 			8
 		else
-			if s_qp > 4 and s_qp < 25 then
-				(s_qp + 13) >> 1
+			if s_qp > 4 and s_qp < 9 then
+				2 * s_qp
 			else
-				s_qp - 6
+				if s_qp > 8 and s_qp < 25 then
+					s_qp + 8
+				else
+					(2 * s_qp) - 16
+				end
 			end
 		end
 	end
 
 	// Read an INTRA block
-	read.intra: action NEW_VOP:[newvop],BTYPE:[btype], AC_CODED:[ac_coded], AC_PRED:[acp], QP:[ qp ], A:[ a ], B:[ b ], C:[ c ] ==> PTR:[ if top then
+	read.intra: action NEW_VOP:[newvop], BTYPE:[btype], AC_CODED:[ac_coded], AC_PRED:[ac_pred], QP:[ qp ], A:[ a ], B:[ b ], C:[ c ] ==> PTR:[ if top then
 			c
 		else
 			a
 		end ], AC_PRED_DIR:[ s ], SIGNED:[ is_signed ], QUANT:[ s_qp ], PREV_QUANT:[ s_prev_qp ]
+	guard
+		 btype=2,
+		not(newvop)
 	var
 		int(size=SAMPLE_SZ) dca = dc_buf[a] , int(size=SAMPLE_SZ) dcb = dc_buf[b] ,
 		int(size=SAMPLE_SZ) dcc = dc_buf[c] , int(size=SAMPLE_SZ) horiz = abs(dcb - dcc) ,
-		int(size=SAMPLE_SZ) vert = abs(dca - dcb) , bool top = vert < horiz , int(size=3) s
+		int(size=SAMPLE_SZ) vert = abs(dca - dcb) , bool top = vert < horiz , int(size=3) s 
 	do
 		s_qp := qp;
-		s_prev_qp := s_qp;
+		s_prev_qp := qp;
 		round := ((s_qp & 1) ^ 1);
 		scaler := dc_scaler();
+		// Retrieve 'dc_scalar'. See ISO/IEC 14496-2 Table 7-1.
 		dc_pred := ((if top then
 			dcc
 		else
 			dca
 		end) + (scaler >> 1)) / scaler;
-		s := if not acp then
+		// See ISO/IEC 14496-2 Section 7.4.3.2.
+		s := if not ac_pred then
 			0
 		else
 			if top then
@@ -223,20 +243,35 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 				1
 			end
 		end;
+		// Set 'ac_pred_dir'
 		is_signed := scaler = 0;
+		// Will never be true!
 		if (s = 2) then
-			s_prev_qp := buf_qp[cnt];
+			if (comp = 0) or (comp = 1) then
+				s_prev_qp := buf_qp[cnt + 2];
+			else
+				if (comp = 2) or (comp = 3) then
+					s_prev_qp := buf_qp[cnt - 2];
+				end
+			end
 		end
-		if (s = 1) and (cnt >= 1) then
-			s_prev_qp := buf_qp[cnt - 1];
+		if (s = 1) and (cnt >= 3) then
+			if (comp = 0) or (comp = 2) then
+				s_prev_qp := buf_qp[cnt - 3];
+			else
+				if (comp = 1) or (comp = 3) then
+					s_prev_qp := buf_qp[cnt - 1];
+				end
+			end
 		end
 		buf_qp[cnt] := s_qp;
 	end
 
-	// Do dequant on INTER block DC
+	// Do inverse prediction and dequant on INTER block DC
 	getdc.inter: action QFS_DC:[ dc ] ==>
 	var
-		int(size=SAMPLE_SZ) v = (s_qp * ((abs(dc) << 1) + 1)) - round
+		int(size=SAMPLE_SZ) v = (s_qp * ((abs(dc) << 1) + 1)) - round // See ISO/IEC 14496-2 Section 7.4.4.2.1 (H.263).
+
 	do
 		dc_val := if dc = 0 then
 			0
@@ -253,10 +288,12 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 		end;
 	end
 
-	// Do prediction on INTRA block DC
+	// Do inverse prediction on INTRA block DC
 	getdc.intra: action QFS_DC:[ dc ] ==>
 	do
 		dc_val := (dc + dc_pred) * scaler;
+		// See ISO/IEC 14496-2 Section 7.4.3.2 and Section 7.4.4.1.1.
+
 	end
 
 	function saturate(int x) --> int
@@ -278,19 +315,23 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 	var
 		int(size=SAMPLE_SZ) dc = saturate(dc_val)
 	do
-		dc_buf[ptr] := dc;
+		dc_buf[(ptr | comp)] := dc;
 	end
 
 	advance: action ==>
 	do
-		ptr := if ptr = 1 then
-			BUF_SIZE - 1
-		else
-			ptr - 1
-		end;
 		cnt := cnt + 1;
-		if (cnt = mbwidth) then
+		if (cnt = mbwidth * 4) then
 			cnt := 0;
+		end
+		comp := comp + 1;
+		if comp = 4 then
+			comp := 0;
+			ptr := if ptr = 4 then
+				BUF_SIZE - 4
+			else
+				ptr - 4
+			end;
 		end
 	end
 
@@ -307,8 +348,7 @@ SIGNED , int(size=QUANT_SZ) QUANT , int(size=QUANT_SZ) PREV_QUANT :
 	end
 
 	priority
-		start > read;
-		read.inter_ac > read.other > read.intra;
+		start > read.inter_ac > read.other > read.intra;
 	end
 
 end
