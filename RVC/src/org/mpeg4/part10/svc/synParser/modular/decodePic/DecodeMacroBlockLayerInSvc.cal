@@ -1,0 +1,207 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+
+package org.mpeg4.part10.svc.synParser.modular.decodePic;
+
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import org.mpeg4.part10.cbp.MacroBlockInfo.*;
+
+actor DecodeMacroBlockLayerInSvc()
+	int (size=32) ValVLD
+		==>
+	int (size=6)  TypeOfVLD,
+	int (size=32) VLDParam
+		:
+
+	uint(size=4) SLICE_TYPE_P  = 0;
+	uint(size=4) SLICE_TYPE_B  = 1;
+	uint(size=4) SLICE_TYPE_I  = 2;
+	uint(size=4) SLICE_TYPE_SP = 3;
+	uint(size=4) SLICE_TYPE_SI = 4;
+
+	uint(size=4) SLICE_TYPE_EI  = 2;
+
+	bool         adaptivBaseMode; // !!!!!!
+	bool         adaptResidualPred; // !!!!!!!!
+	bool         transform8x8Mode;//!!!!!!!!
+	bool         baseMode;
+	uint(size=4) bitDepthChroma;// !!!!!!!!!!!!
+	uint(size=9) chromaReadIdx;
+	uint(size=9) chromaWriteIdx;
+	bool         direct8x8Inference;//!!!!!!!!!
+	uint(size=6) mbType;
+	bool         noSubMbPtSzLssThn8x8; // true init is missing
+	uint(size=9) nbCoeffChroma;//!!!!!!!!!!!!!!
+	uint(size=4) sliceType;//!!!!!!!!!!!!!!
+
+	//Not implemented yet !!
+	function inCropWindow(uint(size=13) currMbAddress) --> bool :
+		currMbAddress != 42
+	end
+
+	askBaseMode: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		inCropWindow(42) and adaptivBaseMode
+	end
+
+	getBaseMode: action ValVLD:[baseModeFlag] ==>
+	do
+		baseMode := (baseModeFlag != 0);
+	end
+
+	askMbType: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		baseMode
+	end
+
+	getMbType: action ValVLD:[ValueOfVLD] ==>
+	do
+		mbType :=
+				if((sliceType = SLICE_TYPE_SI) or (sliceType = SLICE_TYPE_I))then
+					ValueOfVLD
+				else
+					if((sliceType = SLICE_TYPE_SP) or (sliceType = SLICE_TYPE_P))then
+						if(ValueOfVLD >= 5) then
+							if(ValueOfVLD < 31)then
+								ValueOfVLD - 5
+							else
+								0
+							end
+						else
+							ValueOfVLD + BLOCK_TYPE_P_MIN
+						end
+					else
+						if(ValueOfVLD < 23) then
+							ValueOfVLD + BLOCK_TYPE_B_MIN
+						else
+							if(ValueOfVLD < 49) then
+								ValueOfVLD - 23
+							else
+								0
+							end
+						end
+					end
+				end;
+	end
+
+	askAlignByte: action ==> TypeOfVLD:[BYTE_ALIGNED_REQUIRED]
+	guard
+		baseMode and mbType = BLOCK_TYPE_I_PCM
+	end
+
+	askPcmSampleLuma: action ==> TypeOfVLD:[[READ_BITS : for int s in 0 .. 255]] repeat 256,
+		VLDParam:[[bitDepthChroma : for int s in 0 .. 255]] repeat 256
+	end
+
+	getPcmSampleLuma: action ValVLD:[lumaPcm] repeat 256 ==>
+	do
+		chromaReadIdx  := 0;
+		chromaWriteIdx := 0;
+	end
+	
+	askPcmSampleChroma: action ==> TypeOfVLD:[READ_BITS], VLDParam:[bitDepthChroma]
+	guard
+		chromaWriteIdx < nbCoeffChroma
+	do
+		chromaWriteIdx  := chromaWriteIdx + 1;
+	end
+	
+	getPcmSampleChroma.launch: action ValVLD:[ValueOfVLD] ==>
+	guard
+		chromaReadIdx < chromaWriteIdx
+	do
+		chromaReadIdx := chromaReadIdx + 1;
+	end
+	
+	getPcmSampleChroma.done: action ==>
+	guard
+		chromaReadIdx = nbCoeffChroma
+	end
+
+	subMbPred.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+		VLDParam:[SUB_MB_PRED]
+	guard
+		not baseMode and NumMbPart(mbType) = 4
+	end
+
+	checkSubMbType: action /*SubMbType :[subMbType] repeat 4*/ ==>
+	do
+		uint(size=4) subMbType [4]; // !!!!
+
+		if(sliceType = SLICE_TYPE_B) then
+			foreach int mbPartIdx in 0 .. 3
+			do	//if(sub_mb_type != B_DIRECT_8x8
+			    // && NumSubMbPart(sub_mb_type) > 1)
+				if(subMbType[mbPartIdx] > 3)then
+					noSubMbPtSzLssThn8x8 := false;
+				else//if(sub_mb_type = B_DIRECT_8x8
+					// && !direct_8x8_inference_flag)
+					if((subMbType[mbPartIdx] = 0) and (not direct8x8Inference))then
+						noSubMbPtSzLssThn8x8 := false;
+					end
+				end
+			end
+		else
+			//if(sub_mb_type != B_DIRECT_8x8)
+			if((sliceType = SLICE_TYPE_P) or (sliceType = SLICE_TYPE_SP))then
+				foreach int mbPartIdx in 0 .. 3
+				do  //if(NumSubMbPart(sub_mb_type) > 1)
+					if(subMbType[mbPartIdx] != 0)then
+						noSubMbPtSzLssThn8x8 := false;
+					end
+				end
+			end
+		end
+	end
+
+	askTransfSize8x8: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		transform8x8Mode and mbType = BLOCK_TYPE_I_NxN
+	end
+
+	getTransfSize8x8: action ValVLD:[transfSz8x8] ==>
+	end
+
+	LaunchMbPred: action ==> TypeOfVLD:[LAUNCH_ACTOR], VLDParam:[MB_PRED_SVC]
+	end
+
+	askResidualPred: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		adaptResidualPred and sliceType != SLICE_TYPE_EI and
+		(baseMode or (not Mb_IsIntra(mbType) and inCropWindow(42)))
+	end
+
+	getResidualPred: action ValVLD:[residualPrediction] ==>
+	end
+
+	
+
+end

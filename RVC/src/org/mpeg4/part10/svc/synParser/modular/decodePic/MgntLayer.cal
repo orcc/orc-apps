@@ -44,8 +44,8 @@ actor MgntLayer()
 	int (size=32) Header2SvcVLDParam,
 	uint(size=5)  DecRefPicMarkingTypeOfVLD,
 	int (size=32) DecRefPicMarkingNbBitsToRead,
-	uint(size=5)  DecRefBasePicMarkTypeOfVLD,
-	int (size=32) DecRefBasePicMarkNbBitsToRead,
+	uint(size=5)  DecRefBsPicMarkTypeOfVLD,
+	int (size=32) DecRefBsPicMarkNbBitsToRead,
 	uint(size=5)  RefPicListTypeOfVLD,
 	int (size=32) RefPicListNbBitsToRead,
 	int (size=6)  DataTypeOfVLD,
@@ -67,7 +67,7 @@ actor MgntLayer()
 	int (size=32) Header2AvcValVLD,
 	int (size=32) Header2SvcValVLD,
 	int (size=32) DecRefPicMarkingValVLD,
-	int (size=32) DecRefBasePicMarkValVLD,
+	int (size=32) DecRefBsPicMarkValVLD,
 	int (size=32) RefPicListValVLD,
 	int (size=32) DataValVLD,
 	int (size=32) MbLayerValVLD,
@@ -110,6 +110,11 @@ actor MgntLayer()
 	findOutNextActor.isRefPicMark: action ==>
 	guard
 		callStack[stackIdx] = REF_PIC_MARKING
+	end
+
+	findOutNextActor.isRefBasePicMark: action ==>
+	guard
+		callStack[stackIdx] = REF_BASE_PIC_MARKING
 	end
 
 	findOutNextActor.isRefPicList: action ==>
@@ -368,6 +373,58 @@ actor MgntLayer()
 	end
 
 	RefPicMark.Done: action DecRefPicMarkingTypeOfVLD :[Function] ==>
+	guard
+		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	RefBasePicMark.GetVLDVal.Launch: action
+		ValVLD                 :[VLDecoding]
+			==>
+		DecRefBsPicMarkValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	RefBasePicMark.GetVLDVal.Done: action ==>
+	guard
+		nbParamToDecod = 0
+	end
+
+	RefBasePicMark.WaitVLDVal: action ==>
+	guard
+		nbParamToDecod > 0
+	end
+
+	RefBasePicMark.FunctionWithoutParam: action
+		DecRefBsPicMarkTypeOfVLD :[ValTypeOfVLD]
+			==>
+		TypeOfVLD                 :[ValTypeOfVLD]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 0,
+		ValTypeOfVLD  != SKIP_NAL
+	do
+		if(ValTypeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	RefBasePicMark.FunctionWith1Param: action
+		DecRefBsPicMarkTypeOfVLD    :[ValTypeOfVLD],
+		DecRefBsPicMarkNbBitsToRead :[Param]
+			==>
+		TypeOfVLD :[ValTypeOfVLD],
+		VLD_Param :[Param]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	RefBasePicMark.Done: action DecRefBsPicMarkTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
 	do
@@ -743,6 +800,7 @@ actor MgntLayer()
 		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Svc )--> LaunchSlcHead2Svc;
 		FindOutNextActor (findOutNextActor.isRefPicMark      )--> LaunchRefPicMark;
+		FindOutNextActor (findOutNextActor.isRefBasePicMark  )--> LaunchRefBasePicMark;
 		FindOutNextActor (findOutNextActor.isRefPicList      )--> LaunchRefPicList;
 		FindOutNextActor (findOutNextActor.isSliceData       )--> LaunchSliceData;
 		FindOutNextActor (findOutNextActor.isMbLayer         )--> LaunchMbLayer;
@@ -778,9 +836,16 @@ actor MgntLayer()
 		LaunchRefPicMark (RefPicMark.FunctionWithoutParam )--> LaunchRefPicMark;
 		LaunchRefPicMark (RefPicMark.FunctionWith1Param   )--> LaunchRefPicMark;
 		LaunchRefPicMark (RefPicMark.WaitVLDVal           )--> LaunchRefPicMarkGetVLDVal;
-		LaunchRefPicMark (RefPicMark.Done                 )--> LaunchSlcHead2Avc;
+		LaunchRefPicMark (RefPicMark.Done                 )--> FindOutNextActor;
 			LaunchRefPicMarkGetVLDVal (RefPicMark.GetVLDVal.Launch )--> LaunchRefPicMarkGetVLDVal;
 			LaunchRefPicMarkGetVLDVal (RefPicMark.GetVLDVal.Done   )--> LaunchRefPicMark;
+	
+		LaunchRefBasePicMark (RefBasePicMark.FunctionWithoutParam )--> LaunchRefBasePicMark;
+		LaunchRefBasePicMark (RefBasePicMark.FunctionWith1Param   )--> LaunchRefBasePicMark;
+		LaunchRefBasePicMark (RefBasePicMark.WaitVLDVal           )--> LaunchRefBasePicMarkGetVLDVal;
+		LaunchRefBasePicMark (RefBasePicMark.Done                 )--> FindOutNextActor;
+			LaunchRefBasePicMarkGetVLDVal (RefBasePicMark.GetVLDVal.Launch )--> LaunchRefBasePicMarkGetVLDVal;
+			LaunchRefBasePicMarkGetVLDVal (RefBasePicMark.GetVLDVal.Done   )--> LaunchRefBasePicMark;
 		
 		LaunchRefPicList (RefPicList.FunctionWithoutParam )--> LaunchRefPicList;
 		LaunchRefPicList (RefPicList.FunctionWith1Param   )--> LaunchRefPicList;
@@ -845,6 +910,8 @@ actor MgntLayer()
 
 		RefPicMark.FunctionWithoutParam  > RefPicMark.FunctionWith1Param  > RefPicMark.WaitVLDVal > RefPicMark.Done;
 		RefPicMark.GetVLDVal.Launch > RefPicMark.GetVLDVal.Done;
+		RefBasePicMark.FunctionWithoutParam  > RefBasePicMark.FunctionWith1Param  > RefBasePicMark.WaitVLDVal > RefBasePicMark.Done;
+		RefBasePicMark.GetVLDVal.Launch > RefBasePicMark.GetVLDVal.Done;
 		RefPicList.FunctionWithoutParam  > RefPicList.FunctionWith1Param  > RefPicList.WaitVLDVal > RefPicList.Done;
 		RefPicList.GetVLDVal.Launch > RefPicList.GetVLDVal.Done;
 
