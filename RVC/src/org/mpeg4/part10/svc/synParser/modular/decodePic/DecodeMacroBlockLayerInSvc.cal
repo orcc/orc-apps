@@ -49,17 +49,51 @@ actor DecodeMacroBlockLayerInSvc()
 
 	uint(size=4) SLICE_TYPE_EI  = 2;
 
+	uint(size=6) VLD_ME_TABLE[4][48][2] =
+		[
+			[[15, 0], [ 0, 1], [ 7, 2], [11, 4], [13, 8], [14, 3], [ 3, 5], [ 5,10], [10,12], [12,15],
+			 [ 1, 7], [ 2,11], [ 4,13], [ 8,14], [ 6, 6], [ 9, 9], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0],
+			 [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0],
+			 [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0],
+			 [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0]
+			],
+			[[47, 0], [31,16], [15, 1], [ 0, 2], [23, 4], [27, 8], [29,32], [30, 3], [ 7, 5], [11, 10],
+			 [13,12], [14,15], [39,47], [43, 7], [45,11], [46,13], [16,14], [ 3, 6], [ 5, 9], [10,31],
+			 [12,35], [19,37], [21,42], [26,44], [28,33], [35,34], [37,36], [42,40], [44,39], [ 1,43],
+			 [ 2,45], [ 4,46], [ 8,17], [17,18], [18,20], [20,24], [24,19], [ 6,21], [ 9,26], [22,28],
+			 [25,23], [32,27], [33,29], [34,30], [36,22], [40,25], [38,38], [41,41]
+			],
+			[[47, 0], [31,16], [15, 1], [ 0, 2], [23, 4], [27, 8], [29,32], [30, 3], [ 7, 5], [11, 10],
+			 [13,12], [14,15], [39,47], [43, 7], [45,11], [46,13], [16,14], [ 3, 6], [ 5, 9], [10,31],
+			 [12,35], [19,37], [21,42], [26,44], [28,33], [35,34], [37,36], [42,40], [44,39], [ 1,43],
+			 [ 2,45], [ 4,46], [ 8,17], [17,18], [18,20], [20,24], [24,19], [ 6,21], [ 9,26], [22,28],
+			 [25,23], [32,27], [33,29], [34,30], [36,22], [40,25], [38,38], [41,41]
+			],
+			[[15, 0], [ 0, 1], [ 7, 2], [11, 4], [13, 8], [14, 3], [ 3, 5], [ 5,10], [10,12], [12,15],
+			 [ 1, 7], [ 2,11], [ 4,13], [ 8,14], [ 6, 6], [ 9, 9], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0],
+			 [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0],
+			 [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0],
+			 [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0], [ 0, 0]
+			]
+		];
+
 	bool         adaptivBaseMode; // !!!!!!
 	bool         adaptResidualPred; // !!!!!!!!
 	bool         transform8x8Mode;//!!!!!!!!
 	bool         baseMode;
 	uint(size=4) bitDepthChroma;// !!!!!!!!!!!!
+	uint(size=2) chromaArrayType; //!!!!!!!!!!
 	uint(size=9) chromaReadIdx;
 	uint(size=9) chromaWriteIdx;
+	uint(size=6) codedBlkPattern;// init is missing
+	uint(size=6) codedBlkPatternLuma;// init is missing
+	uint(size=6) codedBlkPatternChrom;// init is missing
 	bool         direct8x8Inference;//!!!!!!!!!
 	uint(size=6) mbType;
 	bool         noSubMbPtSzLssThn8x8; // true init is missing
 	uint(size=9) nbCoeffChroma;//!!!!!!!!!!!!!!
+	uint(size=4) scanIdxEnd; // !!!!!!!
+	uint(size=4) scanIdxStart; // !!!!!!!
 	uint(size=4) sliceType;//!!!!!!!!!!!!!!
 
 	//Not implemented yet !!
@@ -202,6 +236,53 @@ actor DecodeMacroBlockLayerInSvc()
 	getResidualPred: action ValVLD:[residualPrediction] ==>
 	end
 
+
+	askCodedBlkPattern: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		(scanIdxEnd >= scanIdxStart) and
+		(baseMode or not(Is_Intra_16x16(mbType)))
+	end
+
+	getCodeBlkPattern: action
+			ValVLD :[CodeNum]
+				==>
+		do
+			codedBlkPattern :=
+				if( mbType = BLOCK_TYPE_I_NxN)then
+					VLD_ME_TABLE[chromaArrayType][CodeNum][0]
+				else
+					VLD_ME_TABLE[chromaArrayType][CodeNum][1]
+				end;
+			codedBlkPatternLuma   := codedBlkPattern mod 16;
+			codedBlkPatternChrom  := codedBlkPattern  /  16;
+		end
+
+	askTransfSize8x8Flag: action
+				==>
+			//        transform_size_8x8_flag
+			TypeOfVLD :[ READ_BITS ],
+			VLDParam  :[     1     ]
+		guard
+			(codedBlkPatternLuma > 0) and transform8x8Mode,
+			baseMode or (mbType != BLOCK_TYPE_I_NxN and noSubMbPtSzLssThn8x8
+			  and (mbType != BLOCK_TYPE_B_DIRECT_16x16 or direct8x8Inference))
+		end
+
+	getTransfSize8x8Flage: action ValVLD:[transfSize8x8] ==>
+	end
+
+	askMbQpDelta: action ==> TypeOfVLD:[VLD_SE]
+	guard
+		scanIdxEnd >= scanIdxStart,
+	   (codedBlkPatternLuma   > 0) or (codedBlkPatternChrom > 0)
+		or not baseMode and Is_Intra_16x16(mbType)
+	end
+
+	getMbQpDelta: action ValVLD:[mbQpDelta] ==>
+	end
+
+	LaunchResidual: action ==> TypeOfVLD:[LAUNCH_ACTOR], VLDParam:[RESIDUAL]
+	end
 	
 
 end
