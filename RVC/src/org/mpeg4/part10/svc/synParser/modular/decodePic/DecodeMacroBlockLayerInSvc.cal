@@ -33,9 +33,11 @@ package org.mpeg4.part10.svc.synParser.modular.decodePic;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
+import std.util.BitOps.*;
 
 actor DecodeMacroBlockLayerInSvc()
-	int (size=32) ValVLD
+	int (size=32) ValVLD,
+	int (size=8)  Parameters
 		==>
 	int (size=6)  TypeOfVLD,
 	int (size=32) VLDParam
@@ -77,28 +79,45 @@ actor DecodeMacroBlockLayerInSvc()
 			]
 		];
 
-	bool         adaptivBaseMode; // !!!!!!
-	bool         adaptResidualPred; // !!!!!!!!
-	bool         transform8x8Mode;//!!!!!!!!
+
+	uint(size=4) tabCodedBlockPatternChroma[8] = [  0,  1,  2,  0,  1,  2,  0,  0];
+	uint(size=4) tabCodedBlockPatternLuma[8]   = [  0,  0,  0, 15, 15, 15,  0,  0];
+
+	bool         adaptivBaseMode;
+	bool         adaptResidualPred;
+	bool         transform8x8Mode;
 	bool         baseMode;
-	uint(size=4) bitDepthChroma;// !!!!!!!!!!!!
-	uint(size=2) chromaArrayType; //!!!!!!!!!!
+	uint(size=4) bitDepthChroma;
+	uint(size=2) chromaArrayType;
 	uint(size=9) chromaReadIdx;
 	uint(size=9) chromaWriteIdx;
-	uint(size=6) codedBlkPattern;// init is missing
-	uint(size=6) codedBlkPatternLuma;// init is missing
-	uint(size=6) codedBlkPatternChrom;// init is missing
-	bool         direct8x8Inference;//!!!!!!!!!
+	uint(size=6) codedBlkPatternLuma;
+	uint(size=6) codedBlkPatternChrom;
+	bool         direct8x8Inference;
 	uint(size=6) mbType;
 	bool         noSubMbPtSzLssThn8x8; // true init is missing
-	uint(size=9) nbCoeffChroma;//!!!!!!!!!!!!!!
-	uint(size=4) scanIdxEnd; // !!!!!!!
-	uint(size=4) scanIdxStart; // !!!!!!!
-	uint(size=4) sliceType;//!!!!!!!!!!!!!!
+	uint(size=9) nbCoeffChroma;
+	uint(size=4) scanIdxEnd;
+	uint(size=4) scanIdxStart;
+	uint(size=4) sliceType;
 
 	//Not implemented yet !!
 	function inCropWindow(uint(size=13) currMbAddress) --> bool :
 		currMbAddress != 42
+	end
+
+	getParamValues: action Parameters:[paramVal] repeat 8 ==>
+	do
+		adaptivBaseMode    := getFlag(paramVal[0], 0);
+		adaptResidualPred  := getFlag(paramVal[0], 1);
+		transform8x8Mode   := getFlag(paramVal[0], 2);
+		direct8x8Inference := getFlag(paramVal[0], 3);
+		bitDepthChroma     := paramVal[1];
+		chromaArrayType    := paramVal[2];
+		nbCoeffChroma      := paramVal[3] * paramVal[4];
+		scanIdxStart       := paramVal[5];
+		scanIdxEnd         := paramVal[6];
+		sliceType          := paramVal[7];
 	end
 
 	askBaseMode: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
@@ -118,6 +137,8 @@ actor DecodeMacroBlockLayerInSvc()
 
 	getMbType: action ValVLD:[ValueOfVLD] ==>
 	do
+		uint tabIdx;
+
 		mbType :=
 				if((sliceType = SLICE_TYPE_SI) or (sliceType = SLICE_TYPE_I))then
 					ValueOfVLD
@@ -144,6 +165,10 @@ actor DecodeMacroBlockLayerInSvc()
 						end
 					end
 				end;
+
+		tabIdx := (mbType - BLOCK_TYPE_INTRA_16x16_MIN)/4;
+		codedBlkPatternLuma   := tabCodedBlockPatternLuma[tabIdx & 7];
+		codedBlkPatternChrom := tabCodedBlockPatternChroma[tabIdx & 7];
 	end
 
 	askAlignByte: action ==> TypeOfVLD:[BYTE_ALIGNED_REQUIRED]
@@ -245,6 +270,8 @@ actor DecodeMacroBlockLayerInSvc()
 
 	getCodeBlkPattern: action ValVLD :[CodeNum] ==>
 	do
+		uint(size=6) codedBlkPattern;
+
 		codedBlkPattern :=
 			if( mbType = BLOCK_TYPE_I_NxN)then
 				VLD_ME_TABLE[chromaArrayType][CodeNum][0]
