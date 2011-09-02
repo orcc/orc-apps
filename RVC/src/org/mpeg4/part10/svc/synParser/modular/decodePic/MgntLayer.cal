@@ -33,7 +33,7 @@ package org.mpeg4.part10.svc.synParser.modular.decodePic;
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 
 actor MgntLayer()
-	bool          IsSvcSlice,
+	uint(size=5)  NalUnitType,
 	int (size=32) ValVLD,
 
 	int (size=6)  Header1TypeOfVLD,
@@ -82,10 +82,13 @@ actor MgntLayer()
 	int (size=32) ResBlkCavlcValVLD
 		:
 
+	uint(size=5) NAL_PREFIX_NAL    = 14;
+	uint(size=5) NAL_SVC_SLICE     = 20;
+
 	bool          isSvc;
 	uint(size=8)  callStack[16];
 	uint(size=32) nbParamToDecod := 0;
-	uint(size=3)  stackIdx;
+	int (size=4)  stackIdx;
 
 	initialize ==>
 	do
@@ -93,9 +96,21 @@ actor MgntLayer()
 		callStack[0] := SLICE_HEADER1;
 	end
 
-	getNewSlice: action IsSvcSlice:[isSvcSlice] ==>
+	getNewSlice: action NalUnitType:[nalUnitType] ==>
 	do
-		isSvc :=isSvcSlice;
+		isSvc        := (nalUnitType = NAL_SVC_SLICE);
+		stackIdx     := 0;
+		callStack[0] :=
+			if(nalUnitType = NAL_PREFIX_NAL)then
+				PREFIX_NAL_UNIT
+			else
+				SLICE_HEADER1
+			end;
+	end
+
+	stackIsEmpty: action ==>
+	guard
+		stackIdx < 0
 	end
 
 	findOutNextActor.isSliceHeader1: action ==>
@@ -223,6 +238,8 @@ actor MgntLayer()
 	SliceHeader1.Done: action Header1TypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
+	do
+		stackIdx := stackIdx - 1;
 	end
 
 	SlcHead2Avc.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
@@ -917,8 +934,9 @@ actor MgntLayer()
 	end
 
 	schedule fsm GetNewSlice:
-		GetNewSlice (getNewSlice )--> LaunchSlcHead;
+		GetNewSlice (getNewSlice )--> FindOutNextActor;
 
+		FindOutNextActor (stackIsEmpty                       )--> GetNewSlice;
 		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Svc )--> LaunchSlcHead2Svc;
@@ -938,7 +956,7 @@ actor MgntLayer()
 		LaunchSlcHead (SliceHeader1.FunctionWith1Param   )--> LaunchSlcHead;
 		LaunchSlcHead (SliceHeader1.WaitVLDVal           )--> LaunchSliceHeaderGetVLDVal;
 		LaunchSlcHead (SliceHeader1.LaunchActor          )--> FindOutNextActor;
-		LaunchSlcHead (SliceHeader1.Done                 )--> GetNewSlice;
+		LaunchSlcHead (SliceHeader1.Done                 )--> FindOutNextActor;
 			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Launch )--> LaunchSliceHeaderGetVLDVal;
 			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Done   )--> LaunchSlcHead;
 
@@ -1037,6 +1055,8 @@ actor MgntLayer()
 			LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Done        )--> LaunchResBlkCavlc;
 	end
 	priority
+		stackIsEmpty > findOutNextActor;
+
 		SliceHeader1.FunctionWithoutParam > SliceHeader1.FunctionWith1Param > SliceHeader1.WaitVLDVal > SliceHeader1.LaunchActor;
 		SliceHeader1.LaunchActor      > SliceHeader1.Done;
 		SliceHeader1.GetVLDVal.Launch > SliceHeader1.GetVLDVal.Done;
