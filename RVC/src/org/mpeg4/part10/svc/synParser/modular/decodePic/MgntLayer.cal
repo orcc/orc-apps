@@ -63,7 +63,10 @@ actor MgntLayer()
 	int (size=6)  ResTypeOfVLD,
 	int (size=32) ResActorLaunched,
 	uint(size=5)  ResBlkCavlcTypeOfVLD,
-	int (size=32) ResBlkCavlcVLD_Param
+	int (size=32) ResBlkCavlcVLD_Param,
+	int (size=6)  PrefixTypeOfVLD,
+	int (size=32) PrefixVLD_Param,
+	uint(size=2)  NalRefIdc
 		==>
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VLD_Param,
@@ -79,7 +82,10 @@ actor MgntLayer()
 	int (size=32) MbLayerSvcValVLD,
 	int (size=32) MbPredValVLD,
 	int (size=32) SubMbPredValVLD,
-	int (size=32) ResBlkCavlcValVLD
+	int (size=32) ResBlkCavlcValVLD,
+	int (size=32) PrefixValVLD,
+	uint(size=2)  NalRefIdcHead,
+	uint(size=2)  NalRefIdcPrefix
 		:
 
 	uint(size=5) NAL_PREFIX_NAL    = 14;
@@ -96,19 +102,26 @@ actor MgntLayer()
 		callStack[0] := SLICE_HEADER1;
 	end
 
-	getNewSlice: action NalUnitType:[nalUnitType] ==>
+	getNewSlice.isAvcSlice: action NalUnitType:[nalUnitType],
+		NalRefIdc:[nalRefIdc] ==> NalRefIdcHead:[nalRefIdc]
+	guard
+		nalUnitType != NAL_PREFIX_NAL
 	do
 		isSvc        := (nalUnitType = NAL_SVC_SLICE);
 		stackIdx     := 0;
-		callStack[0] :=
-			if(nalUnitType = NAL_PREFIX_NAL)then
-				PREFIX_NAL_UNIT
-			else
-				SLICE_HEADER1
-			end;
+		callStack[0] := SLICE_HEADER1;
 	end
 
-	stackIsEmpty: action ==>
+	getNewSlice.isPrefixNal: action NalUnitType:[nalUnitType],
+		NalRefIdc:[nalRefIdc] ==> NalRefIdcPrefix:[nalRefIdc]
+	guard
+		nalUnitType = NAL_PREFIX_NAL
+	do
+		stackIdx     := 0;
+		callStack[0] := PREFIX_NAL_UNIT;
+	end
+
+	stackIsEmpty: action ==> TypeOfVLD:[SKIP_NAL]
 	guard
 		stackIdx < 0
 	end
@@ -562,7 +575,7 @@ actor MgntLayer()
 		callStack[stackIdx] := Actor;
 	end
 
-	SliceDataAvc.Done: action DataAvcTypeOfVLD:[Function] ==> TypeOfVLD:[SKIP_NAL]
+	SliceDataAvc.Done: action DataAvcTypeOfVLD:[Function] ==>
 	guard
 		Function = SKIP_NAL
 	do
@@ -788,6 +801,43 @@ actor MgntLayer()
 	end
 
 	MbPred.Done: action MbPredTypeOfVLD :[Function] ==>
+	guard
+		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	Prefix.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
+		PrefixValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	Prefix.GetVLDVal.Done: action ==>
+	guard
+		nbParamToDecod = 0
+	end
+
+	Prefix.WaitVLDVal: action ==>
+	guard
+		nbParamToDecod > 0
+	end
+
+	Prefix.FunctionWith1Param: action
+		PrefixTypeOfVLD    :[ValTypeOfVLD],
+		PrefixVLD_Param :[VldParam]
+			==>
+		TypeOfVLD          :[ValTypeOfVLD],
+		VLD_Param          :[VldParam]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	Prefix.Done: action PrefixTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
 	do

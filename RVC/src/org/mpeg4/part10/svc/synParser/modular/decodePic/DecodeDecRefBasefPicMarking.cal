@@ -34,49 +34,39 @@ import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import std.util.BitOps.*;
 
 actor DecodeDecRefBasefPicMarking()
-	uint(size=4)  HeadSvcExt,
-	bool          IsSvc,
-	uint(size=2)  NalRefIdc,
-	uint(size=2)  SpsExtParam,
+	uint(size=5)  NalUnitType,
+	bool          SkipFromPrefix,
 	int (size=32) ValVLD
 		==>
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VLDParam
 		:
 
+	uint(size=5) NAL_PREFIX_NAL    = 14;
+//	uint(size=5) NAL_SVC_SLICE     = 20;
+
 	bool          adaptRefBasePicMode;
 	uint(size=31) memMgntCtrlOp;
-	uint(size=2)  nalRefIdc;
-	bool          slcHeaderRestr;
-	bool          storeRefBasePic;
-	bool          useRefBasePic;
 
-	nalIsAvc: action IsSvc:[isSvc], NalRefIdc:[nalRefIdc] ==>
+	getNalUnitType.isSlice: action NalUnitType:[nalUnitType] ==>
 	guard
-		not isSvc
+		nalUnitType != NAL_PREFIX_NAL
 	end
 
-	nalIsSvc: action HeadSvcExt:[headSvcExt] repeat 2, IsSvc:[isSvc],
-		NalRefIdc:[valNalRefIdc], SpsExtParam:[spsExtParam] repeat 2 ==>
+	getNalUnitType.isPrefix: action NalUnitType:[nalUnitType] ==>
 	guard
-		isSvc
-	do
-		nalRefIdc      := valNalRefIdc;
-		slcHeaderRestr := getFlag(spsExtParam[1],2);
-		useRefBasePic  := getFlag(headSvcExt[1],1);
+		nalUnitType = NAL_PREFIX_NAL
 	end
 
-	askStorRefBasePic: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
-	end
-
-	getStorRefBasePic: action ValVLD:[storeRefBasePicFlag] ==>
-	do
-		storeRefBasePic := (storeRefBasePicFlag != 0);
-	end
-
-	askAdaptRefBasePic: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	checkSkipFromPrefix.isTrue: action SkipFromPrefix:[skip] ==>
 	guard
-		useRefBasePic or storeRefBasePic
+		skip
+	end
+
+	checkSkipFromPrefix.isFalse: action SkipFromPrefix:[skip] ==>
+		TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		not skip
 	end
 
 	getAdaptRefBasePic: action ValVLD:[adptRefBasPicMod] ==>
@@ -118,32 +108,27 @@ actor DecodeDecRefBasefPicMarking()
 	endDecrefBasePicMarking: action ==> TypeOfVLD:[SKIP_NAL]
 	end
 
-	schedule fsm GetParameters:
-		GetParameters       (nalIsAvc                )--> GetParameters;
-		GetParameters       (nalIsSvc                )--> CheckSliceHeadRestr;
-		CheckSliceHeadRestr (askStorRefBasePic       )--> GetStorRefBasePic;
-		CheckSliceHeadRestr (endDecrefBasePicMarking )--> GetParameters;
+	schedule fsm GetNalUnitType:
+		GetNalUnitType (getNalUnitType.isSlice  )--> GetNalUnitType;
+		GetNalUnitType (getNalUnitType.isPrefix )--> CheckSkipPrefix;
 
-		GetStorRefBasePic   (getStorRefBasePic       )--> CheckStorRefBasePic;
-		CheckStorRefBasePic (askAdaptRefBasePic      )--> GetAdaptRefBasePic;
-		CheckStorRefBasePic (endDecrefBasePicMarking )--> GetParameters;
+		CheckSkipPrefix (checkSkipFromPrefix.isTrue  )--> GetNalUnitType;
+		CheckSkipPrefix (checkSkipFromPrefix.isFalse )--> GetAdaptRefBasePic;
 
 		GetAdaptRefBasePic (getAdaptRefBasePic      )--> CheckAdaptRefBasePic;
 		CheckAdaptRefPic   (checkAdaptRefBasePic    )--> GetMmco;
-		CheckAdaptRefPic   (endDecrefBasePicMarking )--> GetParameters;
+		CheckAdaptRefPic   (endDecrefBasePicMarking )--> GetNalUnitType;
 
 		GetMmco   (getMmco                 )--> CheckMmco;
 		CheckMmco (askDiffPicNumMinus1     )--> GetDiffPicNumMinus1;
 		CheckMmco (askLongTermPicNum       )--> GetLongTermPicNum;
 		CheckMmco (askMmco                 )--> GetMmco;
-		CheckMmco (endDecrefBasePicMarking )--> GetParameters;
+		CheckMmco (endDecrefBasePicMarking )--> GetNalUnitType;
 
 		GetDiffPicNumMinus1 (getDiffPicNumMinus1 )--> GetMmco;
 		GetLongTermPicNum   (getLongTermPicNum   )--> GetMmco;
 	end
 	priority
-		askStorRefBasePic    > endDecrefBasePicMarking;
-		askAdaptRefBasePic   > endDecrefBasePicMarking;
 		checkAdaptRefBasePic > endDecrefBasePicMarking;
 		askDiffPicNumMinus1  > askLongTermPicNum > askMmco;
 		askMmco              > endDecrefBasePicMarking;
