@@ -20,8 +20,8 @@ import std.util.BitOps.*;
 
 actor Algo_DecodeSps()
 	int (size=32) ValVLD,
-	uint(size=5)  NumSpsAsked,
-	uint(size=2)  SenderOfRequest
+	uint(size=5)  NalUnitType,
+	uint(size=5)  NumSpsAsked
 		==>
 	uint(size=5)  TypeOfVLD,
 	int (size=32) NbBitsToRead,
@@ -43,10 +43,10 @@ actor Algo_DecodeSps()
 * Constants
 *
 */
-
-	uint(size=2) GET_SPS_FROM_PIC = 0;
-	uint(size=2) GET_SPS_FROM_PPS = 1;
-	uint(size=2) GET_SPS_FROM_SVC = 2;
+	uint(size=5) NAL_SLICE_NON_IDR = 1;
+	uint(size=5) NAL_SLICE_IDR     = 5;
+	uint(size=5) NAL_SPS           = 7;
+	uint(size=5) NAL_PPS           = 8;
 
 	List(type: uint, size=64) MaxFS_LookUpTable = [   99,    99,    99,    99,    99,    99,    99,    99,    99,    99,
 	                                                  99,   396,   396,   396,   396,   396,   396,   396,   396,   396,
@@ -124,6 +124,7 @@ actor Algo_DecodeSps()
 	uint(size=5)  last_sps_id := 0;
 	int (size=32) LoopVal     := 0;
 	int (size=32) PrevOffForRefFramAccum;
+	int (size=6) nalUnitType := -1;
 
 
 /*
@@ -139,19 +140,23 @@ actor Algo_DecodeSps()
 			NbBitsToRead :[     8     ,     4     ,     4     ,     8     ]
 		end
 
-
-	SpsParam.AskedFromSvc: action
-			SenderOfRequest :[Sender]
-				==>
-			SpsParameters  :[3 , profile_idc[last_sps_id] , Chroma_Array_Type[last_sps_id], last_sps_id]
-		guard
-			Sender = GET_SPS_FROM_SVC
+	getNalUnitType: action NalUnitType:[nalUnit] ==>
+	guard
+		nalUnitType = -1
+	do
+		if(nalUnit = NAL_PPS or nalUnit = NAL_SLICE_IDR or nalUnit = NAL_SLICE_NON_IDR or nalUnit = NAL_SPS)then
+			nalUnitType := nalUnit;
 		end
+	end
 
-	SpsParam.AskedFromPic: action
-			SenderOfRequest :[Sender],
-			NumSpsAsked     :[ValSps]
-				==>
+	SpsParam.AskedFromSvc: action ==> SpsParameters  :[3 , profile_idc[last_sps_id] , Chroma_Array_Type[last_sps_id], last_sps_id]
+	guard
+		nalUnitType = 42
+	do
+		nalUnitType := -1;	
+	end
+
+	SpsParam.AskedFromPic: action NumSpsAsked     :[ValSps] ==>
 			SpsParameters         :[parameters_to_send]repeat 11,
 			SzDPB                 :[MaxDPBSz[ValSps]],
 			Direct8x8Inference    :[ValDirect8x8Inference],
@@ -159,7 +164,7 @@ actor Algo_DecodeSps()
 			MMCO_MaxFrameNum      :[max_frame_num[ValSps]],
 			MMCO_NumRefFrame      :[num_ref_frames[ValSps]]
 		guard
-			Sender = GET_SPS_FROM_PIC
+			nalUnitType = NAL_SLICE_NON_IDR or nalUnitType = NAL_SLICE_IDR
 		var
 			bool ValDirect8x8Inference,
 			bool val_frame_mbs_only,
@@ -167,6 +172,7 @@ actor Algo_DecodeSps()
 			bool ValMbAdaptFrameField,
 			List(type: int(size=32), size=12) parameters_to_send
 		do
+			nalUnitType := -1;	
 			val_frame_mbs_only    := (frame_mbs_only_flag[ValSps]              != 0);
 			ValDeltaPic           := (delta_pic_order_always_zero_flag[ValSps] != 0);
 			ValMbAdaptFrameField  := (mb_adaptive_frame_field_flag[ValSps]     != 0);
@@ -225,20 +231,22 @@ actor Algo_DecodeSps()
 			SliceDataParam[9] := MbHeightC[spsId];
 		end
 
-	SpsParam.AskedFromPps: action
-			SenderOfRequest :[Sender],
-			NumSpsAsked     :[ValSps]
-				==>
+	SpsParam.AskedFromPps: action NumSpsAsked:[ValSps] ==>
 			SpsParameters :[2 , pic_width_in_mbs_minus1[ValSps] + 1 , pic_height_in_map_units_minus1[ValSps] + 1]
 		guard
-			Sender = GET_SPS_FROM_PPS
+			nalUnitType = NAL_PPS
+		do
+			nalUnitType := -1;	
 		end
 
 	ReadSpsId.Done: action
 			ValVLD :[ValueOfVLD] repeat 5
 				==>
 			DecodeNextNal :[true]
+		guard
+			nalUnitType = NAL_SPS
 		do
+			nalUnitType := -1;	
 			if(DEBUG_FLAG_DECODED)then
 				println(" ***********SPS**************");
 				println("\t\tprofile_idc : "+ValueOfVLD[0]);
@@ -622,6 +630,7 @@ actor Algo_DecodeSps()
 	schedule fsm AskReadSpsId:
 		AskReadSpsId                 (ReadSpsId.Asked                )--> ReadSpsIdDone;
 
+		ReadSpsIdDone                (getNalUnitType                  )--> ReadSpsIdDone;
 		ReadSpsIdDone                (SpsParam.AskedFromPic          )--> SendOff4RefFrameAcc;
 		ReadSpsIdDone                (SpsParam.AskedFromPps          )--> ReadSpsIdDone;
 		ReadSpsIdDone                (SpsParam.AskedFromSvc          )--> ReadSpsIdDone;
