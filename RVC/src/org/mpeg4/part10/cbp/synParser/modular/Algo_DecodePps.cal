@@ -21,7 +21,7 @@ import std.util.BitOps.*;
 actor Algo_DecodePps(bool IsCBP)
 	int (size=32) ValVLD,
 	uint(size=8)  PpsAsked,
-
+	uint(size=5) NalUnitType,
 	uint(size=32) Parameters
 		==>
 	uint(size=5)  TypeOfVLD,
@@ -35,6 +35,10 @@ actor Algo_DecodePps(bool IsCBP)
 		:
 
 	bool DEBUG_FLAG_DECODED = false;
+
+	uint(size=5) NAL_SLICE_NON_IDR = 1;
+	uint(size=5) NAL_SLICE_IDR     = 5;
+	uint(size=5) NAL_PPS           = 8;
 
 	List (type:List (type:uint,size=7),size=255) run_length_minus1 := [[ 0 : for int i in 1 .. 7] :for int j in 0 .. 254];
 	List (type:List (type:uint,size=7),size=255) top_left          := [[ 0 : for int i in 1 .. 7] : for int j in 0 .. 254];
@@ -63,6 +67,7 @@ actor Algo_DecodePps(bool IsCBP)
 	uint(size=8)  pps_id;
 	int (size=32) LoopVal;
 	uint(size=32) ValPicWidthInMbs;
+	int (size=6) nalUnitType := -1;
 
 	ReadPpsId.Asked: action
 				==>
@@ -70,6 +75,15 @@ actor Algo_DecodePps(bool IsCBP)
 			TypeOfVLD    :[ VLD_UE , VLD_UE , READ_BITS , READ_BITS , VLD_UE ],
 			NbBitsToRead :[                       1     ,     1              ]
 		end
+
+	getNalUnitType: action NalUnitType:[nalUnit] ==>
+	guard
+		nalUnitType = -1
+	do
+		if(nalUnit = NAL_PPS or nalUnit = NAL_SLICE_IDR or nalUnit = NAL_SLICE_NON_IDR)then
+			nalUnitType := nalUnit;
+		end
+	end
 
 	PpsParamAsked.Frext: action
 		PpsAsked   :[ValPps]
@@ -80,7 +94,7 @@ actor Algo_DecodePps(bool IsCBP)
 		SliceDataParameters   :[DataParam]       repeat 3,
 		NumRefIdxLXActive     :[ValNumRefIdxAct] repeat 2
 	guard
-		not IsCBP
+		nalUnitType = NAL_SLICE_NON_IDR or nalUnitType = NAL_SLICE_IDR
 	var
 		bool ValPicOrderPresent,
 		bool ValRedPicCntPres,
@@ -90,6 +104,7 @@ actor Algo_DecodePps(bool IsCBP)
 		List(type: int(size=32), size=5) HeaderParam,
 		List(type: int(size=32), size=3) DataParam
 	do
+		nalUnitType := -1;
 		ValPicOrderPresent :=
 			if(pic_order_present_flag[ValPps] = 0)then
 				false
@@ -130,7 +145,10 @@ actor Algo_DecodePps(bool IsCBP)
 
 
 	ReadPpsId.Done: action ValVLD :[ValueOfVLD] repeat 5 ==> GetSps :[ValueOfVLD[1]]
+	guard
+		nalUnitType = NAL_PPS
 	do
+		nalUnitType := -1;
 		pps_id                            := ValueOfVLD[0];
 		sequence_parameter_set_id[pps_id] := ValueOfVLD[1];
 		entropy_coding_mode_flag[pps_id]  := ValueOfVLD[2];
@@ -331,6 +349,7 @@ actor Algo_DecodePps(bool IsCBP)
 	schedule fsm AskReadPpsId:
 		AskReadPpsId              (ReadPpsId.Asked                          )--> ReadPpsIdDoneOrPpsAsked;
 
+		ReadPpsIdDoneOrPpsAsked   (getNalUnitType                            )--> ReadPpsIdDoneOrPpsAsked;
 		ReadPpsIdDoneOrPpsAsked   (PpsParamAsked                            )--> ReadPpsIdDoneOrPpsAsked;
 		ReadPpsIdDoneOrPpsAsked   (ReadPpsId.Done                           )--> CheckNumSliceGroup;
 
