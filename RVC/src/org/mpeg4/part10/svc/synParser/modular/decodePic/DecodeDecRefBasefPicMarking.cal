@@ -35,6 +35,7 @@ import std.util.BitOps.*;
 
 actor DecodeDecRefBasefPicMarking()
 	uint(size=5)  NalUnitType,
+	bool          SkipFromHeader,
 	bool          SkipFromPrefix,
 	int (size=32) ValVLD
 		==>
@@ -47,14 +48,19 @@ actor DecodeDecRefBasefPicMarking()
 	bool isPrefix;
 
 	uint(size=5) NAL_PREFIX_NAL    = 14;
-//	uint(size=5) NAL_SVC_SLICE     = 20;
+	uint(size=5) NAL_SVC_SLICE     = 20;
 
 	bool          adaptRefBasePicMode;
 	uint(size=31) memMgntCtrlOp;
 
-	getNalUnitType.isSlice: action NalUnitType:[nalUnitType] ==>
+	getNalUnitType.isAvcSlice: action NalUnitType:[nalUnitType] ==>
 	guard
-		nalUnitType != NAL_PREFIX_NAL
+		nalUnitType != NAL_PREFIX_NAL and nalUnitType != NAL_SVC_SLICE
+	end
+
+	getNalUnitType.isSvcSlice: action NalUnitType:[nalUnitType] ==>
+	guard
+		nalUnitType = NAL_SVC_SLICE
 	do
 		isPrefix := false;
 	end
@@ -72,6 +78,17 @@ actor DecodeDecRefBasefPicMarking()
 	end
 
 	checkSkipFromPrefix.isFalse: action SkipFromPrefix:[skip] ==>
+		TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		not skip
+	end
+
+	checkSkipFromHeader.isTrue: action SkipFromHeader:[skip]==>
+	guard
+		skip
+	end
+
+	checkSkipFromHeader.isFalse: action SkipFromHeader:[skip] ==>
 		TypeOfVLD:[READ_BITS], VLDParam:[1]
 	guard
 		not skip
@@ -132,11 +149,15 @@ actor DecodeDecRefBasefPicMarking()
 	end
 
 	schedule fsm GetNalUnitType:
-		GetNalUnitType (getNalUnitType.isSlice  )--> GetNalUnitType;
-		GetNalUnitType (getNalUnitType.isPrefix )--> CheckSkipPrefix;
+		GetNalUnitType (getNalUnitType.isAvcSlice )--> GetNalUnitType;
+		GetNalUnitType (getNalUnitType.isSvcSlice )--> CheckSkipHeader;
+		GetNalUnitType (getNalUnitType.isPrefix   )--> CheckSkipPrefix;
 
 		CheckSkipPrefix (checkSkipFromPrefix.isTrue  )--> GetNalUnitType;
 		CheckSkipPrefix (checkSkipFromPrefix.isFalse )--> GetAdaptRefBasePic;
+
+		CheckSkipHeader (checkSkipFromHeader.isTrue  )--> GetNalUnitType;
+		CheckSkipHeader (checkSkipFromHeader.isFalse )--> GetAdaptRefBasePic;
 
 		GetAdaptRefBasePic   (getAdaptRefBasePic      )--> CheckAdaptRefBasePic;
 		CheckAdaptRefBasePic (checkAdaptRefBasePic    )--> GetMmco;

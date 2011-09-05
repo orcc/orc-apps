@@ -36,11 +36,13 @@ import std.util.BitOps.*;
 actor DecodeSliceHeaderPart2()
 	uint(size=32) Header1Param,
 	uint(size=4)  HeadSvcExt,
+	uint(size=2)  NalRefIdc,
 	int (size=32) PpsParameters,
 	uint(size=2)  SpsExtParam,
 	uint(size=32) SpsParameters,
 	int (size=32) ValVLD
 		==>
+	bool          SkipRefBase,
 	int (size=6)  TypeOfVLD,
 	int (size=32) VLDParam
 		:
@@ -60,7 +62,9 @@ actor DecodeSliceHeaderPart2()
 	uint(size=3)  disIntLayDbfIdc;
 	bool          entropyCodingMode;
 	uint(size=2)  extSpatScal;
+	bool          idr;
 	bool          intLayDbfCtrlPres;
+	uint(size=2)  nalRefIdc;
 	bool          noInterLayPred;
 	uint(size=4)  numSliceGrp;
 	uint(size=4)  qualityId;
@@ -68,16 +72,21 @@ actor DecodeSliceHeaderPart2()
 	uint(size=3)  slcGrpMapType;
 	bool          sliceSkip;
 	uint(size=4)  sliceType;
+	bool          storeRefBasePic;
 	uint(size=32) szSlcGrpChgCycle;
+	bool          useRefBasePic;
 
 	getParameters: action Header1Param:[header1Param] repeat 3,
 		HeadSvcExt:[headSvcExt] repeat 2, PpsParameters:[ppsParam] repeat 5,
-		SpsParameters:[spsParam] repeat 9, SpsExtParam:[spsExtParam] repeat 2
+		SpsParameters:[spsParam] repeat 9, SpsExtParam:[spsExtParam] repeat 2,
+		NalRefIdc:[nalRef]
 		==>
 	do
 		sliceType := header1Param[0];
 		qualityId := headSvcExt[0];
 		noInterLayPred := getFlag(headSvcExt[1],0);
+		useRefBasePic  := getFlag(headSvcExt[1],1);
+		idr            := getFlag(headSvcExt[1],2);
 		numSliceGrp         := ppsParam[0];
 		szSlcGrpChgCycle    := ppsParam[2];
 		slcGrpMapType       := ppsParam[3];
@@ -88,6 +97,7 @@ actor DecodeSliceHeaderPart2()
 		intLayDbfCtrlPres   := getFlag(spsExtParam[1],0);
 		adaptTcoeffLvlPred  := getFlag(spsExtParam[1],1);
 		slcHeadRestr        := getFlag(spsExtParam[1],2);
+		nalRefIdc           := nalRef;
 	end
 
 	refPicList.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
@@ -96,8 +106,30 @@ actor DecodeSliceHeaderPart2()
 		qualityId = 0
 	end
 
-	decRefPicMarking.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR, LAUNCH_ACTOR],
-		VLDParam:[REF_PIC_MARKING, REF_BASE_PIC_MARKING]
+	decRefPicMarking.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+		VLDParam:[REF_PIC_MARKING]
+	end
+
+	askStoreRefBasePic: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		nalRefIdc != 0 and not slcHeadRestr
+	end
+
+	getStoreRefBasePic: action ValVLD:[storeRefBsPic] ==>
+	do
+		if(DEBUG) then
+			println("\t\tstore_ref_base_pic_flag : "+storeRefBsPic);
+		end
+		storeRefBasePic := (storeRefBsPic != 0);
+	end
+
+	decRefBasePicMarking.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+		VLDParam:[REF_BASE_PIC_MARKING], SkipRefBase:[false]
+	guard
+		(useRefBasePic or storeRefBasePic) and not idr
+	end
+
+	decRefBasePicMarking.skip: action ==> SkipRefBase:[true]
 	end
 
 	askCabacInitIdc: action ==> TypeOfVLD:[VLD_UE]
@@ -371,7 +403,13 @@ actor DecodeSliceHeaderPart2()
 		                                  //should be LaunchPredWeightTable;
 		LaunchRefPicList       (refPicList       )--> LaunchDecRefPicMarking;
 		//LaunchPredWeightTable  (predWeightTable  )--> LaunchDecRefPicMarking;
-		LaunchDecRefPicMarking (decRefPicMarking )--> CheckEntropCodMode;
+		LaunchDecRefPicMarking (decRefPicMarking          )--> AskStoreRefBasePic;
+		AskStoreRefBasePic     (askStoreRefBasePic        )--> GetStoreRefBasePic;
+		AskStoreRefBasePic     (decRefBasePicMarking.skip )--> CheckEntropCodMode;
+
+		GetStoreRefBasePic (getStoreRefBasePic )--> TryLchRefBasePicMark;
+		TryLchRefBasePicMark (decRefBasePicMarking )--> CheckEntropCodMode;
+
 		CheckEntropCodMode     (askCabacInitIdc  )--> GetCabacInitIdc;
 		CheckEntropCodMode     (askSlcQpDelt     )--> GetSlcQpDelt;
 
@@ -460,6 +498,8 @@ actor DecodeSliceHeaderPart2()
 		EndOfSliceHeader (endOfSliceHeader )--> GetParameters;
 	end
 	priority
+		askStoreRefBasePic > decRefBasePicMarking.skip;
+		decRefBasePicMarking.launch > decRefBasePicMarking.skip;
 		askCabacInitIdc > askSlcQpDelt;
 		askDisDbfIdc    > askSlcGrpChg > askRefLayDqId > conditions.areFalse;
 		askSlcAlphaOff  > askSlcGrpChg;
