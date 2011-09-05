@@ -42,6 +42,7 @@ actor Algo_DecodeSps()
 	uint(size=5) NAL_SLICE_IDR     = 5;
 	uint(size=5) NAL_SPS           = 7;
 	uint(size=5) NAL_PPS           = 8;
+	uint(size=5) NAL_SUBSET_SPS    = 15;
 
 	List(type: uint, size=64) MaxFS_LookUpTable = [   99,    99,    99,    99,    99,    99,    99,    99,    99,    99,
 	                                                  99,   396,   396,   396,   396,   396,   396,   396,   396,   396,
@@ -139,14 +140,24 @@ actor Algo_DecodeSps()
 	guard
 		nalUnitType = -1
 	do
-		if(nalUnit = NAL_PPS or nalUnit = NAL_SLICE_IDR or nalUnit = NAL_SLICE_NON_IDR or nalUnit = NAL_SPS)then
+		if(nalUnit = NAL_PPS or nalUnit = NAL_SLICE_IDR or
+		   nalUnit = NAL_SLICE_NON_IDR or nalUnit = NAL_SPS or
+		   nalUnit = NAL_SUBSET_SPS
+		)then
 			nalUnitType := nalUnit;
 		end
 	end
 
 	SpsParam.AskedFromSvc: action ==> SpsParameters  :[3 , profile_idc[last_sps_id] , Chroma_Array_Type[last_sps_id], last_sps_id]
 	guard
-		nalUnitType = 42
+		nalUnitType = NAL_SUBSET_SPS
+	do
+		nalUnitType := -1;	
+	end
+
+	SpsParam.skip: action ==>
+	guard
+		nalUnitType != NAL_SUBSET_SPS
 	do
 		nalUnitType := -1;	
 	end
@@ -236,9 +247,8 @@ actor Algo_DecodeSps()
 
 	ReadSpsId.Done: action ValVLD:[ValueOfVLD] repeat 5 ==>
 	guard
-		nalUnitType = NAL_SPS
+		nalUnitType = NAL_SPS or nalUnitType = NAL_SUBSET_SPS
 	do
-		nalUnitType := -1;	
 		if(DEBUG_FLAG_DECODED)then
 			println(" ***********SPS**************");
 			println("\t\tprofile_idc : "+ValueOfVLD[0]);
@@ -680,11 +690,14 @@ actor Algo_DecodeSps()
 
 		ReadVuiParametersAsked       (ReadVuiParameters.Asked        )--> ReadVuiParametersDone;
 
-		ReadVuiParametersDone        (ReadVuiParameters.Done         )--> AskReadSpsId;
+		ReadVuiParametersDone        (ReadVuiParameters.Done         )--> CheckNalUnitType;
+
+		CheckNalUnitType             (SpsParam.AskedFromSvc          )--> AskReadSpsId;
+		CheckNalUnitType             (SpsParam.skip                  )--> AskReadSpsId;
 	end
 
 	priority
-		SpsParam.AskedFromPic        > SpsParam.AskedFromPps           > ReadSpsId.Done;
+		SpsParam                     > ReadSpsId;
 		ReadChromaFormatIdc.Asked    > Read_MaxFrameNum_PocType.Asked;
 		ReadPocType.IsEqualTo0       > ReadPocType.IsEqualTo1          > ReadNumRefFrame.Asked;
 		CheckNumRefInPocCycle        > ReadNumRefFrame.Asked;
