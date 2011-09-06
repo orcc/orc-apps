@@ -30,13 +30,17 @@
 package org.epfl.system;
 
 import std.io.DVI.* ;
+import std.trace.Debug.*;
 
-actor Sink ()
+actor AdaptativeDviDisplayer ()
 	uint(size=16) Width,
 	uint(size=16) Height,
-	uint(size=24) RGB
+	uint(size=24) Picture
 	==> 
 	:
+	
+	uint(size=16) W := 128;
+	uint(size=16) H := 128;
 	
 	uint(size=16) width := 0;
 	uint(size=16) height := 0;
@@ -44,51 +48,106 @@ actor Sink ()
 	uint(size=16) w := width;
 	uint(size=16) h := height;
 	
-	procedure advance() 
-	begin
-		w := w + 1;
-		if(w >=  width) then 
-			w := 0;
-			h := h + 1;
-		end
-		if(h >= height) then
-			h := 0;
-		end
-	end
+	bool eof := false;
 	
 	initialize ==>
 	do
-		init(1920,1080);
+		init(W,H);
 	end 
 	
-	setSize: action  Width:[ width ], Height:[ height ] ==>
+	newFrame: action  Width:[ t_width ], Height:[ t_height ] ==>
 	do
-		width := width;
-		height := height;
+		width := t_width;
+		height := t_height;
 	end
 	
-	setPix: action RGB:[ r ] ==>
-	guard (w > width) and (h > height)
+	endFrame: action ==>
+	guard eof
+	do
+		w := 0;
+		h := 0;
+		eof := false;
+	end
+	
+	newPixel.accurate: action Picture:[ r ] ==>
 	do
 		setRGB(r);
-		advance();
+		w := w + 1;
+		if(width = W) and (w >= W) then
+			w := 0;
+			h := h + 1;
+			if(height = H) and (h >= H) then
+				eof := true;
+			end
+		end
 	end
 	
-	setPixOutOfRange: action ==> 
-	guard w != 0 and h != 0
+	newPixel.extend.width : action ==>
+	guard (width < W) and (w >= width)
 	do
-		setRGB( 0 );
-		advance();
+		setRGB(0);
+		w := w + 1;
+		if(w >= W) then
+			w := 0;
+			h := h + 1;
+			if(height = H) and (h >= H) then
+				eof := true;
+			end
+		end
 	end
 	
-	schedule fsm Fire :
-		Fire ( setPix ) --> Fire;
-		Fire ( setPixOutOfRange ) --> Fire;
-		Fire ( setSize ) --> Fire;
+	newPixel.extend.height : action ==>
+	guard (height < H) and (h >= height)
+	do
+		setRGB(0);
+		w := w + 1;
+		if(w >= W) then
+			w := 0;
+			h := h + 1;
+			if( h >= H) then
+				eof := true;
+			end
+		end
 	end
+	
+	newPixel.crop.width : action Picture:[ r ] ==>
+	guard (width > W) and (w >= W)
+	do
+		w := w + 1;
+		if(w >= width) then
+			w := 0;
+			h := h + 1;
+			if(height = H) and (h >= H) then
+				eof := true;
+			end
+		end
+	end
+	
+	newPixel.crop.height : action Picture:[ r ] ==>
+	guard (height > H) and (h >= H)
+	do
+		w := w + 1;
+		if(w >= width) then
+			w := 0;
+			h := h + 1;
+			if( h >= height) then
+				eof := true;
+			end
+		end
+	end
+	
+	schedule fsm New:
+		New (newFrame) --> Inside;
+		Inside(newPixel) --> Inside;
+		Inside(endFrame) --> New;
+	end
+	
 	
 	priority
-		setPix > setPixOutOfRange > setSize;
+		endFrame > newPixel;
+		newPixel.crop > newPixel.extend > newPixel.accurate;
+		newPixel.crop.height > newPixel.crop.width;
+		newPixel.extend.height > newPixel.extend.width;
 	end
 
 end
