@@ -36,8 +36,10 @@ actor MgntLayer()
 	uint(size=5)  NalUnitType,
 	int (size=32) ValVLD,
 
-	int (size=6)  Header1TypeOfVLD,
-	int (size=32) Header1VLDParam,
+	int (size=6)  Header1AvcTypeOfVLD,
+	int (size=32) Header1AvcVLDParam,
+	int (size=6)  Header1SvcTypeOfVLD,
+	int (size=32) Header1SvcVLDParam,
 	int (size=6)  Header2AvcTypeOfVLD,
 	int (size=32) Header2AvcVLDParam,
 	int (size=6)  Header2SvcTypeOfVLD,
@@ -70,7 +72,8 @@ actor MgntLayer()
 		==>
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VLD_Param,
-	int (size=32) Header1ValVLD,
+	int (size=32) Header1AvcValVLD,
+	int (size=32) Header1SvcValVLD,
 	int (size=32) Header2AvcValVLD,
 	int (size=32) Header2SvcValVLD,
 	int (size=32) DecRefPicMarkingValVLD,
@@ -84,8 +87,8 @@ actor MgntLayer()
 	int (size=32) SubMbPredValVLD,
 	int (size=32) ResBlkCavlcValVLD,
 	int (size=32) PrefixValVLD,
-	uint(size=2)  NalRefIdcHead,
-	uint(size=2)  NalRefIdcHead2Svc,
+	uint(size=2)  NalRefIdcAvcHead,
+	uint(size=2)  NalRefIdcSvcHead,
 	uint(size=2)  NalRefIdcPrefix
 		:
 
@@ -98,7 +101,7 @@ actor MgntLayer()
 	int (size=4)  stackIdx;
 
 	getNewSlice.isAvcSlice: action NalUnitType:[nalUnitType],
-		NalRefIdc:[nalRefIdc] ==> NalRefIdcHead:[nalRefIdc]
+		NalRefIdc:[nalRefIdc] ==> NalRefIdcAvcHead:[nalRefIdc]
 	guard
 		nalUnitType != NAL_PREFIX_NAL and nalUnitType != NAL_SVC_SLICE
 	do
@@ -108,8 +111,7 @@ actor MgntLayer()
 	end
 
 	getNewSlice.isSvcSlice: action NalUnitType:[nalUnitType],
-		NalRefIdc:[nalRefIdc] ==> NalRefIdcHead:[nalRefIdc],
-		NalRefIdcHead2Svc:[nalRefIdc]
+		NalRefIdc:[nalRefIdc] ==> NalRefIdcSvcHead:[nalRefIdc]
 	guard
 		nalUnitType = NAL_SVC_SLICE
 	do
@@ -132,9 +134,14 @@ actor MgntLayer()
 		stackIdx < 0
 	end
 
-	findOutNextActor.isSliceHeader1: action ==>
+	findOutNextActor.isSliceHeader1Avc: action ==>
 	guard
-		callStack[stackIdx] = SLICE_HEADER1
+		callStack[stackIdx] = SLICE_HEADER1 and not isSvc
+	end
+
+	findOutNextActor.isSliceHeader1Svc: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER1 and isSvc
 	end
 
 	findOutNextActor.isSliceHeader2Avc: action ==>
@@ -207,25 +214,25 @@ actor MgntLayer()
 		callStack[stackIdx] = PREFIX_NAL_UNIT
 	end
 
-	SliceHeader1.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
-		Header1ValVLD :[VLDecoding]
+	SliceHeader1Avc.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
+		Header1AvcValVLD :[VLDecoding]
 	guard
 		nbParamToDecod > 0
 	do
 		nbParamToDecod := nbParamToDecod - 1;
 	end
 
-	SliceHeader1.GetVLDVal.Done: action ==>
+	SliceHeader1Avc.GetVLDVal.Done: action ==>
 	guard
 		nbParamToDecod = 0
 	end
 
-	SliceHeader1.WaitVLDVal: action ==>
+	SliceHeader1Avc.WaitVLDVal: action ==>
 	guard
 		nbParamToDecod > 0
 	end
 
-	SliceHeader1.FunctionWithoutParam: action Header1TypeOfVLD :[ValTypeOfVLD] ==>
+	SliceHeader1Avc.FunctionWithoutParam: action Header1AvcTypeOfVLD :[ValTypeOfVLD] ==>
 		TypeOfVLD :[ValTypeOfVLD]
 	guard
 		NbParamForFunction(ValTypeOfVLD) = 0,
@@ -236,9 +243,9 @@ actor MgntLayer()
 		end
 	end
 
-	SliceHeader1.FunctionWith1Param: action
-		Header1TypeOfVLD :[ValTypeOfVLD],
-		Header1VLDParam  :[Param]
+	SliceHeader1Avc.FunctionWith1Param: action
+		Header1AvcTypeOfVLD :[ValTypeOfVLD],
+		Header1AvcVLDParam  :[Param]
 			==>
 		TypeOfVLD       :[ValTypeOfVLD],
 		VLD_Param       :[Param]
@@ -248,9 +255,9 @@ actor MgntLayer()
 		nbParamToDecod := nbParamToDecod + 1;
 	end
 
-	SliceHeader1.LaunchActor: action
-		Header1TypeOfVLD :[Function],
-		Header1VLDParam  :[Actor]
+	SliceHeader1Avc.LaunchActor: action
+		Header1AvcTypeOfVLD :[Function],
+		Header1AvcVLDParam  :[Actor]
 			==>
 	guard
 		Function = LAUNCH_ACTOR
@@ -259,7 +266,7 @@ actor MgntLayer()
 		callStack[stackIdx] := Actor;
 	end
 
-	SliceHeader1.Done: action Header1TypeOfVLD :[Function] ==>
+	SliceHeader1Avc.Done: action Header1AvcTypeOfVLD :[Function] ==>
 	guard
 		Function = SKIP_NAL
 	do
@@ -998,7 +1005,8 @@ actor MgntLayer()
 		GetNewSlice (getNewSlice )--> FindOutNextActor;
 
 		FindOutNextActor (stackIsEmpty                       )--> GetNewSlice;
-		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
+		FindOutNextActor (findOutNextActor.isSliceHeader1Avc )--> LaunchSlcHeadAvc;
+		FindOutNextActor (findOutNextActor.isSliceHeader1Svc )--> LaunchSlcHeadSvc;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Svc )--> LaunchSlcHead2Svc;
 		FindOutNextActor (findOutNextActor.isRefPicMark      )--> LaunchRefPicMark;
@@ -1014,13 +1022,13 @@ actor MgntLayer()
 		FindOutNextActor (findOutNextActor.isResidualCavlc   )--> LaunchResBlkCavlc;
 		FindOutNextActor (findOutNextActor.isPrefix          )--> LaunchPrefix;
 
-		LaunchSlcHead (SliceHeader1.FunctionWithoutParam )--> LaunchSlcHead;
-		LaunchSlcHead (SliceHeader1.FunctionWith1Param   )--> LaunchSlcHead;
-		LaunchSlcHead (SliceHeader1.WaitVLDVal           )--> LaunchSliceHeaderGetVLDVal;
-		LaunchSlcHead (SliceHeader1.LaunchActor          )--> FindOutNextActor;
-		LaunchSlcHead (SliceHeader1.Done                 )--> FindOutNextActor;
-			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Launch )--> LaunchSliceHeaderGetVLDVal;
-			LaunchSliceHeaderGetVLDVal (SliceHeader1.GetVLDVal.Done   )--> LaunchSlcHead;
+		LaunchSlcHeadAvc (SliceHeader1Avc.FunctionWithoutParam )--> LaunchSlcHeadAvc;
+		LaunchSlcHeadAvc (SliceHeader1Avc.FunctionWith1Param   )--> LaunchSlcHeadAvc;
+		LaunchSlcHeadAvc (SliceHeader1Avc.WaitVLDVal           )--> LaunchSliceHeaderAvcGetVLDVal;
+		LaunchSlcHeadAvc (SliceHeader1Avc.LaunchActor          )--> FindOutNextActor;
+		LaunchSlcHeadAvc (SliceHeader1Avc.Done                 )--> FindOutNextActor;
+			LaunchSliceHeaderAvcGetVLDVal (SliceHeader1Avc.GetVLDVal.Launch )--> LaunchSliceHeaderAvcGetVLDVal;
+			LaunchSliceHeaderAvcGetVLDVal (SliceHeader1Avc.GetVLDVal.Done   )--> LaunchSlcHeadAvc;
 
 		LaunchSlcHead2Avc (SlcHead2Avc.FunctionWithoutParam )--> LaunchSlcHead2Avc;
 		LaunchSlcHead2Avc (SlcHead2Avc.FunctionWith1Param   )--> LaunchSlcHead2Avc;
@@ -1125,9 +1133,9 @@ actor MgntLayer()
 	priority
 		stackIsEmpty > findOutNextActor;
 
-		SliceHeader1.FunctionWithoutParam > SliceHeader1.FunctionWith1Param > SliceHeader1.WaitVLDVal > SliceHeader1.LaunchActor;
-		SliceHeader1.LaunchActor      > SliceHeader1.Done;
-		SliceHeader1.GetVLDVal.Launch > SliceHeader1.GetVLDVal.Done;
+		SliceHeader1Avc.FunctionWithoutParam > SliceHeader1Avc.FunctionWith1Param > SliceHeader1Avc.WaitVLDVal > SliceHeader1Avc.LaunchActor;
+		SliceHeader1Avc.LaunchActor      > SliceHeader1Avc.Done;
+		SliceHeader1Avc.GetVLDVal.Launch > SliceHeader1Avc.GetVLDVal.Done;
 
 		SlcHead2Avc.FunctionWithoutParam > SlcHead2Avc.FunctionWith1Param > SlcHead2Avc.WaitVLDVal > SlcHead2Avc.LaunchActor;
 		SlcHead2Avc.LaunchActor > SlcHead2Avc.Done;
