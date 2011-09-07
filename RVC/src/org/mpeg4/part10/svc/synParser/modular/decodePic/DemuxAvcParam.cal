@@ -36,31 +36,75 @@ actor DemuxAvcParam()
 	bool          IsSvcSlice,
 	int (size=32) Pps4Header,
 	int (size=5)  Pps4Data,
-	uint(size=32) SpsParam4SlcData
+	uint(size=32) SpsParam4SlcData,
+	int (size=32) SpsParam4SlcHead
 		==>
 	int (size=32) Pps4HeaderAvc,
 	int (size=32) Pps4HeaderSvc,
 	int (size=5)  Pps4DataAvc,
 	int (size=5)  Pps4DataSvc,
-	uint(size=32) SpsParam4Avc,
-	uint(size=32) SpsParam4Svc
+	uint(size=32) SpsParamAvcData,
+	uint(size=32) SpsParamSvcData,
+	int (size=32) SpsParamAvcHead,
+	int (size=32) SpsParamSvcHead
 		:
 
-	forwardAvc: action IsSvcSlice:[isSvc],
-		Pps4Data:[ppsData] repeat 3, Pps4Header:[ppsHeader] repeat 5,
-		SpsParam4SlcData:[sps] repeat 9 ==>
+	uint(size=8) nbSpsData;
+	bool         isSvc;
+
+	forward1stPart.avc: action IsSvcSlice:[isSvcSlc], Pps4Data:[ppsData] repeat 3,
+		Pps4Header:[ppsHeader] repeat 5, SpsParam4SlcData:[spsData] repeat 9,
+		SpsParam4SlcHead:[spsHead] repeat 10 ==>
 		Pps4DataAvc:[ppsData] repeat 3, Pps4HeaderAvc:[ppsHeader] repeat 5,
-		SpsParam4Avc:[sps] repeat 9
+		SpsParamAvcData:[spsData] repeat 9, SpsParamAvcHead:[spsHead] repeat 10
 	guard
-		not isSvc
+		not isSvcSlc
+	do
+		nbSpsData := spsHead[2] + 1;
+		isSvc     := isSvcSlc;
 	end
 
-	forwardSvc: action IsSvcSlice:[isSvc],
-		Pps4Data:[ppsData] repeat 3, Pps4Header:[pps] repeat 5,
-		SpsParam4SlcData:[sps] repeat 9 ==>
+	forward1stPart.svc: action IsSvcSlice:[isSvcSlc], Pps4Data:[ppsData] repeat 3,
+		Pps4Header:[pps] repeat 5, SpsParam4SlcData:[sps] repeat 9,
+		SpsParam4SlcHead:[spsHead] repeat 10 ==>
 		Pps4DataSvc:[ppsData] repeat 3, Pps4HeaderSvc:[pps] repeat 5,
-		SpsParam4Svc:[sps] repeat 9
+		SpsParamSvcData:[sps] repeat 9, SpsParamSvcHead:[spsHead] repeat 10
 	guard
-		isSvc
+		isSvcSlc
+	do
+		nbSpsData := spsHead[2] + 1;
+		isSvc     := isSvcSlc;
+	end
+
+	forwardSpsData.launch.avc: action SpsParam4SlcHead:[sps] ==>
+		SpsParamAvcHead:[sps]
+	guard
+		nbSpsData > 0 and not isSvc
+	do
+		nbSpsData := nbSpsData - 1;
+	end
+
+	forwardSpsData.launch.svc: action SpsParam4SlcHead:[sps] ==>
+		SpsParamSvcHead:[sps]
+	guard
+		nbSpsData > 0 and isSvc
+	do
+		nbSpsData := nbSpsData - 1;
+	end
+
+	forwardSpsData.done.avc: action ==>
+	guard
+		nbSpsData = 0 and not isSvc
+	end
+
+	forwardSpsData.done.svc: action ==>
+	guard
+		nbSpsData = 0 and isSvc
+	end
+
+	schedule fsm Forward1stPart :
+		Forward1stPart (forward1stPart        )--> ForwardSpsData;
+		ForwardSpsData (forwardSpsData.launch )--> ForwardSpsData;
+		ForwardSpsData (forwardSpsData.done   )--> Forward1stPart;
 	end
 end
