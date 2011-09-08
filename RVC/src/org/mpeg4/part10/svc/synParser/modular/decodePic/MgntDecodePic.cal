@@ -35,9 +35,12 @@ import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 actor MgntDecodePic()
 	int (size=6)  Header1TypeOfVLD,
 	int (size=32) Header1VLDParam,
+	int (size=6)  Header2TypeOfVLD,
+	int (size=32) Header2VLDParam,
 	int (size=32) ValDecoding
 		==>
 	int (size=32) Header1ValDecod,
+	int (size=32) Header2ValDecod,
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VldParam
 		:
@@ -55,6 +58,11 @@ actor MgntDecodePic()
 	findOutNextActor.isSliceHeader1: action ==>
 	guard
 		callStack[stackIdx] = SLICE_HEADER1
+	end
+
+	findOutNextActor.isSliceHeader2: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER2
 	end
 
 	getVldVal.done: action ==>
@@ -102,20 +110,67 @@ actor MgntDecodePic()
 	end
 
 	sliceHeader1.done: action Header1TypeOfVLD:[typeOfVld] ==>
-	TypeOfVLD:[SKIP_NAL] //Delete me !!
+		TypeOfVLD:[SKIP_NAL]
+	guard
+		typeOfVld = SKIP_NAL
+	end
+
+	sliceHeader2.vld.withoutParam: action Header2TypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0,
+		typeOfVld  != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceHeader2.vld.with1Param: action Header2TypeOfVLD:[typeOfVld],
+		Header2VLDParam:[param] ==> TypeOfVLD:[typeOfVld], VldParam:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceHeader2.getVldVal: action ValDecoding:[valDecoded] ==>
+		Header2ValDecod:[valDecoded]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	sliceHeader2.launchActor: action Header2TypeOfVLD:[typeOfVld],
+		Header2VLDParam:[actorLaunched] ==>
+	guard
+		typeOfVld = LAUNCH_ACTOR
+	do
+		stackIdx       := (stackIdx + 1) &0x0F;
+		callStack[stackIdx] := actorLaunched;
+	end
+
+	sliceHeader2.done: action Header2TypeOfVLD:[typeOfVld] ==>
 	guard
 		typeOfVld = SKIP_NAL
 	end
 
 	schedule fsm FindOutNextActor:
-		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
+		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead1;
+		FindOutNextActor (findOutNextActor.isSliceHeader2    )--> LaunchSlcHead2;
 
-		LaunchSlcHead (sliceHeader1.vld         )--> LaunchSlcHead;
-		LaunchSlcHead (waitVLDVal               )--> SlcHeadGetVLDVal;
-		LaunchSlcHead (sliceHeader1.launchActor )--> FindOutNextActor;
-		LaunchSlcHead (sliceHeader1.done        )--> LaunchSlcHead;
-			SlcHeadGetVLDVal (sliceHeader1.getVldVal )--> SlcHeadGetVLDVal;
-			SlcHeadGetVLDVal (getVldVal.done         )--> LaunchSlcHead;
+		LaunchSlcHead1 (sliceHeader1.vld         )--> LaunchSlcHead1;
+		LaunchSlcHead1 (waitVLDVal               )--> SlcHead1GetVLDVal;
+		LaunchSlcHead1 (sliceHeader1.launchActor )--> FindOutNextActor;
+		LaunchSlcHead1 (sliceHeader1.done        )--> LaunchSlcHead1;
+			SlcHead1GetVLDVal (sliceHeader1.getVldVal )--> SlcHead1GetVLDVal;
+			SlcHead1GetVLDVal (getVldVal.done         )--> LaunchSlcHead1;
+
+		LaunchSlcHead2 (sliceHeader2.vld         )--> LaunchSlcHead2;
+		LaunchSlcHead2 (waitVLDVal               )--> SlcHead2GetVLDVal;
+		LaunchSlcHead2 (sliceHeader2.launchActor )--> FindOutNextActor;
+		LaunchSlcHead2 (sliceHeader2.done        )--> LaunchSlcHead2;
+			SlcHead2GetVLDVal (sliceHeader2.getVldVal )--> SlcHead2GetVLDVal;
+			SlcHead2GetVLDVal (getVldVal.done         )--> LaunchSlcHead2;
 	end
 	priority
 		sliceHeader1.vld > waitVLDVal > sliceHeader1.launchActor > sliceHeader1.done;

@@ -1,0 +1,88 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+
+package org.mpeg4.part10.svc.synParser.modular.decodePps;
+
+actor MergeGetPps ()
+	uint(size=8)  GetPpsFromAvc,
+	uint(size=8)  GetPpsFromSvc,
+	uint(size=5)  NalUnitType,
+	int (size=32) Pps4Header,
+	int (size=5)  Pps4Data
+		==>
+	uint(size=8)  GetPps,
+	int (size=32) Pps4HeaderAvc,
+	int (size=32) Pps4HeaderSvc,
+	int (size=5)  Pps4DataAvc,
+	int (size=5)  Pps4DataSvc
+		:
+
+	uint(size=5) NAL_SLICE_NON_IDR = 1;
+	uint(size=5) NAL_SLICE_IDR     = 5;
+	uint(size=5) NAL_SVC_SLICE     = 20;
+
+	isAvcSlice: action GetPpsFromAvc:[pps], NalUnitType:[nalUnitType] ==>
+		GetPps:[pps]
+	guard
+		nalUnitType = NAL_SLICE_NON_IDR or nalUnitType = NAL_SLICE_IDR
+	end
+
+	isSvcSlice: action  GetPpsFromSvc:[pps], NalUnitType:[nalUnitType] ==>
+		GetPps:[pps]
+	guard
+		nalUnitType = NAL_SVC_SLICE
+	end
+
+	isOtherNal: action NalUnitType:[nalUnitType] ==>
+	guard
+		nalUnitType != NAL_SLICE_NON_IDR and nalUnitType != NAL_SLICE_IDR,
+		NAL_SLICE_IDR != NAL_SVC_SLICE
+	end
+
+	forward.avcInfo: action Pps4Data:[ppsData] repeat 3,
+		Pps4Header:[ppsHead] repeat 5  ==> Pps4DataAvc:[ppsData] repeat 3,
+		Pps4HeaderAvc:[ppsHead] repeat 5
+	end
+
+	forward.svcInfo: action Pps4Data:[ppsData] repeat 3,
+		Pps4Header:[pps] repeat 5 ==> Pps4DataSvc:[ppsData] repeat 3,
+		Pps4HeaderSvc:[pps] repeat 5
+	end
+
+	schedule fsm GetNextNal:
+		GetNextNal (isAvcSlice )--> ForwardAvcInfo;
+		GetNextNal (isSvcSlice )--> ForwardSvcInfo;
+		GetNextNal (isOtherNal )--> GetNextNal;
+
+		ForwardAvcInfo (forward.avcInfo )--> GetNextNal;
+		ForwardSvcInfo (forward.svcInfo )--> GetNextNal;
+	end
+end
