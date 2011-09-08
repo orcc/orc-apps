@@ -37,10 +37,13 @@ actor MgntDecodePic()
 	int (size=32) Header1VLDParam,
 	int (size=6)  Header2TypeOfVLD,
 	int (size=32) Header2VLDParam,
+	uint(size=5)  RefPicListTypeOfVLD,
+	int (size=32) RefPicListVldParam,
 	int (size=32) ValDecoding
 		==>
 	int (size=32) Header1ValDecod,
 	int (size=32) Header2ValDecod,
+	int (size=32) RefPicListValVld,
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VldParam
 		:
@@ -165,6 +168,39 @@ actor MgntDecodePic()
 		stackIdx := stackIdx - 1;
 	end
 
+	refPicList.vld.withoutParam: action RefPicListTypeOfVLD:[typeOfVLD] ==>
+		TypeOfVLD:[typeOfVLD]
+	guard
+		NbParamForFunction(typeOfVLD) = 0,
+		typeOfVLD  != SKIP_NAL
+	do
+		if(typeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	refPicList.vld.with1Param: action RefPicListTypeOfVLD:[typeOfVLD],
+		RefPicListVldParam:[param] ==> TypeOfVLD:[typeOfVLD], VldParam:[param]
+	guard
+		NbParamForFunction(typeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	refPicList.getVLDVal: action ValDecoding:[valDecoded] ==> RefPicListValVld:[valDecoded]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	refPicList.done: action RefPicListTypeOfVLD:[typeOfVLD] ==>
+	guard
+		typeOfVLD = SKIP_NAL
+	do
+		stackIdx := stackIdx - 1;
+	end
+
 	schedule fsm FindOutNextActor:
 		FindOutNextActor (stackIsEmpty                       )--> FindOutNextActor;
 		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead1;
@@ -183,9 +219,16 @@ actor MgntDecodePic()
 		LaunchSlcHead2 (sliceHeader2.done        )--> FindOutNextActor;
 			SlcHead2GetVLDVal (sliceHeader2.getVldVal )--> SlcHead2GetVLDVal;
 			SlcHead2GetVLDVal (getVldVal.done         )--> LaunchSlcHead2;
+		
+		LaunchRefPicList (refPicList.vld  )--> LaunchRefPicList;
+		LaunchRefPicList (waitVLDVal      )--> RefPicListGetVLDVal;
+		LaunchRefPicList (refPicList.done )--> FindOutNextActor;
+			RefPicListGetVLDVal (refPicList.getVLDVal )--> RefPicListGetVLDVal;
+			RefPicListGetVLDVal (getVldVal.done       )--> LaunchRefPicList;
 	end
 	priority
 		stackIsEmpty > findOutNextActor;
 		sliceHeader1.vld > waitVLDVal > sliceHeader1.launchActor > sliceHeader1.done;
+		refPicList.vld   > waitVLDVal > refPicList.done;
 	end
 end
