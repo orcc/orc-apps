@@ -41,9 +41,10 @@ actor MergeSpsAsk()
 	uint(size=2) SenderOfRequest
 		:
 
-	uint(size=2) GET_SPS_FROM_PIC = 0;
-	uint(size=2) GET_SPS_FROM_PPS = 1;
-	uint(size=2) GET_SPS_FROM_SVC = 2;
+	uint(size=2) GET_SPS_FROM_AVC    = 0;
+	uint(size=2) GET_SPS_FROM_PPS    = 1;
+	uint(size=2) GET_SPS_FROM_SVC    = 2;
+	uint(size=2) GET_SPS_FROM_SUBSET = 3;
 
 	uint(size=5) NAL_SLICE_NON_IDR = 1;
 	uint(size=5) NAL_SLICE_IDR     = 5;
@@ -51,14 +52,20 @@ actor MergeSpsAsk()
 	uint(size=5) NAL_SUBSET_SPS    = 15;
 	uint(size=5) NAL_SVC_SLICE     = 20;
 
-	uint(size=5) nalUnitTp;
+	uint(size=2) senderOfReq;
+	
 
-	getNalUnitType.isPic: action NalUnitType:[nalUnitType] ==>
+	getNalUnitType.isSlice: action NalUnitType:[nalUnitType] ==>
 	guard
 		nalUnitType = NAL_SLICE_NON_IDR or nalUnitType = NAL_SLICE_IDR
 		or nalUnitType = NAL_SVC_SLICE
 	do
-		nalUnitTp := nalUnitType;
+		senderOfReq :=
+			if(nalUnitType != NAL_SVC_SLICE) then
+				GET_SPS_FROM_AVC
+			else
+				GET_SPS_FROM_SVC
+			end;
 	end
 
 	getNalUnitType.isPps: action NalUnitType:[nalUnitType] ==>
@@ -67,7 +74,7 @@ actor MergeSpsAsk()
 	end
 
 	getNalUnitType.isSubSps: action NalUnitType:[nalUnitType] ==>
-		SenderOfRequest:[GET_SPS_FROM_SVC]
+		SenderOfRequest:[GET_SPS_FROM_SUBSET]
 	guard
 		nalUnitType = NAL_SUBSET_SPS
 	end
@@ -75,17 +82,8 @@ actor MergeSpsAsk()
 	skipForwardInfo: action NalUnitType:[nalUnitType] ==>
 	end
 
-	getSpsForAvcSlice: action SpsAskedFromPic:[numSps] ==>
-		SenderOfRequest:[GET_SPS_FROM_PIC], NumSpsAsked:[numSps]
-	guard
-		nalUnitTp != NAL_SVC_SLICE
-	end
-
-	getSpsForSvcSlice: action SpsAskedFromPic:[numSps] ==>
-		SenderOfRequest :[GET_SPS_FROM_PIC], NumSpsAsked:[numSps],
-		NumSpsExtAsked:[numSps]
-	guard
-		nalUnitTp = NAL_SVC_SLICE
+	getSpsForSlice: action SpsAskedFromPic:[numSps] ==>
+		SenderOfRequest:[senderOfReq], NumSpsAsked:[numSps]
 	end
 
 	getSpsForPps: action SpsAskedFromPps:[numSps] ==>
@@ -93,14 +91,13 @@ actor MergeSpsAsk()
 	end
 
 	schedule fsm GetNaluType:
-		GetNaluType (getNalUnitType.isPic )--> GetSpsForPic;
+		GetNaluType (getNalUnitType.isSlice  )--> GetSpsForPic;
 		GetNaluType (getNalUnitType.isPps    )--> GetSpsForPps;
 		GetNaluType (getNalUnitType.isSubSps )--> GetNaluType;
 		GetNaluType (skipForwardInfo         )--> GetNaluType;
 
-		GetSpsForPic  (getSpsForAvcSlice )--> GetNaluType;
-		GetSpsForPic  (getSpsForSvcSlice )--> GetNaluType;
-		GetSpsForPps (getSpsForPps )--> GetNaluType;
+		GetSpsForPic (getSpsForSlice )--> GetNaluType;
+		GetSpsForPps (getSpsForPps   )--> GetNaluType;
 	end
 	priority
 		getNalUnitType > skipForwardInfo;
