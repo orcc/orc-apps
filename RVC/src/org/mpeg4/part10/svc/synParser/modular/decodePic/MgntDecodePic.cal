@@ -41,12 +41,15 @@ actor MgntDecodePic()
 	int (size=32) RefPicListVldParam,
 	uint(size=5)  RefPicMarkTypeOfVLD,
 	int (size=32) RefPicMarkVldParam,
+	uint(size=5)  RefBaseMarkTypeOfVLD,
+	int (size=32) RefBaseMarkVldParam,
 	int (size=32) ValDecoded
 		==>
 	int (size=32) Header1ValDecod,
 	int (size=32) Header2ValDecod,
 	int (size=32) RefPicListValVld,
 	int (size=32) RefPicMarkValVLD,
+	int (size=32) RefBaseMarkValVLD,
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VldParam
 		:
@@ -87,6 +90,11 @@ actor MgntDecodePic()
 	findOutNextActor.isRefPicMark: action ==>
 	guard
 		callStack[stackIdx] = REF_PIC_MARKING
+	end
+
+	findOutNextActor.isRefBaseMark: action ==>
+	guard
+		callStack[stackIdx] = REF_BASE_PIC_MARKING
 	end
 
 	getVldVal.done: action ==>
@@ -248,12 +256,47 @@ actor MgntDecodePic()
 		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
+	refBaseMark.vld.withoutParam: action RefBaseMarkTypeOfVLD:[typeOfVLD]
+		==> TypeOfVLD:[typeOfVLD]
+	guard
+		NbParamForFunction(typeOfVLD) = 0,
+		typeOfVLD  != SKIP_NAL
+	do
+		if(typeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	refBaseMark.vld.with1Param: action RefBaseMarkTypeOfVLD:[typeOfVLD],
+		RefBaseMarkVldParam:[param] ==> TypeOfVLD:[typeOfVLD], VldParam:[param]
+	guard
+		NbParamForFunction(typeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	refBaseMark.getVldVal: action ValDecoded:[valDecoded] ==>
+		RefBaseMarkValVLD:[valDecoded]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	refBaseMark.done: action RefBaseMarkTypeOfVLD:[typeOfVLD] ==>
+	guard
+		typeOfVLD = SKIP_NAL
+	do
+		stackIdx := stackIdx - 1;
+	end
+
 	schedule fsm FindOutNextActor:
-		FindOutNextActor (stackIsEmpty                       )--> FindOutNextActor;
-		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead1;
-		FindOutNextActor (findOutNextActor.isSliceHeader2    )--> LaunchSlcHead2;
-		FindOutNextActor (findOutNextActor.isRefPicList      )--> LaunchRefPicList;
-		FindOutNextActor (findOutNextActor.isRefPicMark      )--> LaunchRefPicMark;
+		FindOutNextActor (stackIsEmpty                    )--> FindOutNextActor;
+		FindOutNextActor (findOutNextActor.isSliceHeader1 )--> LaunchSlcHead1;
+		FindOutNextActor (findOutNextActor.isSliceHeader2 )--> LaunchSlcHead2;
+		FindOutNextActor (findOutNextActor.isRefPicList   )--> LaunchRefPicList;
+		FindOutNextActor (findOutNextActor.isRefPicMark   )--> LaunchRefPicMark;
+		FindOutNextActor (findOutNextActor.isRefBaseMark  )--> LaunchRefBaseMark;
 
 		LaunchSlcHead1 (sliceHeader1.vld         )--> LaunchSlcHead1;
 		LaunchSlcHead1 (waitVLDVal               )--> SlcHead1GetVLDVal;
@@ -280,11 +323,18 @@ actor MgntDecodePic()
 		LaunchRefPicMark (refPicMark.done )--> FindOutNextActor;
 			RefPicMarkGetVLDVal (refPicMark.getVldVal )--> RefPicMarkGetVLDVal;
 			RefPicMarkGetVLDVal (getVldVal.done       )--> LaunchRefPicMark;
+	
+		LaunchRefBaseMark (refBaseMark.vld  )--> LaunchRefBaseMark;
+		LaunchRefBaseMark (waitVLDVal       )--> RefBaseMarkGetVLDVal;
+		LaunchRefBaseMark (refBaseMark.done )--> FindOutNextActor;
+			RefBaseMarkGetVLDVal (refBaseMark.getVldVal )--> RefBaseMarkGetVLDVal;
+			RefBaseMarkGetVLDVal (getVldVal.done        )--> LaunchRefBaseMark;
 	end
 	priority
 		stackIsEmpty > findOutNextActor;
 		sliceHeader1.vld > waitVLDVal > sliceHeader1.launchActor > sliceHeader1.done;
 		refPicList.vld   > waitVLDVal > refPicList.done;
 		refPicMark.vld   > waitVLDVal > refPicMark.done;
+		refBaseMark.vld  > waitVLDVal > refBaseMark.done;
 	end
 end
