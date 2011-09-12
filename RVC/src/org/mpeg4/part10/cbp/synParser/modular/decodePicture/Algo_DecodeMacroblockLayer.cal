@@ -19,7 +19,7 @@ import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import std.util.BitOps.*;
 
-actor Algo_DecodeMacroblockLayer()
+actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	int (size=32) ValVLD,
 	int (size=8)  Parameters,
 
@@ -65,6 +65,7 @@ actor Algo_DecodeMacroblockLayer()
 	uint(size=4) SLICE_TYPE_P  = 0;
 	uint(size=4) SLICE_TYPE_B  = 1;
 	uint(size=4) SLICE_TYPE_I  = 2;
+	uint(size=4) SLICE_TYPE_EI = 2;
 	uint(size=4) SLICE_TYPE_SP = 3;
 	uint(size=4) SLICE_TYPE_SI = 4;
 
@@ -111,9 +112,6 @@ actor Algo_DecodeMacroblockLayer()
 			42,42,42,42
 		];
 
-	bool DEBUG_FLAG_DECODED = false;
-
-
 	uint(size=6)  mb_type                        := 0;
 	bool          noSubMbPartSizeLessThan8x8Flag := true;
 	bool          transform_size_8x8_flag        := true;
@@ -141,6 +139,11 @@ actor Algo_DecodeMacroblockLayer()
 	int (size=8)  Qp_CrValue;
 	int (size=5)  chroma_qp_index_offset;
 	int (size=5)  second_chroma_qp_index_offset;
+	bool          adaptBaseMode; /// !!!!!!!!!!!!!!!!!
+	bool          baseMode := false;
+	bool          residualPred; //!!!!!!!!!!!!!
+	uint(size=4)  scanIdxStart;//!!!!!!!!!!!!!
+	uint(size=4)  scanIdxEnd;//!!!!!!!!!!!!
 
 	uint(size=9)  NbCoeffChroma;
 	uint(size=9)  ChromaReadIdx  := 0;
@@ -168,43 +171,55 @@ actor Algo_DecodeMacroblockLayer()
 			end
 		end
 
-	ReadMbType.Asked: action
-				==>
-			//              mb_type
-			TypeOfVLD    :[  VLD_UE  ]
-		end
+	//not implemented yet !
+	function inCropWindow(uint(size=32) currMbAddr) --> bool :
+		currMbAddr = 42
+	end
 
-	ReadParameters: action
-			Parameters         :[Param] repeat 37
-				==>
-			MergeTransfSz8x8   :[transform_8x8_mode_flag]
+	askBaseModeFlag: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		not isAvc and inCropWindow(42) and adaptBaseMode
+	end
+
+	getBaseModeFlag: action ValVLD:[baseModeFlag] ==>
+	do
+		baseMode := (baseModeFlag != 0);
+	end
+
+	ReadMbType.Asked: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		not baseMode or isAvc
+	end
+
+	ReadParameters: action Parameters:[param] repeat 37 ==>
+		MergeTransfSz8x8:[transform_8x8_mode_flag]
+	do
+		direct_8x8_inference_flag     := getFlag(param[0], 0);
+		transform_8x8_mode_flag       := getFlag(param[0], 1);
+		mb_field_decoding             := getFlag(param[0], 2);
+		entropy_coding_mode_flag      := getFlag(param[0], 3);
+		LeftMb_Exists                 := getFlag(param[0], 4);
+		AboveMb_Exists                := getFlag(param[0], 5);
+
+		slice_type                    := param[1];
+		bit_depth_luma                := param[2];
+		bit_depth_chroma              := param[3];
+		Chroma_Array_Type             := param[4];
+		num_ref_idx_l0_active         := param[5];
+		num_ref_idx_l1_active         := param[6];
+		NumC8x8                       := param[7];
+		QpValue                       := param[8];
+		chroma_qp_index_offset        := param[9];
+		second_chroma_qp_index_offset := param[10];
+		Qp_CbValue                    := QP_TAB[(QpValue + chroma_qp_index_offset) & 0x3F];
+		Qp_CrValue                    := QP_TAB[(QpValue + second_chroma_qp_index_offset) & 0x3F];
+		foreach int i in 0 .. 11
 		do
-			direct_8x8_inference_flag     := getFlag(Param[0], 0);
-			transform_8x8_mode_flag       := getFlag(Param[0], 1);
-			mb_field_decoding             := getFlag(Param[0], 2);
-			entropy_coding_mode_flag      := getFlag(Param[0], 3);
-			LeftMb_Exists                 := getFlag(Param[0], 4);
-			AboveMb_Exists                := getFlag(Param[0], 5);
-
-			slice_type                    := Param[1];
-			bit_depth_luma                := Param[2];
-			bit_depth_chroma              := Param[3];
-			Chroma_Array_Type             := Param[4];
-			num_ref_idx_l0_active         := Param[5];
-			num_ref_idx_l1_active         := Param[6];
-			NumC8x8                       := Param[7];
-			QpValue                       := Param[8];
-			chroma_qp_index_offset        := Param[9];
-			second_chroma_qp_index_offset := Param[10];
-			Qp_CbValue                    := QP_TAB[(QpValue + chroma_qp_index_offset) & 0x3F];
-			Qp_CrValue                    := QP_TAB[(QpValue + second_chroma_qp_index_offset) & 0x3F];
-			foreach int i in 0 .. 11
-			do
-				nATab[i] := Param[11 + i];
-				nBTab[i] := Param[23 + i];
-			end
-			NbCoeffChroma := Param[35] * Param[36];
+			nATab[i] := param[11 + i];
+			nBTab[i] := param[23 + i];
 		end
+		NbCoeffChroma := param[35] * param[36];
+	end
 
 	ReadMbType.Done: action
 			ValVLD             :[ValueOfVLD]
@@ -242,7 +257,7 @@ actor Algo_DecodeMacroblockLayer()
 
 			transform_size_8x8_flag        := false;
 			noSubMbPartSizeLessThan8x8Flag := true;
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("mb_type : "+ValueOfVLD);
 			end
 			Idx := (mb_type - BLOCK_TYPE_INTRA_16x16_MIN)/4;
@@ -263,13 +278,13 @@ actor Algo_DecodeMacroblockLayer()
 
 			IsIPCM :[true]
 		guard
-			mb_type = BLOCK_TYPE_I_PCM
+			mb_type = BLOCK_TYPE_I_PCM and (not baseMode or isAvc)
 		var
 			List(type: uint(size=3), size=257) ValTypeOfVLD      := [READ_BITS        : for int s in 0 .. 256],
 			//List(type: uint(size=3), size=256) ValTypeOfVLDecod   = [READ_BITS        : for int s in 0 .. 255],
 			List(type: uint(size=5), size=256) BitDepthChromaTab  = [bit_depth_luma : for int s in 0 .. 255]
 		do
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("IsIPCM");
 			end
 			ValTypeOfVLD[0] := BYTE_ALIGNED_REQUIRED;
@@ -280,7 +295,7 @@ actor Algo_DecodeMacroblockLayer()
 				==>
 			pix_I_PCM_Y  :[ValueOfVLD] repeat 256
 		do
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("");
 				/* Forward to the output for the pcm decoding */
 				foreach int a in 0 .. 255
@@ -309,7 +324,7 @@ actor Algo_DecodeMacroblockLayer()
 		guard
 			ChromaReadIdx < ChromaWriteIdx
 		do
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("\t\tpcm_sample_chroma1[" + ChromaReadIdx + "] : " + ValueOfVLD);
 			end
 			ChromaReadIdx := ChromaReadIdx + 1;
@@ -322,7 +337,7 @@ actor Algo_DecodeMacroblockLayer()
 		guard
 			ChromaReadIdx < ChromaWriteIdx
 		do
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("\t\tpcm_sample_chroma2[" + ChromaReadIdx + "] : " + ValueOfVLD);
 			end
 			ChromaReadIdx := ChromaReadIdx + 1;
@@ -334,23 +349,22 @@ actor Algo_DecodeMacroblockLayer()
 		do
 			ChromaReadIdx  := 0;
 			ChromaWriteIdx := 0;
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("");
 			end
 		end
 
-	CheckMbType.IsNotIPCM: action
-				==>
-			NbCoeffInMB :[NbCoeff],
-			IsIPCM      :[false]
-		var
-			uint(size=5) NbCoeff
-		do
-			NbCoeff := 16 + 1 + 1 + 4 + 4; // 16 Luma AC + 1 * 2 Chroma DC + 4 * 2 Chroma AC
-			if(Is_Intra_16x16(mb_type))then
-				NbCoeff := NbCoeff + 1;// 1 Luma DC
-			end
+	CheckMbType.IsNotIPCM: action ==> NbCoeffInMB:[NbCoeff], IsIPCM:[false]
+	guard
+		not baseMode or isAvc
+	var
+		uint(size=5) NbCoeff
+	do
+		NbCoeff := 16 + 1 + 1 + 4 + 4; // 16 Luma AC + 1 * 2 Chroma DC + 4 * 2 Chroma AC
+		if(Is_Intra_16x16(mb_type))then
+			NbCoeff := NbCoeff + 1;// 1 Luma DC
 		end
+	end
 
 	LaunchSubMbPred: action
 				==>
@@ -414,32 +428,42 @@ actor Algo_DecodeMacroblockLayer()
 			                   setFlag(transform_size_8x8_flag,1,setFlag(mb_field_decoding,0,0))]
 		end
 
-	ReadCodedBlockPattern.Asked: action
-				==>
-			//        coded_block_pattern
-			TypeOfVLD    :[  VLD_UE  ] //VLD_ME
-		guard
-			not(Is_Intra_16x16(mb_type))
-		end
+	askResidualPredFlag: action ==>
+	guard
+		not isAvc,
+		residualPred and slice_type != SLICE_TYPE_EI and
+		(baseMode or (not Mb_IsIntra(mb_type) and inCropWindow(42)))
+	end
 
-	ReadCodedBlockPattern.Done: action
-			ValVLD :[CodeNum]
-				==>
-		do
-			uint(size=6) coded_block_pattern;
+	checkForResidualFlag.launch: action ==>
+	guard
+		isAvc or (scanIdxEnd >= scanIdxStart)
+	end
 
-			coded_block_pattern :=
-				if( Is_Intra_4x4(mb_type) or Is_Intra_8x8(mb_type) )then
-					VLD_ME_TABLE[Chroma_Array_Type][CodeNum][0]
-				else
-					VLD_ME_TABLE[Chroma_Array_Type][CodeNum][1]
-				end;
-			CodedBlockPatternLuma   := coded_block_pattern mod 16;
-			CodedBlockPatternChroma := coded_block_pattern  /  16;
-			if(DEBUG_FLAG_DECODED)then
-				println("coded_block_pattern : "+coded_block_pattern);
-			end
+	checkForResidualFlag.skip: action ==>
+	end
+
+	ReadCodedBlockPattern.Asked: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		not(Is_Intra_16x16(mb_type)) or (baseMode and not isAvc)
+	end
+
+	ReadCodedBlockPattern.Done: action ValVLD:[CodeNum] ==>
+	do
+		uint(size=6) coded_block_pattern;
+
+		coded_block_pattern :=
+			if( Is_Intra_4x4(mb_type) or Is_Intra_8x8(mb_type) )then
+				VLD_ME_TABLE[Chroma_Array_Type][CodeNum][0]
+			else
+				VLD_ME_TABLE[Chroma_Array_Type][CodeNum][1]
+			end;
+		CodedBlockPatternLuma   := coded_block_pattern mod 16;
+		CodedBlockPatternChroma := coded_block_pattern  /  16;
+		if(DEBUG)then
+			println("coded_block_pattern : "+coded_block_pattern);
 		end
+	end
 
 	ReadTransformSize8x8.Asked: action
 				==>
@@ -448,10 +472,11 @@ actor Algo_DecodeMacroblockLayer()
 			VLDParam  :[     1     ]
 		guard
 			CodedBlockPatternLuma  > 0,
-			mb_type               != BLOCK_TYPE_I_NxN,
 			transform_8x8_mode_flag,
-			noSubMbPartSizeLessThan8x8Flag,
-			(mb_type != BLOCK_TYPE_B_DIRECT_16x16) or direct_8x8_inference_flag
+			(baseMode and not isAvc) or 
+			(mb_type               != BLOCK_TYPE_I_NxN and
+			noSubMbPartSizeLessThan8x8Flag and
+			(mb_type != BLOCK_TYPE_B_DIRECT_16x16 or direct_8x8_inference_flag))
 		end
 
 	ReadTransformSize8x8.Done: action
@@ -473,7 +498,7 @@ actor Algo_DecodeMacroblockLayer()
 		guard
 			   (CodedBlockPatternLuma   > 0)
 			or (CodedBlockPatternChroma > 0)
-			or Is_Intra_16x16(mb_type)
+			or (not baseMode or isAvc) and Is_Intra_16x16(mb_type)
 		end
 
 	ReadMbQpDelta.Done: action
@@ -482,7 +507,7 @@ actor Algo_DecodeMacroblockLayer()
 			Qp_Y_Cb_Cr :[QpValue , Qp_CbValue , Qp_CrValue],
 			QpFeedback              :[QpValue , Qp_CbValue , Qp_CrValue]
 		do
-			if(DEBUG_FLAG_DECODED)then
+			if(DEBUG)then
 				println("mb_qp_delta : "+ValueOfVLD);
 			end
 			//mb_qp_delta := ValueOfVLD;
@@ -617,5 +642,6 @@ actor Algo_DecodeMacroblockLayer()
 		ReadPcmSampleChroma.Asked      > ReadPcmSampleChroma.Done;
 		ReadPcmSampleChroma.Done       > ReadPcmSampleChroma.VComponent;
 		ReadPcmSampleChroma.Done       > ReadPcmSampleChroma.UComponent;
+		checkForResidualFlag.launch    > checkForResidualFlag.skip;
 	end
 end
