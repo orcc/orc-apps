@@ -100,6 +100,11 @@ actor MgntDecodePic()
 		callStack[stackIdx] = REF_BASE_PIC_MARKING
 	end
 
+	findOutNextActor.isSliceData: action ==>
+	guard
+		callStack[stackIdx] = SLICE_DATA_SVC
+	end
+
 	getVldVal.done: action ==>
 	guard
 		nbParamToDecod = 0
@@ -256,7 +261,7 @@ actor MgntDecodePic()
 	guard
 		typeOfVld = SKIP_NAL
 	do
-		stackIdx := (stackIdx - 1) & 0x0F;
+		stackIdx := stackIdx - 1;
 	end
 
 	refBaseMark.vld.withoutParam: action RefBaseMarkTypeOfVLD:[typeOfVLD]
@@ -293,6 +298,49 @@ actor MgntDecodePic()
 		stackIdx := stackIdx - 1;
 	end
 
+	slcData.vld.withoutParam: action DataTypeOfVLD:[typeOfVLD] ==>
+		TypeOfVLD:[typeOfVLD]
+	guard
+		NbParamForFunction(typeOfVLD) = 0,
+		typeOfVLD  != SKIP_NAL
+	do
+		if(typeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	slcData.vld.with1Param: action DataTypeOfVLD:[typeOfVLD],
+		DataVLDParam:[param] ==> TypeOfVLD:[typeOfVLD], VldParam:[param]
+	guard
+		NbParamForFunction(typeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	slcData.getVldVal: action ValDecoded:[valDecoded] ==>
+		DataValDecod:[valDecoded]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	slcData.launchActor: action DataTypeOfVLD:[typeOfVLD],
+		DataVLDParam:[actorLaunched] ==>
+	guard
+		typeOfVLD = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := actorLaunched;
+	end
+
+	slcData.done: action DataTypeOfVLD:[typeOfVLD] ==> TypeOfVLD:[SKIP_NAL]
+	guard
+		typeOfVLD = SKIP_NAL
+	do
+		stackIdx := stackIdx - 1 ;
+	end
+
 	schedule fsm FindOutNextActor:
 		FindOutNextActor (stackIsEmpty                    )--> FindOutNextActor;
 		FindOutNextActor (findOutNextActor.isSliceHeader1 )--> LaunchSlcHead1;
@@ -300,6 +348,7 @@ actor MgntDecodePic()
 		FindOutNextActor (findOutNextActor.isRefPicList   )--> LaunchRefPicList;
 		FindOutNextActor (findOutNextActor.isRefPicMark   )--> LaunchRefPicMark;
 		FindOutNextActor (findOutNextActor.isRefBaseMark  )--> LaunchRefBaseMark;
+		FindOutNextActor (findOutNextActor.isSliceData    )--> LaunchSlcData;
 
 		LaunchSlcHead1 (sliceHeader1.vld         )--> LaunchSlcHead1;
 		LaunchSlcHead1 (waitVLDVal               )--> SlcHead1GetVLDVal;
@@ -332,6 +381,13 @@ actor MgntDecodePic()
 		LaunchRefBaseMark (refBaseMark.done )--> FindOutNextActor;
 			RefBaseMarkGetVLDVal (refBaseMark.getVldVal )--> RefBaseMarkGetVLDVal;
 			RefBaseMarkGetVLDVal (getVldVal.done        )--> LaunchRefBaseMark;
+
+		LaunchSlcData (slcData.vld         )--> LaunchSlcData;
+		LaunchSlcData (waitVLDVal            )--> SlcDataGetVLDVal;
+		LaunchSlcData (slcData.launchActor )--> FindOutNextActor;
+		LaunchSlcData (slcData.done        )--> FindOutNextActor;
+			SlcDataGetVLDVal (slcData.getVldVal )--> SlcDataGetVLDVal;
+			SlcDataGetVLDVal (getVldVal.done      )--> LaunchSlcData;
 	end
 	priority
 		stackIsEmpty > findOutNextActor;
@@ -339,5 +395,6 @@ actor MgntDecodePic()
 		refPicList.vld   > waitVLDVal > refPicList.done;
 		refPicMark.vld   > waitVLDVal > refPicMark.done;
 		refBaseMark.vld  > waitVLDVal > refBaseMark.done;
+		slcData.vld      > waitVLDVal > slcData.launchActor > slcData.done;
 	end
 end
