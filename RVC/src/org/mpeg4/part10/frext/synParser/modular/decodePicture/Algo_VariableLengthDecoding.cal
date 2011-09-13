@@ -28,6 +28,9 @@
  */
  
 // Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+// Original author for Cabac decoding : Endri Bezati <endri.bezati@epfl.ch>
+// Cabac decoding adaptation Damien de Saint Jorre
+
 package org.mpeg4.part10.frext.synParser.modular.decodePicture;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
@@ -77,7 +80,8 @@ actor Algo_VariableLengthDecoding()
 	uint(size=4) TotalCoeffParam := 0;
 	/* Cavlc run_before */
 	uint(size=8) IdxzerosLeft    := 0;
-
+	/* Cabac Init */
+	int(size=3) cabacInitIdc;
 
 	uint(size=32) Out_ReadNBits;
 	procedure ReadNBitsInWorkingByte(uint(size=32) InitialValue, uint(size=4) NbBitsToRead)
@@ -286,6 +290,13 @@ actor Algo_VariableLengthDecoding()
 			end;
 		NbBitsRead      := 0;
 		ValRead         := 0;
+	end
+
+	isCabacInit: action TypeOfVLD:[typeOfVld], VLD_Param:[cabacInit] ==>
+	guard
+		typeOfVld = CABAC_INIT
+	do
+		cabacInitIdc := cabacInit;
 	end
 
 	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
@@ -526,6 +537,51 @@ actor Algo_VariableLengthDecoding()
 		end
 	end
 
+/******* Cabac Decoding *******/
+	cabacInitContextVar: action ==>
+	do
+		foreach int i in 0 .. 459 do
+			if (cabacInitIdc = -1 )then
+				preCtxState_pro(val_QP, Cabac_Context_Init_I[i][0], Cabac_Context_Init_I[i][1]);
+			else
+				preCtxState_pro(val_QP, Cabac_Context_Init_PB[cabac_init_idc][i][0], Cabac_Context_Init_PB[cabac_init_idc][i][1]);
+			end
+							
+			if ( preCtxState  <=  63 )  then
+				pStateIdx[i]	:= 63 - preCtxState;
+				valMPS[i]		:= 0 ;
+			else 
+				pStateIdx[i]	:= preCtxState - 64;
+				valMPS[i]		:= 1;
+			end
+		end
+	end
+/*action ==>
+	guard
+		StartCabacInit
+	do
+		foreach int i in 0 .. 459 do
+					if (slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI )then
+						preCtxState_pro(val_QP, Cabac_Context_Init_I[i][0], Cabac_Context_Init_I[i][1]);
+					else
+						preCtxState_pro(val_QP, Cabac_Context_Init_PB[cabac_init_idc][i][0], Cabac_Context_Init_PB[cabac_init_idc][i][1]);
+					end
+									
+					if ( preCtxState  <=  63 )  then
+						pStateIdx[i]	:= 63 - preCtxState;
+						valMPS[i]		:= 0 ;
+					else 
+						pStateIdx[i]	:= preCtxState - 64;
+						valMPS[i]		:= 1;
+					end
+				end
+		StartInitializationDecoding := true;
+		set_bits_to_read(9);
+		StartCabacInit := false;
+		// Do not give the hand to CabacParsing
+		StopCabacProcess();
+	end	*/
+
 /*
 *
 * Scheduler
@@ -545,6 +601,7 @@ actor Algo_VariableLengthDecoding()
 		CheckVLDType    (IsCavlcCoeffToken                   )--> DecCavlcCofTkn;
 		CheckVLDType    (IsCavlcTotalZeros                   )--> DecCavlcTotZer;
 		CheckVLDType    (IsCavlcRunBefore                    )--> DecCavlcRunBef;
+		CheckVLDType    (isCabacInit                         )--> CabacInit;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
