@@ -56,6 +56,7 @@ actor Algo_VariableLengthDecoding()
 	//Contains the number of bit which are not read yet in WorkingByte
 	uint(size=4)  CountBufferRbsp  := 0;
 	//Contains up to 4 next byte in the flow. It helps for more_rbsp_data()
+	//and Cabac initialisation
 	uint(size=3)  SizeBufferRbsp   := 0;
 	List(type: uint(size=8), size=4) BufferRbsp := [0: for int s in 0 .. 3];
 	/* ue(v) and Cavlc coeff_token()*/
@@ -81,11 +82,14 @@ actor Algo_VariableLengthDecoding()
 	uint(size=4) TotalCoeffParam := 0;
 	/* Cavlc run_before */
 	uint(size=8) IdxzerosLeft    := 0;
-	/* Cabac */
+	/* Cabac inittialisation */
 	int (size=3) cabacInitIdc;
 	int (size=6) pStateIdx[640];
 	int (size=8) sliceQpY;
 	uint(size=1) valMPS[640];
+	/* Cabac Arithmetic Decoding */
+	int (size=16) codIRange;
+	int (size=16) codIOffset;
 
 	uint(size=32) Out_ReadNBits;
 	procedure ReadNBitsInWorkingByte(uint(size=32) InitialValue, uint(size=4) NbBitsToRead)
@@ -544,6 +548,7 @@ actor Algo_VariableLengthDecoding()
 
 /******* Cabac Decoding *******/
 
+	/* Initialization process */
 	cabacInitContextVar: action ==>
 	do
 		int preCtxState;
@@ -570,6 +575,23 @@ actor Algo_VariableLengthDecoding()
 		end
 	end
 
+	cabacInitArithDecod: action ==>
+	guard
+		SizeBufferRbsp >= 2
+	do
+		uint(size=4) nbBitInFirstByte = CountBufferRbsp;
+
+		codIRange	:= 0x01FE;
+		ReadNBitsInWorkingByte(0, CountBufferRbsp);
+
+		CountBufferRbsp := 8;
+		SizeBufferRbsp  := SizeBufferRbsp - 1;
+		WorkingByte     := BufferRbsp[SizeBufferRbsp];
+
+		ReadNBitsInWorkingByte(Out_ReadNBits, 9- nbBitInFirstByte);
+		codIOffset := Out_ReadNBits;
+	end
+
 /*
 *
 * Scheduler
@@ -589,7 +611,7 @@ actor Algo_VariableLengthDecoding()
 		CheckVLDType    (IsCavlcCoeffToken  )--> DecCavlcCofTkn;
 		CheckVLDType    (IsCavlcTotalZeros  )--> DecCavlcTotZer;
 		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
-		CheckVLDType    (isCabacInit        )--> CabacInit;
+		CheckVLDType    (isCabacInit        )--> CabacInitContextVar;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
@@ -666,7 +688,10 @@ actor Algo_VariableLengthDecoding()
 		ChckCavlcRunBef (GetCavlcRunBefore.Finished    )--> CheckVLDType;
 
 		/* Cabac Init */
-		CabacInit (cabacInitContextVar )--> undefined;
+		CabacInitContextVar (cabacInitContextVar )--> CabacInitArithDecod;
+		CabacInitArithDecod (Buffer.IsEmpty      )--> CabacInitArithDecod;
+		CabacInitArithDecod (cabacInitArithDecod )--> undefined;
+		CabacInitArithDecod (FillBufferRbsp      )--> CabacInitArithDecod;
 	end
 	
 	priority
@@ -682,5 +707,6 @@ actor Algo_VariableLengthDecoding()
 		GetCavlcLevelPrefix.NotFinished > GetCavlcLevelPrefix.Finished;
 		GetCavlcTotalZeros.NotFinished  > GetCavlcTotalZeros.Finished;
 		GetCavlcRunBefore.NotFinished   > GetCavlcRunBefore.Finished;
+		Buffer > cabacInitArithDecod    > FillBufferRbsp;
 	end
 end
