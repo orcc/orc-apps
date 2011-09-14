@@ -118,7 +118,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	uint(size=6)  CodedBlockPatternLuma          := 0;
 	uint(size=6)  CodedBlockPatternChroma        := 0;
 	//int (size=32) mb_qp_delta                    := 0;
-	bool          entropy_coding_mode_flag;
+	bool          entropyCodingMode;
 	//SliceData Parameters
 	uint(size=4)  slice_type;
 	uint(size=4)  bit_depth_luma;
@@ -176,28 +176,13 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		currMbAddr = 42
 	end
 
-	askBaseModeFlag: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
-	guard
-		not isAvc and inCropWindow(42) and adaptBaseMode
-	end
-
-	getBaseModeFlag: action ValVLD:[baseModeFlag] ==>
-	do
-		baseMode := (baseModeFlag != 0);
-	end
-
-	ReadMbType.Asked: action ==> TypeOfVLD:[VLD_UE]
-	guard
-		not baseMode or isAvc
-	end
-
 	ReadParameters: action Parameters:[param] repeat 37 ==>
 		MergeTransfSz8x8:[transform_8x8_mode_flag]
 	do
 		direct_8x8_inference_flag     := getFlag(param[0], 0);
 		transform_8x8_mode_flag       := getFlag(param[0], 1);
 		mb_field_decoding             := getFlag(param[0], 2);
-		entropy_coding_mode_flag      := getFlag(param[0], 3);
+		entropyCodingMode             := getFlag(param[0], 3);
 		LeftMb_Exists                 := getFlag(param[0], 4);
 		AboveMb_Exists                := getFlag(param[0], 5);
 
@@ -219,6 +204,28 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			nBTab[i] := param[23 + i];
 		end
 		NbCoeffChroma := param[35] * param[36];
+	end
+
+	askBaseModeFlag: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		not isAvc and inCropWindow(42) and adaptBaseMode
+	end
+
+	getBaseModeFlag: action ValVLD:[baseModeFlag] ==>
+	do
+		baseMode := (baseModeFlag != 0);
+	end
+
+	ReadMbType.Asked: action ==> TypeOfVLD:[typeOfVld]
+	guard
+		not baseMode or isAvc
+	do
+		uint(size=5) typeOfVld =
+			if(entropyCodingMode) then
+				CABAC_MB_TYPE_I
+			else
+				VLD_UE
+			end;
 	end
 
 	ReadMbType.Done: action
@@ -528,7 +535,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			List(type: uint(size=6), size=32) Parameters,
 			uint(size=6) Flag
 		do
-			Flag := setFlag(entropy_coding_mode_flag , 0 , setFlag( transform_size_8x8_flag, 1 , 0    ) );
+			Flag := setFlag(entropyCodingMode , 0 , setFlag( transform_size_8x8_flag, 1 , 0    ) );
 			Flag := setFlag( false /*BmFlag*/        , 2 , setFlag( LeftMb_Exists          , 3 , Flag ) );
 			Flag := setFlag( AboveMb_Exists          , 4 ,  Flag );
 			Parameters[0] := Flag;
@@ -577,10 +584,10 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			TypeOfVLD :[SKIP_NAL]
 		end
 
-	schedule fsm ReadMbType_Asked:
-		ReadMbType_Asked          (ReadMbType.Asked               )--> ReadParameters;
+	schedule fsm ReadParameters:
+		ReadParameters            (ReadParameters                 )--> ReadMbType_Asked;
 
-		ReadParameters            (ReadParameters                 )--> ReadMbType;
+		ReadMbType_Asked          (ReadMbType.Asked               )--> ReadMbType;
 
 		ReadMbType                (ReadMbType.Done                )--> CheckMbType;
 
@@ -630,7 +637,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 
 		GetResidualCoeffToken     (GetResidualCoeffToken          )--> SendEndSliceHeader;
 
-		SendEndSliceHeader        (SendEndSliceHeader             )--> ReadMbType_Asked;
+		SendEndSliceHeader        (SendEndSliceHeader             )--> ReadParameters;
 	end
 
 	priority
