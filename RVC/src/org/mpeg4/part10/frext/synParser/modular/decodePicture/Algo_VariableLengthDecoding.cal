@@ -35,6 +35,7 @@ package org.mpeg4.part10.frext.synParser.modular.decodePicture;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import org.mpeg4.part10.cbp.synParser.modular.cavlcLookUpTables.*;
+import org.mpeg4.part10.frext.synParser.modular.decodePicture.cabacDecoding.*;
 import std.util.BitOps.*;
 
 actor Algo_VariableLengthDecoding()
@@ -80,8 +81,11 @@ actor Algo_VariableLengthDecoding()
 	uint(size=4) TotalCoeffParam := 0;
 	/* Cavlc run_before */
 	uint(size=8) IdxzerosLeft    := 0;
-	/* Cabac Init */
-	int(size=3) cabacInitIdc;
+	/* Cabac */
+	int (size=3) cabacInitIdc;
+	int (size=6) pStateIdx[640];
+	int (size=8) sliceQpY;
+	uint(size=1) valMPS[640];
 
 	uint(size=32) Out_ReadNBits;
 	procedure ReadNBitsInWorkingByte(uint(size=32) InitialValue, uint(size=4) NbBitsToRead)
@@ -292,11 +296,12 @@ actor Algo_VariableLengthDecoding()
 		ValRead         := 0;
 	end
 
-	isCabacInit: action TypeOfVLD:[typeOfVld], VLD_Param:[cabacInit] ==>
+	isCabacInit: action TypeOfVLD:[typeOfVld], VLD_Param:[cabacInit, qpValue] ==>
 	guard
 		typeOfVld = CABAC_INIT
 	do
 		cabacInitIdc := cabacInit;
+		sliceQpY     := qpValue;
 	end
 
 	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
@@ -538,49 +543,32 @@ actor Algo_VariableLengthDecoding()
 	end
 
 /******* Cabac Decoding *******/
+
 	cabacInitContextVar: action ==>
 	do
+		int preCtxState;
+
 		foreach int i in 0 .. 459 do
-			if (cabacInitIdc = -1 )then
-				preCtxState_pro(val_QP, Cabac_Context_Init_I[i][0], Cabac_Context_Init_I[i][1]);
-			else
-				preCtxState_pro(val_QP, Cabac_Context_Init_PB[cabac_init_idc][i][0], Cabac_Context_Init_PB[cabac_init_idc][i][1]);
-			end
-							
-			if ( preCtxState  <=  63 )  then
-				pStateIdx[i]	:= 63 - preCtxState;
-				valMPS[i]		:= 0 ;
+			//Should be modify : CabacContextInit I and PB should be merged and
+			//we should use the index cabacInitIdc + 1
+			preCtxState :=
+				if(cabacInitIdc = -1) then
+					computePreCtxState(sliceQpY, Cabac_Context_Init_I[i][0],
+						Cabac_Context_Init_I[i][1])
+				else
+					computePreCtxState(sliceQpY, Cabac_Context_Init_PB
+						[cabacInitIdc][i][0], Cabac_Context_Init_PB
+						[cabacInitIdc][i][1])
+				end;				
+			if(preCtxState  <=  63)  then
+				pStateIdx[i] := 63 - preCtxState;
+				valMPS[i]    := 0 ;
 			else 
-				pStateIdx[i]	:= preCtxState - 64;
-				valMPS[i]		:= 1;
+				pStateIdx[i] := preCtxState - 64;
+				valMPS[i]    := 1;
 			end
 		end
 	end
-/*action ==>
-	guard
-		StartCabacInit
-	do
-		foreach int i in 0 .. 459 do
-					if (slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI )then
-						preCtxState_pro(val_QP, Cabac_Context_Init_I[i][0], Cabac_Context_Init_I[i][1]);
-					else
-						preCtxState_pro(val_QP, Cabac_Context_Init_PB[cabac_init_idc][i][0], Cabac_Context_Init_PB[cabac_init_idc][i][1]);
-					end
-									
-					if ( preCtxState  <=  63 )  then
-						pStateIdx[i]	:= 63 - preCtxState;
-						valMPS[i]		:= 0 ;
-					else 
-						pStateIdx[i]	:= preCtxState - 64;
-						valMPS[i]		:= 1;
-					end
-				end
-		StartInitializationDecoding := true;
-		set_bits_to_read(9);
-		StartCabacInit := false;
-		// Do not give the hand to CabacParsing
-		StopCabacProcess();
-	end	*/
 
 /*
 *
@@ -589,114 +577,96 @@ actor Algo_VariableLengthDecoding()
 */
 
 	schedule fsm CheckVLDType:
-		CheckVLDType    (IsEndOfNal                          )--> WaitForNewNal;
-		CheckVLDType    (IsByteAligned                       )--> CheckVLDType;
-		CheckVLDType    (IsVldUe                             )--> VLDecoding_Ue;
-		CheckVLDType    (IsVldSe                             )--> VLDecoding_Se;
-		CheckVLDType    (IsVldTe.ue                          )--> VLDecoding_Ue;
-		CheckVLDType    (IsVldTe.u                           )--> Decode_u;
-		CheckVLDType    (IsReadBits                          )--> Decode_u;
-		CheckVLDType    (IsMoreRbspData                      )--> FillBuffer;
-		CheckVLDType    (IsCavlcLevelPrefix                  )--> DecCavlcLevPre;
-		CheckVLDType    (IsCavlcCoeffToken                   )--> DecCavlcCofTkn;
-		CheckVLDType    (IsCavlcTotalZeros                   )--> DecCavlcTotZer;
-		CheckVLDType    (IsCavlcRunBefore                    )--> DecCavlcRunBef;
-		CheckVLDType    (isCabacInit                         )--> CabacInit;
+		CheckVLDType    (IsEndOfNal         )--> WaitForNewNal;
+		CheckVLDType    (IsByteAligned      )--> CheckVLDType;
+		CheckVLDType    (IsVldUe            )--> VLDecoding_Ue;
+		CheckVLDType    (IsVldSe            )--> VLDecoding_Se;
+		CheckVLDType    (IsVldTe.ue         )--> VLDecoding_Ue;
+		CheckVLDType    (IsVldTe.u          )--> Decode_u;
+		CheckVLDType    (IsReadBits         )--> Decode_u;
+		CheckVLDType    (IsMoreRbspData     )--> FillBuffer;
+		CheckVLDType    (IsCavlcLevelPrefix )--> DecCavlcLevPre;
+		CheckVLDType    (IsCavlcCoeffToken  )--> DecCavlcCofTkn;
+		CheckVLDType    (IsCavlcTotalZeros  )--> DecCavlcTotZer;
+		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
+		CheckVLDType    (isCabacInit        )--> CabacInit;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
 		FillBuffer      (FutureNewNalDetected                )--> CheckBuffer;
 		FillBuffer      (CheckSizeBufferRbsp.IsEqualOrSupTo2 )--> CheckVLDType;
 		FillBuffer      (NewNalHasBeenSent                   )--> CheckBuffer;
-
 		CheckBuffer     (CheckSizeBufferRbsp                 )--> CheckVLDType;
 
 		/* Skip the others values of the Rbsp */
-		WaitForNewNal   (NewNalHasBeenSent                   )--> ResetNewNal;
-		WaitForNewNal   (WaitForNewNal                       )--> WaitForNewNal2;
-		WaitForNewNal   (NewNalDetected                      )--> CheckVLDType;
-
-		ResetNewNal     (ResetNewNalAlreadyDetected          )--> CheckVLDType;
-
-		WaitForNewNal2  (WaitForNewNal                       )--> WaitForNewNal2;
-		WaitForNewNal2  (NewNalDetected                      )--> CheckVLDType;
+		WaitForNewNal   (NewNalHasBeenSent          )--> ResetNewNal;
+		WaitForNewNal   (WaitForNewNal              )--> WaitForNewNal2;
+		WaitForNewNal   (NewNalDetected             )--> CheckVLDType;
+		ResetNewNal     (ResetNewNalAlreadyDetected )--> CheckVLDType;
+		WaitForNewNal2  (WaitForNewNal              )--> WaitForNewNal2;
+		WaitForNewNal2  (NewNalDetected             )--> CheckVLDType;
 
 		/* ue(v) decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		VLDecoding_Ue   (Buffer                              )--> GetCodeNum4ue;
-		VLDecoding_Ue   (FillBufferRbsp                      )--> VLDecoding_Ue;
-
-		GetCodeNum4ue   (GetCodeNum.Launch                   )--> CheckCodeNum4ue;
-
-		CheckCodeNum4ue (GetCodeNum.NotFinished              )--> VLDecoding_Ue;
-		CheckCodeNum4ue (GetCodeNum.Finished                 )--> SendUeValue;
-
-		SendUeValue     (SendUeValue                         )--> CheckVLDType;
+		VLDecoding_Ue   (Buffer                 )--> GetCodeNum4ue;
+		VLDecoding_Ue   (FillBufferRbsp         )--> VLDecoding_Ue;
+		GetCodeNum4ue   (GetCodeNum.Launch      )--> CheckCodeNum4ue;
+		CheckCodeNum4ue (GetCodeNum.NotFinished )--> VLDecoding_Ue;
+		CheckCodeNum4ue (GetCodeNum.Finished    )--> SendUeValue;
+		SendUeValue     (SendUeValue            )--> CheckVLDType;
 
 		/* se(v) decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		VLDecoding_Se   (Buffer                              )--> GetCodeNum4se;
-		VLDecoding_Se   (FillBufferRbsp                      )--> VLDecoding_Se;
-
-		GetCodeNum4se   (GetCodeNum.Launch                   )--> CheckCodeNum4se;
-
-		CheckCodeNum4se (GetCodeNum.NotFinished              )--> VLDecoding_Se;
-		CheckCodeNum4se (GetCodeNum.Finished                 )--> SendUeValse;
-
-		SendUeValse     (SendSeValue                         )--> CheckVLDType;
+		VLDecoding_Se   (Buffer                 )--> GetCodeNum4se;
+		VLDecoding_Se   (FillBufferRbsp         )--> VLDecoding_Se;
+		GetCodeNum4se   (GetCodeNum.Launch      )--> CheckCodeNum4se;
+		CheckCodeNum4se (GetCodeNum.NotFinished )--> VLDecoding_Se;
+		CheckCodeNum4se (GetCodeNum.Finished    )--> SendUeValse;
+		SendUeValse     (SendSeValue            )--> CheckVLDType;
 
 		/* u(n) decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		Decode_u        (Buffer                              )--> Get_u;
-		Decode_u        (FillBufferRbsp                      )--> Decode_u;
-
-		Get_u           (Get_u.Launch                        )--> Check_u_Val;
-
-		Check_u_Val     (Get_u.NotFinished                   )--> Decode_u;
-		Check_u_Val     (Get_u.Finished                      )--> SendUValue;
-
-		SendUValue      (SendUValue                          )--> CheckVLDType;
+		Decode_u        (Buffer            )--> Get_u;
+		Decode_u        (FillBufferRbsp    )--> Decode_u;
+		Get_u           (Get_u.Launch      )--> Check_u_Val;
+		Check_u_Val     (Get_u.NotFinished )--> Decode_u;
+		Check_u_Val     (Get_u.Finished    )--> SendUValue;
+		SendUValue      (SendUValue        )--> CheckVLDType;
 
 		/* Cavlc coeff_token() decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcCofTkn  (Buffer                              )--> GetCavlcCofTkn;
-		DecCavlcCofTkn  (FillBufferRbsp                      )--> DecCavlcCofTkn;
-
-		GetCavlcCofTkn   (GetCavlcCoeffToken.Launch          )--> ChckCavlcCofTkn;
-
-		ChckCavlcCofTkn (GetCavlcCoeffToken.NotFinished      )--> DecCavlcCofTkn;
-		ChckCavlcCofTkn (GetCavlcCoeffToken.Finished         )--> CheckVLDType;
+		DecCavlcCofTkn  (Buffer                         )--> GetCavlcCofTkn;
+		DecCavlcCofTkn  (FillBufferRbsp                 )--> DecCavlcCofTkn;
+		GetCavlcCofTkn   (GetCavlcCoeffToken.Launch     )--> ChckCavlcCofTkn;
+		ChckCavlcCofTkn (GetCavlcCoeffToken.NotFinished )--> DecCavlcCofTkn;
+		ChckCavlcCofTkn (GetCavlcCoeffToken.Finished    )--> CheckVLDType;
 
 		/* Cavlc level_prefix decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcLevPre  (Buffer                              )--> GetCavlcLevPre;
-		DecCavlcLevPre  (FillBufferRbsp                      )--> DecCavlcLevPre;
-
-		GetCavlcLevPre  (GetCavlcLevelPrefix.Launch          )--> ChckCavlcLevPre;
-
-		ChckCavlcLevPre (GetCavlcLevelPrefix.NotFinished     )--> DecCavlcLevPre;
-		ChckCavlcLevPre (GetCavlcLevelPrefix.Finished        )--> CheckVLDType;
+		DecCavlcLevPre  (Buffer                          )--> GetCavlcLevPre;
+		DecCavlcLevPre  (FillBufferRbsp                  )--> DecCavlcLevPre;
+		GetCavlcLevPre  (GetCavlcLevelPrefix.Launch      )--> ChckCavlcLevPre;
+		ChckCavlcLevPre (GetCavlcLevelPrefix.NotFinished )--> DecCavlcLevPre;
+		ChckCavlcLevPre (GetCavlcLevelPrefix.Finished    )--> CheckVLDType;
 
 		/* Cavlc total_zeros decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcTotZer  (Buffer                              )--> GetCavlcTotZer;
-		DecCavlcTotZer  (FillBufferRbsp                      )--> DecCavlcTotZer;
-
-		GetCavlcTotZer  (GetCavlcTotalZeros.Launch          )--> ChckCavlcTotZer;
-
-		ChckCavlcTotZer (GetCavlcTotalZeros.NotFinished     )--> DecCavlcTotZer;
-		ChckCavlcTotZer (GetCavlcTotalZeros.Finished        )--> CheckVLDType;
+		DecCavlcTotZer  (Buffer                         )--> GetCavlcTotZer;
+		DecCavlcTotZer  (FillBufferRbsp                 )--> DecCavlcTotZer;
+		GetCavlcTotZer  (GetCavlcTotalZeros.Launch      )--> ChckCavlcTotZer;
+		ChckCavlcTotZer (GetCavlcTotalZeros.NotFinished )--> DecCavlcTotZer;
+		ChckCavlcTotZer (GetCavlcTotalZeros.Finished    )--> CheckVLDType;
 
 		/* Cavlc run_before decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcRunBef  (Buffer                              )--> GetCavlcRunBef;
-		DecCavlcRunBef  (FillBufferRbsp                      )--> DecCavlcRunBef;
+		DecCavlcRunBef  (Buffer                        )--> GetCavlcRunBef;
+		DecCavlcRunBef  (FillBufferRbsp                )--> DecCavlcRunBef;
+		GetCavlcRunBef  (GetCavlcRunBefore.Launch      )--> ChckCavlcRunBef;
+		ChckCavlcRunBef (GetCavlcRunBefore.NotFinished )--> DecCavlcRunBef;
+		ChckCavlcRunBef (GetCavlcRunBefore.Finished    )--> CheckVLDType;
 
-		GetCavlcRunBef  (GetCavlcRunBefore.Launch            )--> ChckCavlcRunBef;
-
-		ChckCavlcRunBef (GetCavlcRunBefore.NotFinished     )--> DecCavlcRunBef;
-		ChckCavlcRunBef (GetCavlcRunBefore.Finished        )--> CheckVLDType;
-
+		/* Cabac Init */
+		CabacInit (cabacInitContextVar )--> undefined;
 	end
 	
 	priority
