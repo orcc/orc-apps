@@ -93,7 +93,7 @@ actor Algo_VariableLengthDecoding()
 	int (size=16) codIRange;
 	int (size=16) codIOffset;
 	/* Cabac Mb type parsing */
-	int  binIdx;
+	int (size=6)  binIdx;
 	uint(size=1)  binVal;
 	uint(size=32) binString;
 //	int  compIdx;
@@ -124,10 +124,10 @@ actor Algo_VariableLengthDecoding()
 
 	/* Cabac procedures */
 
-	procedure getMbTypeParsing(uint(size=5) decodingType)
+	procedure getCtxIdx(uint(size=5) decodingType)
 	begin
 		if decodingType = CABAC_MB_TYPE_I then
-			GetMbType_I(1);
+			getCtxIdxMbTypeI(1);
 		else
 			/*if SearchForMbType = 1 then
 				 GetMbType_P();
@@ -138,7 +138,7 @@ actor Algo_VariableLengthDecoding()
 	end
 
 	
-	procedure GetMbType_I(uint(size=1) isIntra)
+	procedure getCtxIdxMbTypeI(uint(size=1) isIntra)
 	begin
 		uint(size=2)  ctxIdxInc;
 
@@ -567,9 +567,8 @@ actor Algo_VariableLengthDecoding()
 	guard
 		typeOfVld = CABAC_MB_TYPE_I
 	do
-		binIdx        := 0;
-		binString     := 0;
-		getMbTypeParsing(typeOfVld);
+		binIdx        := -1;
+		binString     :=  0;
 	end
 
 	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
@@ -867,6 +866,20 @@ actor Algo_VariableLengthDecoding()
 		codIOffset := Out_ReadNBits;
 	end
 
+	cabacGetCtxIdx: action ==>
+	do
+		binIdx := binIdx + 1;
+		getCtxIdx(CABAC_MB_TYPE_I);
+		//Begining of DecodeBin(ctxIdx)
+//		if(byPass) then
+			
+//		elsif(ctxIdx = 276)then
+
+/*		else*/ if(ctxIdx != 276 and not byPass) then
+			decodeDecision();
+		end
+	end
+
 	cabacRenormD.launch: action ==>
 	guard
 		codIRange < 0x0100
@@ -913,7 +926,7 @@ actor Algo_VariableLengthDecoding()
 		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
 		CheckVLDType    (isCabacInit        )--> CabacInitContextVar;
 		CheckVLDType    (isCabacInitMbVal   )--> CheckVLDType;
-		CheckVLDType    (isCabacMbType      )--> CabacInitContextVar;
+		CheckVLDType    (isCabacMbType      )--> CabacGetCtxIdx;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
@@ -994,6 +1007,15 @@ actor Algo_VariableLengthDecoding()
 		CabacInitArithDecod (Buffer.IsEmpty      )--> CabacInitArithDecod;
 		CabacInitArithDecod (cabacInitArithDecod )--> CheckVLDType;
 		CabacInitArithDecod (FillBufferRbsp      )--> CabacInitArithDecod;
+
+		/* Cabac Decode Syntax Element */
+		CabacGetCtxIdx     (cabacGetCtxIdx )--> CabacFillOutBuffer;
+		CabacFillOutBuffer (Buffer         )--> RenormD;
+		CabacFillOutBuffer (FillBufferRbsp )--> CabacFillOutBuffer;
+		RenormD (cabacRenormD.launch )--> CabacFillOutBuffer;
+		RenormD (cabacRenormD.skip   )--> CabacCheckBinarization;
+		CabacCheckBinarization (cabacCheckBinarization.notFinished )--> CabacGetCtxIdx;
+		CabacCheckBinarization (cabacCheckBinarization.done        )--> CheckVLDType;
 	end
 	
 	priority
