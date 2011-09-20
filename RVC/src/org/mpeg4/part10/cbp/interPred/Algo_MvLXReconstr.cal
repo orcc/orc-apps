@@ -120,7 +120,6 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 	int (size=LOG2_POW2_PICWIDTH_BLK_PLUS1+1) idxMbAddrC;
 	int (size=LOG2_POW2_PICWIDTH_BLK_PLUS1+1) idxMbAddrD;
 
-	bool          directPredLx;
 	uint(size=11) mbXInPix;
 	uint(size=11) mbYInPix;
 
@@ -406,12 +405,6 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		mvTab[idxCurrBlk]     := [[0,0]: for int i in 0 .. 15];	
 	end
 
-	checkMbType.isBSkipBDirect16x16: action
-			==>
-	guard
-		mbType = BLOCK_TYPE_B_SKIP or mbType = BLOCK_TYPE_B_DIRECT_16x16
-	end
-
 	checkMbType.isOthers: action ==>
 	guard
 		mbType != BLOCK_TYPE_B_SKIP,
@@ -426,45 +419,6 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		mvTab[idxCurrBlk]     := [[0,0]: for int i in 0 .. 15];
 		refIdxTab[idxCurrBlk] := [-1: for int i in 0 .. 15];
 	end
-
-	GetOtherDirectPredLx: action
-				==>
-		end
-
-	SendMv4Direct.Launch: action
-				==>
-			Location  :[ListLocation] repeat 32,
-			MvOut     :[ListMv]       repeat 32,
-			RefIdxOut :[ListRefIdx]   repeat 16,
-			NewMb_o  :[[true : for int i in 1 .. 16]]    repeat 16
-		guard
-			directPredLx
-		var
-			List(type: uint(size=11), size=32) ListLocation,
-			List(type:  int(size=16), size=32) ListMv,
-			List(type: uint(size=4) , size=16) ListRefIdx
-		do
-			foreach int mb_part_idx in 0 .. 3
-			do
-				foreach int sub_mb_part_idx in 0 .. 3
-				do
-					ListLocation[2* (4*mb_part_idx+sub_mb_part_idx)]     := mbXInPix + 8 *  (mb_part_idx&1) + 4 * (sub_mb_part_idx&1);
-					ListLocation[2* (4*mb_part_idx+sub_mb_part_idx) + 1] := mbYInPix + 8 * ((mb_part_idx>>1)&1) + 4 * ((sub_mb_part_idx>>1)&1);
-					ListMv[2* (4*mb_part_idx+sub_mb_part_idx)]           := mvTab[idxCurrBlk][4 * mb_part_idx + sub_mb_part_idx][0];
-					ListMv[2* (4*mb_part_idx+sub_mb_part_idx) + 1]       := mvTab[idxCurrBlk][4 * mb_part_idx + sub_mb_part_idx][1];
-					ListRefIdx[4*mb_part_idx+sub_mb_part_idx]            := refIdxTab[idxCurrBlk][4 * mb_part_idx + sub_mb_part_idx];
-				end
-			end
-		end
-
-	SendMv4Direct.Skip: action ==>
-		guard
-			not directPredLx
-		end
-
-	SendSubMv4Direct.Skip: action
-				==>
-		end
 
 	ComputeMvLX.Launch16x16: action
 			MbPredRefIdx :[RefIdxCurr],
@@ -516,7 +470,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 			sizeMbMv = SZ_16x8
 		var
 			List(type: int(size=16), size=2) mvpL0,
-			uint(size=11) Blk_x_in_pix := mbXInPix,
+			uint(size=11) Blk_x_in_pix = mbXInPix,
 			uint(size=11) Blk_y_in_pix := mbYInPix
 		do
 			foreach int i in 0 .. 7
@@ -569,7 +523,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		var
 			List(type: int(size=16), size=2) mvpL0,
 			uint(size=11) Blk_x_in_pix := mbXInPix,
-			uint(size=11) Blk_y_in_pix := mbYInPix
+			uint(size=11) Blk_y_in_pix = mbYInPix
 		do
 			foreach int i in 0 .. 3
 			do
@@ -679,14 +633,6 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 			end
 
 			subMbPartIdx := subMbPartIdx + 1;
-		end
-
-	ComputeSubMvLX.LaunchB_Direct_8x8: action
-				==>
-		guard
-			subMbPartIdx < subMbPartIdxMax,
-			sizeSubMbMv = SZ_4x4,
-			SubMbPartPredMode[idxSubTab][subMbType & 15] = DIRECT
 		end
 
 	ComputeSubMvLX.Launch8x4: action
@@ -816,11 +762,7 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		CheckMbType          (checkMbType.isIorSI               )--> GetMbType;
 		CheckMbType          (checkMbType.isPSkipL0             )--> GetMbType;
 		CheckMbType          (checkMbType.isPSkipL1             )--> GetMbType;
-		CheckMbType          (checkMbType.isBSkipBDirect16x16   )--> GetOtherDirectPredLx;
 		CheckMbType          (checkMbType.isOthers              )--> ComputeMvpL0;
-
-		GetOtherDirectPredLx (GetOtherDirectPredLx              )--> SendMv4Direct;
-		SendMv4Direct        (SendMv4Direct                     )--> GetMbType;
 
 		ComputeMvpL0         (ComputeMvLX.Skip                  )--> ComputeMvpL0;
 		ComputeMvpL0         (ComputeMvLX.Launch16x16           )--> ComputeMvpL0;
@@ -830,21 +772,17 @@ actor Algo_MvLXReconstr(bool IsPredL0)
 		ComputeMvpL0         (ComputeMvLX.Done                  )--> GetMbType;
 
 		ComputeSubMvpL0      (ComputeSubMvLX.Launch8x8          )--> ComputeSubMvpL0;
-		ComputeSubMvpL0      (ComputeSubMvLX.LaunchB_Direct_8x8 )--> SendSubMv4Direct;
 		ComputeSubMvpL0      (ComputeSubMvLX.Launch8x4          )--> ComputeSubMvpL0;
 		ComputeSubMvpL0      (ComputeSubMvLX.Launch4x8          )--> ComputeSubMvpL0;
 		ComputeSubMvpL0      (ComputeSubMvLX.Launch4x4          )--> ComputeSubMvpL0;
 		ComputeSubMvpL0      (ComputeSubMvLX.Skip               )--> ComputeSubMvpL0;
 		ComputeSubMvpL0      (ComputeSubMvLX.Done               )--> ComputeMvpL0;
-
-		SendSubMv4Direct     (SendSubMv4Direct                  )--> ComputeSubMvpL0;
 	end
 
 	priority
 		checkMbType.isIorSI              > checkMbType.isOthers;
 		checkMbType.isPSkipL0            > checkMbType.isOthers;
 		checkMbType.isPSkipL1            > checkMbType.isOthers;
-		checkMbType.isBSkipBDirect16x16 > checkMbType.isOthers;
 		GetMbType                        > getNewPic;
 	end
 end
