@@ -98,12 +98,10 @@ actor Algo_VariableLengthDecoding()
 	uint(size=32) binString;
 	uint(size=3)  cabacFLRemainBits;
 
-	uint(size=6) mbTypeNeighbourA;
-	uint(size=6) mbTypeNeighbourB;
-	bool         neighbourAAvail;
-	bool         neighbourBAvail;
-	uint(size=16) neighbourAAddr;
-	uint(size=16) neighbourBAddr;
+	uint(size=6)  mbTypeNeighbours[2];
+	bool          neighboursAvail[2];
+	uint(size=16) neighboursAddr[2];
+	uint(size=4)  neighboursIntraPredC[2];
 
 	uint(size=11) ctxIdx;
 	bool          byPass = false;
@@ -114,9 +112,6 @@ actor Algo_VariableLengthDecoding()
 	procedure getCtxIdx(uint(size=11) ctxIdxOffset)
 	begin
 		uint(size=2)  ctxIdxInc;
-		//temp : remove it when the Bug in Orcc will be fixed
-		bool neighboursAvail[2] = [neighbourAAvail, neighbourBAvail];
-		uint(size=6) mbTypeNeighbours[2] = [mbTypeNeighbourA, mbTypeNeighbourB];
 
 		if(binIdx = 0) then
 			if(ctxIdxOffset = 0 or ctxIdxOffset = 3 or ctxIdxOffset = 27) then
@@ -138,8 +133,8 @@ actor Algo_VariableLengthDecoding()
 					uint(size=6) prevMbType, uint(size=8) prevCbp, int(size=8)
 					prevMbQpDelta);*/
 			elsif(ctxIdxOffset = 64) then
-				/*ctxIdxInc := getCtxIdxIncIntraChromPred(bool neighbourAvail[2],
-					uint(size=6) neighbourMbType[2], uint(size=4) neighbourIntraPredC[2]);*/
+				ctxIdxInc := getCtxIdxIncIntraChromPred(neighboursAvail,
+					mbTypeNeighbours, neighboursIntraPredC);
 			elsif(ctxIdxOffset = 70) then
 				/* We don't manage field */
 //				ctxIdxInc := getCtxIdxIncMbFieldDec([neighbourAAvail,
@@ -296,12 +291,12 @@ actor Algo_VariableLengthDecoding()
 		    Luma 16x16 Block DC
 		 *********************************************************************/
 		if ctxBlockCat = 0 then
-			if(neighbourAAvail and Is_Intra_16x16(mbTypeNeighbourA)) then
-				transBlockA := neighbourAAddr;
+			if(neighboursAvail[0] and Is_Intra_16x16(mbTypeNeighbours[0])) then
+				transBlockA := neighboursAddr[0];
 			end
 
-			if(neighbourBAvail and Is_Intra_16x16(mbTypeNeighbourB)) then
-				transBlockB := neighbourBAddr;
+			if(neighboursAvail[1] and Is_Intra_16x16(mbTypeNeighbours[1])) then
+				transBlockB := neighboursAddr[1];
 			end
 		end
 		
@@ -740,6 +735,18 @@ actor Algo_VariableLengthDecoding()
 			end;
 	end
 
+	isCabacIntraChroma: action TypeOfVLD:[typeOfVld], VLD_Param:[intraChroma] repeat 2 ==>
+	guard
+		typeOfVld = CABAC_INTRA_CHROMA_PRED_MODE
+	do
+		binIdx        := -1;
+		binString     :=  0;
+		syntaxElement := typeOfVld;
+
+		neighboursIntraPredC[0] := intraChroma[0];
+		neighboursIntraPredC[1] := intraChroma[1];
+	end
+
 	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
 	guard
 		ValTypeOfVLD = CAVLC_LEVEL_PREFIX
@@ -762,10 +769,10 @@ actor Algo_VariableLengthDecoding()
 	guard
 		typeOfVld = CABAC_INIT_MB_VAL
 	do
-		neighbourAAvail := getFlag(param[0], 0);
-		neighbourBAvail := getFlag(param[0], 1);
-		mbTypeNeighbourA := param[1];
-		mbTypeNeighbourB := param[2];
+		neighboursAvail[0] := getFlag(param[0], 0);
+		neighboursAvail[1] := getFlag(param[0], 1);
+		mbTypeNeighbours[0] := param[1];
+		mbTypeNeighbours[1] := param[2];
 	end
 
 	Buffer.IsEmpty: action ==>
@@ -1072,16 +1079,22 @@ actor Algo_VariableLengthDecoding()
 
 	cabacCheckBinarization.done: action ==> ValDecoded:[decodedVal]
 	guard
-		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits)
+		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits, binVal)
 	do
 		int(size=32) decodedVal;
 
 		decodedVal :=
 			if(isCabacFL(syntaxElement)) then
 				binString + (binVal << binIdx)
+			else if(syntaxElement = CABAC_INTRA_CHROMA_PRED_MODE) then
+				if(binVal = 1)then
+					3
+				else
+					binIdx
+				end
 			else
 				getBinarizationValue(binIdx, binString)
-			end;
+			end end;
 	end
 
 	cabacCheckBinarization.notFinished: action ==>
@@ -1111,7 +1124,8 @@ actor Algo_VariableLengthDecoding()
 		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
 		CheckVLDType    (isCabacInit        )--> CabacInitContextVar;
 		CheckVLDType    (isCabacInitMbVal   )--> CheckVLDType;
-		CheckVLDType    (isCabacDecod      )--> CabacGetCtxIdx;
+		CheckVLDType    (isCabacDecod       )--> CabacGetCtxIdx;
+		CheckVLDType    (isCabacIntraChroma )--> CabacGetCtxIdx;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;

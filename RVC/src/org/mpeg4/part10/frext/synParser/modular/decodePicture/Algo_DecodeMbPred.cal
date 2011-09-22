@@ -18,6 +18,7 @@ package org.mpeg4.part10.frext.synParser.modular.decodePicture;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import std.util.BitOps.*;
+import org.mpeg4.part10.Imp_PictureInfo.*;
 
 actor Algo_DecodeMbPred()
 	int (size=32) ValVLD,
@@ -38,14 +39,13 @@ actor Algo_DecodeMbPred()
 		:
 
 	bool DEBUG_MV           = false;
-	bool DEBUG_FLAG_DECODED = false;
+	bool DEBUG_FLAG_DECODED = true;
 
 	List (type:uint(size=4),size=16) rem_intraYxY_pred_mode := [ 0 : for int i in 0 .. 15];
 
 	uint(size=5)  lumaYxYBlkIdx := 0;
 	uint(size=2)  BitMissed     := 0;
 	int (size=6)  CountBit      := 0;
-	//uint(size=2)  intra_chroma_pred_mode;
 	uint(size=5)  mbPartIdx     := 0;
 	uint(size=5)  mbPartIdxMax  := 0;
 	//MbLayer Parameters
@@ -56,8 +56,10 @@ actor Algo_DecodeMbPred()
 	uint(size=5)  num_ref_idx_l1_active;
 	bool          mb_field_decoding_flag;
 
+	uint(size=32) picWidthInMbs;
+	uint(size=32) currMbAddr;
 	bool          entropyCodingMode;
-
+	uint(size=4)  intraPredModeChTab[POW2_PICWIDTH_BLK_PLUS1];
 
 	function Is_Intra_8x8(uint MbType)
 				-->
@@ -84,7 +86,7 @@ actor Algo_DecodeMbPred()
 	ReadParameters: action
 			Parameters :[ MbType            , ChromaArrayType , 
 			              NumRefIdxL0Active , NumRefIdxL1Active ,
-			              Flags]
+			              Flags, picWidthInMbsVal, currMbAddrVal]
 				==>
 		do
 			mb_type                 := MbType;
@@ -96,6 +98,8 @@ actor Algo_DecodeMbPred()
 			mb_field_decoding_flag  := getFlag(Flags,0);
 			lumaYxYBlkIdx           := 0;
 			BitMissed               := 0;
+			picWidthInMbs := picWidthInMbsVal;
+			currMbAddr    := currMbAddrVal;
 		end
 
 	MbType.IsIntra_YxY: action ==>
@@ -240,25 +244,38 @@ actor Algo_DecodeMbPred()
 			RemIntraYxYPredMode:[rem_intraYxY_pred_mode] repeat 4
 		end
 
-	ChromaArrayTp.IsEqualTo1or2: action
-				==>
-			//          intra_chroma_pred_mode
-			TypeOfVLD    :[    VLD_UE     ]
-		guard
-			   Chroma_Array_Type = 1
-			or Chroma_Array_Type = 2
-		end
+	//                                           intra_chroma_pred_mode
+	ChromaArrayTp.IsEqualTo1or2.cavlc: action ==> TypeOfVLD:[VLD_UE]
+	guard
+	   Chroma_Array_Type = 1 or Chroma_Array_Type = 2,
+	   not entropyCodingMode
+	end
 
-	ReadIntraChroma: action
-			ValVLD         :[ValueOfVLD]
-				==>
-			IntraPredModeC :[ValueOfVLD]
-		do
-			//intra_chroma_pred_mode := ValueOfVLD;
-			if(DEBUG_FLAG_DECODED)then
-				println("intra_chroma_pred_mode : "+ValueOfVLD);
-			end
+	//          intra_chroma_pred_mode
+	ChromaArrayTp.IsEqualTo1or2.cabac: action ==>
+		TypeOfVLD:[CABAC_INTRA_CHROMA_PRED_MODE],
+		NbBitsToRead:[chromaArray] repeat 2
+	guard
+		Chroma_Array_Type = 1 or Chroma_Array_Type = 2,
+		entropyCodingMode
+	do
+		uint(size=4) chromaArray[2];
+
+		chromaArray[0] := intraPredModeChTab[(currMbAddr - 1) &
+			MASK_POW2_PICWIDTH_BLK_PLUS1];
+		chromaArray[1] := intraPredModeChTab[(currMbAddr - picWidthInMbs) &
+			 MASK_POW2_PICWIDTH_BLK_PLUS1];
+	end
+
+	ReadIntraChroma: action ValVLD:[ValueOfVLD] ==>
+		IntraPredModeC :[ValueOfVLD]
+	do
+		intraPredModeChTab[currMbAddr & MASK_POW2_PICWIDTH_BLK_PLUS1] :=
+			ValueOfVLD;
+		if(DEBUG_FLAG_DECODED)then
+			println("intra_chroma_pred_mode : "+ValueOfVLD);
 		end
+	end
 
 	Mb_Type.IsNotEqualToDirect: action
 				==>
