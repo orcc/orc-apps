@@ -92,9 +92,12 @@ actor Algo_VariableLengthDecoding()
 	int (size=16) codIRange;
 	int (size=16) codIOffset;
 	/* Cabac Mb type parsing */
+	uint(size=5)  syntaxElement;
 	int (size=6)  binIdx;
 	uint(size=1)  binVal;
 	uint(size=32) binString;
+	uint(size=3)  cabacFLRemainBits;
+
 	uint(size=6) mbTypeNeighbourA;
 	uint(size=6) mbTypeNeighbourB;
 	bool         neighbourAAvail;
@@ -111,12 +114,15 @@ actor Algo_VariableLengthDecoding()
 	procedure getCtxIdx(uint(size=11) ctxIdxOffset)
 	begin
 		uint(size=2)  ctxIdxInc;
+		//temp : remove it when the Bug in Orcc will be fixed
+		bool neighboursAvail[2] = [neighbourAAvail, neighbourBAvail];
+		uint(size=6) mbTypeNeighbours[2] = [mbTypeNeighbourA, mbTypeNeighbourB];
 
 		if(binIdx = 0) then
 			if(ctxIdxOffset = 0 or ctxIdxOffset = 3 or ctxIdxOffset = 27) then
-//				ctxIdxInc := getCtxIdxIncMbType([neighbourAAvail, neighbourBAvail],
-//					[mbTypeNeighbourA, mbTypeNeighbourB],
-//					ctxIdxOffset);
+				ctxIdxInc := getCtxIdxIncMbType(/*[neighbourAAvail, neighbourBAvail]*/ neighboursAvail,
+					mbTypeNeighbours/*[mbTypeNeighbourA, mbTypeNeighbourB]*/,
+					ctxIdxOffset);
 			elsif(ctxIdxOffset = 11 or ctxIdxOffset = 24) then
 //				ctxIdxInc := getCtxIdxIncMbSkipFlag([neighbourAAvail,
 //					neighbourBAvail], [mbTypeNeighbourA, mbTypeNeighbourB]);
@@ -492,8 +498,11 @@ actor Algo_VariableLengthDecoding()
 			binVal := valMPS[ctxIdx]; 
 			pStateIdx[ctxIdx] := transIdxMPS[pStateIdx[ctxIdx]];
 		end
-		binString := binString << 1;
-		binString := binString + binVal;
+
+		if(not isCabacFL(syntaxElement)) then
+			binString := binString << 1;
+			binString := binString + binVal;
+		end
 	end
 
 	/* Read bits procedure */
@@ -714,12 +723,16 @@ actor Algo_VariableLengthDecoding()
 		sliceQpY     := qpValue;
 	end
 
-	isCabacMbType: action TypeOfVLD:[typeOfVld] ==>
+	isCabacDecod: action TypeOfVLD:[typeOfVld] ==>
 	guard
-		typeOfVld = CABAC_MB_TYPE_I
+		typeOfVld = CABAC_MB_TYPE_I or typeOfVld = CABAC_PREV_INTRA4x4_8x8_PRED_MODE_FLAG
 	do
 		binIdx        := -1;
 		binString     :=  0;
+		syntaxElement := typeOfVld;
+
+		//Needed for FL decoding.
+		cabacFLRemainBits := 1;
 	end
 
 	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
@@ -1022,7 +1035,11 @@ actor Algo_VariableLengthDecoding()
 		uint(size=11) ctxIdxOffset;
 
 		binIdx := binIdx + 1;
-		ctxIdxOffset := getCtxIdxOff(CABAC_MB_TYPE_I);
+
+		//Only needed for Fixed Lenght decoding
+		cabacFLRemainBits := cabacFLRemainBits - 1;
+
+		ctxIdxOffset := getCtxIdxOff(syntaxElement,0);
 		getCtxIdx(ctxIdxOffset);
 		//Begining of DecodeBin(ctxIdx)
 //		if(byPass) then
@@ -1050,14 +1067,23 @@ actor Algo_VariableLengthDecoding()
 
 	cabacCheckBinarization.done: action ==> ValDecoded:[decodedVal]
 	guard
-		binarizationDone(binIdx, binString)
+		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits)
 	do
 		int(size=32) decodedVal;
 
-		decodedVal := getBinarizationValue(binIdx, binString);
+		decodedVal :=
+			if(isCabacFL(syntaxElement)) then
+				binString + (binVal << 0)
+			else
+				getBinarizationValue(binIdx, binString)
+			end;
 	end
 
 	cabacCheckBinarization.notFinished: action ==>
+	do
+		if(isCabacFL(syntaxElement)) then
+			binString := binString + (binVal << cabacFLRemainBits);
+		end
 	end
 /*
 *
@@ -1080,7 +1106,7 @@ actor Algo_VariableLengthDecoding()
 		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
 		CheckVLDType    (isCabacInit        )--> CabacInitContextVar;
 		CheckVLDType    (isCabacInitMbVal   )--> CheckVLDType;
-		CheckVLDType    (isCabacMbType      )--> CabacGetCtxIdx;
+		CheckVLDType    (isCabacDecod      )--> CabacGetCtxIdx;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
