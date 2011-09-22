@@ -38,7 +38,7 @@ actor Algo_DecodeMbPred()
 		:
 
 	bool DEBUG_MV           = false;
-	bool DEBUG_FLAG_DECODED = true;
+	bool DEBUG_FLAG_DECODED = false;
 
 	List (type:uint(size=4),size=16) rem_intraYxY_pred_mode := [ 0 : for int i in 0 .. 15];
 
@@ -103,78 +103,12 @@ actor Algo_DecodeMbPred()
 		Mb_IsIntra(mb_type) and mb_type != BLOCK_TYPE_I_PCM
 	end
 
-//We read 16 bits for limiting communication with others actors and improving performance
-	MbType.IsIntra_4x4.cavlc: action
-				==>
-			//  prev_intra4x4_pred_mode_flag and rem_intra4x4_pred_mode
-			TypeOfVLD    :[ READ_BITS ],
-			NbBitsToRead :[    16     ]
-		guard
-			Is_Intra_4x4(mb_type) and not entropyCodingMode
-		do
-			CountBit := 16;
-		end
 
 /*for( luma4x4BlkIdx=0; luma4x4BlkIdx<16; luma4x4BlkIdx++ ) {
    prev_intra4x4_pred_mode_flag[ luma4x4BlkIdx ]
    if( !prev_intra4x4_pred_mode_flag[ luma4x4BlkIdx ] )
        rem_intra4x4_pred_mode[ luma4x4BlkIdx ]
 }*/
-
-
-	ReadPrevAndRemIntraYxY: action
-			ValVLD :[ValueOfVLD]
-				==>
-		var
-			uint(size=16) Buff
-		do
-			Buff := ValueOfVLD;
-			Buff := Buff << (16-CountBit);
-
-			if(BitMissed > 0)then
-				rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1] := rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1] + (Buff >> (16-BitMissed));
-				CountBit := CountBit - BitMissed;
-				Buff := (Buff << BitMissed);
-				if(DEBUG_FLAG_DECODED)then
-					println("rem_intraYxY_pred_mode["+(lumaYxYBlkIdx - 1)+"] : "+rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1]);
-				end
-			end
-			while(CountBit > 0)
-			do
-				if((Buff & 0x8000) = 0) then
-					CountBit := CountBit - 1;
-					Buff     := (Buff << 1);
-					rem_intraYxY_pred_mode[lumaYxYBlkIdx] := (Buff >> 13);
-					CountBit := CountBit - 3;
-					Buff     := (Buff << 3);
-					if(CountBit >= 0 and DEBUG_FLAG_DECODED)then
-						println("rem_intraYxY_pred_mode["+lumaYxYBlkIdx+"] : "+rem_intraYxY_pred_mode[lumaYxYBlkIdx]);
-					end
-				else
-					rem_intraYxY_pred_mode[lumaYxYBlkIdx] := 15;
-					CountBit := CountBit - 1;
-					Buff     := (Buff << 1);
-					if(DEBUG_FLAG_DECODED)then
-						println("rem_intraYxY_pred_mode["+lumaYxYBlkIdx+"] : -1");
-					end
-				end
-				lumaYxYBlkIdx := lumaYxYBlkIdx + 1;
-			end
-			BitMissed := -CountBit;
-		end
-
-	ReadPrevAndRemIntra4x4.NotFinished: action
-				==>
-			//  prev_intra4x4_pred_mode_flag and rem_intra4x4_pred_mode
-			TypeOfVLD    :[    READ_BITS     ],
-			NbBitsToRead :[      CountBit ]
-		guard
-			(lumaYxYBlkIdx < 16) or (BitMissed > 0)
-		do
-			//Compute the minimal remaining bits
-			CountBit := BitMissed + 16 - lumaYxYBlkIdx;
-		end
-
 	ReadPrevAndRemIntra4x4.Finished: action
 				==>
 			RemIntraYxYPredMode:[rem_intraYxY_pred_mode] repeat 16
@@ -186,13 +120,15 @@ actor Algo_DecodeMbPred()
 		lumaYxYBlkIdx < 16 and Is_Intra_4x4(mb_type) and entropyCodingMode
 	end
 
-	readPrevAndRem.finished: action ==>
-	end
 
-	MbType.IsIntra_4x4.cavlc1: action ==> TypeOfVLD:[READ_BITS],
+	MbType.IsIntra_4x4.cavlc: action ==> TypeOfVLD:[READ_BITS],
 		NbBitsToRead:[1]
 	guard
 		lumaYxYBlkIdx < 16 and Is_Intra_4x4(mb_type) and not entropyCodingMode
+	end
+
+	readPrevAndRem.finished: action ==>
+		RemIntraYxYPredMode:[rem_intraYxY_pred_mode] repeat 16
 	end
 
 	ReadRemIntraYxY.asked.cabac: action ValVLD:[prevIntraYxY] ==>
@@ -246,6 +182,47 @@ actor Algo_DecodeMbPred()
 			CountBit := 4;
 		end
 
+
+	ReadPrevAndRemIntraYxY: action
+			ValVLD :[ValueOfVLD]
+				==>
+		var
+			uint(size=16) Buff
+		do
+			Buff := ValueOfVLD;
+			Buff := Buff << (16-CountBit);
+
+			if(BitMissed > 0)then
+				rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1] := rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1] + (Buff >> (16-BitMissed));
+				CountBit := CountBit - BitMissed;
+				Buff := (Buff << BitMissed);
+				if(DEBUG_FLAG_DECODED)then
+					println("rem_intraYxY_pred_mode["+(lumaYxYBlkIdx - 1)+"] : "+rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1]);
+				end
+			end
+			while(CountBit > 0)
+			do
+				if((Buff & 0x8000) = 0) then
+					CountBit := CountBit - 1;
+					Buff     := (Buff << 1);
+					rem_intraYxY_pred_mode[lumaYxYBlkIdx] := (Buff >> 13);
+					CountBit := CountBit - 3;
+					Buff     := (Buff << 3);
+					if(CountBit >= 0 and DEBUG_FLAG_DECODED)then
+						println("rem_intraYxY_pred_mode["+lumaYxYBlkIdx+"] : "+rem_intraYxY_pred_mode[lumaYxYBlkIdx]);
+					end
+				else
+					rem_intraYxY_pred_mode[lumaYxYBlkIdx] := 15;
+					CountBit := CountBit - 1;
+					Buff     := (Buff << 1);
+					if(DEBUG_FLAG_DECODED)then
+						println("rem_intraYxY_pred_mode["+lumaYxYBlkIdx+"] : -1");
+					end
+				end
+				lumaYxYBlkIdx := lumaYxYBlkIdx + 1;
+			end
+			BitMissed := -CountBit;
+		end
 	ReadPrevAndRemIntra8x8.NotFinished: action
 				==>
 			//  prev_intra4x4_pred_mode_flag and rem_intra4x4_pred_mode
@@ -498,24 +475,18 @@ actor Algo_DecodeMbPred()
 		CheckMbType   (Mb_Type.IsNotEqualToDirect )-->ReadRefIdxl0Asked;
 		CheckMbType   (SendEndMbPred)--> ReadParameters;
 
-		CheckMbTypeYxY (MbType.IsIntra_4x4.cavlc )--> ReadPrevAndRemIntra4x4;
-		CheckMbTypeYxY (MbType.IsIntra_4x4.cabac )--> ReadRemIntra4x4Cabac;
+		CheckMbTypeYxY (MbType.IsIntra_4x4 )--> ReadRemIntra4x4;
 		CheckMbTypeYxY (MbType.IsIntra_8x8       )--> ReadPrevAndRemIntra8x8;
 		CheckMbTypeYxY (ChromaArrayTp.IsEqualTo1or2  )--> ReadIntraChroma;
 		CheckMbTypeYxY (SendEndMbPred  )--> ReadParameters;
 
-		ReadPrevAndRemIntra4x4 ( ReadPrevAndRemIntraYxY)-->CheckEndOfReadPrev4x4;
+		ReadRemIntra4x4       (ReadRemIntraYxY.asked    )--> GetRemIntra4x4;
+		ReadRemIntra4x4       (ReadRemIntraYxY.skip     )--> CheckEndOfReadPrev4x4;
 
-		CheckEndOfReadPrev4x4( ReadPrevAndRemIntra4x4.NotFinished )--> ReadPrevAndRemIntra4x4;
-		CheckEndOfReadPrev4x4( ReadPrevAndRemIntra4x4.Finished    )--> CheckChromaArrayTp;
+		GetRemIntra4x4 (getRemIntraYxY )--> CheckEndOfReadPrev4x4;
 
-		ReadRemIntra4x4Cabac       (ReadRemIntraYxY.asked    )--> GetRemIntra4x4Cabac;
-		ReadRemIntra4x4Cabac       (ReadRemIntraYxY.skip     )--> CheckEndOfReadPrev4x4Cabac;
-
-		GetRemIntra4x4Cabac (getRemIntraYxY )--> CheckEndOfReadPrev4x4Cabac;
-
-		CheckEndOfReadPrev4x4Cabac (MbType.IsIntra_4x4.cabac )--> ReadRemIntra4x4Cabac;
-		CheckEndOfReadPrev4x4Cabac (readPrevAndRem.finished  )--> CheckChromaArrayTp;
+		CheckEndOfReadPrev4x4 (MbType.IsIntra_4x4       )--> ReadRemIntra4x4;
+		CheckEndOfReadPrev4x4 (readPrevAndRem.finished  )--> CheckChromaArrayTp;
 
 		ReadPrevAndRemIntra8x8 ( ReadPrevAndRemIntraYxY)-->CheckEndOfReadPrev8x8;
 
@@ -566,7 +537,6 @@ actor Algo_DecodeMbPred()
 		MbType.IsIntra_YxY                 > Mb_Type.IsNotEqualToDirect       > SendEndMbPred;
 		MbType.IsIntra_4x4                 > MbType.IsIntra_8x8               > ChromaArrayTp.IsEqualTo1or2;
 		ChromaArrayTp.IsEqualTo1or2        > SendEndMbPred;
-		ReadPrevAndRemIntra4x4.NotFinished > ReadPrevAndRemIntra4x4.Finished;
 		ReadPrevAndRemIntra8x8.NotFinished > ReadPrevAndRemIntra8x8.Finished;
 		ReadRefIdxl0             > ReadParam.Skip1Parameter;
 		ReadRefIdxl1             > ReadParam.Skip1Parameter;
