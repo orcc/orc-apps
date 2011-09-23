@@ -96,7 +96,10 @@ actor Algo_VariableLengthDecoding()
 	int (size=6)  binIdx;
 	uint(size=1)  binVal;
 	uint(size=32) binString;
+	uint(size=32) binStringPrefix;
 	uint(size=3)  cabacFLRemainBits;
+	bool          hasSuffix     := false;
+	bool          prefixDecoded := false;
 
 	uint(size=6)  mbTypeNeighbours[2];
 	bool          neighboursAvail[2];
@@ -496,7 +499,7 @@ actor Algo_VariableLengthDecoding()
 			pStateIdx[ctxIdx] := transIdxMPS[pStateIdx[ctxIdx]];
 		end
 
-		if(not isCabacFL(syntaxElement)) then
+		if(not isCabacFL(syntaxElement, not prefixDecoded)) then
 			binString := binString << 1;
 			binString := binString + binVal;
 		end
@@ -612,7 +615,6 @@ actor Algo_VariableLengthDecoding()
 		leadingZeroBits := 0;
 		CodeNum         := 0;
 	end
-
 
 	IsVldSe: action TypeOfVLD :[ValTypeOfVLD] ==>
 	guard
@@ -756,6 +758,8 @@ actor Algo_VariableLengthDecoding()
 			neighboursCbpChroma[0] := param[0]  /  16;
 			neighboursCbpChroma[1] := param[1]  /  16;
 			cabacFLRemainBits := 4;
+			prefixDecoded := false;
+			hasSuffix     := true;
 		end
 	end
 
@@ -1063,7 +1067,7 @@ actor Algo_VariableLengthDecoding()
 		//Only needed for Fixed Lenght decoding
 		cabacFLRemainBits := cabacFLRemainBits - 1;
 
-		ctxIdxOffset := getCtxIdxOff(syntaxElement,0);
+		ctxIdxOffset := getCtxIdxOff(syntaxElement,prefixDecoded);
 		getCtxIdx(ctxIdxOffset);
 		//Begining of DecodeBin(ctxIdx)
 //		if(byPass) then
@@ -1091,12 +1095,13 @@ actor Algo_VariableLengthDecoding()
 
 	cabacCheckBinarization.done: action ==> ValDecoded:[decodedVal]
 	guard
-		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits, binVal)
+		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits, binVal, not prefixDecoded),
+		not hasSuffix or prefixDecoded
 	do
 		int(size=32) decodedVal;
 
 		decodedVal :=
-			if(isCabacFL(syntaxElement)) then
+			if(isCabacFL(syntaxElement, not prefixDecoded)) then
 				binString + (binVal << binIdx)
 			else if(syntaxElement = CABAC_INTRA_CHROMA_PRED_MODE) then
 				if(binVal = 1)then
@@ -1104,19 +1109,36 @@ actor Algo_VariableLengthDecoding()
 				else
 					binIdx
 				end
+			else if(syntaxElement = CABAC_CODED_BLOCK_PATERN) then
+				if(binVal = 1)then
+					(2 << 4) + binStringPrefix
+				else
+					(binIdx << 4) + binStringPrefix
+				end
 			else
 				getBinarizationValue(binIdx, binString)
-			end end;
+			end end end;
 	end
 
 	cabacCheckBinarization.notFinished: action ==>
 	do
-		if(isCabacFL(syntaxElement)) then
+		if(isCabacFL(syntaxElement, not prefixDecoded)) then
 			binString := binString + (binVal << binIdx);
 		end
 		//Only needed by coded_block_pattern
 		priorDecBinVal[binIdx] := binVal;
 	end
+
+	cabacInitForSuffix: action ==>
+	guard
+		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits, binVal, not prefixDecoded)
+	do
+		prefixDecoded   := true;
+		binStringPrefix := binString + (binVal << binIdx);
+		binIdx          := -1;
+		binString       :=  0;
+	end
+
 /*
 *
 * Scheduler
@@ -1228,6 +1250,7 @@ actor Algo_VariableLengthDecoding()
 		RenormD (cabacRenormD.launch )--> CabacFillOutBuffer;
 		RenormD (cabacRenormD.skip   )--> CabacCheckBinarization;
 		CabacCheckBinarization (cabacCheckBinarization.notFinished )--> CabacGetCtxIdx;
+		CabacCheckBinarization (cabacInitForSuffix                 )--> CabacGetCtxIdx;
 		CabacCheckBinarization (cabacCheckBinarization.done        )--> CheckVLDType;
 	end
 	
@@ -1245,6 +1268,6 @@ actor Algo_VariableLengthDecoding()
 		GetCavlcTotalZeros.NotFinished  > GetCavlcTotalZeros.Finished;
 		GetCavlcRunBefore.NotFinished   > GetCavlcRunBefore.Finished;
 		Buffer > cabacInitArithDecod    > FillBufferRbsp;
-		cabacCheckBinarization.done     > cabacCheckBinarization.notFinished;
+		cabacCheckBinarization.done     > cabacInitForSuffix > cabacCheckBinarization.notFinished;
 	end
 end
