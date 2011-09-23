@@ -108,6 +108,8 @@ actor Algo_VariableLengthDecoding()
 	uint(size=2)  neighboursCbpLuma[2];
 	uint(size=2)  neighboursCbpChroma[2];
 	uint(size=1)  priorDecBinVal[4];
+	uint(size=6)  prevCbp;
+	int(size=8)   prevMbQpDelta;
 
 	uint(size=11) ctxIdx;
 	bool          byPass = false;
@@ -138,9 +140,10 @@ actor Algo_VariableLengthDecoding()
 			elsif(ctxIdxOffset = 54) then
 				/*ctxIdxInc := getCtxIdxIncRefIdx();*/
 			elsif(ctxIdxOffset = 60) then
-				/*ctxIdxInc := getCtxIdxIncMbQpDelta(bool prevMbAvail,
-					uint(size=6) prevMbType, uint(size=8) prevCbp, int(size=8)
-					prevMbQpDelta);*/
+				// /!\ should be the previous Mb and not the neighbour for avail
+				// and mbtype
+				ctxIdxInc := getCtxIdxIncMbQpDelta(neighboursAvail[0],
+					mbTypeNeighbours[0], prevCbp,  prevMbQpDelta);
 			elsif(ctxIdxOffset = 64) then
 				ctxIdxInc := getCtxIdxIncIntraChromPred(neighboursAvail,
 					mbTypeNeighbours, neighboursIntraPredC);
@@ -756,7 +759,8 @@ actor Algo_VariableLengthDecoding()
 		VLD_Param:[param] repeat 2 ==>
 	guard
 		typeOfVld = CABAC_INTRA_CHROMA_PRED_MODE or
-		typeOfVld = CABAC_CODED_BLOCK_PATERN
+		typeOfVld = CABAC_CODED_BLOCK_PATERN or
+		typeOfVld = CABAC_MB_QP_DELTA
 	do
 		binIdx        := -1;
 		binString     :=  0;
@@ -765,7 +769,7 @@ actor Algo_VariableLengthDecoding()
 		if(typeOfVld = CABAC_INTRA_CHROMA_PRED_MODE) then
 			neighboursIntraPredC[0] := param[0];
 			neighboursIntraPredC[1] := param[1];
-		else
+		else if (typeOfVld = CABAC_CODED_BLOCK_PATERN) then
 			neighboursCbpLuma[0]   := param[0] mod 16;
 			neighboursCbpLuma[1]   := param[1] mod 16;
 			neighboursCbpChroma[0] := param[0]  /  16;
@@ -773,7 +777,10 @@ actor Algo_VariableLengthDecoding()
 			cabacFLRemainBits := 4;
 			prefixDecoded := false;
 			hasSuffix     := true;
-		end
+		else
+			prevCbp := param[0];
+			prevMbQpDelta := param[1];
+		end end
 	end
 
 	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
@@ -1128,9 +1135,16 @@ actor Algo_VariableLengthDecoding()
 				else
 					(binIdx << 4) + binStringPrefix
 				end
+			else if(syntaxElement = CABAC_MB_QP_DELTA) then
+				if( ((binIdx + 1) & 1) = 0 )then
+					(binIdx + 1) / 2
+				else
+					-binIdx / 2
+				end
 			else
 				getBinarizationValue(binIdx, binString)
-			end end end;
+			end end end end;
+		hasSuffix := false;
 	end
 
 	cabacCheckBinarization.notFinished: action ==>

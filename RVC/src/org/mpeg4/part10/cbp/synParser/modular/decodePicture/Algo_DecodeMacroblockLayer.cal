@@ -144,6 +144,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	int (size=8)  Qp_CrValue;
 	int (size=5)  chroma_qp_index_offset;
 	int (size=5)  second_chroma_qp_index_offset;
+	int (size=8)  prevMbQpDelta;
+	int (size=8)  currMbQpDelta;
 	bool          adaptBaseMode = false; /// !!!!!!!!!!!!!!!!!
 	bool          baseMode := false;
 	bool          residualPred = false; //!!!!!!!!!!!!!
@@ -211,6 +213,9 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		NbCoeffChroma := param[35] * param[36];
 		picWidthInMbs := param[37];
 		currMbAddr    := param[38];
+
+		prevMbQpDelta := currMbQpDelta;
+		currMbQpDelta  := 0;
 	end
 
 	askBaseModeFlag: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
@@ -529,21 +534,34 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 				end;
 		end
 
-	ReadMbQpDelta.Asked: action
-				==>
 			//            mb_qp_delta
-			TypeOfVLD    :[  VLD_SE  ]
-		guard
-			   (CodedBlockPatternLuma   > 0)
-			or (CodedBlockPatternChroma > 0)
-			or (not baseMode or isAvc) and Is_Intra_16x16(mb_type)
-		end
+	ReadMbQpDelta.Asked.cavlc: action ==> TypeOfVLD:[VLD_SE]
+	guard
+		(CodedBlockPatternLuma   > 0) or (CodedBlockPatternChroma > 0)
+		or (not baseMode or isAvc) and Is_Intra_16x16(mb_type),
+		not entropyCodingMode
+	end
+
+	ReadMbQpDelta.Asked.cabac: action ==> TypeOfVLD:[CABAC_MB_QP_DELTA],
+		VLDParam:[param] repeat 2
+	guard
+		(CodedBlockPatternLuma   > 0) or (CodedBlockPatternChroma > 0)
+		or (not baseMode or isAvc) and Is_Intra_16x16(mb_type),
+		not entropyCodingMode
+	do
+		int(size=32) param[2];
+
+		param[0] := codedBlkPattTab[(currMbAddr - 1) &
+			MASK_POW2_PICWIDTH_BLK_PLUS1];
+		param[1] := prevMbQpDelta;
+	end
 
 	ReadMbQpDelta.Done: action
 			ValVLD :[ValueOfVLD]
 				==>
 			QpFeedback              :[QpValue , Qp_CbValue , Qp_CrValue]
 		do
+			currMbQpDelta := ValueOfVLD;
 			if(DEBUG)then
 				println("mb_qp_delta : "+ValueOfVLD);
 			end
