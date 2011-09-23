@@ -15,6 +15,7 @@ This copyright notice must be included in all copies or derivative works. Copyri
 ***********************************************************************/
 package org.mpeg4.part10.cbp.synParser.modular.decodePicture;
 
+import org.mpeg4.part10.Imp_PictureInfo.*;
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import std.util.BitOps.*;
@@ -68,9 +69,10 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	uint(size=4) SLICE_TYPE_SP = 3;
 	uint(size=4) SLICE_TYPE_SI = 4;
 
-	List(type: uint(size=4), size=8) TabCodedBlockPatternChroma = [  0,  1,  2,  0,  1,  2,  0,  0];
-	List(type: uint(size=4), size=8) TabCodedBlockPatternLuma   = [  0,  0,  0, 15, 15, 15,  0,  0];
-	List(type: uint(size=4), size=16) InverseScan4x4Tab         = [ 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ];
+	uint(size=6) TabCodedBlockPattern[8]       = [0x00, 0x10, 0x20, 0x0F, 0x1F, 0x2F, 0x00, 0x00];
+	uint(size=4) TabCodedBlockPatternChroma[8] = [0x00, 0x01, 0x02, 0x00, 0x01, 0x02, 0x00, 0x00];
+	uint(size=4) TabCodedBlockPatternLuma[8]   = [0x00, 0x00, 0x00, 0x0F, 0x0F, 0x0F, 0x00, 0x00];
+	uint(size=4) InverseScan4x4Tab[16]         = [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ];
 
 	List ( type: List ( type: List ( type: uint(size=6), size=2), size=48 ), size=4) VLD_ME_TABLE =
 		[
@@ -116,6 +118,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	uint(size=6)  mb_type                        := 0;
 	bool          noSubMbPartSizeLessThan8x8Flag := true;
 	bool          transform_size_8x8_flag        := true;
+	uint(size=4)  codedBlkPattTab[POW2_PICWIDTH_BLK_PLUS1];
 	uint(size=6)  CodedBlockPatternLuma          := 0;
 	uint(size=6)  CodedBlockPatternChroma        := 0;
 	//int (size=32) mb_qp_delta                    := 0;
@@ -273,6 +276,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			Idx := (mb_type - BLOCK_TYPE_INTRA_16x16_MIN)/4;
 			CodedBlockPatternLuma   := TabCodedBlockPatternLuma[Idx & 7];
 			CodedBlockPatternChroma := TabCodedBlockPatternChroma[Idx & 7];
+			codedBlkPattTab[currMbAddr &
+			MASK_POW2_PICWIDTH_BLK_PLUS1] := TabCodedBlockPattern[Idx & 7];
 		end
 
 	CheckMbType.IsIPCM: action
@@ -455,9 +460,23 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	checkForResidualFlag.skip: action ==>
 	end
 
-	ReadCodedBlockPattern.Asked: action ==> TypeOfVLD:[VLD_UE]
+	ReadCodedBlockPattern.Asked.cavlc: action ==> TypeOfVLD:[VLD_UE]
 	guard
-		not(Is_Intra_16x16(mb_type)) or (baseMode and not isAvc)
+		not(Is_Intra_16x16(mb_type)) or (baseMode and not isAvc),
+		not entropyCodingMode
+	end
+
+	ReadCodedBlockPattern.Asked.cabac: action ==>
+		TypeOfVLD:[CABAC_CODED_BLOCK_PATERN], VLDParam:[codedBlkPatt] repeat 2
+	guard
+		not(Is_Intra_16x16(mb_type)) or (baseMode and not isAvc),
+		entropyCodingMode
+	do
+		uint(size=6) codedBlkPatt[2];
+		codedBlkPatt[0] := codedBlkPattTab[(currMbAddr - 1) &
+			MASK_POW2_PICWIDTH_BLK_PLUS1];
+		codedBlkPatt[1] := codedBlkPattTab[(currMbAddr - picWidthInMbs) &
+			MASK_POW2_PICWIDTH_BLK_PLUS1];
 	end
 
 	ReadCodedBlockPattern.Done: action ValVLD:[CodeNum] ==>
@@ -470,6 +489,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			else
 				VLD_ME_TABLE[Chroma_Array_Type][CodeNum][1]
 			end;
+		codedBlkPattTab[currMbAddr &
+			MASK_POW2_PICWIDTH_BLK_PLUS1] := coded_block_pattern;
 		CodedBlockPatternLuma   := coded_block_pattern mod 16;
 		CodedBlockPatternChroma := coded_block_pattern  /  16;
 		if(DEBUG)then
