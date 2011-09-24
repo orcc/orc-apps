@@ -54,7 +54,9 @@ actor MgntDecodePic()
 	int (size=6)  ResTypeOfVLD,
 	int (size=32) ResActorLaunched,
 	uint(size=5)  ResBlkCavlcTypeOfVLD,
-	int (size=32) ResBlkCavlcVLD_Param
+	int (size=32) ResBlkCavlcVLD_Param,
+	uint(size=5)  ResBlkCabacTypeOfVLD,
+	int (size=32) ResBlkCabacVLD_Param
 		==>
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VLD_Param,
@@ -66,7 +68,8 @@ actor MgntDecodePic()
 	int (size=32) MbLayerValVLD,
 	int (size=32) MbPredValVLD,
 	int (size=32) SubMbPredValVLD,
-	int (size=32) ResBlkCavlcValVLD
+	int (size=32) ResBlkCavlcValVLD,
+	int (size=32) ResBlkCabacValVLD
 		:
 
 	uint(size=8)  callStack[16];
@@ -127,6 +130,11 @@ actor MgntDecodePic()
 	findOutNextActor.isResidualCavlc: action ==>
 	guard
 		callStack[stackIdx] = RESIDUAL_BLOCK_CAVLC
+	end
+
+	findOutNextActor.isResidualCabac: action ==>
+	guard
+		callStack[stackIdx] = RESIDUAL_BLOCK_CABAC
 	end
 
 	getVldVal.done: action ==>
@@ -631,6 +639,62 @@ actor MgntDecodePic()
 		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
+	ResBlkCabac.GetVLDVal.Launch: action
+		ValVLD            :[VLDecoding]
+			==>
+		ResBlkCabacValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	ResBlkCabac.FunctionWithoutParam: action
+		ResBlkCabacTypeOfVLD :[ValTypeOfVLD]
+			==>
+		TypeOfVLD            :[ValTypeOfVLD]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 0,
+		ValTypeOfVLD != SKIP_NAL
+	do
+		if(ValTypeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	ResBlkCabac.FunctionWith1Param: action
+		ResBlkCabacTypeOfVLD :[ValTypeOfVLD],
+		ResBlkCabacVLD_Param :[Param]
+			==>
+		TypeOfVLD            :[ValTypeOfVLD],
+		VLD_Param            :[Param]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	ResBlkCabac.FunctionWith2Param: action
+		ResBlkCabacTypeOfVLD :[ValTypeOfVLD],
+		ResBlkCabacVLD_Param :[Param1 , Param2]
+			==>
+		TypeOfVLD            :[ValTypeOfVLD],
+		VLD_Param            :[Param1 , Param2]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 2
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	ResBlkCabac.Done: action
+		ResBlkCabacTypeOfVLD :[Function]
+			==>
+	guard
+		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
 	schedule fsm FindOutNextActor:
 		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
@@ -642,6 +706,7 @@ actor MgntDecodePic()
 		FindOutNextActor (findOutNextActor.isSubMbPred       )--> LaunchSubMbPred;
 		FindOutNextActor (findOutNextActor.isResidual        )--> LaunchResidual;
 		FindOutNextActor (findOutNextActor.isResidualCavlc   )--> LaunchResBlkCavlc;
+		FindOutNextActor (findOutNextActor.isResidualCabac   )--> LaunchResBlkCabac;
 
 		LaunchSlcHead (SliceHeader1.FunctionWithoutParam )--> LaunchSlcHead;
 		LaunchSlcHead (SliceHeader1.FunctionWith1Param   )--> LaunchSlcHead;
@@ -714,6 +779,14 @@ actor MgntDecodePic()
 		LaunchResBlkCavlc (ResBlkCavlc.Done                 )--> FindOutNextActor;
 			LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Launch      )--> LaunchResBlkCavlcGetVLDVal;
 			LaunchResBlkCavlcGetVLDVal (getVldVal.done        )--> LaunchResBlkCavlc;
+
+		LaunchResBlkCabac (ResBlkCavlc.FunctionWithoutParam )--> LaunchResBlkCabac;
+		LaunchResBlkCabac (ResBlkCavlc.FunctionWith1Param   )--> LaunchResBlkCabac;
+		LaunchResBlkCabac (ResBlkCavlc.FunctionWith2Param   )--> LaunchResBlkCabac;
+		LaunchResBlkCabac (waitVLDVal          )--> LaunchResBlkCavlcGetVLDVal;
+		LaunchResBlkCabac (ResBlkCavlc.Done                 )--> FindOutNextActor;
+			LaunchResBlkCabacGetVLDVal (ResBlkCavlc.GetVLDVal.Launch      )--> LaunchResBlkCabacGetVLDVal;
+			LaunchResBlkCabacGetVLDVal (getVldVal.done        )--> LaunchResBlkCabac;
 	end
 	priority
 		SliceHeader1.FunctionWithoutParam > SliceHeader1.FunctionWith1Param > waitVLDVal > SliceHeader1.LaunchActor;
@@ -739,5 +812,7 @@ actor MgntDecodePic()
 		SubMbPred.GetVLDVal.Launch       > getVldVal.done;
 		ResBlkCavlc.FunctionWithoutParam > ResBlkCavlc.FunctionWith1Param > ResBlkCavlc.FunctionWith2Param > waitVLDVal > ResBlkCavlc.Done;
 		ResBlkCavlc.GetVLDVal.Launch     > getVldVal.done;
+		ResBlkCabac.FunctionWithoutParam > ResBlkCabac.FunctionWith1Param > ResBlkCabac.FunctionWith2Param > waitVLDVal > ResBlkCabac.Done;
+		ResBlkCabac.GetVLDVal.Launch     > getVldVal.done;
 	end
 end
