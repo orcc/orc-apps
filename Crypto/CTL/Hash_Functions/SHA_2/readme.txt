@@ -4,7 +4,7 @@ RVC-CAL Implementation of SHA-2 (FIPS-180-3)
 
 Junaid Jameel Ahmad @ Uni-Konstanz
 
-03 September, 2010
+Last modified: 25.09.2011
 
 **********************************************************
 
@@ -30,8 +30,8 @@ Note: Utilities are located under package CTL.Utilities.
 
 == SHA-2 FU network ==
 
-SHA-224.xdf
-SHA-256.xdf
+Top_SHA_224.xdf
+Top_SHA_256.xdf
 
 Note: SHA-384 and SHA-512 are not yet implemented because of the lack of big integers support in Orcc. 
 They will be implemented after implementing a library for BigIntegers in CAL.

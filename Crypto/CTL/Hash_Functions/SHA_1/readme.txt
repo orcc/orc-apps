@@ -4,7 +4,7 @@ RVC-CAL Implementation of SHA-2 (FIPS-180-3)
 
 Junaid Jameel Ahmad @ Uni-Konstanz
 
-03 September, 2010
+Last modified: 25.09.2011
 
 **********************************************************
 
@@ -29,4 +29,4 @@ Note: Utilities are located under package CTL.Utilities.
 
 == SHA-1 FU network ==
 
-SHA-160.xdf
+Top_SHA_160.xdf
