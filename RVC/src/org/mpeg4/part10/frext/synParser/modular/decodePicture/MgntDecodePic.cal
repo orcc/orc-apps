@@ -28,7 +28,7 @@
  */
  
 // Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
-package org.mpeg4.part10.cbp.synParser.modular.decodePicture;
+package org.mpeg4.part10.frext.synParser.modular.decodePicture;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 //Clean me !!
@@ -54,7 +54,9 @@ actor MgntDecodePic()
 	int (size=6)  ResTypeOfVLD,
 	int (size=32) ResActorLaunched,
 	uint(size=5)  ResBlkCavlcTypeOfVLD,
-	int (size=32) ResBlkCavlcVLD_Param
+	int (size=32) ResBlkCavlcVLD_Param,
+	uint(size=5)  ResBlkCabacTypeOfVLD,
+	int (size=32) ResBlkCabacVLD_Param
 		==>
 	uint(size=5)  TypeOfVLD,
 	int (size=32) VLD_Param,
@@ -66,7 +68,8 @@ actor MgntDecodePic()
 	int (size=32) MbLayerValVLD,
 	int (size=32) MbPredValVLD,
 	int (size=32) SubMbPredValVLD,
-	int (size=32) ResBlkCavlcValVLD
+	int (size=32) ResBlkCavlcValVLD,
+	int (size=32) ResBlkCabacValVLD
 		:
 
 	uint(size=8)  callStack[16];
@@ -632,6 +635,62 @@ actor MgntDecodePic()
 		stackIdx := (stackIdx - 1) & 0x0F;
 	end
 
+	ResBlkCabac.GetVLDVal.Launch: action
+		ValVLD            :[VLDecoding]
+			==>
+		ResBlkCabacValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	ResBlkCabac.vld.withoutParam: action
+		ResBlkCabacTypeOfVLD :[ValTypeOfVLD]
+			==>
+		TypeOfVLD            :[ValTypeOfVLD]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 0,
+		ValTypeOfVLD != SKIP_NAL
+	do
+		if(ValTypeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	ResBlkCabac.vld.with1Param: action
+		ResBlkCabacTypeOfVLD :[ValTypeOfVLD],
+		ResBlkCabacVLD_Param :[Param]
+			==>
+		TypeOfVLD            :[ValTypeOfVLD],
+		VLD_Param            :[Param]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	ResBlkCabac.vld.with2Param: action
+		ResBlkCabacTypeOfVLD :[ValTypeOfVLD],
+		ResBlkCabacVLD_Param :[Param1 , Param2]
+			==>
+		TypeOfVLD            :[ValTypeOfVLD],
+		VLD_Param            :[Param1 , Param2]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 2
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	ResBlkCabac.Done: action
+		ResBlkCabacTypeOfVLD :[Function]
+			==>
+	guard
+		Function = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
 	schedule fsm FindOutNextActor:
 		FindOutNextActor (findOutNextActor.isSliceHeader1    )--> LaunchSlcHead;
 		FindOutNextActor (findOutNextActor.isSliceHeader2Avc )--> LaunchSlcHead2Avc;
@@ -706,6 +765,12 @@ actor MgntDecodePic()
 		LaunchResBlkCavlc (ResBlkCavlc.Done                 )--> FindOutNextActor;
 			LaunchResBlkCavlcGetVLDVal (ResBlkCavlc.GetVLDVal.Launch      )--> LaunchResBlkCavlcGetVLDVal;
 			LaunchResBlkCavlcGetVLDVal (getVldVal.done        )--> LaunchResBlkCavlc;
+
+		LaunchResBlkCabac (ResBlkCabac.vld )--> LaunchResBlkCabac;
+		LaunchResBlkCabac (waitVLDVal          )--> LaunchResBlkCavlcGetVLDVal;
+		LaunchResBlkCabac (ResBlkCavlc.Done                 )--> FindOutNextActor;
+			LaunchResBlkCabacGetVLDVal (ResBlkCabac.GetVLDVal.Launch      )--> LaunchResBlkCabacGetVLDVal;
+			LaunchResBlkCabacGetVLDVal (getVldVal.done        )--> LaunchResBlkCabac;
 	end
 	priority
 		SliceHeader1.vld > waitVLDVal > SliceHeader1.LaunchActor;
@@ -731,5 +796,7 @@ actor MgntDecodePic()
 		SubMbPred.GetVLDVal.Launch       > getVldVal.done;
 		ResBlkCavlc.vld > ResBlkCavlc.FunctionWith2Param > waitVLDVal > ResBlkCavlc.Done;
 		ResBlkCavlc.GetVLDVal.Launch     > getVldVal.done;
+		ResBlkCabac.vld > waitVLDVal > ResBlkCabac.Done;
+		ResBlkCabac.GetVLDVal.Launch     > getVldVal.done;
 	end
 end
