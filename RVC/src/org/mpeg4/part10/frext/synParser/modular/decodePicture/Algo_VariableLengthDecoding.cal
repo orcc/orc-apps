@@ -49,6 +49,8 @@ actor Algo_VariableLengthDecoding()
 
 	bool DEBUG_FLAG_DECODED = false;
 
+	uint(size=2) RENORM_D      = 0;
+	uint(size=2) DECODE_BYPASS = 1;
 
 	//Contains the Byte which is currently read.
 	uint(size=16) WorkingByte      := 0;
@@ -100,6 +102,9 @@ actor Algo_VariableLengthDecoding()
 	uint(size=3)  cabacFLRemainBits;
 	bool          hasSuffix     := false;
 	bool          prefixDecoded := false;
+	uint(size=2)  cabacEndDecodeBin;
+	uint(size=11) ctxIdx;
+	bool          byPass;
 
 	uint(size=4)  ctxBlockCat;
 	uint(size=6)  mbTypeNeighbours[2];
@@ -112,8 +117,6 @@ actor Algo_VariableLengthDecoding()
 	int(size=8)   prevMbQpDelta;
 	uint(size=1)  priorDecBinVal[4];
 
-	uint(size=11) ctxIdx;
-	bool          byPass = false;
 
 	/* Cabac procedures */
 
@@ -552,6 +555,7 @@ actor Algo_VariableLengthDecoding()
 		binIdx        := -1;
 		binString     :=  0;
 		syntaxElement := typeOfVld;
+		byPass        := false;
 
 		//Needed for FL decoding.
 		cabacFLRemainBits :=
@@ -570,6 +574,7 @@ actor Algo_VariableLengthDecoding()
 		binIdx        := -1;
 		binString     :=  0;
 		syntaxElement := typeOfVld;
+		byPass        := false;
 
 		ctxBlockCat := param;
 		cabacFLRemainBits := 1;
@@ -585,6 +590,7 @@ actor Algo_VariableLengthDecoding()
 		binIdx        := -1;
 		binString     :=  0;
 		syntaxElement := typeOfVld;
+		byPass        := false;
 
 		if(typeOfVld = CABAC_INTRA_CHROMA_PRED_MODE) then
 			neighboursIntraPredC[0] := param[0];
@@ -912,18 +918,19 @@ actor Algo_VariableLengthDecoding()
 		ctxIdxOffset := getCtxIdxOff(syntaxElement,prefixDecoded);
 		getCtxIdx(ctxIdxOffset);
 		//Begining of DecodeBin(ctxIdx)
-//		if(byPass) then
-			
+		if(byPass) then
+			cabacEndDecodeBin := DECODE_BYPASS;
 //		elsif(ctxIdx = 276)then
 
-/*		else*/ if(ctxIdx != 276 and not byPass) then
+		else if(ctxIdx != 276 and not byPass) then
 			decodeDecision();
-		end
+			cabacEndDecodeBin := RENORM_D;
+		end end
 	end
 
 	cabacRenormD.launch: action ==>
 	guard
-		codIRange < 0x0100
+		codIRange < 0x0100 and cabacEndDecodeBin = RENORM_D
 	do
 		codIRange := codIRange << 1;
 		ReadNBitsInWorkingByte(codIOffset, 1);
@@ -932,7 +939,21 @@ actor Algo_VariableLengthDecoding()
 
 	cabacRenormD.skip: action ==>
 	guard
-		codIRange >= 0x0100
+		codIRange >= 0x0100 and cabacEndDecodeBin = RENORM_D
+	end
+
+	decodeByPass: action ==>
+	guard
+		cabacEndDecodeBin = DECODE_BYPASS
+	do
+		ReadNBitsInWorkingByte(codIOffset, 1);
+		codIOffset := Out_ReadNBits;
+		if(codIOffset >= codIRange) then
+			binVal := 1;
+			codIOffset := codIOffset - codIRange;
+		else
+			binVal := 0;
+		end
 	end
 
 	cabacCheckBinarization.done: action ==> ValDecoded:[decodedVal]
@@ -1093,10 +1114,12 @@ actor Algo_VariableLengthDecoding()
 
 		/* Cabac Decode Syntax Element */
 		CabacGetCtxIdx     (cabacGetCtxIdx )--> CabacFillOutBuffer;
-		CabacFillOutBuffer (Buffer         )--> RenormD;
+		CabacFillOutBuffer (Buffer         )--> EndDecodeBin;
 		CabacFillOutBuffer (FillBufferRbsp )--> CabacFillOutBuffer;
-		RenormD (cabacRenormD.launch )--> CabacFillOutBuffer;
-		RenormD (cabacRenormD.skip   )--> CabacCheckBinarization;
+		EndDecodeBin (cabacRenormD.launch )--> CabacFillOutBuffer;
+		EndDecodeBin (cabacRenormD.skip   )--> CabacCheckBinarization;
+		EndDecodeBin (decodeByPass        )--> CabacCheckBinarization;
+
 		CabacCheckBinarization (cabacCheckBinarization.notFinished )--> CabacGetCtxIdx;
 		CabacCheckBinarization (cabacInitForSuffix                 )--> CabacGetCtxIdx;
 		CabacCheckBinarization (cabacCheckBinarization.done        )--> CheckVLDType;
