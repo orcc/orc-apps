@@ -46,10 +46,10 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 
 	bool         codedBlock;
 	uint(size=4) ctxBlockCat;
-	uint(size=5) numCoeff;
+	int (size=6) numCoeff;
 	int (size=7) iLoop;
 //	uint(size=7) maxNumCoeff;
-	bool         significantCoeff;
+	bool         significantCoeffTab[64];
 
 	readParameters: action Parameters:[ctxBlkCat, maxNumCoeffVal, startIndex,
 		endIndex] ==>
@@ -57,7 +57,7 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 		ctxBlockCat := ctxBlkCat;
 		numCoeff := endIndex + 1;
 //		maxNumCoeff := maxNumCoeffVal;
-		iLoop := startIndex;
+		iLoop    := startIndex;
 	end
 
 	askCodedBlockFlag: action ==> TypeOfVLD:[CABAC_CODED_BLOCK_FLAG],
@@ -83,7 +83,7 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 
 	getSignificantCoeff: action ValVLD:[signCoeffFlag] ==>
 	do
-		significantCoeff := (signCoeffFlag != 0);
+		significantCoeffTab[iLoop] := (signCoeffFlag != 0);
 		if(DEBUG) then
 			println("significant_coeff_flag : "+signCoeffFlag);
 		end
@@ -91,7 +91,7 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 
 	askLastSignCoeff: action ==> TypeOfVLD:[CABAC_LAST_SIGNIFICANT_COEFF_FLAG]
 	guard
-		significantCoeff
+		significantCoeffTab[iLoop]
 	end
 
 	getLastSignCoeff: action ValVLD:[lastSignCoef] ==>
@@ -100,18 +100,25 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 			println("last_significant_coeff_flag : "+ lastSignCoef);
 		end
 		if(lastSignCoef = 1) then
-			numCoeff := iLoop + 1;
+			numCoeff := iLoop;
 		end
 	end
 
 	checkEndOfLoop.isFalse: action ==>
-	guard
-		iLoop < (numCoeff - 1)
+	guard // numCoeff is equivalent to numCoeff - 1 from the standard
+		iLoop < numCoeff
 	do
 		iLoop := iLoop + 1;
 	end
 
-	askCoeffAbsLvl: action ==> TypeOfVLD:[CABAC_COEFF_ABS_LEVEL_MINUS1]
+	askCoeffAbsLvl.launch: action ==> TypeOfVLD:[CABAC_COEFF_ABS_LEVEL_MINUS1]
+	guard
+		significantCoeffTab[numCoeff]
+	end
+
+	askCoeffAbsLvl.skip: action ==>
+	do
+		numCoeff := numCoeff - 1;
 	end
 
 	getCoeffAbsLvl: action ValVLD:[coeffAbsLvlMin1] ==>
@@ -129,12 +136,12 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 		if(DEBUG) then
 			println("coeff_sign_flag : "+ coeffSignFlag);
 		end
-		iLoop := iLoop - 1;
+		numCoeff := numCoeff - 1;
 	end
 
 	checkEndOfCoeffLoop.isFalse: action ==>
 	guard
-		iLoop >= 0
+		numCoeff >= 0
 	end
 
 	sendEndOfDecoding: action ==> TypeOfVLD:[SKIP_NAL]
@@ -150,25 +157,29 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 		GetSignificantCoeff (getSignificantCoeff    )--> CheckSignCoeffFlag;
 		CheckSignCoeffFlag  (askLastSignCoeff       )--> GetLastSignCoeff;
 		CheckSignCoeffFlag  (checkEndOfLoop.isFalse )--> AskSignificantCoeff;
-		CheckSignCoeffFlag  (askCoeffAbsLvl         )--> GetCoeffAbsLvl;
+		CheckSignCoeffFlag  (askCoeffAbsLvl.launch  )--> GetCoeffAbsLvl;
+		CheckSignCoeffFlag  (askCoeffAbsLvl.skip    )--> CheckEndOfCoeffLoop;
 
 		GetLastSignCoeff (getLastSignCoeff       )--> CheckEndOfLoop;
 		CheckEndOfLoop   (checkEndOfLoop.isFalse )--> AskSignificantCoeff;
-		CheckEndOfLoop   (askCoeffAbsLvl         )--> GetCoeffAbsLvl;
+		CheckEndOfLoop   (askCoeffAbsLvl.launch  )--> GetCoeffAbsLvl;
+		CheckEndOfLoop   (askCoeffAbsLvl.skip    )--> CheckEndOfCoeffLoop;
 
 		AskSignificantCoeff (askSignificantCoeff )--> GetSignificantCoeff;
 
-		AskCoeffAbsLvl   (askCoeffAbsLvl   )--> GetCoeffAbsLvl;
-		GetCoeffAbsLvl   (getCoeffAbsLvl   )--> AskCoeffSignFlag;
-		AskCoeffSignFlag (askCoeffSignFlag )--> GetCoeffSignFlag;
-		GetCoeffSignFlag (getCoeffSignFlag )--> CheckEndOfCoeffLoop;
+		AskCoeffAbsLvl   (askCoeffAbsLvl.launch )--> GetCoeffAbsLvl;
+		AskCoeffAbsLvl   (askCoeffAbsLvl.skip   )--> CheckEndOfCoeffLoop;
+		GetCoeffAbsLvl   (getCoeffAbsLvl        )--> AskCoeffSignFlag;
+		AskCoeffSignFlag (askCoeffSignFlag      )--> GetCoeffSignFlag;
+		GetCoeffSignFlag (getCoeffSignFlag      )--> CheckEndOfCoeffLoop;
 
 		CheckEndOfCoeffLoop (checkEndOfCoeffLoop.isFalse )--> AskCoeffAbsLvl;
 		CheckEndOfCoeffLoop (sendEndOfDecoding           )--> AskCoeffAbsLvl;
 	end
 	priority
-		askSignificantCoeff > sendEndOfDecoding;
-		askLastSignCoeff    > checkEndOfLoop > askCoeffAbsLvl;
-		checkEndOfCoeffLoop > sendEndOfDecoding;
+		askSignificantCoeff   > sendEndOfDecoding;
+		askLastSignCoeff      > checkEndOfLoop > askCoeffAbsLvl;
+		checkEndOfCoeffLoop   > sendEndOfDecoding;
+		askCoeffAbsLvl.launch > askCoeffAbsLvl.skip;
 	end
 end
