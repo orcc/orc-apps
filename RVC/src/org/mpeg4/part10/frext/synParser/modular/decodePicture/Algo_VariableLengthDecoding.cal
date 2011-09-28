@@ -103,10 +103,12 @@ actor Algo_VariableLengthDecoding()
 	uint(size=3)  cabacFLRemainBits;
 	uint(size=8)  cMax;
 	bool          hasSuffix     := false;
-	bool          prefixDecoded := false;
+	bool          prefixDecoded;
 	uint(size=2)  cabacEndDecodeBin;
 	uint(size=11) ctxIdx;
 	bool          byPass;
+	uint(size=4)  uCoff;
+	bool          signedVal;
 
 	uint(size=4)  ctxBlockCat;
 	uint(size=4)  levelListIdx;
@@ -578,9 +580,13 @@ actor Algo_VariableLengthDecoding()
 			else
 				3
 			end;
-		//Needed for TU decoding
-		cMax := 14;
-		prefixDecoded := false;
+		if(syntaxElement = CABAC_COEFF_ABS_LEVEL_MINUS1) then
+			cMax := 14;
+			prefixDecoded := false;
+			hasSuffix := true;
+			uCoff     := 14;
+			signedVal := false;
+		end
 	end
 
 	isCabacDecod.with1Param: action TypeOfVLD:[typeOfVld], VLD_Param:[param]
@@ -978,24 +984,25 @@ actor Algo_VariableLengthDecoding()
 	guard
 		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits,
 			binVal, not prefixDecoded, cMax),
-		not hasSuffix or prefixDecoded
+		not hasSuffix or prefixDecoded or
+		skipSuffixDecoding(syntaxElement, signedVal, binString, uCoff)
 	do
 		int(size=32) decodedVal;
 
 		decodedVal :=
 			if(isCabacFL(syntaxElement, not prefixDecoded)) then
 				binString + (binVal << binIdx)
-			else if(syntaxElement = CABAC_INTRA_CHROMA_PRED_MODE) then
-				if(binVal = 1)then
-					3
-				else
-					binIdx
-				end
 			else if(syntaxElement = CABAC_CODED_BLOCK_PATERN) then
 				if(binVal = 1)then
 					(2 << 4) + binStringPrefix
 				else
 					(binIdx << 4) + binStringPrefix
+				end
+			else if(isCabacTU(syntaxElement, not prefixDecoded)) then
+				if(binVal = 1)then
+					cMax
+				else
+					binIdx
 				end
 			else if(syntaxElement = CABAC_MB_QP_DELTA) then
 				if( ((binIdx + 1) & 1) = 0 )then
@@ -1140,9 +1147,9 @@ actor Algo_VariableLengthDecoding()
 		EndDecodeBin (cabacRenormD.skip   )--> CabacCheckBinarization;
 		EndDecodeBin (decodeByPass        )--> CabacCheckBinarization;
 
-		CabacCheckBinarization (cabacCheckBinarization.notFinished )--> CabacGetCtxIdx;
-		CabacCheckBinarization (cabacInitForSuffix                 )--> CabacGetCtxIdx;
 		CabacCheckBinarization (cabacCheckBinarization.done        )--> CheckVLDType;
+		CabacCheckBinarization (cabacInitForSuffix                 )--> CabacGetCtxIdx;
+		CabacCheckBinarization (cabacCheckBinarization.notFinished )--> CabacGetCtxIdx;
 	end
 	
 	priority
