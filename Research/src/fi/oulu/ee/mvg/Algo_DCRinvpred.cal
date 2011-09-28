@@ -1,52 +1,98 @@
 package fi.oulu.ee.mvg;
 
-import std.util.BitOps.*;
-import fi.oulu.ee.mvg.Constants.*;
+import org.mpeg4.part2.Constants.*;
+import std.util.Math.*;
 
-actor Algo_DCRinvpred (int NEWVOP,
-	int INTRA,
-	int INTER,
-	int ACCODED,
-	int ACPRED,
-	int DCVAL) int(size=BTYPE_SZ) BTYPE, int(size=MB_COORD_SZ + 3) A, int(size=MB_COORD_SZ +
-3) B, int(size=MB_COORD_SZ + 3) C, int(size=SAMPLE_SZ) QFS_DC, int(size=QUANT_SZ) QP ==>
-int(size=SAMPLE_SZ) QF_DC , int(size=MB_COORD_SZ + 3) PTR , int(size=3) AC_PRED_DIR ,
-int(size=3) MODE , bool SIGNED , int(size=QUANT_SZ) QUANT :
-
-	int SCALER_SZ = 7;
-
-	int QUANT_SZ = 6;
-
-	// Bitwidth needed for 'dc_scalar' - see ISO/IEC 14496-2
-	int(size=QUANT_SZ) s_QP;
+actor Algo_DCRinvpred () 
+	int(size=BTYPE_SZ) BTYPE, 
+	int(size=MB_COORD_SZ + 3) A, 
+	int(size=MB_COORD_SZ +3) B, 
+	int(size=MB_COORD_SZ + 3) C, 
+	int(size=SAMPLE_SZ) QFS_DC, 
+	int(size=QUANT_SZ) QP 
+	==>
+	int(size=SAMPLE_SZ) QF_DC, 
+	int(size=MB_COORD_SZ + 3) PTR, 
+	int(size=3) AC_PRED_DIR ,
+	int(size=3) MODE, 
+	bool SIGNED, 
+	int(size=QUANT_SZ) QUANT :
 
 	// Decoded 'quantiser_scale' - see ISO/IEC 14496-2
-	int(size=2) round;
+	int(size=QUANT_SZ) s_QP;
 
 	// Flag to indicate whether 'quantiser_scale' is even or odd
-	int BUF_SIZE = (MAXW_IN_MB + 2) * 8;
+	int(size=2) round;
 
 	// Have 4 8x8 blocks per MB
-	int ptr := 8;
+	int BUF_SIZE = (MAXW_IN_MB + 2) * 8;
 
 	// Pointer to current 8x8 block on current row
 	// using circular buffer addressing. Start at 4, since 0-3 are reserved.
+	int ptr := 8;
+
+	// 8x8 block component in macroblock index
 	int(size=4) comp := 0;
 
-	// 8x8 block component in macroblock index  // JWJ: increased size
+	  // JWJ: increased size
 	// Initialize to the dummy values needed for uncoded blocks (always mapped to index 0)
 	List(type: int(size=SAMPLE_SZ), size=BUF_SIZE) dc_buf := [ DCVAL : for int k in 1 .. BUF_SIZE ];
 
-	int(size=SAMPLE_SZ) dc_pred;
-
 	// Decoded DC prediction value
-	int(size=SCALER_SZ) scaler;
-
+	int(size=SAMPLE_SZ) dc_pred;
 	// Decoded 'dc_scalar'
-	bool is_signed;
+	int(size=SCALER_SZ) scaler;
+	int(size=SAMPLE_SZ) dc_val;
 
 	// Flag to indicate INTER or INTRA block
-	int(size=SAMPLE_SZ) dc_val;
+	bool is_signed;
+	
+	
+	function saturate(int x) --> int
+	var
+		bool minus = x < -2048,
+		bool plus = x > 2047 :
+		if minus then
+			-2048
+		else
+			if plus then
+				2047
+			else
+				x
+			end
+		end
+	end
+	
+	function dc_scaler() --> int(size=SCALER_SZ) :
+		if (comp & 4) = 0 then
+		// Y component
+			if s_QP > 0 and s_QP < 5 then
+				8
+			else
+				if s_QP > 4 and s_QP < 9 then
+					2 * s_QP
+				else
+					if s_QP > 8 and s_QP < 25 then
+						s_QP + 8
+					else
+						(2 * s_QP) - 16
+					end
+				end
+			end
+		else
+		// UV component
+			if s_QP > 0 and s_QP < 5 then
+				8
+			else
+				if s_QP > 4 and s_QP < 25 then
+					(s_QP + 13) >> 1
+				else
+					s_QP - 6
+				end
+			end
+		end
+	end
+	
 
 	// Reconstructed DC coefficient  
 	start: action BTYPE:[ cmd ] ==> AC_PRED_DIR:[ -2 ]
@@ -79,43 +125,6 @@ int(size=3) MODE , bool SIGNED , int(size=QUANT_SZ) QUANT :
 		s_QP := qp;
 	end
 
-	function abs(int x) --> int :
-		if x < 0 then
-			(-x)
-		else
-			x
-		end
-	end
-
-	function dc_scaler() --> int(size=SCALER_SZ) :
-		if (comp & 4) = 0 then
-		// Y component
-			if s_QP > 0 and s_QP < 5 then
-				8
-			else
-				if s_QP > 4 and s_QP < 9 then
-					2 * s_QP
-				else
-					if s_QP > 8 and s_QP < 25 then
-						s_QP + 8
-					else
-						(2 * s_QP) - 16
-					end
-				end
-			end
-		else
-		// UV component
-			if s_QP > 0 and s_QP < 5 then
-				8
-			else
-				if s_QP > 4 and s_QP < 25 then
-					(s_QP + 13) >> 1
-				else
-					s_QP - 6
-				end
-			end
-		end
-	end
 
 	read.intra: action BTYPE:[ cmd ], QP:[ qp ], A:[ a ], B:[ b ], C:[ c ] ==> PTR:[ if top then
 			c
@@ -180,21 +189,6 @@ int(size=3) MODE , bool SIGNED , int(size=QUANT_SZ) QUANT :
 
 	end
 
-	function saturate(int x) --> int
-	var
-		bool minus = x < -2048,
-		bool plus = x > 2047 :
-		if minus then
-			-2048
-		else
-			if plus then
-				2047
-			else
-				x
-			end
-		end
-	end
-
 	sat: action ==> QF_DC:[ dc ]
 	var
 		int(size=SAMPLE_SZ) dc = saturate(dc_val)
@@ -214,6 +208,7 @@ int(size=3) MODE , bool SIGNED , int(size=QUANT_SZ) QUANT :
 			end;
 		end
 	end
+
 
 	schedule fsm read :
 		read ( start ) --> getw;
