@@ -26,59 +26,28 @@ actor Framebuf_w_Address_8X8 ()
 		==>
 	int(size=FLAG_SZ) halfpel, int(size=PIX_SZ) RD :
 
-// Frame buffer
+	// Frame buffer
+	//  * sized for max width, max height + half the search window.
+	//  * pixels are written/read ring-buffer fashion
+	//  * write pointer leads by half the search window to prevent
+	//    over-writing motion comp pixels from the last frame
+	//  * luma, chroma_u, chroma_v components are separated
+	//  * addressing is pixel-based [x + w * y]
 
-//  * sized for max width, max height + half the search window.
-
-//  * pixels are written/read ring-buffer fashion
-
-//  * write pointer leads by half the search window to prevent
-
-//    over-writing motion comp pixels from the last frame
-
-//  * luma, chroma_u, chroma_v components are separated
-
-//  * addressing is pixel-based [x + w * y]
 	int SAMPLES_PER_MB = 8;
-
-	int COMP_PER_MB = 1;
-	// 8x8 blocks/MB
-	int SEARCHWIN_IN_MB = 3;
-
-	int MAXW_IN_MB = 121;
-	// maximum image width (in macroblocks)
-	int MAXH_IN_MB = 69;
-	// maximum image height (in macroblocks)
-	int FLAG_SZ = 4;
-
-	int MV_SZ = 9;
-
-	int BTYPE_SZ = 12;
-
-	int PIX_SZ = 9;
-
+	int COMP_PER_MB = 1; // 8x8 blocks/MB
+	
 	int MAXW_IN_SAMPLES = MAXW_IN_MB * SAMPLES_PER_MB;
-
 	int MAXH_IN_SAMPLES = MAXH_IN_MB * SAMPLES_PER_MB;
-
 	int MAX_FRAME_SIZE = MAXW_IN_SAMPLES * MAXH_IN_SAMPLES;
-
 	int HALF_SEARCH = (SEARCHWIN_IN_MB + 1) / 2;
-
 	int EXTRA_SPACE = HALF_SEARCH * SAMPLES_PER_MB * MAXW_IN_SAMPLES;
-
 	int BUFFER_SIZE = MAX_FRAME_SIZE + EXTRA_SPACE;
+	
 	// Note: size is a multiple of SAMPLES_PER_MB*MAXW_IN_SAMPLES
-
 	// (a complete row of macro blocks). Testing for buffer wrap-around
-
 	// is only necessary when a complete row has been processed.
 	List(type: int(size=PIX_SZ), size=BUFFER_SIZE) frameBuffer;
-	// Removed initializer (otherwise: huge XLIM document results)
-
-	// List(type:int(size=PIX_SZ), size=BUFFER_SIZE) frameBuffer = 
-
-	// [ 0 : for i in 1 .. BUFFER_SIZE]
 
 	// properties of the VOP
 	int vop_width := 0;
@@ -127,8 +96,10 @@ actor Framebuf_w_Address_8X8 ()
 	// offset of luma blocks
 	int UNUSED32 = 0x7FFFFFFF;
 	// To make SsaGenerator see this as int32_t
-	List(type: int, size=5) comp_offset = [ 0, 8, 8 * MAXW_IN_SAMPLES, 8 + 8 *
-	MAXW_IN_SAMPLES, UNUSED32 ];
+	List(type: int, size=5) comp_offset = 
+		[ 0, 8, 8 * MAXW_IN_SAMPLES, 8 + 8 *MAXW_IN_SAMPLES, UNUSED32 ];
+	
+	
 	// Move pointers to next block
 	procedure advance_block()
 	begin
@@ -158,6 +129,7 @@ actor Framebuf_w_Address_8X8 ()
 	do
 		vop_rounding_mode := round;
 	end
+
 
 	read_w_h: action BTYPE:[ w, h ] ==>
 	var
@@ -194,6 +166,8 @@ actor Framebuf_w_Address_8X8 ()
 		// println("Max outstanding="+max_outstanding_writes);
 
 	end
+	
+	
 	// Pure texture
 	cmd.noMotion: action BTYPE:[ cmd ] ==>
 	guard
@@ -201,11 +175,15 @@ actor Framebuf_w_Address_8X8 ()
 	do
 		advance_block();
 	end
+	
+	
 	// Pure motion
 	cmd.motion: action BTYPE:[ cmd ] ==>
 	guard
 		(cmd & MOTION) != 0
 	end
+	
+	
 	// Encode flags on halfpel: bit2 = interp. x
 
 	//                          bit1 = interp. y
@@ -218,12 +196,16 @@ actor Framebuf_w_Address_8X8 ()
 		mvx := (x >> 1);
 		mvy := (y >> 1);
 	end
+	
+	
 	// No change in the block
 	cmd.neither: action BTYPE:[ cmd ] ==> halfpel:[ 0 ]
 	do
 		mvx := 0;
 		mvy := 0;
 	end
+	
+	
 	// Read one 9x9 block from the frame buffer
 	read_fb: action ==> RD:[ rd ] repeat 81
 	guard
@@ -313,6 +295,8 @@ actor Framebuf_w_Address_8X8 ()
 		// Advance to next block
 		advance_block();
 	end
+	
+	
 	// free-running write to frame buffer is driven by token availability
 	action WD:[ wd ] repeat 64 ==>
 	guard
