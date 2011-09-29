@@ -114,10 +114,11 @@ actor Algo_VariableLengthDecoding()
 	uint(size=4)  ctxBlockCat;
 	uint(size=6)  currMbType;
 	uint(size=4)  levelListIdx;
+	uint(size=4)  luma4x4Idx;
 	uint(size=6)  mbTypeNeighbours[2][16];
 	bool          neighboursAvail[2][16] := [[true : for int s in 0 .. 15]: for int t in 0 .. 1];
 	uint(size=16) neighboursAddr[2];
-	uint(size=16) neighboursCbf[2];
+	uint(size=16) neighboursCbf[2][16];
 	uint(size=2)  neighboursCbpLuma[2];
 	uint(size=2)  neighboursCbpChroma[2];
 	uint(size=4)  neighboursIntraPredC[2];
@@ -138,8 +139,8 @@ actor Algo_VariableLengthDecoding()
 		//Remove these variable when the bug #49 will be fixed
 		uint(size=1) priorTab[2];
 		bool         isCurrMbTab[2];
-		uint(size=1) neighbourCbf[2] = [0,0];
-		uint(size=4) cbpLuma[2] = [0,0];
+		uint(size=1) neighbourCbf[2];
+		uint(size=4) cbpLuma[2] = [15,15];
 		uint(size=2) luma8x8BlkIdx[2] = [0,0];
 		bool neighbAvail[2];
 		uint(size=6) neighbMbType[2];
@@ -317,8 +318,9 @@ actor Algo_VariableLengthDecoding()
 				end
 			end
 		elsif(syntaxElement = CABAC_CODED_BLOCK_FLAG) then
-			neighbAvail := [neighboursAvail[0][0], neighboursAvail[1][0]];
-			neighbMbType := [mbTypeNeighbours[0][0], mbTypeNeighbours[1][0]];
+			neighbAvail := [neighboursAvail[0][luma4x4Idx], neighboursAvail[1][luma4x4Idx]];
+			neighbMbType := [mbTypeNeighbours[0][luma4x4Idx], mbTypeNeighbours[1][luma4x4Idx]];
+			neighbourCbf := [neighboursCbf[0][luma4x4Idx], neighboursCbf[1][luma4x4Idx]];
 			ctxIdxInc := getCtxIdxIncCodedBlockFlag(neighbAvail, currMbType, neighbMbType, neighbourCbf,
 				ctxBlockCat, neighboursAddr, cbpLuma, luma8x8BlkIdx);
 			ctxIdxInc := ctxIdxInc + ctxIdxBlockCatOffset[0][ctxBlockCat];
@@ -620,7 +622,8 @@ actor Algo_VariableLengthDecoding()
 		byPass        := false;
 
 		if(syntaxElement = CABAC_CODED_BLOCK_FLAG)then
-			ctxBlockCat := param;
+			luma4x4Idx  := param >> 4;
+			ctxBlockCat := param & 0x0F;
 		else
 			//ctxBlockCat did not change.
 			levelListIdx := param;
@@ -692,11 +695,11 @@ actor Algo_VariableLengthDecoding()
 			neighboursAvail[1][neighbourBIdx[i]] := getFlag(param[0], 1);
 			mbTypeNeighbours[0][neighbourAIdx[i]] := param[1];
 			mbTypeNeighbours[1][neighbourBIdx[i]] := param[2];
+			neighboursCbf[0][neighbourAIdx[i]]  := param[5];
+			neighboursCbf[1][neighbourBIdx[i]]  := param[6];
 		end
 		neighboursAddr[0] := param[3];
 		neighboursAddr[1] := param[4];
-		neighboursCbf[0]  := param[5];
-		neighboursCbf[1]  := param[6];
 	end
 
 	Buffer.IsEmpty: action ==>
@@ -1015,6 +1018,13 @@ actor Algo_VariableLengthDecoding()
 		skipSuffixDecoding(syntaxElement, signedVal, binString, uCoff)
 	do
 		int(size=32) decodedVal;
+		uint(size=4) neighbourAIdx[12] = [1, 3, 4, 5, 6, 7,  9, 11, 12, 13, 14, 15];
+		uint(size=4) neighbourBIdx[12] = [2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14 ,15];
+
+		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 0, 7, 0, 9, 12, 11,
+			14, 13, 0, 15, 0];
+		uint(size=4) invNeighbourBIdx[16] = [2, 3, 8, 9, 6, 7, 12, 13, 10, 11,
+			0, 0, 14, 15, 0, 0];
 
 		decodedVal :=
 			if(isCabacFL(syntaxElement, not prefixDecoded)) then
@@ -1052,8 +1062,17 @@ actor Algo_VariableLengthDecoding()
 		else if(syntaxElement = CABAC_MB_TYPE_I or
 			syntaxElement = CABAC_MB_TYPE_P_SP or
 			syntaxElement = CABAC_MB_TYPE_B)then
-				currMbType := decodedVal;
-		end end
+
+			currMbType := decodedVal;
+			foreach int i in 0 .. 11
+			do
+				mbTypeNeighbours[0][neighbourAIdx[i]] := decodedVal;
+				mbTypeNeighbours[1][neighbourBIdx[i]] := decodedVal;
+			end
+		else if(syntaxElement = CABAC_CODED_BLOCK_FLAG) then
+			neighboursCbf[0][invNeighbourAIdx[luma4x4Idx]] := decodedVal;
+			neighboursCbf[1][invNeighbourBIdx[luma4x4Idx]] := decodedVal;
+		end end end
 
 		hasSuffix := false;
 	end
