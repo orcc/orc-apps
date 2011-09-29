@@ -243,7 +243,6 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	ReadMbType.Done: action
 			ValVLD             :[ValueOfVLD]
 				==>
-			MbType             :[mb_type]
 		var
 			uint         Idx
 		do
@@ -253,17 +252,17 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 				else
 					if((slice_type = SLICE_TYPE_SP) or (slice_type = SLICE_TYPE_P))then
 						if(ValueOfVLD >= 5) then
-							if(ValueOfVLD < 31)then
+							if(ValueOfVLD < 32)then
 								ValueOfVLD - 5
 							else
 								0
 							end
 						else
-							ValueOfVLD + BLOCK_TYPE_P_MIN
+							ValueOfVLD + BLOCK_TYPE_P_MIN - (BLOCK_TYPE_INTRA_16x16_MIN - 1)
 						end
 					else
 						if(ValueOfVLD < 23) then
-							ValueOfVLD + BLOCK_TYPE_B_MIN
+							ValueOfVLD + BLOCK_TYPE_B_MIN - (BLOCK_TYPE_INTRA_16x16_MIN - 1)
 						else
 							if(ValueOfVLD < 49) then
 								ValueOfVLD - 23
@@ -273,7 +272,9 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 						end
 					end
 				end;
-
+			if mb_type != BLOCK_TYPE_I_NxN then
+				mb_type := mb_type + (BLOCK_TYPE_INTRA_16x16_MIN - 1);
+			end
 			transform_size_8x8_flag        := false;
 			noSubMbPartSizeLessThan8x8Flag := true;
 			if(DEBUG)then
@@ -285,7 +286,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			codedBlkPattTab[currMbAddr &
 			MASK_POW2_PICWIDTH_BLK_PLUS1] := TabCodedBlockPattern[Idx & 7];
 		end
-
+	
 	CheckMbType.IsIPCM: action
 				==>
 			//    pcm_alignment_zero_bit , pcm_sample_luma[ i ]
@@ -393,7 +394,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			VLDParam  :[SUB_MB_PRED],
 
 			SubMbPredParameters :[mb_type,num_ref_idx_l0_active,num_ref_idx_l1_active,
-			                      setFlag(mb_field_decoding,0,0)]
+			                      setFlag(mb_field_decoding,0,0)],
+			MbType :[mb_type]
 		guard
 			NumMbPart(mb_type) = 4
 		end
@@ -435,10 +437,14 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			VLDParam  :[     1     ]
 		guard
 			transform_8x8_mode_flag and mb_type = BLOCK_TYPE_I_NxN
+		end	
+	ReadTransformSize.Puts: action ==> MbType :[mb_type]
 		do
-			println("ReadTransformSize.Asked not implemented yet");
+			if transform_size_8x8_flag = true then
+				mb_type := BLOCK_TYPE_I_8x8;
+			end
 		end
-
+	
 	LaunchMbPred: action
 				==>
 			TypeOfVLD               :[LAUNCH_ACTOR],
@@ -533,7 +539,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 					true
 				end;
 		end
-
+		
 			//            mb_qp_delta
 	ReadMbQpDelta.Asked.cavlc: action ==> TypeOfVLD:[VLD_SE]
 	guard
@@ -643,7 +649,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 
 		CheckMbPred               (LaunchSubMbPred                )--> CheckSubMbType;
 		CheckMbPred               (ReadTransformSize.Asked        )--> ReadTransformSize8x8_1;
-		CheckMbPred               (LaunchMbPred                   )--> Check4CodedBlockPattern;
+		CheckMbPred               (ReadTransformSize.Puts         )--> LaunchMbPred;
 
 		/* PCM Macroblock */
 		ReadPcmSampleLuma         (ReadPcmSampleLuma.Done         )--> ReadPcmSampleChroma1;
@@ -659,7 +665,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		/* Other Macroblock */
 		CheckSubMbType            (CheckSubMbType                 )--> Check4CodedBlockPattern;
 
-		ReadTransformSize8x8_1    (ReadTransformSize8x8.Done      )--> LaunchMbPred;
+		ReadTransformSize8x8_1    (ReadTransformSize8x8.Done      )--> ReadTransformSize8x8_1_Puts;
+		ReadTransformSize8x8_1_Puts (ReadTransformSize.Puts       )--> LaunchMbPred;
 
 		LaunchMbPred              (LaunchMbPred                   )--> Check4CodedBlockPattern;
 
@@ -689,7 +696,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 
 	priority
 		CheckMbType.IsIPCM             > CheckMbType.IsNotIPCM;
-		LaunchSubMbPred                > ReadTransformSize.Asked > LaunchMbPred;
+		LaunchSubMbPred                > ReadTransformSize.Asked > ReadTransformSize.Puts;
 		ReadCodedBlockPattern.Asked    > ReadMbQpDelta.Asked;
 		ReadTransformSize8x8.Asked     > ReadMbQpDelta.Asked;
 		ReadMbQpDelta.Asked            > NoResidual;
