@@ -268,7 +268,7 @@ actor Algo_DecodeSliceData(bool IsAvc)
 	end
 
 	//for( i=0; i<mb_skip_run; i++ )
-	CheckMbSkipRun.IsNotEqualTo0: action
+	checkMbSkipRun.isNotEqualTo0: action
 			==>
 		ConstraindedIntraPredFlag :[constrained_intra_pred_flag],
 		CurrMbAddr                :[curr_mb_addr - 1],
@@ -311,18 +311,25 @@ actor Algo_DecodeSliceData(bool IsAvc)
 	end
 
 	//                                               more_rbsp_data()
-	CheckMbSkipRun.IsEqualTo0: action ==> TypeOfVLD :[MORE_RBSP_DATA]
+	checkMbSkipRun.isEqualTo0: action ==> TypeOfVLD :[askEndOfSlice]
 	guard
 		mb_skip_run = 0
+	do
+		uint(size=6) askEndOfSlice =
+			if(not entropyCodingMode)then
+				MORE_RBSP_DATA
+			else
+				CABAC_END_OF_SLICE_FLAG
+			end;
 	end
 
-	ReadMoreDataFlag: action ValVLD :[ValueOfVLD] ==>
+	readEndOfSlice: action ValVLD :[ValueOfVLD] ==>
 	do
 		moreDataFlag :=
-			if(ValueOfVLD = 0)then
-				false
+			if(not entropyCodingMode) then
+				ValueOfVLD != 0
 			else
-				true
+				ValueOfVLD = 0
 			end;
 	end
 
@@ -484,7 +491,7 @@ actor Algo_DecodeSliceData(bool IsAvc)
 	end
 
 	DecMacroBlockLayer.Launch: action ==> TypeOfVLD:[ LAUNCH_ACTOR ,
-		MORE_RBSP_DATA], VLDParam:[functionLaunched],
+		askEndOfSlice], VLDParam:[functionLaunched],
 		ConstraindedIntraPredFlag :[constrained_intra_pred_flag],
 		CurrMbAddr                :[curr_mb_addr],
 		MbLocation                :[MbLocxInPic , MbLocyInPic],
@@ -495,6 +502,12 @@ actor Algo_DecodeSliceData(bool IsAvc)
 		Slice_Beta_Offset         :[slice_beta_offset],
 		Slice_Alpha_C0_Offset     :[slice_alpha_c0_offset]
 	do
+		uint(size=6) askEndOfSlice =
+			if(not entropyCodingMode)then
+				MORE_RBSP_DATA
+			else
+				CABAC_END_OF_SLICE_FLAG
+			end;
 		uint(size=8) functionLaunched =
 			if(IsAvc) then MB_LAYER else MB_LAYER_SVC end;
 	end
@@ -570,10 +583,10 @@ actor Algo_DecodeSliceData(bool IsAvc)
 
 		ReadMbSkipRun              (ReadMbSkipRun.Done                  )--> CheckMbSkipRun;
 
-		CheckMbSkipRun             (CheckMbSkipRun.IsNotEqualTo0        )--> CheckMbSkipRun;
-		CheckMbSkipRun             (CheckMbSkipRun.IsEqualTo0           )--> ReadMoreDataFlag;
+		CheckMbSkipRun             (checkMbSkipRun.isNotEqualTo0        )--> CheckMbSkipRun;
+		CheckMbSkipRun             (checkMbSkipRun.isEqualTo0           )--> ReadMoreDataFlag;
 
-		ReadMoreDataFlag           (ReadMoreDataFlag                    )--> CheckMoreDataFlag;
+		ReadMoreDataFlag           (readEndOfSlice                      )--> CheckMoreDataFlag;
 
 		CheckMoreDataFlag          (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
 		CheckMoreDataFlag          (LaunchNextMbAddr                    )--> EndDecodeSliceData;
@@ -589,7 +602,7 @@ actor Algo_DecodeSliceData(bool IsAvc)
 
 		GetTotalCoeffLuma          (GetTotalCoeffLuma                   )--> GetMbType;
 		GetMbType                  (getMbType                           )--> ReadMoreDataFlag2;
-		ReadMoreDataFlag2          (ReadMoreDataFlag                    )--> LaunchNextMbAddr;
+		ReadMoreDataFlag2          (readEndOfSlice                    )--> LaunchNextMbAddr;
 
 		LaunchNextMbAddr           (LaunchNextMbAddr                    )--> CheckMoreDataFlag2;
 
@@ -601,7 +614,7 @@ actor Algo_DecodeSliceData(bool IsAvc)
 	priority
 		EntropyCodingModeFlag.IsEqualToTrue > IsSliceIorSI;
 		IsSliceIorSI                        > CheckMoreDataFlag.IsEqualToTrue;
-		CheckMbSkipRun.IsNotEqualTo0        > CheckMbSkipRun.IsEqualTo0;
+		checkMbSkipRun.isNotEqualTo0        > checkMbSkipRun.isEqualTo0;
 		CheckMoreDataFlag.IsEqualToTrue     > LaunchNextMbAddr;
 		ReadMbFieldDecod.Asked              > SendMbLayerParameters;
 		CheckMoreDataFlag.IsEqualToTrue     > SendEndSliceHeader;
