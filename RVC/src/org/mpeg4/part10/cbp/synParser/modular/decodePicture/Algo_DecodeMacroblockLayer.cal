@@ -615,7 +615,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		end
 	end
 
-	NoResidual: action ==> Feedback:[feedbackValues] repeat 52,
+	noResidual: action ==> Feedback:[feedbackValues] repeat 52,
 		SkipMacroBlk:[true]
 	do
 		int(size=16) feedbackValues[52] := [0: for int s in 3 .. 51];
@@ -625,66 +625,55 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		feedbackValues[2]  := Qp_CrValue;
 	end
 
-	SendEndSliceHeader: action
-				==>
-			TypeOfVLD :[SKIP_NAL]
-		end
+	sendEndMbLayer: action ==> TypeOfVLD:[SKIP_NAL],
+		Feedback:[CodedBlockPatternChroma]
+	end
 
 	schedule fsm ReadParameters:
-		ReadParameters            (ReadParameters                 )--> ReadMbType_Asked;
+		ReadParameters   (ReadParameters        )--> ReadMbType_Asked;
+		ReadMbType_Asked (ReadMbType.Asked      )--> ReadMbType;
+		ReadMbType       (ReadMbType.Done       )--> CheckMbType;
+		CheckMbType      (CheckMbType.IsIPCM    )--> ReadPcmSampleLuma;
+		CheckMbType      (CheckMbType.IsNotIPCM )--> CheckMbPred;
 
-		ReadMbType_Asked          (ReadMbType.Asked               )--> ReadMbType;
-
-		ReadMbType                (ReadMbType.Done                )--> CheckMbType;
-
-		CheckMbType               (CheckMbType.IsIPCM             )--> ReadPcmSampleLuma;
-		CheckMbType               (CheckMbType.IsNotIPCM          )--> CheckMbPred;
-
-		CheckMbPred               (LaunchSubMbPred                )--> CheckSubMbType;
-		CheckMbPred               (ReadTransformSize.Asked        )--> ReadTransformSize8x8_1;
-		CheckMbPred               (ReadTransformSize.Puts         )--> LaunchMbPred;
+		CheckMbPred (LaunchSubMbPred         )--> CheckSubMbType;
+		CheckMbPred (ReadTransformSize.Asked )--> ReadTransformSize8x8_1;
+		CheckMbPred (ReadTransformSize.Puts  )--> LaunchMbPred;
 
 		/* PCM Macroblock */
-		ReadPcmSampleLuma         (ReadPcmSampleLuma.Done         )--> ReadPcmSampleChroma1;
+		ReadPcmSampleLuma    (ReadPcmSampleLuma.Done         )--> ReadPcmSampleChroma1;
+		ReadPcmSampleChroma1 (ReadPcmSampleChroma.Asked      )--> ReadPcmSampleChroma1;
+		ReadPcmSampleChroma1 (ReadPcmSampleChroma.UComponent )--> ReadPcmSampleChroma1;
+		ReadPcmSampleChroma1 (ReadPcmSampleChroma.Done       )--> ReadPcmSampleChroma2;
 
-		ReadPcmSampleChroma1      (ReadPcmSampleChroma.Asked      )--> ReadPcmSampleChroma1;
-		ReadPcmSampleChroma1      (ReadPcmSampleChroma.UComponent )--> ReadPcmSampleChroma1;
-		ReadPcmSampleChroma1      (ReadPcmSampleChroma.Done       )--> ReadPcmSampleChroma2;
-
-		ReadPcmSampleChroma2      (ReadPcmSampleChroma.Asked      )--> ReadPcmSampleChroma2;
-		ReadPcmSampleChroma2      (ReadPcmSampleChroma.VComponent )--> ReadPcmSampleChroma2;
-		ReadPcmSampleChroma2      (ReadPcmSampleChroma.Done       )--> SendEndSliceHeader;
+		ReadPcmSampleChroma2 (ReadPcmSampleChroma.Asked      )--> ReadPcmSampleChroma2;
+		ReadPcmSampleChroma2 (ReadPcmSampleChroma.VComponent )--> ReadPcmSampleChroma2;
+		ReadPcmSampleChroma2 (ReadPcmSampleChroma.Done       )--> SendEndMbLayer;
 
 		/* Other Macroblock */
-		CheckSubMbType            (CheckSubMbType                 )--> Check4CodedBlockPattern;
+		CheckSubMbType          (CheckSubMbType              )--> Check4CodedBlockPattern;
+		Check4CodedBlockPattern (ReadCodedBlockPattern.Asked )--> ReadCodedBlockPattern;
+		Check4CodedBlockPattern (ReadMbQpDelta.Asked         )--> ReadMbQpDelta;
+		Check4CodedBlockPattern (noResidual                  )--> SendEndMbLayer;
 
-		ReadTransformSize8x8_1    (ReadTransformSize8x8.Done      )--> ReadTransformSize8x8_1_Puts;
-		ReadTransformSize8x8_1_Puts (ReadTransformSize.Puts       )--> LaunchMbPred;
-
-		LaunchMbPred              (LaunchMbPred                   )--> Check4CodedBlockPattern;
-
-		Check4CodedBlockPattern   (ReadCodedBlockPattern.Asked    )--> ReadCodedBlockPattern;
-		Check4CodedBlockPattern   (ReadMbQpDelta.Asked            )--> ReadMbQpDelta;
-		Check4CodedBlockPattern   (NoResidual                     )--> SendEndSliceHeader;
+		ReadTransformSize8x8_1      (ReadTransformSize8x8.Done )--> ReadTransformSize8x8_1_Puts;
+		ReadTransformSize8x8_1_Puts (ReadTransformSize.Puts    )--> LaunchMbPred;
+		LaunchMbPred                (LaunchMbPred              )--> Check4CodedBlockPattern;
 	
-		ReadCodedBlockPattern     (ReadCodedBlockPattern.Done     )--> Check4TransformSize8x8;
+		ReadCodedBlockPattern  (ReadCodedBlockPattern.Done )--> Check4TransformSize8x8;
+		Check4TransformSize8x8 (ReadTransformSize8x8.Asked )--> ReadTransformSize8x8_2;
+		Check4TransformSize8x8 (ReadMbQpDelta.Asked        )--> ReadMbQpDelta;
+		Check4TransformSize8x8 (noResidual                 )--> SendEndMbLayer;
 
-		Check4TransformSize8x8    (ReadTransformSize8x8.Asked     )--> ReadTransformSize8x8_2;
-		Check4TransformSize8x8    (ReadMbQpDelta.Asked            )--> ReadMbQpDelta;
-		Check4TransformSize8x8    (NoResidual                     )--> SendEndSliceHeader;
+		ReadTransformSize8x8_2 (ReadTransformSize8x8.Done )--> Check4MbQpDelta;
 
-		ReadTransformSize8x8_2    (ReadTransformSize8x8.Done      )--> Check4MbQpDelta;
+		Check4MbQpDelta (ReadMbQpDelta.Asked )--> ReadMbQpDelta;
+		Check4MbQpDelta (noResidual          )--> SendEndMbLayer;
 
-		Check4MbQpDelta           (ReadMbQpDelta.Asked            )--> ReadMbQpDelta;
-		Check4MbQpDelta           (NoResidual                     )--> SendEndSliceHeader;
-
-		ReadMbQpDelta             (ReadMbQpDelta.Done             )--> LaunchResidual;
-
-		LaunchResidual            (LaunchResidual                 )--> GetResidualCoeffToken;
-
-		GetResidualCoeffToken     (GetResidualCoeffToken          )--> SendEndSliceHeader;
-
-		SendEndSliceHeader        (SendEndSliceHeader             )--> ReadParameters;
+		ReadMbQpDelta         (ReadMbQpDelta.Done    )--> LaunchResidual;
+		LaunchResidual        (LaunchResidual        )--> GetResidualCoeffToken;
+		GetResidualCoeffToken (GetResidualCoeffToken )--> SendEndMbLayer;
+		SendEndMbLayer        (sendEndMbLayer        )--> ReadParameters;
 	end
 
 	priority
@@ -692,7 +681,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		LaunchSubMbPred                > ReadTransformSize.Asked > ReadTransformSize.Puts;
 		ReadCodedBlockPattern.Asked    > ReadMbQpDelta.Asked;
 		ReadTransformSize8x8.Asked     > ReadMbQpDelta.Asked;
-		ReadMbQpDelta.Asked            > NoResidual;
+		ReadMbQpDelta.Asked            > noResidual;
 		ReadPcmSampleChroma.Asked      > ReadPcmSampleChroma.Done;
 		ReadPcmSampleChroma.Done       > ReadPcmSampleChroma.VComponent;
 		ReadPcmSampleChroma.Done       > ReadPcmSampleChroma.UComponent;
