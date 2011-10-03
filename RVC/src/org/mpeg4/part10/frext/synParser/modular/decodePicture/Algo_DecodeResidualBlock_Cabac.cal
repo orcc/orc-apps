@@ -51,8 +51,9 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 	int (size=7) iLoop;
 	uint(size=4) luma4x4BlkIdx;
 //	uint(size=7) maxNumCoeff;
-	int (size=6) numCoeff;
+	int (size=6) numCoeffMinus1;
 	bool         significantCoeffTab[64];
+	bool         signifCoeff;
 
 	readParameters: action Parameters:[ctxBlkCat, maxNumCoeffVal, startIndex,
 		endIndex, luma4x4Idx, codedBlockPattLuma, codedBlkPatternChroma] ==>
@@ -60,8 +61,8 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 		codBlkPattLuma   := codedBlockPattLuma;
 		codBlkPattChroma := codedBlkPatternChroma;
 		ctxBlockCat := ctxBlkCat;
-		luma4x4BlkIdx := luma4x4Idx;
-		numCoeff    := endIndex + 1;
+		luma4x4BlkIdx  := luma4x4Idx;
+		numCoeffMinus1 := endIndex;
 //		maxNumCoeff := maxNumCoeffVal;
 		iLoop       := startIndex;
 	end
@@ -91,15 +92,19 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 
 	getSignificantCoeff: action ValVLD:[signCoeffFlag] ==>
 	do
-		significantCoeffTab[iLoop] := (signCoeffFlag != 0);
+		signifCoeff := (signCoeffFlag != 0);
+		significantCoeffTab[iLoop] := signifCoeff;
 		if(DEBUG) then
 			println("significant_coeff_flag : "+signCoeffFlag);
+		end
+		if(signCoeffFlag = 0)then
+			iLoop := iLoop + 1;
 		end
 	end
 
 	askLastSignCoeff: action ==> TypeOfVLD:[CABAC_LAST_SIGNIFICANT_COEFF_FLAG]
 	guard
-		significantCoeffTab[iLoop]
+		signifCoeff
 	end
 
 	getLastSignCoeff: action ValVLD:[lastSignCoef] ==>
@@ -108,25 +113,25 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 			println("last_significant_coeff_flag : "+ lastSignCoef);
 		end
 		if(lastSignCoef = 1) then
-			numCoeff := iLoop;
+			numCoeffMinus1 := iLoop;
+		else
+			iLoop := iLoop + 1;
 		end
 	end
 
 	checkEndOfLoop.isFalse: action ==>
 	guard // numCoeff is equivalent to numCoeff - 1 from the standard
-		iLoop < numCoeff
-	do
-		iLoop := iLoop + 1;
+		iLoop < numCoeffMinus1
 	end
 
 	askCoeffAbsLvl.launch: action ==> TypeOfVLD:[CABAC_COEFF_ABS_LEVEL_MINUS1]
-	guard
-		significantCoeffTab[numCoeff]
+	guard//                               the last coeff is always decoded
+		significantCoeffTab[numCoeffMinus1] or(iLoop = numCoeffMinus1)
 	end
 
 	askCoeffAbsLvl.skip: action ==>
 	do
-		numCoeff := numCoeff - 1;
+		numCoeffMinus1 := numCoeffMinus1 - 1;
 	end
 
 	getCoeffAbsLvl: action ValVLD:[coeffAbsLvlMin1] ==>
@@ -144,12 +149,12 @@ actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
 		if(DEBUG) then
 			println("coeff_sign_flag : "+ coeffSignFlag);
 		end
-		numCoeff := numCoeff - 1;
+		numCoeffMinus1 := numCoeffMinus1 - 1;
 	end
 
 	checkEndOfCoeffLoop.isFalse: action ==>
 	guard
-		numCoeff >= 0
+		numCoeffMinus1 >= 0
 	end
 
 	sendEndOfDecoding: action ==> TypeOfVLD:[SKIP_NAL]
