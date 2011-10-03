@@ -22,13 +22,13 @@ import std.util.BitOps.*;
 //Clean me !!
 actor Algo_DecodeResidual()
 	bool          CodedBlockFlag,
-	uint(size=6)  Parameters,
+	uint(size=16) Parameters,
 	uint(size=5)  TotalCoeffCavlc
 		==>
 	int (size=6)  TypeOfVLD,
 	int (size=32) ActorLaunched,
 	int (size=8)  ResBlkParamCavlc,
-	int (size=8)  ResBlkParamCabac,
+	int (size=16) ResBlkParamCabac,
 	int (size=32) Feedback,
 	bool          Skip_Block
 		:
@@ -46,6 +46,8 @@ actor Algo_DecodeResidual()
 //	uint(size=2) RESIDUAL_LUMA_CHROMA2_OUTPUT := 0;
 
 	bool          bmFlag;
+	uint(size=16) cbfChrNeighbA;
+	uint(size=16) cbfChrNeighbB;
 	int (size=5)  startIdx;
 	uint(size=4)  endIdx;
 	uint(size=4)  StartIdxSent;
@@ -73,7 +75,7 @@ actor Algo_DecodeResidual()
 	uint(size=16) cbfLuma;
 	uint(size=16) cbfChroma;
 
-	GetParameters: action Parameters :[param] repeat 32 ==>
+	GetParameters: action Parameters :[param] repeat 34 ==>
 	do
 		bool LeftMbExists;
 		bool AboveMbExists;
@@ -110,6 +112,8 @@ actor Algo_DecodeResidual()
 			TotalCoeffTabChroma[iCr][20+i] := param[20 + 8 + i];
 			MbExists           [20+i]      := AboveMbExists;
 		end
+		cbfChrNeighbA := param[32];
+		cbfChrNeighbB := param[33];
 		ResidualLumaOutput := RESIDUAL_LUMA_LUMA_OUTPUT;
 		i8x8Loop   := 1;
 		IdxCurrMb  := 0;
@@ -272,10 +276,17 @@ actor Algo_DecodeResidual()
 
 	SendResBlockParameters.cabac: action ==> ResBlkParamCabac:[ctxBlkCat,
 		maxNumCoeff, StartIdxSent, EndIdxSent, IdxCurrMb - 1,
-		CodedBlockPatternLuma, CodedBlockPatternChroma], Skip_Block:[false]
+		CodedBlockPatternLuma, CodedBlockPatternChroma, cbfChNeighbours],
+		Skip_Block:[false]
 	guard
 		entropyCodingMode
 	do
+		uint(size= 10) cbfChNeighbours =
+			if(iCbCrLoop = 0)then
+				((cbfChrNeighbA & 0x1F) << 5) + (cbfChrNeighbB & 0x1F)
+			else
+				(cbfChrNeighbA & 0x03E0) + ((cbfChrNeighbB & 0x03E0) >> 5)
+			end;
 		if(Component_type != CHROMA_DC_COMPONENT or IdxCurrMb = 0) then
 			IdxCurrMb := IdxCurrMb + 1;
 		end
@@ -298,9 +309,12 @@ actor Algo_DecodeResidual()
 	do
 		if(Component_type = LUMA_COMPONENT) then
 			cbfLuma := setFlag(codedBlock, IdxCurrMb - 1, cbfLuma);
+		else if(Component_type = CHROMA_DC_COMPONENT) then
+			cbfChroma := setFlag(codedBlock, 5*iCbCrLoop + 4, cbfChroma);
+			iCbCrLoop := iCbCrLoop + 1;
 		else if(Component_type = CHROMA_AC_COMPONENT) then
-			cbfChroma := setFlag(codedBlock, IdxCurrMb - 1, cbfChroma);
-		end end
+			cbfChroma := setFlag(codedBlock, IdxCurrMb - 1 + 5*iCbCrLoop, cbfChroma);
+		end end end
 	end
 
 	ChromaArrayTypeVal.IsEqualTo1or2: action ==>
@@ -379,12 +393,6 @@ actor Algo_DecodeResidual()
 		i8x8Loop < NumC8x8
 	do
 		i8x8Loop := i8x8Loop + 1;
-	end
-
-	ChromaAcLoopi4x4: action
-			==>
-		TypeOfVLD     :[ LAUNCH_ACTOR  , LAUNCH_ACTOR  , LAUNCH_ACTOR  , LAUNCH_ACTOR  ],
-		ActorLaunched :[ ActorSelected , ActorSelected , ActorSelected , ActorSelected ]
 	end
 
 	SendSkipChromaDc: action ==> Skip_Block :[ true , true ]

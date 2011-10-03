@@ -37,9 +37,9 @@ import std.util.BitOps.*;
 
 actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	int (size=32) ValVLD,
-	int (size=8)  Parameters,
+	int (size=16) Parameters,
 
-	uint(size=4) SubMbType,
+	uint(size=4)  SubMbType,
 
 	int(size=32)  ResFeedback
 		==>
@@ -53,7 +53,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	uint(size=6)  SubMbPredParameters,
 
 	//Residual Parameters
-	uint(size=6)  ResParameters,
+	uint(size=16) ResParameters,
 
 	uint(size=6)  MbType,
 	bool          MergeTransfSz8x8,
@@ -78,7 +78,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	uint(size=4) SLICE_TYPE_P  = 0;
 	uint(size=4) SLICE_TYPE_B  = 1;
 	uint(size=4) SLICE_TYPE_I  = 2;
-	uint(size=4) SLICE_TYPE_EI = 2;
+//	uint(size=4) SLICE_TYPE_EI = 2;
 	uint(size=4) SLICE_TYPE_SP = 3;
 	uint(size=4) SLICE_TYPE_SI = 4;
 
@@ -141,6 +141,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	uint(size=4)  slice_type;
 	uint(size=4)  bit_depth_luma;
 	uint(size=4)  bit_depth_chroma;
+	uint(size=16) cbfChrNeighbA;
+	uint(size=16) cbfChrNeighbB;
 	bool          direct_8x8_inference_flag;
 	bool          transform_8x8_mode_flag;
 	uint(size=2)  Chroma_Array_Type;
@@ -159,22 +161,24 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	int (size=5)  second_chroma_qp_index_offset;
 	int (size=8)  prevMbQpDelta;
 	int (size=8)  currMbQpDelta;
+	bool          baseMode = false;
+/*	Svc parameters 
 	bool          adaptBaseMode = false; /// !!!!!!!!!!!!!!!!!
-	bool          baseMode := false;
 	bool          residualPred = false; //!!!!!!!!!!!!!
 	uint(size=4)  scanIdxStart = 0;//!!!!!!!!!!!!!
 	uint(size=4)  scanIdxEnd = 0;//!!!!!!!!!!!!
+*/
 
 	uint(size=9)  NbCoeffChroma;
 	uint(size=9)  ChromaReadIdx  := 0;
 	uint(size=9)  ChromaWriteIdx := 0;
 
-		//not implemented yet !
-	function inCropWindow(uint(size=32) currMbAddr) --> bool :
+		//not implemented yet ! (Svc function)
+/*	function inCropWindow(uint(size=32) currMbAddr) --> bool :
 		currMbAddr = 42
-	end
+	end*/
 
-	ReadParameters: action Parameters:[param] repeat 39 ==>
+	ReadParameters: action Parameters:[param] repeat 41 ==>
 		MergeTransfSz8x8:[transform_8x8_mode_flag]
 	do
 		direct_8x8_inference_flag     := getFlag(param[0], 0);
@@ -204,11 +208,14 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		NbCoeffChroma := param[35] * param[36];
 		picWidthInMbs := param[37];
 		currMbAddr    := param[38];
+		cbfChrNeighbA := param[39];
+		cbfChrNeighbB := param[40];
 
 		prevMbQpDelta := currMbQpDelta;
 		currMbQpDelta  := 0;
 	end
 
+/* Svc actions
 	askBaseModeFlag: action ==> TypeOfVLD:[READ_BITS], VLDParam:[1]
 	guard
 		not isAvc and inCropWindow(42) and adaptBaseMode
@@ -218,7 +225,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 	do
 		baseMode := (baseModeFlag != 0);
 	end
-
+*/
 	ReadMbType.Asked: action ==> TypeOfVLD:[typeOfVld]
 	guard
 		not baseMode or isAvc
@@ -453,7 +460,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			                   	mb_field_decoding,0, setFlag(entropyCodingMode,
 			                   	2,0))), picWidthInMbs, currMbAddr]
 		end
-
+/* Svc actions
 	askResidualPredFlag: action ==>
 	guard
 		not isAvc,
@@ -468,7 +475,7 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 
 	checkForResidualFlag.skip: action ==>
 	end
-
+*/
 	ReadCodedBlockPattern.Asked.cavlc: action ==> TypeOfVLD:[VLD_UE]
 	guard
 		not(Is_Intra_16x16(mb_type)) or (baseMode and not isAvc),
@@ -577,11 +584,11 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 			TypeOfVLD            :[LAUNCH_ACTOR],
 			VLDParam             :[RESIDUAL],
 
-			ResParameters        :[parameters] repeat 32,
+			ResParameters        :[parameters] repeat 34,
 
 			SkipMacroBlk         :[false]
 		do
-			uint(size=6) parameters[32];
+			uint(size=16) parameters[34];
 			uint(size=6) flag;
 
 			flag := setFlag(entropyCodingMode , 0 , setFlag( transform_size_8x8_flag, 1 , 0    ) );
@@ -600,6 +607,8 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 				parameters[8  + i] := nATab[i];
 				parameters[20 + i] := nBTab[i];
 			end
+			parameters[32] := cbfChrNeighbA;
+			parameters[33] := cbfChrNeighbB;
 		end
 
 	GetResidualCoeffToken: action ResFeedback:[CoLu] repeat 50 ==>
@@ -686,6 +695,6 @@ actor Algo_DecodeMacroblockLayer(bool isAvc, bool DEBUG)
 		ReadPcmSampleChroma.Asked      > ReadPcmSampleChroma.Done;
 		ReadPcmSampleChroma.Done       > ReadPcmSampleChroma.VComponent;
 		ReadPcmSampleChroma.Done       > ReadPcmSampleChroma.UComponent;
-		checkForResidualFlag.launch    > checkForResidualFlag.skip;
+//		checkForResidualFlag.launch    > checkForResidualFlag.skip;
 	end
 end
