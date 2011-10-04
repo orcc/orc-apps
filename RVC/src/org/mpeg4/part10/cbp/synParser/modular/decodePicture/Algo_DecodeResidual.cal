@@ -19,13 +19,14 @@ import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import std.util.BitOps.*;
 
+//Clean me !!
 actor Algo_DecodeResidual()
 	uint(size=16) Parameters,
-	uint(size=5)  TotalCoeffIn
+	uint(size=5)  TotalCoeffCavlc
 		==>
 	int (size=6)  TypeOfVLD,
 	int (size=32) ActorLaunched,
-	int (size=8)  ResBlkParameters,
+	int (size=8)  ResBlkParamCavlc,
 	int (size=32) Feedback,
 	bool          Skip_Block
 		:
@@ -49,7 +50,7 @@ actor Algo_DecodeResidual()
 	uint(size=4)  EndIdxSent;
 	uint(size=2)  chroma_array_type;
 	uint(size=2)  NumC8x8;
-	bool          entropy_coding_mode_flag;
+	bool          entropyCodingMode;
 	uint(size=6)  mb_type;
 	bool          transform_size_8x8_flag;
 	uint(size=6)  CodedBlockPatternLuma;
@@ -72,7 +73,7 @@ actor Algo_DecodeResidual()
 		bool LeftMbExists;
 		bool AboveMbExists;
 
-		entropy_coding_mode_flag := getFlag(param[0],0);
+		entropyCodingMode := getFlag(param[0],0);
 		transform_size_8x8_flag  := getFlag(param[0],1);
 		bmFlag                   := getFlag(param[0],2);
 		LeftMbExists             := getFlag(param[0],3);
@@ -85,7 +86,7 @@ actor Algo_DecodeResidual()
 		chroma_array_type        := param[6];
 		NumC8x8                  := param[7];
 		ActorSelected :=
-			if(entropy_coding_mode_flag = CAVLC_ENTROPY)then
+			if(entropyCodingMode = CAVLC_ENTROPY)then
 				RESIDUAL_BLOCK_CAVLC
 			else
 				RESIDUAL_BLOCK_CABAC
@@ -105,8 +106,8 @@ actor Algo_DecodeResidual()
 			MbExists           [20+i]      := AboveMbExists;
 		end
 		ResidualLumaOutput := RESIDUAL_LUMA_LUMA_OUTPUT;
-		i8x8Loop      := 1;
-		IdxCurrMb     := 0;
+		i8x8Loop   := 1;
+		IdxCurrMb  := 0;
 	end
 
 	ResLumaOutput.IsLuma: action ==> Feedback:[TotalCoeffTabLuma] repeat 16
@@ -121,47 +122,27 @@ actor Algo_DecodeResidual()
 		TypeOfVLD     :[LAUNCH_ACTOR],
 		ActorLaunched :[ActorSelected]
 	guard
-		bmFlag   = false,
-		startIdx = 0,
-		Is_Intra_16x16(mb_type)
+		bmFlag   = false and startIdx = 0 and Is_Intra_16x16(mb_type),
+		not entropyCodingMode
 	do
 		Component_type := LUMA_COMPONENT;
 		maxNumCoeff    := 16;
 		StartIdxSent   :=  0;
-		EndIdxSent     :=  15;
+		EndIdxSent     := 15;
 	end
 
 	ResLuma_CheckTransfSzAndCavlc: action ==>
 	guard
-		   transform_size_8x8_flag  = false
-		or entropy_coding_mode_flag = CAVLC_ENTROPY
+		not transform_size_8x8_flag or not entropyCodingMode
 	do
-		IdxCurrMb      := 0;
+		IdxCurrMb := 0;
 	end
+
+	
 
 	ResLuma_CheckCodedBlockPattern: action ==>
 	guard
 		(CodedBlockPatternLuma & 1) = 1
-	end
-
-	ResLuma_CheckBmFlagAndEndIdxAndMbType: action
-				==>
-		TypeOfVLD     :[ LAUNCH_ACTOR  , LAUNCH_ACTOR  , LAUNCH_ACTOR  , LAUNCH_ACTOR  ],
-		ActorLaunched :[ ActorSelected , ActorSelected , ActorSelected , ActorSelected ]
-	guard
-		not bmFlag,
-		endIdx > 0,
-		Is_Intra_16x16(mb_type)
-	do
-		Component_type := LUMA_COMPONENT;
-		maxNumCoeff    := 15;
-		StartIdxSent   :=
-			if(0 > startIdx - 1) then
-				0
-			else
-				startIdx - 1
-			end;
-		EndIdxSent     :=  endIdx - 1;
 	end
 
 	ResLuma_LaunchResBlk_1: action
@@ -170,9 +151,30 @@ actor Algo_DecodeResidual()
 		ActorLaunched :[ ActorSelected , ActorSelected , ActorSelected , ActorSelected ]
 	do
 		Component_type := LUMA_COMPONENT;
-		maxNumCoeff    := 16;
-		StartIdxSent   := startIdx;
-		EndIdxSent     := endIdx;
+		if(not bmFlag and endIdx > 0 and Is_Intra_16x16(mb_type)) then
+			maxNumCoeff    := 15;
+			StartIdxSent   :=
+				if(0 > startIdx - 1) then
+					0
+				else
+					startIdx - 1
+				end;
+			EndIdxSent     :=  endIdx - 1;
+		else
+			maxNumCoeff    := 16;
+			StartIdxSent   := startIdx;
+			EndIdxSent     := endIdx;
+		end
+	end
+
+	resLumaLaunchResCabac: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+		ActorLaunched:[ActorSelected]
+	do
+		Component_type := LUMA_COMPONENT;
+		maxNumCoeff    := 64;
+		StartIdxSent   := 4*startIdx;
+		EndIdxSent     := 4*endIdx + 3;
+		//ctxBlkCat :=
 	end
 
 	ResetLevelTab: action ==> Skip_Block :[true , true , true , true]
@@ -194,7 +196,7 @@ actor Algo_DecodeResidual()
 
 	ResLuma_CheckCavlc8x8: action ==>
 	guard
-		entropy_coding_mode_flag = CAVLC_ENTROPY,
+		entropyCodingMode = CAVLC_ENTROPY,
 		transform_size_8x8_flag  = true
 	end
 
@@ -209,47 +211,53 @@ actor Algo_DecodeResidual()
 					level8x8[i8x8][i]=0;
 		}
 */
-	SendResBlockParameters: action
-			==>
-		ResBlkParameters  :[nC , maxNumCoeff , StartIdxSent , EndIdxSent],
-		Skip_Block        :[false]
-	var
-		int(size=8) nC
+	SendResBlockParameters.cavlc: action ==> ResBlkParamCavlc:[nC, maxNumCoeff,
+		StartIdxSent, EndIdxSent], Skip_Block:[false]
+	guard
+		not entropyCodingMode
 	do
-		if(Component_type = LUMA_COMPONENT)then
-			//println("\t\t Idx : "+(IdxCurrMb-1)+ " ; IdxLeftNeighbour : "+IdxLeftNeighbour[IdxCurrMb] + ","+IdxAboveNeighbour[IdxCurrMb]+" ; TotalCoeffTab 1 and 2: "+TotalCoeffTabLuma[IdxLeftNeighbour[IdxCurrMb]]+ " ; "+TotalCoeffTabLuma[IdxAboveNeighbour[IdxCurrMb]]);
-			nC :=
-				if(MbExists[IdxLeftNeighbour[IdxCurrMb]] and MbExists[IdxAboveNeighbour[IdxCurrMb]])then
-					(TotalCoeffTabLuma[IdxLeftNeighbour[IdxCurrMb]] + TotalCoeffTabLuma[IdxAboveNeighbour[IdxCurrMb]] + 1) >> 1
+		int(size=8) nC =
+			if(Component_type = LUMA_COMPONENT)then
+				if(MbExists[IdxLeftNeighbour[IdxCurrMb]] and 
+					MbExists[IdxAboveNeighbour[IdxCurrMb]])then
+						(TotalCoeffTabLuma[IdxLeftNeighbour[IdxCurrMb]] +
+						TotalCoeffTabLuma[IdxAboveNeighbour[IdxCurrMb]] + 1)
+						>> 1
 				else
-					TotalCoeffTabLuma[IdxLeftNeighbour[IdxCurrMb]] + TotalCoeffTabLuma[IdxAboveNeighbour[IdxCurrMb]]
-				end;
-		else
-			if(Component_type = CHROMA_DC_COMPONENT) then
-				nC :=
-					if(chroma_array_type = 1) then
-						-1
-					else
-						-2
-					end;
+					TotalCoeffTabLuma[IdxLeftNeighbour[IdxCurrMb]] +
+					TotalCoeffTabLuma[IdxAboveNeighbour[IdxCurrMb]]
+				end
+			else if(Component_type = CHROMA_DC_COMPONENT) then
+				if(chroma_array_type = 1) then
+					-1
+				else
+					-2
+				end
 			else
-				nC :=
-					if(MbExists[IdxLeftNeighbour[IdxCurrMb]] and MbExists[IdxAboveNeighbour[IdxCurrMb]])then
-						(TotalCoeffTabChroma[iCbCrLoop - 1][IdxLeftNeighbour[IdxCurrMb]] + TotalCoeffTabChroma[iCbCrLoop - 1][IdxAboveNeighbour[IdxCurrMb]] + 1) >> 1
-					else
-						TotalCoeffTabChroma[iCbCrLoop - 1][IdxLeftNeighbour[IdxCurrMb]] + TotalCoeffTabChroma[iCbCrLoop - 1][IdxAboveNeighbour[IdxCurrMb]]
-					end;
-			end
-		end
+				if(MbExists[IdxLeftNeighbour[IdxCurrMb]] and
+					MbExists[IdxAboveNeighbour[IdxCurrMb]])then
+						(TotalCoeffTabChroma[iCbCrLoop]
+							[IdxLeftNeighbour[IdxCurrMb]] +
+						TotalCoeffTabChroma[iCbCrLoop]
+							[IdxAboveNeighbour[IdxCurrMb]] + 1) >> 1
+				else
+					TotalCoeffTabChroma[iCbCrLoop]
+						[IdxLeftNeighbour[IdxCurrMb]] +
+					TotalCoeffTabChroma[iCbCrLoop]
+						[IdxAboveNeighbour[IdxCurrMb]]
+				end
+			end end;
 		IdxCurrMb := IdxCurrMb + 1;
 	end
 
-	GetTotalCoeff: action TotalCoeffIn :[ValTotal_Coeff] ==>
+	GetFeedback.cavlc: action TotalCoeffCavlc:[valTotalCoeff] ==>
+	guard
+		not entropyCodingMode
 	do
-		if(Component_type = LUMA_COMPONENT)then
-			TotalCoeffTabLuma[IdxCurrMb - 1]   := ValTotal_Coeff;
+		if(Component_type = LUMA_COMPONENT) then
+			TotalCoeffTabLuma[IdxCurrMb - 1]   := valTotalCoeff;
 		else if(Component_type = CHROMA_AC_COMPONENT)then
-			TotalCoeffTabChroma[iCbCrLoop - 1][IdxCurrMb - 1] := ValTotal_Coeff;
+			TotalCoeffTabChroma[iCbCrLoop][IdxCurrMb - 1] := valTotalCoeff;
 		end end
 	end
 
@@ -273,6 +281,7 @@ actor Algo_DecodeResidual()
 		StartIdxSent   := 0;
 		EndIdxSent     := 4 * NumC8x8 - 1;
 		maxNumCoeff    := 4 * NumC8x8;
+		IdxCurrMb      := 0;
 	end
 
 	ChromaAcComponentPresent: action ==>
@@ -288,13 +297,15 @@ actor Algo_DecodeResidual()
 				startIdx - 1
 			end;
 		iCbCrLoop   := 0;
-		EndIdxSent   := endIdx - 1;
-		maxNumCoeff  := 15;
+		i8x8Loop    := 0;
+		IdxCurrMb   := 0;
+		EndIdxSent  := endIdx - 1;
+		maxNumCoeff := 15;
 	end
 
 	ChromaLoopiCbCr: action ==>
 	guard
-		iCbCrLoop < 2
+		iCbCrLoop < 1
 	do
 		iCbCrLoop := iCbCrLoop + 1;
 		i8x8Loop  := 0;
@@ -308,10 +319,10 @@ actor Algo_DecodeResidual()
 		if(NumC8x8 = 1)then
 			foreach int i in 0 .. 3
 			do
-				TotCoefChrm[i]    := TotalCoeffTabChroma[iCbCrLoop - 1][i];
-				TotCoefChrm[4+i]  := TotalCoeffTabChroma[iCbCrLoop - 1][i];
-				TotCoefChrm[8+i]  := TotalCoeffTabChroma[iCbCrLoop - 1][i];
-				TotCoefChrm[12+i] := TotalCoeffTabChroma[iCbCrLoop - 1][i];
+				TotCoefChrm[i]    := TotalCoeffTabChroma[iCbCrLoop][i];
+				TotCoefChrm[4+i]  := TotalCoeffTabChroma[iCbCrLoop][i];
+				TotCoefChrm[8+i]  := TotalCoeffTabChroma[iCbCrLoop][i];
+				TotCoefChrm[12+i] := TotalCoeffTabChroma[iCbCrLoop][i];
 			end
 		else
 			println("NumC8x8 != 1 :"+NumC8x8+" not implemented yet in a lot of actor !");
@@ -351,7 +362,6 @@ actor Algo_DecodeResidual()
 
 
 	SendEndResidual: action ==> TypeOfVLD :[SKIP_NAL],
-		//Cabac is not in the Constrained Baseline Profile.
 		Feedback:[0, 0]
 	end
 
@@ -371,30 +381,30 @@ actor Algo_DecodeResidual()
 				/* residual_luma()*/
 				ResLumaCheckIntra16x16       (ResLuma_Launch16x16DCResBlock         )--> ResLumaSendResBlkPar1;
 				ResLumaCheckIntra16x16       (ResLuma_CheckTransfSzAndCavlc         )--> CheckCodeBlockBmFlag;
-				ResLumaCheckIntra16x16 (undefined )--> undefined;//Cabac stuff not implemented yet
+				ResLumaCheckIntra16x16       (ResLuma_CheckCodedBlockPattern        )--> ResLumaLaunchCabac;
 	
 				ResLumaSendResBlkPar1        (SendResBlockParameters                )--> ResLumaGetTotalCoeff1;
-	
-				ResLumaGetTotalCoeff1        ( GetTotalCoeff                        )--> ResLumaCheckTrnsSzAndEntropy;
-	
+				ResLumaGetTotalCoeff1        (GetFeedback                           )--> ResLumaCheckTrnsSzAndEntropy;
+
 				ResLumaCheckTrnsSzAndEntropy (ResLuma_CheckTransfSzAndCavlc         )--> CheckCodeBlockBmFlag;
-				ResLumaCheckTrnsSzAndEntropy (undefined )--> undefined;//Cabac stuff not implemented yet
-	
+				ResLumaCheckTrnsSzAndEntropy (ResLuma_CheckCodedBlockPattern        )--> ResLumaLaunchCabac;
+
 				CheckCodeBlockBmFlag         (ResLuma_CheckCodedBlockPattern        )--> CheckBmFlagEndIx;
 				CheckCodeBlockBmFlag         (ResetLevelTab                         )--> CheckEndLoop8x8;
 	
-				CheckBmFlagEndIx             (ResLuma_CheckBmFlagAndEndIdxAndMbType )--> ResLumaSendResBlkPar2_0;
 				CheckBmFlagEndIx             (ResLuma_LaunchResBlk_1                )--> ResLumaSendResBlkPar2_0;
-	
+
+				ResLumaLaunchCabac (resLumaLaunchResCabac )--> ResLumaSendResBlkPar2_3;
+
 				ResLumaSendResBlkPar2_0      (SendResBlockParameters                )--> ResLumaGetTotalCoeff2_0;
-				ResLumaGetTotalCoeff2_0      (GetTotalCoeff                         )--> ResLumaSendResBlkPar2_1;
+				ResLumaGetTotalCoeff2_0      (GetFeedback                         )--> ResLumaSendResBlkPar2_1;
 				ResLumaSendResBlkPar2_1      (SendResBlockParameters                )--> ResLumaGetTotalCoeff2_1;
-				ResLumaGetTotalCoeff2_1      (GetTotalCoeff                         )--> ResLumaSendResBlkPar2_2;
+				ResLumaGetTotalCoeff2_1      (GetFeedback                         )--> ResLumaSendResBlkPar2_2;
 				ResLumaSendResBlkPar2_2      (SendResBlockParameters                )--> ResLumaGetTotalCoeff2_2;
-				ResLumaGetTotalCoeff2_2      (GetTotalCoeff                         )--> ResLumaSendResBlkPar2_3;
+				ResLumaGetTotalCoeff2_2      (GetFeedback                         )--> ResLumaSendResBlkPar2_3;
 				ResLumaSendResBlkPar2_3      (SendResBlockParameters                )--> ResLumaGetTotalCoeff2_3;
-				ResLumaGetTotalCoeff2_3      (GetTotalCoeff                         )--> CheckEndLoop8x8;
-	
+				ResLumaGetTotalCoeff2_3      (GetFeedback                         )--> CheckEndLoop8x8;
+
 				CheckEndLoop8x8              (EndLoop8x8.IsEqualToFalse             )--> CheckCodeBlockBmFlag;
 				CheckEndLoop8x8              (ResLuma_CheckCavlc8x8                 )--> ResidualLumaFinished;
 
@@ -415,12 +425,12 @@ actor Algo_DecodeResidual()
 		CheckChromaDc               (SendSkipChromaDc                 )--> CheckChromaAC;
 
 		ChromaDCSendResBlockParam_1 (SendResBlockParameters           )--> ChromaDCGetTotalCoeff_1;
-		ChromaDCGetTotalCoeff_1     (GetTotalCoeff                    )--> ChromaDCSendResBlockParam_2;
+		ChromaDCGetTotalCoeff_1     (GetFeedback                      )--> ChromaDCSendResBlockParam_2;
 		ChromaDCSendResBlockParam_2 (SendResBlockParameters           )--> ChromaDCGetTotalCoeff_2;
-		ChromaDCGetTotalCoeff_2     (GetTotalCoeff                    )--> CheckChromaAC;
+		ChromaDCGetTotalCoeff_2     (GetFeedback                      )--> CheckChromaAC;
 
 
-		CheckChromaAC               (ChromaAcComponentPresent         )--> CheckLoopiCbCr;
+		CheckChromaAC               (ChromaAcComponentPresent         )--> CheckLoopi8x8;
 		CheckChromaAC               (ChromaAcComponentNotPresent      )--> SendEndResidual;
 
 		CheckLoopiCbCr              (ChromaLoopiCbCr                  )--> CheckLoopi8x8;
@@ -430,26 +440,25 @@ actor Algo_DecodeResidual()
 		CheckLoopi8x8               (SendChromaCoeffToken             )--> CheckLoopiCbCr;
 	
 		ChromaAcSendResBlockPar_1   (SendResBlockParameters           )--> ChromaAcGetTotalCoeff_1;
-		ChromaAcGetTotalCoeff_1     (GetTotalCoeff                    )--> ChromaAcSendResBlockPar_2;
+		ChromaAcGetTotalCoeff_1     (GetFeedback                    )--> ChromaAcSendResBlockPar_2;
 		ChromaAcSendResBlockPar_2   (SendResBlockParameters           )--> ChromaAcGetTotalCoeff_2;
-		ChromaAcGetTotalCoeff_2     (GetTotalCoeff                    )--> ChromaAcSendResBlockPar_3;
+		ChromaAcGetTotalCoeff_2     (GetFeedback                    )--> ChromaAcSendResBlockPar_3;
 		ChromaAcSendResBlockPar_3   (SendResBlockParameters           )--> ChromaAcGetTotalCoeff_3;
-		ChromaAcGetTotalCoeff_3     (GetTotalCoeff                    )--> ChromaAcSendResBlockPar_4;
+		ChromaAcGetTotalCoeff_3     (GetFeedback                    )--> ChromaAcSendResBlockPar_4;
 		ChromaAcSendResBlockPar_4   (SendResBlockParameters           )--> ChromaAcGetTotalCoeff_4;
-		ChromaAcGetTotalCoeff_4     (GetTotalCoeff                    )--> CheckLoopi8x8;
+		ChromaAcGetTotalCoeff_4     (GetFeedback                    )--> CheckLoopi8x8;
 
 		ChromaAcComponentNotPresent (ChromaAcComponentNotPresent      )--> ChromaAcComponentNotPresent;
 		ChromaAcComponentNotPresent (SendEndResidual                  )--> GetParameters;
 
 		SendEndResidual             (SendEndResidual )--> GetParameters;
 
-		undefined (undefined )-->undefined;
+		undefined (undefined )--> undefined;
 	end
 	priority
 		ResLuma_Launch16x16DCResBlock         > ResLuma_CheckTransfSzAndCavlc;
-		ResLuma_CheckTransfSzAndCavlc         > undefined;
+		ResLuma_CheckTransfSzAndCavlc         > ResLuma_CheckCodedBlockPattern;
 		ResLuma_CheckCodedBlockPattern        > ResetLevelTab;
-		ResLuma_CheckBmFlagAndEndIdxAndMbType > ResLuma_LaunchResBlk_1;
 		EndLoop8x8.IsEqualToFalse             > ResLuma_CheckCavlc8x8           > ResLumaOutput.IsLuma;
 		ResLumaOutput.IsLuma                  > undefined;
 		ChromaArrayTypeVal.IsEqualTo1or2      > ChromaArrayTypeVal.IsEqualTo3   > SendEndResidual;
