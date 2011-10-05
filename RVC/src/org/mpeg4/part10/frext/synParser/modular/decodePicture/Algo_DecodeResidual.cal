@@ -35,9 +35,10 @@ actor Algo_DecodeResidual()
 
 	bool         CAVLC_ENTROPY = false;
 //	bool         CABAC_ENTROPY = true;
-	uint(size=2) LUMA_COMPONENT      = 0;
-	uint(size=2) CHROMA_DC_COMPONENT = 1;
-	uint(size=2) CHROMA_AC_COMPONENT = 2;
+	uint(size=2) LUMA_DC_COMPONENT      = 0;
+	uint(size=2) LUMA_AC_COMPONENT      = 1;
+	uint(size=2) CHROMA_DC_COMPONENT    = 2;
+	uint(size=2) CHROMA_AC_COMPONENT    = 3;
 	uint(size=1) iCb = 0;
 	uint(size=1) iCr = 1;
 
@@ -72,7 +73,8 @@ actor Algo_DecodeResidual()
 	uint(size=5)  maxNumCoeff;
 	uint(size=2)  ResidualLumaOutput := 0;
 	uint(size=4)  ctxBlkCat;
-	uint(size=16) cbfLuma;
+	uint(size=16) cbfAcLuma;
+	uint(size=1)  cbfDcLuma;
 	uint(size=16) cbfChroma;
 
 	GetParameters: action Parameters :[param] repeat 34 ==>
@@ -117,7 +119,8 @@ actor Algo_DecodeResidual()
 		ResidualLumaOutput := RESIDUAL_LUMA_LUMA_OUTPUT;
 		i8x8Loop   := 1;
 		IdxCurrMb  := 0;
-		cbfLuma    := 0;
+		cbfAcLuma  := 0;
+		cbfDcLuma  := 0;
 		cbfChroma  := 0;
 	end
 
@@ -135,7 +138,7 @@ actor Algo_DecodeResidual()
 	guard
 		bmFlag   = false and startIdx = 0 and Is_Intra_16x16(mb_type)
 	do
-		Component_type := LUMA_COMPONENT;
+		Component_type := LUMA_DC_COMPONENT;
 		maxNumCoeff    := 16;
 		StartIdxSent   :=  0;
 		EndIdxSent     := 15;
@@ -153,6 +156,7 @@ actor Algo_DecodeResidual()
 			else
 				2
 			end;
+		Component_type := LUMA_AC_COMPONENT;
 	end
 
 	
@@ -160,6 +164,8 @@ actor Algo_DecodeResidual()
 	ResLuma_CheckCodedBlockPattern: action ==>
 	guard
 		(CodedBlockPatternLuma & 1) = 1
+	do
+		Component_type := LUMA_AC_COMPONENT;
 	end
 
 	ResLuma_LaunchResBlk_1: action
@@ -167,7 +173,6 @@ actor Algo_DecodeResidual()
 		TypeOfVLD     :[ LAUNCH_ACTOR  , LAUNCH_ACTOR  , LAUNCH_ACTOR  , LAUNCH_ACTOR  ],
 		ActorLaunched :[ ActorSelected , ActorSelected , ActorSelected , ActorSelected ]
 	do
-		Component_type := LUMA_COMPONENT;
 		if(not bmFlag and endIdx > 0 and Is_Intra_16x16(mb_type)) then
 			maxNumCoeff    := 15;
 			StartIdxSent   :=
@@ -187,11 +192,9 @@ actor Algo_DecodeResidual()
 	resLumaLaunchResCabac: action ==> TypeOfVLD:[LAUNCH_ACTOR],
 		ActorLaunched:[ActorSelected]
 	do
-		Component_type := LUMA_COMPONENT;
 		maxNumCoeff    := 64;
 		StartIdxSent   := 4*startIdx;
 		EndIdxSent     := 4*endIdx + 3;
-		//ctxBlkCat :=
 	end
 
 	ResetLevelTab: action ==> Skip_Block :[true , true , true , true]
@@ -200,11 +203,11 @@ actor Algo_DecodeResidual()
 		TotalCoeffTabLuma[IdxCurrMb + 1]   := 0;
 		TotalCoeffTabLuma[IdxCurrMb + 2]   := 0;
 		TotalCoeffTabLuma[IdxCurrMb + 3]   := 0;
-		if(Component_type = LUMA_COMPONENT) then
-			cbfLuma := setFlag(false, IdxCurrMb    , cbfLuma);
-			cbfLuma := setFlag(false, IdxCurrMb + 1, cbfLuma);
-			cbfLuma := setFlag(false, IdxCurrMb + 2, cbfLuma);
-			cbfLuma := setFlag(false, IdxCurrMb + 3, cbfLuma);
+		if(Component_type = LUMA_AC_COMPONENT) then
+			cbfAcLuma := setFlag(false, IdxCurrMb    , cbfAcLuma);
+			cbfAcLuma := setFlag(false, IdxCurrMb + 1, cbfAcLuma);
+			cbfAcLuma := setFlag(false, IdxCurrMb + 2, cbfAcLuma);
+			cbfAcLuma := setFlag(false, IdxCurrMb + 3, cbfAcLuma);
 		end
 		IdxCurrMb := IdxCurrMb + 4;
 	end
@@ -240,7 +243,8 @@ actor Algo_DecodeResidual()
 		not entropyCodingMode
 	do
 		int(size=8) nC =
-			if(Component_type = LUMA_COMPONENT)then
+			if(Component_type = LUMA_DC_COMPONENT or
+				Component_type = LUMA_AC_COMPONENT) then
 				if(MbExists[IdxLeftNeighbour[IdxCurrMb]] and 
 					MbExists[IdxAboveNeighbour[IdxCurrMb]])then
 						(TotalCoeffTabLuma[IdxLeftNeighbour[IdxCurrMb]] +
@@ -295,7 +299,7 @@ actor Algo_DecodeResidual()
 	guard
 		not entropyCodingMode
 	do
-		if(Component_type = LUMA_COMPONENT) then
+		if(Component_type = LUMA_AC_COMPONENT) then
 			TotalCoeffTabLuma[IdxCurrMb - 1]   := valTotalCoeff;
 		else if(Component_type = CHROMA_AC_COMPONENT)then
 			TotalCoeffTabChroma[iCbCrLoop][IdxCurrMb - 1] := valTotalCoeff;
@@ -306,13 +310,15 @@ actor Algo_DecodeResidual()
 	guard
 		entropyCodingMode
 	do
-		if(Component_type = LUMA_COMPONENT) then
-			cbfLuma := setFlag(codedBlock, IdxCurrMb - 1, cbfLuma);
+		if(Component_type = LUMA_AC_COMPONENT) then
+			cbfAcLuma := setFlag(codedBlock, IdxCurrMb - 1, cbfAcLuma);
 		else if(Component_type = CHROMA_DC_COMPONENT) then
 			cbfChroma := setFlag(codedBlock, 5*iCbCrLoop + 4, cbfChroma);
 			iCbCrLoop := iCbCrLoop + 1;
 		else if(Component_type = CHROMA_AC_COMPONENT) then
 			cbfChroma := setFlag(codedBlock, IdxCurrMb - 1 + 5*iCbCrLoop, cbfChroma);
+		else //Component_type = LUMA_DC_COMPONENT
+			cbfDcLuma := setFlag(codedBlock, 0, 0);
 		end end end
 	end
 
@@ -419,7 +425,7 @@ actor Algo_DecodeResidual()
 
 
 	SendEndResidual: action ==> TypeOfVLD :[SKIP_NAL],
-		Feedback:[cbfLuma, cbfChroma]
+		Feedback:[/*cbfDcLuma,*/ cbfAcLuma, cbfChroma]
 	end
 
 	//remove me !!
