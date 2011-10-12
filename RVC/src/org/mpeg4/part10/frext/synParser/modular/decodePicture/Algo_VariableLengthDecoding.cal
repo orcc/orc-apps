@@ -115,7 +115,6 @@ actor Algo_VariableLengthDecoding()
 
 	uint(size=4)  ctxBlockCat;
 	uint(size=6)  currMbType;
-	bool          isSliceP;
 	uint(size=4)  levelListIdx;
 	uint(size=4)  luma4x4Idx;
 	bool          first0Found := true;
@@ -134,6 +133,7 @@ actor Algo_VariableLengthDecoding()
 	uint(size=6)  prevCbp;
 	int(size=8)   prevMbQpDelta;
 	uint(size=1)  priorDecBinVal[4];
+	uint(size=4)  sliceType;
 
 
 	/* Cabac procedures */
@@ -594,13 +594,13 @@ actor Algo_VariableLengthDecoding()
 		ValRead         := 0;
 	end
 
-	isCabacInit: action TypeOfVLD:[typeOfVld], VLD_Param:[cabacInit, qpValue, isSlcP] ==>
+	isCabacInit: action TypeOfVLD:[typeOfVld], VLD_Param:[cabacInit, qpValue, slcType] ==>
 	guard
 		typeOfVld = CABAC_INIT
 	do
-		cabacInitIdc := cabacInit;
-		sliceQpY     := qpValue;
-		isSliceP     := (isSlcP != SLICE_TYPE_B);
+		cabacInitIdc = cabacInit;
+		sliceQpY     = qpValue;
+		sliceType    = slcType;
 	end
 
 	isCabacDecod.withoutParam: action TypeOfVLD:[typeOfVld] ==>
@@ -631,57 +631,60 @@ actor Algo_VariableLengthDecoding()
 	isCabacDecod.with1Param: action TypeOfVLD:[typeOfVld], VLD_Param:[param]
 		==>
 	guard
-		typeOfVld = CABAC_CODED_BLOCK_FLAG or
-		typeOfVld = CABAC_SIGNIFICANT_COEFF_FLAG or
-		typeOfVld = CABAC_MB_SKIP_FLAG
+		typeOfVld == CABAC_CODED_BLOCK_FLAG ||
+		typeOfVld == CABAC_SIGNIFICANT_COEFF_FLAG ||
+		typeOfVld == CABAC_MB_SKIP_FLAG ||
+		typeOfVld == CABAC_MB_TYPE
 	do
-		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 0, 7, 0, 9, 12, 11,
+		const uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 0, 7, 0, 9, 12, 11,
 			14, 13, 0, 15, 0];
-		uint(size=4) invNeighbourBIdx[16] = [2, 3, 8, 9, 6, 7, 12, 13, 10, 11,
+		const uint(size=4) invNeighbourBIdx[16] = [2, 3, 8, 9, 6, 7, 12, 13, 10, 11,
 			0, 0, 14, 15, 0, 0];
-		int (size=5)  lastLuma4x4Idx := luma4x4Idx;
+		int (size=5)  lastLuma4x4Idx = luma4x4Idx;
 		uint(size=10) neighbChrReceiv;
 
 
-		binIdx        := -1;
-		binString     :=  0;
-		syntaxElement := typeOfVld;
-		byPass        := false;
+		binIdx        = -1;
+		binString     =  0;
+		syntaxElement = typeOfVld;
+		byPass        = false;
 
-		if(syntaxElement = CABAC_CODED_BLOCK_FLAG)then
-			luma4x4Idx  := (param >> 4) & 0x0F;
+		if(syntaxElement == CABAC_CODED_BLOCK_FLAG)then
+			luma4x4Idx  = (param >> 4) & 0x0F;
 			if((param & 0x0F) != ctxBlockCat) then
-				lastLuma4x4Idx := 0;
+				lastLuma4x4Idx = 0;
 			end
-			ctxBlockCat := param & 0x0F;
-			neighbChrReceiv := (param >> 14) & 0x3FF;
+			ctxBlockCat = param & 0x0F;
+			neighbChrReceiv = (param >> 14) & 0x3FF;
 			if(luma4x4Idx < lastLuma4x4Idx) then
-				lastLuma4x4Idx := -1;
+				lastLuma4x4Idx:= -1;
 			end
 			foreach int i in lastLuma4x4Idx + 1 .. luma4x4Idx - 1
 			do
-				neighboursCbfLumaAc[0][invNeighbourAIdx[i]] := 0;
-				neighboursCbfLumaAc[1][invNeighbourBIdx[i]] := 0;
+				neighboursCbfLumaAc[0][invNeighbourAIdx[i]] = 0;
+				neighboursCbfLumaAc[1][invNeighbourBIdx[i]] = 0;
 			end
-			neighboursCbfChroma[0][0] := (neighbChrReceiv >> 9)&1;
-			neighboursCbfChroma[1][0] := (neighbChrReceiv >> 4)&1;
-			neighboursCbfChroma[0][0+1] := (neighbChrReceiv >> 6)&1;
-			neighboursCbfChroma[0][2+1] := (neighbChrReceiv >> 8)&1;
-			neighboursCbfChroma[1][0+1] := (neighbChrReceiv >> 2)&1;
-			neighboursCbfChroma[1][1+1] := (neighbChrReceiv >> 3)&1;
-		else if(syntaxElement = CABAC_MB_SKIP_FLAG) then
+			neighboursCbfChroma[0][0] = (neighbChrReceiv >> 9)&1;
+			neighboursCbfChroma[1][0] = (neighbChrReceiv >> 4)&1;
+			neighboursCbfChroma[0][0+1] = (neighbChrReceiv >> 6)&1;
+			neighboursCbfChroma[0][2+1] = (neighbChrReceiv >> 8)&1;
+			neighboursCbfChroma[1][0+1] = (neighbChrReceiv >> 2)&1;
+			neighboursCbfChroma[1][1+1] = (neighbChrReceiv >> 3)&1;
+		elsif(syntaxElement == CABAC_MB_SKIP_FLAG) then
 			//Used by mb_skip_flag decoding
-			neighboursMbSkip[0] := getFlag(param, 1);
-			neighboursMbSkip[1] := getFlag(param, 0);
-			neighboursAvail[0][0] := getFlag(param, 2);
-			neighboursAvail[1][0] := getFlag(param, 3);
+			neighboursMbSkip[0] = getFlag(param, 1);
+			neighboursMbSkip[1] = getFlag(param, 0);
+			neighboursAvail[0][0] = getFlag(param, 2);
+			neighboursAvail[1][0] = getFlag(param, 3);
+		elsif(syntaxElement == CABAC_MB_TYPE)then
+			sliceType = param;
 		else
 			//ctxBlockCat did not change.
-			levelListIdx := param;
-		end end
-		numDecodAbsLvlEq1 := 0;
-		numDecodAbsLvlGt1 := 0;
-		cabacFLRemainBits := 1;
+			levelListIdx = param;
+		end
+		numDecodAbsLvlEq1 = 0;
+		numDecodAbsLvlGt1 = 0;
+		cabacFLRemainBits = 1;
 	end
 
 	isCabacDecod.with2Param: action TypeOfVLD:[typeOfVld],
@@ -1015,7 +1018,8 @@ actor Algo_VariableLengthDecoding()
 	cabacGetCtxIdx: action ==>
 	do
 		uint(size=11) ctxIdxOffset;
-		bool ctxIdxOffExtraParam;
+		bool          ctxIdxOffParam1;
+		int(size=32)  ctxIdxOffParam2;
 
 
 		//Only needed for Fixed Lenght decoding
@@ -1026,11 +1030,18 @@ actor Algo_VariableLengthDecoding()
 			cabacEndDecodeBin := DECODE_BYPASS;
 		else
 			binIdx := binIdx + 1;
-			ctxIdxOffExtraParam :=
-				syntaxElement = CABAC_CODED_BLOCK_PATERN and prefixDecoded or
-				syntaxElement = CABAC_MB_SKIP_FLAG and isSliceP;
-			ctxIdxOffset := getCtxIdxOff(syntaxElement, ctxIdxOffExtraParam,
-				ctxBlockCat);
+			ctxIdxOffParam1 =
+				syntaxElement != CABAC_MB_SKIP_FLAG && prefixDecoded ||
+				syntaxElement == CABAC_MB_SKIP_FLAG &&
+					(sliceType != SLICE_TYPE_B);
+			ctxIdxOffParam2 =
+				if(syntaxElement == CABAC_MB_TYPE)then
+					sliceType
+				else
+					ctxBlockCat
+				end;
+			ctxIdxOffset := getCtxIdxOff(syntaxElement, ctxIdxOffParam1,
+				ctxIdxOffParam2);
 			getCtxIdx(ctxIdxOffset);
 //			println("ctxIdx : "+ctxIdx);
 			if(ctxIdx = 276) then
