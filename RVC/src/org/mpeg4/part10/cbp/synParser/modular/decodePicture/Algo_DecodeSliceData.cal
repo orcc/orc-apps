@@ -135,7 +135,7 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 	uint(size=1)  cbfDcLumaTab[POW2_PICWIDTH_BLK_PLUS1];
 	uint(size=16) cbfAcLumaTab[POW2_PICWIDTH_BLK_PLUS1];
 	uint(size=16) cbfChromaTab[POW2_PICWIDTH_BLK_PLUS1];
-	uint(size=16) skipFlagTab[POW2_PICWIDTH_BLK_PLUS1];
+	bool          skipFlagTab[POW2_PICWIDTH_BLK_PLUS1];
 	uint(size=5)  TotalCoeffTabLuma[POW2_PICWIDTH_BLK_PLUS1][16];
 	uint(size=5)  TotalCoeffTabChroma[2][POW2_PICWIDTH_BLK_PLUS1][16];
 
@@ -261,12 +261,23 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		entropyCodingMode,
 		slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI
 	do
-		uint(size=2) mbSkipNeighb :=
-			skipFlagTab[(curr_mb_addr - 1) & MASK_POW2_PICWIDTH_BLK_PLUS1] << 1
-			+ skipFlagTab[(curr_mb_addr - PicWidthInMbs) &
-				MASK_POW2_PICWIDTH_BLK_PLUS1];
-		mbSkipNeighb := setFlag(Is_MbA_Avail, 2, mbSkipNeighb);
-		mbSkipNeighb := setFlag(Is_MbB_Avail, 3, mbSkipNeighb);
+		uint(size=2) mbSkipNeighb;
+
+		mbSkipNeighb = setFlag(skipFlagTab[(curr_mb_addr - 1) &
+			MASK_POW2_PICWIDTH_BLK_PLUS1], 1, 0);
+		mbSkipNeighb = setFlag(skipFlagTab[(curr_mb_addr - PicWidthInMbs) &
+				MASK_POW2_PICWIDTH_BLK_PLUS1], 0, mbSkipNeighb);
+		mbSkipNeighb = setFlag(Is_MbA_Avail, 2, mbSkipNeighb);
+		mbSkipNeighb = setFlag(Is_MbB_Avail, 3, mbSkipNeighb);
+	end
+
+	readMbSkipFlag: action ValVLD:[mbSkipFlag] ==>
+	do
+		const bool mbSkip = (mbSkipFlag != 0);
+
+		skipFlagTab[curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1] =
+			mbSkip;
+		moreDataFlag = !mbSkip;
 	end
 
 	ReadMbSkipRun.Done: action ValVLD :[ValueOfVLD] ==>
@@ -276,7 +287,6 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		if(DEBUG)then
 			println("\t\tmb_skip_run : "+ValueOfVLD);
 		end
-		skipFlagTab[curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1] := ValueOfVLD;
 	end
 
 	//for( i=0; i<mb_skip_run; i++ )
@@ -591,10 +601,12 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		SendNewPic                 (SendNewPic                          )--> CheckEntropyCodingModeFlag;
 
 		CheckEntropyCodingModeFlag (EntropyCodingModeFlag.IsEqualToTrue )--> CheckSliceType;
-		CheckEntropyCodingModeFlag (isNotSliceIorSI                     )--> ReadMbSkipRun;
+		CheckEntropyCodingModeFlag (isNotSliceIorSI.cavlc               )--> ReadMbSkipRun;
+		CheckEntropyCodingModeFlag (isNotSliceIorSI.cabac               )--> ReadMbSkipFlag;
 		CheckEntropyCodingModeFlag (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
 
-		CheckSliceType             (isNotSliceIorSI                     )--> ReadMbSkipRun;
+		CheckSliceType             (isNotSliceIorSI.cavlc               )--> ReadMbSkipRun;
+		CheckSliceType             (isNotSliceIorSI.cabac               )--> ReadMbSkipFlag;
 		CheckSliceType             (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
 
 		ReadMbSkipRun              (ReadMbSkipRun.Done                  )--> CheckMbSkipRun;
@@ -603,6 +615,8 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		CheckMbSkipRun             (checkMbSkipRun.isEqualTo0           )--> ReadMoreDataFlag;
 
 		ReadMoreDataFlag           (readEndOfSlice                      )--> CheckMoreDataFlag;
+
+		ReadMbSkipFlag             (readMbSkipFlag                      )--> CheckMoreDataFlag;
 
 		CheckMoreDataFlag          (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
 		CheckMoreDataFlag          (LaunchNextMbAddr                    )--> EndDecodeSliceData;
