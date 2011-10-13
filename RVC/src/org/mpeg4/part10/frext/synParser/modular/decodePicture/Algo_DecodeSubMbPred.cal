@@ -37,7 +37,7 @@ actor Algo_DecodeSubMbPred()
 
 	bool DEBUG_MV = false;
 
-
+	bool          entropyCodingMode;
 	uint(size=5)  num_ref_idx_l0_active;
 	uint(size=5)  num_ref_idx_l1_active;
 	bool          mb_field_decoding_flag;
@@ -52,37 +52,40 @@ actor Algo_DecodeSubMbPred()
 	List (type:int,size=4) ref_idx_l1 := [ 0 : for int i in 0 .. 3];
 
 
-	ReadSubMbType.Asked: action
-				==>
-			TypeOfVLD :[ VLD_UE , VLD_UE , VLD_UE , VLD_UE ]
-		end
+	ReadParameters: action Parameters:[MacroBType,NumRefIdxL0Act,
+		NumRefIdxL1Act,Flag] ==>
+	do
+		num_ref_idx_l0_active  := NumRefIdxL0Act;
+		num_ref_idx_l1_active  := NumRefIdxL1Act;
+		mb_type                := MacroBType;
+		mb_field_decoding_flag := getFlag(Flag,0);
+		entropyCodingMode      := getFlag(Flag,1);
+		mbPartIdx    := 0;
+	end
 
-	ReadSubMbType.Done: action
-			ValVLD           :[ValueOfVLD] repeat 4
-				==>
-			SubMbType :[ValueOfVLD] repeat 4
+	ReadSubMbType.Asked.cavlc: action ==> TypeOfVLD:[VLD_UE, VLD_UE, VLD_UE,
+		VLD_UE]
+	guard
+		not entropyCodingMode
+	end
+
+	ReadSubMbType.Asked.cabac: action ==> TypeOfVLD:[CABAC_SUB_MB_TYPE,
+		CABAC_SUB_MB_TYPE, CABAC_SUB_MB_TYPE, CABAC_SUB_MB_TYPE]
+	guard
+		entropyCodingMode
+	end
+
+	ReadSubMbType.Done: action ValVLD:[ValueOfVLD] repeat 4 ==>
+		SubMbType :[ValueOfVLD] repeat 4
+	do
+		foreach int i in 0 .. 3
 		do
-			foreach int i in 0 .. 3
-			do
-				sub_mb_type[i] := ValueOfVLD[i];
-				if(DEBUG_MV)then
-					println("sub_mb_type[ "+i+" ] : "+ValueOfVLD[i]);
-				end
+			sub_mb_type[i] := ValueOfVLD[i];
+			if(DEBUG_MV)then
+				println("sub_mb_type[ "+i+" ] : "+ValueOfVLD[i]);
 			end
 		end
-
-	ReadParameters: action
-			Parameters :[MacroBType,NumRefIdxL0Act,NumRefIdxL1Act,Flag]
-				==>
-		do
-			num_ref_idx_l0_active  := NumRefIdxL0Act;
-			num_ref_idx_l1_active  := NumRefIdxL1Act;
-			mb_type                := MacroBType;
-			mb_field_decoding_flag := getFlag(Flag,0);
-
-			mbPartIdx    := 0;
-		end
-
+	end
 /*
 for( mbPartIdx = 0; mbPartIdx < 4; mbPartIdx++ )
    if( ( num_ref_idx_l0_active_minus1 > 0 || mb_field_decoding_flag ) &&
@@ -304,13 +307,10 @@ if( sub_mb_type[ mbPartIdx ] != B_Direct_8x8 &&
 			TypeOfVLD   :[ SKIP_NAL ]
 		end
 
-	schedule fsm ReadSubMbTypeAsked:
+	schedule fsm ReadParameters:
+		ReadParameters     (ReadParameters      )--> ReadSubMbTypeAsked;
 		ReadSubMbTypeAsked (ReadSubMbType.Asked )--> ReadSubMbTypeDone;
-
-		ReadSubMbTypeDone  (ReadSubMbType.Done  )--> ReadParameters;
-
-		ReadParameters     (ReadParameters      )--> AskRefIdxL0;
-
+		ReadSubMbTypeDone  (ReadSubMbType.Done  )--> AskRefIdxL0;
 		AskRefIdxL0        (AskRefIdxL0.Launch  )--> AskRefIdxL0;
 		AskRefIdxL0        (AskRefIdxLX.Skip    )--> AskRefIdxL0;
 		AskRefIdxL0        (SendOrReadDone      )--> AskRefIdxL1;
@@ -354,8 +354,7 @@ if( sub_mb_type[ mbPartIdx ] != B_Direct_8x8 &&
 
 		CheckMbPart4MvdL1  (CheckmbPartIdx      )--> CheckReadMvdl1;
 		CheckMbPart4MvdL1  (SendOrReadDone      )--> SendEndSubMbPred;
-
-		SendEndSubMbPred   (SendEndSubMbPred    )--> ReadSubMbTypeAsked;
+		SendEndSubMbPred   (SendEndSubMbPred    )--> ReadParameters;
 	end
 	priority
 		AskRefIdxL0.Launch   > AskRefIdxLX.Skip;
