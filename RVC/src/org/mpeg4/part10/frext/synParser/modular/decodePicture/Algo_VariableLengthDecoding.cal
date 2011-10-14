@@ -117,6 +117,9 @@ actor Algo_VariableLengthDecoding()
 	bool          askSignedFlag;
 	uint(size=4)  ctxBlockCat;
 	uint(size=6)  currMbType;
+	uint(size=3)  currMbPartIdx;
+	uint(size=6)  currSubMbType;
+	uint(size=3)  currSubMbPartIdx;
 	uint(size=4)  levelListIdx;
 	uint(size=4)  luma4x4Idx;
 	bool          first0Found := true;
@@ -631,7 +634,7 @@ actor Algo_VariableLengthDecoding()
 
 	isCabacDecod.withoutParam: action TypeOfVLD:[typeOfVld] ==>
 	guard
-		isCabacDecoding(typeOfVld)
+		NbParamForFunction(typeOfVld) = 0 && typeOfVld >= CABAC_DECOD_MINI
 	do
 		binIdx        := -1;
 		binString     :=  0;
@@ -652,22 +655,12 @@ actor Algo_VariableLengthDecoding()
 			signedVal := false;
 			CodeNum   := 0;
 		end
-		if(syntaxElement = CABAC_MVD_LX_0 or syntaxElement = CABAC_MVD_LX_1) then
-			cMax := 14;
-			prefixDecoded := false;
-			hasSuffix := true;
-			signedVal := true;
-			CodeNum   := 0;
-		end
 	end
 
 	isCabacDecod.with1Param: action TypeOfVLD:[typeOfVld], VLD_Param:[param]
 		==>
 	guard
-		typeOfVld = CABAC_CODED_BLOCK_FLAG ||
-		typeOfVld = CABAC_SIGNIFICANT_COEFF_FLAG ||
-		typeOfVld = CABAC_MB_SKIP_FLAG ||
-		typeOfVld = CABAC_MB_TYPE
+		NbParamForFunction(typeOfVld) = 1 && typeOfVld >= CABAC_DECOD_MINI
 	do
 		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 0, 7, 0, 9, 12, 11,
 			14, 13, 0, 15, 0];
@@ -711,10 +704,20 @@ actor Algo_VariableLengthDecoding()
 			neighboursAvail[1][0] := getFlag(param, 3);
 		else if(syntaxElement = CABAC_MB_TYPE)then
 			sliceType := param;
+		else if(syntaxElement = CABAC_MVD_LX_0 or syntaxElement = CABAC_MVD_LX_1) then
+			cMax := 14;
+			prefixDecoded := false;
+			hasSuffix := true;
+			signedVal := true;
+			CodeNum   := 0;
+			currMbPartIdx := param >> 3;
+			//We took a neighbour of the first partition of the sub_macroblock
+			currSubMbType := neighbourSubMbType[4*currMbPartIdx+1][0];
+			currSubMbPartIdx := param & 0x07;
 		else
 			//ctxBlockCat did not change.
 			levelListIdx := param;
-		end end end
+		end end end end
 		numDecodAbsLvlEq1 := 0;
 		numDecodAbsLvlGt1 := 0;
 		cabacFLRemainBits := 1;
@@ -723,9 +726,7 @@ actor Algo_VariableLengthDecoding()
 	isCabacDecod.with2Param: action TypeOfVLD:[typeOfVld],
 		VLD_Param:[param] repeat 2 ==>
 	guard
-		typeOfVld = CABAC_INTRA_CHROMA_PRED_MODE or
-		typeOfVld = CABAC_CODED_BLOCK_PATERN or
-		typeOfVld = CABAC_MB_QP_DELTA
+		NbParamForFunction(typeOfVld) = 2 && typeOfVld >= CABAC_DECOD_MINI
 	do
 		binIdx        := -1;
 		binString     :=  0;
@@ -788,6 +789,7 @@ actor Algo_VariableLengthDecoding()
 		neighboursCbfLumaDc[0] := (param[5]>>1) & 1;
 		neighboursCbfLumaDc[1] := param[5] & 1;
 		luma4x4Idx := 0;
+		currMbPartIdx := 0;
 	end
 
 	Buffer.IsEmpty: action ==>
@@ -1229,7 +1231,13 @@ actor Algo_VariableLengthDecoding()
 				neighboursCbfChroma[0][1+invNeighbourAIdx[luma4x4Idx]] := decodedVal;
 				neighboursCbfChroma[1][1+invNeighbourBIdx[luma4x4Idx]] := decodedVal;
 			end end
-		end end end
+		else if(syntaxElement = CABAC_SUB_MB_TYPE) then
+			foreach int i in 4*currMbPartIdx .. 4*currMbPartIdx+3
+			do
+				neighbourSubMbType[invNeighbourAIdx[i]][0] := decodedVal;
+				neighbourSubMbType[invNeighbourBIdx[i]][1] := decodedVal;
+			end
+		end end end end
 
 		hasSuffix := false;
 		signedFlagDecoded := false;
