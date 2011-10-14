@@ -56,8 +56,7 @@ actor Algo_VariableLengthDecoding()
 
 	uint(size=2) RENORM_D       = 0;
 	uint(size=2) DECODE_BYPASS  = 1;
-	uint(size=2) READ_SIGN_FLAG = 2;
-	uint(size=2) SKIP           = 3;
+	uint(size=2) SKIP           = 2;
 
 	//Contains the Byte which is currently read.
 	uint(size=16) WorkingByte      := 0;
@@ -417,10 +416,10 @@ actor Algo_VariableLengthDecoding()
 	uint(size=32) Out_ReadNBits;
 	procedure ReadNBitsInWorkingByte(uint(size=32) InitialValue, uint(size=4) NbBitsToRead)
 	begin
-			Out_ReadNBits    := InitialValue << NbBitsToRead;
-			Out_ReadNBits    := Out_ReadNBits + selectBits(WorkingByte >> (8-NbBitsToRead), 0 , NbBitsToRead);
-			WorkingByte     := WorkingByte << NbBitsToRead;
-			CountBufferRbsp := CountBufferRbsp - NbBitsToRead;
+		Out_ReadNBits    := InitialValue << NbBitsToRead;
+		Out_ReadNBits    := Out_ReadNBits + selectBits(WorkingByte >> (8-NbBitsToRead), 0 , NbBitsToRead);
+		WorkingByte     := WorkingByte << NbBitsToRead;
+		CountBufferRbsp := CountBufferRbsp - NbBitsToRead;
 	end
 
 
@@ -1060,56 +1059,52 @@ actor Algo_VariableLengthDecoding()
 		cabacFLRemainBits := cabacFLRemainBits - 1;
 
 		//Begining of DecodeBin(ctxIdx)
-		if(not askSignedFlag) then
-			if(byPass) then
-				cabacEndDecodeBin := DECODE_BYPASS;
-			else
-				binIdx := binIdx + 1;
-				ctxIdxOffParam1 :=
-					syntaxElement != CABAC_MB_SKIP_FLAG && prefixDecoded ||
-					syntaxElement = CABAC_MB_SKIP_FLAG &&
-						(sliceType != SLICE_TYPE_B);
-				ctxIdxOffParam2 :=
-					if(syntaxElement = CABAC_MB_TYPE or
-						syntaxElement = CABAC_SUB_MB_TYPE) then
-						sliceType
-					else
-						ctxBlockCat
-					end;
-				ctxIdxOffset := getCtxIdxOff(syntaxElement, ctxIdxOffParam1,
-					ctxIdxOffParam2);
-				getCtxIdx(ctxIdxOffset);
-	//			println("ctxIdx : "+ctxIdx);
-				if(ctxIdx = 276) then
-					//9.3.3.2.4 : decodeTerminate()
-					codIRange := codIRange - 2;
-					if(codIOffset >= codIRange) then
-						binVal := 1;
-						cabacEndDecodeBin := SKIP;
-					else
-						binVal := 0;
-						cabacEndDecodeBin := RENORM_D;
-					end
+		if(byPass) then
+			cabacEndDecodeBin := DECODE_BYPASS;
+		else
+			binIdx := binIdx + 1;
+			ctxIdxOffParam1 :=
+				syntaxElement != CABAC_MB_SKIP_FLAG && prefixDecoded ||
+				syntaxElement = CABAC_MB_SKIP_FLAG &&
+					(sliceType != SLICE_TYPE_B);
+			ctxIdxOffParam2 :=
+				if(syntaxElement = CABAC_MB_TYPE or
+					syntaxElement = CABAC_SUB_MB_TYPE) then
+					sliceType
 				else
-					decodeDecision();
+					ctxBlockCat
+				end;
+			ctxIdxOffset := getCtxIdxOff(syntaxElement, ctxIdxOffParam1,
+				ctxIdxOffParam2);
+			getCtxIdx(ctxIdxOffset);
+//			println("ctxIdx : "+ctxIdx);
+			if(ctxIdx = 276) then
+				//9.3.3.2.4 : decodeTerminate()
+				codIRange := codIRange - 2;
+				if(codIOffset >= codIRange) then
+					binVal := 1;
+					cabacEndDecodeBin := SKIP;
+				else
+					binVal := 0;
 					cabacEndDecodeBin := RENORM_D;
 				end
-				if(not isCabacFL(syntaxElement, not prefixDecoded)) then
-					binString := binString << 1;
-					binString := binString + binVal;
-					if(syntaxElement = CABAC_MB_TYPE && not hasSuffix) then
-						if(sliceType = SLICE_TYPE_P && binIdx = 0 &&
-							binString = 1) then
-							hasSuffix := true;
-						else if(sliceType = SLICE_TYPE_B && binIdx = 5 &&
-							binString = 0x3D) then
-							hasSuffix := true;
-						end end
-					end
+			else
+				decodeDecision();
+				cabacEndDecodeBin := RENORM_D;
+			end
+			if(not isCabacFL(syntaxElement, not prefixDecoded)) then
+				binString := binString << 1;
+				binString := binString + binVal;
+				if(syntaxElement = CABAC_MB_TYPE && not hasSuffix) then
+					if(sliceType = SLICE_TYPE_P && binIdx = 0 &&
+						binString = 1) then
+						hasSuffix := true;
+					else if(sliceType = SLICE_TYPE_B && binIdx = 5 &&
+						binString = 0x3D) then
+						hasSuffix := true;
+					end end
 				end
 			end
-		else
-			cabacEndDecodeBin := READ_SIGN_FLAG;
 		end
 	end
 
@@ -1155,23 +1150,17 @@ actor Algo_VariableLengthDecoding()
 				binIdx := binIdx - 1;
 				CodeNum := (CodeNum << 1) + binVal;
 			end
-		end
-	end
-
-	readSignFlag: action ==>
-	guard
-		cabacEndDecodeBin = READ_SIGN_FLAG
-	do
-		ReadNBitsInWorkingByte(0, 1);
-		signedFlag := (Out_ReadNBits != 0);
-		signedFlagDecoded := true;
+		else if(askSignedFlag) then
+			signedFlag := (binVal != 0);
+			signedFlagDecoded := true;
+		end end
 	end
 
 	cabacCheckBinarization.done: action ==> ValDecoded:[decodedVal]
 	guard
 		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits,
 			binVal, not prefixDecoded, cMax, byPass, sliceType, signedFlagDecoded),
-		not hasSuffix or prefixDecoded or
+		not hasSuffix || prefixDecoded || signedFlagDecoded ||
 		skipSuffixDecoding(syntaxElement, signedVal, binVal, binIdx)
 	do
 		int(size=32) decodedVal;
@@ -1192,8 +1181,8 @@ actor Algo_VariableLengthDecoding()
 				else
 					(binIdx << 4) + binStringPrefix
 				end
-			else if(isCabacTU(syntaxElement, not prefixDecoded)) then
-				if(binVal = 1)then
+			else if(isCabacTU(syntaxElement, not prefixDecoded || not hasSuffix)) then
+				if(binVal = 1 && not prefixDecoded)then
 					cMax
 				else
 					binIdx
@@ -1270,12 +1259,14 @@ actor Algo_VariableLengthDecoding()
 			binIdx := 0;
 		else if (syntaxElement = CABAC_MVD_LX_0 or syntaxElement =
 			CABAC_MVD_LX_1) then
+			byPass      := true;
 			if(binVal = 1) then
-				byPass      := true;
 				first0Found := false;
 				binIdx := 3;
 			else
+				//We will decode the sign flag and stop decoding after that
 				askSignedFlag := true;
+				hasSuffix := false;
 			end
 		else
 			binIdx := -1;
@@ -1392,7 +1383,6 @@ actor Algo_VariableLengthDecoding()
 		CabacFillOutBuffer (cabacEndDecode.skip )--> CabacCheckBinarization;
 		EndDecodeBin (cabacRenormD.launch  )--> CabacFillOutBuffer;
 		EndDecodeBin (cabacEndDecode.skip  )--> CabacCheckBinarization;
-		EndDecodeBin (readSignFlag         )--> CabacCheckBinarization;
 		EndDecodeBin (decodeByPass         )--> CabacCheckBinarization;
 
 		CabacCheckBinarization (cabacCheckBinarization.done        )--> CheckVLDType;
