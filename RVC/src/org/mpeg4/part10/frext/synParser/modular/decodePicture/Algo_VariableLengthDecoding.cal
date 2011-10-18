@@ -32,6 +32,7 @@
 package org.mpeg4.part10.frext.synParser.modular.decodePicture;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import org.mpeg4.part10.Imp_PictureInfo.*;
 import org.mpeg4.part10.cbp.synParser.modular.cavlcLookUpTables.*;
 import org.mpeg4.part10.frext.synParser.modular.decodePicture.cabacDecoding.*;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
@@ -116,6 +117,7 @@ actor Algo_VariableLengthDecoding()
 
 	bool          askSignedFlag;
 	uint(size=4)  ctxBlockCat;
+	int (size=32) currMbAddr;
 	uint(size=6)  currMbType;
 	uint(size=3)  currMbPartIdx;
 	uint(size=6)  currSubMbType;
@@ -134,10 +136,13 @@ actor Algo_VariableLengthDecoding()
 	uint(size=4)  neighboursIntraPredC[2];
 	uint(size=3)  neighbourMbPartIdx[16][2];
 	bool          neighbourMbSkip[2];
-	int(size=16)  neighbourMvdLX[16][2][2];
+	//Contains mvd's values for neighbours for current Mb and also for future
+	//Mb.
+	int(size=16)  neighbourMvdLX[20][2][2];
 	uint(size=4)  neighbourSubMbType[16][2];
 	uint(size=5)  numDecodAbsLvlEq1;
 	uint(size=5)  numDecodAbsLvlGt1;
+	int(size=16)  pictureNeighbMvdLX[POW2_PICWIDTH_BLK_PLUS1][2][4][2];
 	uint(size=6)  prevCbp;
 	int(size=8)   prevMbQpDelta;
 	uint(size=1)  priorDecBinVal[4];
@@ -527,10 +532,10 @@ actor Algo_VariableLengthDecoding()
 
 	procedure updateNeighbourSubMvdLX(uint(size=4) sizeSubMbPart, uint(size=2) mbPartIdx, uint(size=2) subMbPartIdx, int(size=16) mvd)
 	begin
-		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 0, 7, 0, 9, 12, 11,
-			14, 13, 0, 15, 0];
+		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 16, 7, 17, 9, 12, 11,
+			14, 13, 18, 15, 19];
 		uint(size=4) invNeighbourBIdx[16] = [2, 3, 8, 9, 6, 7, 12, 13, 10, 11,
-			0, 0, 14, 15, 0, 0];
+			16, 17, 14, 15, 18, 19];
 		uint(size=4) idx;
 		uint(size=2) idxLX =
 			if(syntaxElement = CABAC_MVD_LX_0) then
@@ -945,14 +950,52 @@ actor Algo_VariableLengthDecoding()
 		end
 	end
 
-	isCabacInitMbVal: action TypeOfVLD:[typeOfVld], VLD_Param:[param] repeat 6
+	isCabacInitMbVal: action TypeOfVLD:[typeOfVld], VLD_Param:[param] repeat 8
 		==>
 	guard
 		typeOfVld = CABAC_INIT_MB_VAL
 	do
-		uint(size=4) neighbourAIdx[4] = [0, 2, 8, 10];
-		uint(size=4) neighbourBIdx[4] = [0, 1, 4,  5];
+		uint(size=4)  neighbourAIdx[4] = [0, 2, 8, 10];
+		uint(size=4)  neighbourBIdx[4] = [0, 1, 4,  5];
+		uint(size=32) picWidthInMbs = param[7];
 
+		/* Saving neighbour mvd */
+		if(param[6] < currMbAddr) then
+			currMbAddr := -1;
+		end
+		foreach int mbAddr in currMbAddr + 2 .. param[6]
+		do
+			foreach int lumaIdx in 0 .. 3
+			do
+				foreach int vertOrHor in 0 .. 1
+				do
+					foreach int aOrB in 0 .. 1
+					do
+						pictureNeighbMvdLX[mbAddr &
+							MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx]
+							[vertOrHor] := 0;
+					end
+				end
+			end
+		end
+		if(currMbAddr != -1) then
+			foreach int lumaIdx in 0 .. 3
+			do
+				foreach int vertOrHor in 0 .. 1
+				do
+					foreach int aOrB in 0 .. 1
+					do
+						pictureNeighbMvdLX[currMbAddr &
+							MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx]
+							[vertOrHor]	:= neighbourMvdLX[16+lumaIdx][aOrB]
+							[vertOrHor];
+					end
+				end
+			end
+		end
+
+		currMbAddr = param[6];
+		/* Getting neighbour parameters */
 		foreach int i in 0 .. 3
 		do
 			neighboursAvail[0][neighbourAIdx[i]] := getFlag(param[0], 0);
@@ -961,11 +1004,22 @@ actor Algo_VariableLengthDecoding()
 			mbTypeNeighbours[1][neighbourBIdx[i]] := param[2];
 			neighboursCbfLumaAc[0][neighbourAIdx[i]]    := (param[3] >> (neighbourAIdx[i] + 5)) & 1;
 			neighboursCbfLumaAc[1][neighbourBIdx[i]]    := (param[4] >> (neighbourBIdx[i] + 10)) & 1;
+			foreach int vertOrHor in 0 .. 1
+			do
+				neighbourMvdLX[neighbourAIdx[i]][0][vertOrHor] :=
+					pictureNeighbMvdLX[(currMbAddr-1) &
+							MASK_POW2_PICWIDTH_BLK_PLUS1][0][i][vertOrHor];
+				neighbourMvdLX[neighbourAIdx[i]][1][vertOrHor] :=
+					pictureNeighbMvdLX[(currMbAddr-picWidthInMbs) &
+							MASK_POW2_PICWIDTH_BLK_PLUS1][1][i][vertOrHor];
+			end
 		end
 		neighboursCbfLumaDc[0] := (param[5]>>1) & 1;
 		neighboursCbfLumaDc[1] := param[5] & 1;
+
 		luma4x4Idx := 0;
 		currMbPartIdx := 0;
+		
 	end
 
 	Buffer.IsEmpty: action ==>
