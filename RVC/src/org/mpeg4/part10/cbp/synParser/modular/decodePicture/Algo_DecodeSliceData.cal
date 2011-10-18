@@ -345,6 +345,9 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 			end;
 	end
 
+	askEndOfSliceCabac: action ==> TypeOfVLD:[CABAC_END_OF_SLICE_FLAG]
+	end
+
 	readEndOfSlice: action ValVLD :[ValueOfVLD] ==>
 	do
 		moreDataFlag :=
@@ -598,56 +601,54 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 	end
 
 	schedule fsm GetSpsAndPpsParameters:
-		GetSpsAndPpsParameters     (GetSpsAndPpsParameters              )--> SendNewPic;
-
-		SendNewPic                 (SendNewPic                          )--> CheckEntropyCodingModeFlag;
+		GetSpsAndPpsParameters (GetSpsAndPpsParameters )--> SendNewPic;
+		SendNewPic             (SendNewPic             )--> CheckEntropyCodingModeFlag;
 
 		CheckEntropyCodingModeFlag (EntropyCodingModeFlag.IsEqualToTrue )--> CheckSliceType;
 		CheckEntropyCodingModeFlag (isNotSliceIorSI.cavlc               )--> ReadMbSkipRun;
 		CheckEntropyCodingModeFlag (isNotSliceIorSI.cabac               )--> ReadMbSkipFlag;
 		CheckEntropyCodingModeFlag (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
 
-		CheckSliceType             (isNotSliceIorSI.cavlc               )--> ReadMbSkipRun;
-		CheckSliceType             (isNotSliceIorSI.cabac               )--> ReadMbSkipFlag;
-		CheckSliceType             (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
+		CheckSliceType (isNotSliceIorSI.cavlc           )--> ReadMbSkipRun;
+		CheckSliceType (isNotSliceIorSI.cabac           )--> ReadMbSkipFlag;
+		CheckSliceType (CheckMoreDataFlag.IsEqualToTrue )--> CheckMbAffFrame;
 
-		ReadMbSkipRun              (ReadMbSkipRun.Done                  )--> CheckMbSkipRun;
+		ReadMbSkipRun  (ReadMbSkipRun.Done           )--> CheckMbSkipRun;
+		CheckMbSkipRun (checkMbSkipRun.isNotEqualTo0 )--> CheckMbSkipRun;
+		CheckMbSkipRun (checkMbSkipRun.isEqualTo0    )--> ReadMoreDataFlag;
 
-		CheckMbSkipRun             (checkMbSkipRun.isNotEqualTo0        )--> CheckMbSkipRun;
-		CheckMbSkipRun             (checkMbSkipRun.isEqualTo0           )--> ReadMoreDataFlag;
+		ReadMoreDataFlag   (readEndOfSlice                  )--> CheckMoreDataCavlc;
+		CheckMoreDataCavlc (CheckMoreDataFlag.IsEqualToTrue )--> CheckMbAffFrame;
+		CheckMoreDataCavlc (LaunchNextMbAddr                )--> EndDecodeSliceData;
 
-		ReadMoreDataFlag           (readEndOfSlice                      )--> CheckMoreDataFlag;
+		ReadMbSkipFlag     (readMbSkipFlag                  )--> CheckMoreDataCabac;
+		CheckMoreDataCabac (CheckMoreDataFlag.IsEqualToTrue )--> CheckMbAffFrame;
+		CheckMoreDataCabac (askEndOfSliceCabac              )--> ReadMoreDataFlag2;
 
-		ReadMbSkipFlag             (readMbSkipFlag                      )--> CheckMoreDataFlag;
+		CheckMbAffFrame (ReadMbFieldDecod.Asked )--> ReadMbFieldDecod;
+		CheckMbAffFrame (initCabacMbType        )--> SendMbLayerParameters;
 
-		CheckMoreDataFlag          (CheckMoreDataFlag.IsEqualToTrue     )--> CheckMbAffFrame;
-		CheckMoreDataFlag          (LaunchNextMbAddr                    )--> EndDecodeSliceData;
+		ReadMbFieldDecod      (ReadMbFieldDecod.Done     )--> InitCabacMbType;
+		InitCabacMbType       (initCabacMbType           )--> SendMbLayerParameters;
+		SendMbLayerParameters (SendMbLayerParameters     )--> DecodeMacroBlockLayer;
+		DecodeMacroBlockLayer (DecMacroBlockLayer.Launch )--> GetTotalCoeffLuma;
+		GetTotalCoeffLuma     (GetTotalCoeffLuma         )--> GetMbType;
+		GetMbType             (getMbType                 )--> ReadMoreDataFlag2;
+		ReadMoreDataFlag2     (readEndOfSlice            )--> LaunchNextMbAddr;
 
-		CheckMbAffFrame            (ReadMbFieldDecod.Asked              )--> ReadMbFieldDecod;
-		CheckMbAffFrame            (initCabacMbType                     )--> SendMbLayerParameters;
+		LaunchNextMbAddr (LaunchNextMbAddr )--> CheckMoreDataFlag2;
 
-		ReadMbFieldDecod           (ReadMbFieldDecod.Done               )--> InitCabacMbType;
-		InitCabacMbType            (initCabacMbType                     )--> SendMbLayerParameters;
-		SendMbLayerParameters      (SendMbLayerParameters               )--> DecodeMacroBlockLayer;
+		CheckMoreDataFlag2 (CheckMoreDataFlag.IsEqualToTrue )--> CheckSliceType;
+		CheckMoreDataFlag2 (SendEndSliceHeader              )--> GetSpsAndPpsParameters;
 
-		DecodeMacroBlockLayer      (DecMacroBlockLayer.Launch           )--> GetTotalCoeffLuma;
-
-		GetTotalCoeffLuma          (GetTotalCoeffLuma                   )--> GetMbType;
-		GetMbType                  (getMbType                           )--> ReadMoreDataFlag2;
-		ReadMoreDataFlag2          (readEndOfSlice                    )--> LaunchNextMbAddr;
-
-		LaunchNextMbAddr           (LaunchNextMbAddr                    )--> CheckMoreDataFlag2;
-
-		CheckMoreDataFlag2         (CheckMoreDataFlag.IsEqualToTrue     )--> CheckSliceType;
-		CheckMoreDataFlag2         (SendEndSliceHeader                  )--> GetSpsAndPpsParameters;
-
-		EndDecodeSliceData         (SendEndSliceHeader                  )--> GetSpsAndPpsParameters;
+		EndDecodeSliceData (SendEndSliceHeader )--> GetSpsAndPpsParameters;
 	end
 	priority
 		EntropyCodingModeFlag.IsEqualToTrue > isNotSliceIorSI;
 		isNotSliceIorSI                     > CheckMoreDataFlag.IsEqualToTrue;
 		checkMbSkipRun.isNotEqualTo0        > checkMbSkipRun.isEqualTo0;
 		CheckMoreDataFlag.IsEqualToTrue     > LaunchNextMbAddr;
+		CheckMoreDataFlag.IsEqualToTrue     > askEndOfSliceCabac;
 		ReadMbFieldDecod.Asked              > SendMbLayerParameters;
 		CheckMoreDataFlag.IsEqualToTrue     > SendEndSliceHeader;
 	end
