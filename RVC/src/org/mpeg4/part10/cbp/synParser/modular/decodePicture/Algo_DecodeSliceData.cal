@@ -271,13 +271,57 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		mbSkipNeighb := setFlag(Is_MbB_Avail, 3, mbSkipNeighb);
 	end
 
-	readMbSkipFlag: action ValVLD:[mbSkipFlag] ==>
+	readMbSkipFlag.isTrue: action ValVLD:[mbSkipFlag] ==>
+		TypeOfVLD:[CABAC_END_OF_SLICE_FLAG],
+		ConstraindedIntraPredFlag :[constrained_intra_pred_flag],
+		CurrMbAddr                :[curr_mb_addr - 1],
+		MbLocation                :[prevMbLocxInPic , prevMbLocyInPic],
+		NeighbourAvail            :[PrevNeighbourValues]repeat 4,
+		PicWidthInMb              :[PicWidthInMbs],
+		SkipMbLayer               :[true],
+		MbTypeOut                 :[mbTypeOut],
+		MbType4Pred               :[mbTypeOut],
+		SzMbSkipped               :[16+1+1+4+4],
+		LFDisable                 :[disable_deblocking_filter_idc],
+		Slice_Beta_Offset         :[slice_beta_offset],
+		Slice_Alpha_C0_Offset     :[slice_alpha_c0_offset],
+		Qp                        :[QpValue],
+		Qp_Cb                     :[Qp_CbValue],
+		Qp_Cr                     :[Qp_CrValue],
+		NewPic                    :[false]
+	guard
+		mbSkipFlag = 1
 	do
-		bool mbSkip = (mbSkipFlag != 0);
+		uint(size=7) prevMbLocxInPic = MbLocxInPic;
+		uint(size=7) prevMbLocyInPic = MbLocyInPic;
+		bool PrevNeighbourValues[4] =[Is_MbA_Avail , Is_MbB_Avail , Is_MbC_Avail , Is_MbD_Avail];
+		uint(size=6) mbTypeOut =
+			if(slice_type = SLICE_TYPE_B) then
+				BLOCK_TYPE_B_SKIP
+			else
+				BLOCK_TYPE_P_SKIP
+			end;
 
 		skipFlagTab[curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1] :=
-			mbSkip;
-		moreDataFlag := not mbSkip;
+			true;
+		moreDataFlag := false;
+
+		mbTypeTab[curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1] := mbTypeOut;
+		foreach int i in 0 .. 15
+		do
+			TotalCoeffTabLuma     [curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1][i] := 0;
+			TotalCoeffTabChroma[0][curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1][i] := 0;
+			TotalCoeffTabChroma[1][curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1][i] := 0;
+		end
+	end
+
+	readMbSkipFlag.isFalse: action ValVLD:[mbSkipFlag] ==>
+	guard
+		mbSkipFlag = 0
+	do
+		skipFlagTab[curr_mb_addr & MASK_POW2_PICWIDTH_BLK_PLUS1] :=
+			false;
+		moreDataFlag := true;
 	end
 
 	ReadMbSkipRun.Done: action ValVLD :[ValueOfVLD] ==>
@@ -343,9 +387,6 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 			else
 				CABAC_END_OF_SLICE_FLAG
 			end;
-	end
-
-	askEndOfSliceCabac: action ==> TypeOfVLD:[CABAC_END_OF_SLICE_FLAG]
 	end
 
 	readEndOfSlice: action ValVLD :[ValueOfVLD] ==>
@@ -621,9 +662,8 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		CheckMoreDataCavlc (CheckMoreDataFlag.IsEqualToTrue )--> CheckMbAffFrame;
 		CheckMoreDataCavlc (LaunchNextMbAddr                )--> EndDecodeSliceData;
 
-		ReadMbSkipFlag     (readMbSkipFlag                  )--> CheckMoreDataCabac;
-		CheckMoreDataCabac (CheckMoreDataFlag.IsEqualToTrue )--> CheckMbAffFrame;
-		CheckMoreDataCabac (askEndOfSliceCabac              )--> ReadMoreDataFlag2;
+		ReadMbSkipFlag     (readMbSkipFlag.isTrue  )--> ReadMoreDataFlag2;
+		ReadMbSkipFlag     (readMbSkipFlag.isFalse )--> CheckMbAffFrame;
 
 		CheckMbAffFrame (ReadMbFieldDecod.Asked )--> ReadMbFieldDecod;
 		CheckMbAffFrame (initCabacMbType        )--> SendMbLayerParameters;
@@ -648,7 +688,6 @@ actor Algo_DecodeSliceData(bool IsAvc, bool DEBUG)
 		isNotSliceIorSI                     > CheckMoreDataFlag.IsEqualToTrue;
 		checkMbSkipRun.isNotEqualTo0        > checkMbSkipRun.isEqualTo0;
 		CheckMoreDataFlag.IsEqualToTrue     > LaunchNextMbAddr;
-		CheckMoreDataFlag.IsEqualToTrue     > askEndOfSliceCabac;
 		ReadMbFieldDecod.Asked              > SendMbLayerParameters;
 		CheckMoreDataFlag.IsEqualToTrue     > SendEndSliceHeader;
 	end
