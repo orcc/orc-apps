@@ -108,12 +108,14 @@ actor Algo_VariableLengthDecoding()
 	uint(size=32) binStringPrefix;
 	uint(size=3)  cabacFLRemainBits;
 	uint(size=8)  cMax;
-	bool          hasSuffix     := false;
+	bool          hasSuffix;
+	bool          isTUForMvd;
 	bool          prefixDecoded;
 	uint(size=2)  cabacEndDecodeBin;
 	uint(size=11) ctxIdx;
 	bool          byPass;
 	bool          signedVal;
+	uint(size=2)  UEGk;
 
 	bool          askSignedFlag;
 	uint(size=4)  ctxBlockCat;
@@ -148,6 +150,7 @@ actor Algo_VariableLengthDecoding()
 	uint(size=1)  priorDecBinVal[4];
 	bool          signedFlag;
 	bool          signedFlagDecoded;
+	bool          signedFlagRemaining;
 	uint(size=4)  sliceType;
 
 
@@ -1448,7 +1451,7 @@ actor Algo_VariableLengthDecoding()
 	guard
 		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits,
 			binVal, not prefixDecoded, cMax, byPass, sliceType, signedFlagDecoded),
-		not hasSuffix || prefixDecoded || signedFlagDecoded ||
+		not hasSuffix || prefixDecoded and not signedFlagRemaining || signedFlagDecoded ||
 		skipSuffixDecoding(syntaxElement, signedVal, binVal, binIdx)
 	do
 		int(size=32) decodedVal;
@@ -1469,7 +1472,7 @@ actor Algo_VariableLengthDecoding()
 					(binIdx << 4) + binStringPrefix
 				end
 			else if(isCabacTU(syntaxElement, not prefixDecoded or
-				not hasSuffix)) then
+				isTUForMvd)) then
 				if(binVal = 1 && (not prefixDecoded or not (syntaxElement =
 					CABAC_MVD_LX_0 or syntaxElement = CABAC_MVD_LX_1)))then
 					cMax
@@ -1479,7 +1482,7 @@ actor Algo_VariableLengthDecoding()
 			else if(syntaxElement = CABAC_COEFF_ABS_LEVEL_MINUS1 ||
 				syntaxElement = CABAC_MVD_LX_0 || syntaxElement =
 				CABAC_MVD_LX_1) then
-				cMax + CodeNum - 1
+				cMax + CodeNum - (1 << UEGk)
 			else if(byPass) then
 				binVal
 			else if(syntaxElement = CABAC_MB_QP_DELTA) then
@@ -1534,6 +1537,7 @@ actor Algo_VariableLengthDecoding()
 		hasSuffix := false;
 		signedFlagDecoded := false;
 		askSignedFlag := false;
+		isTUForMvd := false;
 	end
 
 	cabacCheckBinarization.notFinished: action ==>
@@ -1553,22 +1557,31 @@ actor Algo_VariableLengthDecoding()
 		prefixDecoded   := true;
 		binStringPrefix := binString + (binVal << binIdx);
 		binString := 0;
-		CodeNum   := 0;
 		if(syntaxElement = CABAC_COEFF_ABS_LEVEL_MINUS1) then
 			byPass      := true;
 			first0Found := false;
 			binIdx := 0;
+			CodeNum   := 0;
+			UEGk := 0;
 		else if (syntaxElement = CABAC_MVD_LX_0 or syntaxElement =
 			CABAC_MVD_LX_1) then
 			first0Found := false;
 			byPass      := true;
-			if(binVal = 1) then
+			if(binVal = 1 and not signedFlagRemaining) then
 				first0Found := false;
 				binIdx := 3;
+				UEGk   := 3;
+				signedFlagRemaining := true;
+				CodeNum   := 0;
 			else
 				//We will decode the sign flag and stop decoding after that
 				askSignedFlag := true;
 				hasSuffix := false;
+				//if the UEG3 has not been launched
+				if(not signedFlagRemaining) then
+					isTUForMvd := true;
+				end
+				signedFlagRemaining := false;
 			end
 		else
 			binIdx := -1;
