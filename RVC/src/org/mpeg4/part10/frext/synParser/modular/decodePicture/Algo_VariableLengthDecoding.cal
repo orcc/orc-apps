@@ -141,10 +141,12 @@ actor Algo_VariableLengthDecoding()
 	//Mb.
 	int(size=16)  neighbourMvdLX[20][2][2];
 	uint(size=4)  neighbourSubMbType[20][2];
+	uint(size=4)  neighbourRefIdx[20][2];
 	uint(size=5)  numDecodAbsLvlEq1;
 	uint(size=5)  numDecodAbsLvlGt1;
-	int(size=16)  pictureNeighbMvdLX[POW2_PICWIDTH_BLK_PLUS1][2][4][2];
-	int(size=16)  pictureNeighbSubMbTp[POW2_PICWIDTH_BLK_PLUS1][2][4];
+	int (size=16) pictureNeighbMvdLX[POW2_PICWIDTH_BLK_PLUS1][2][4][2];
+	int (size=16) pictureNeighbSubMbTp[POW2_PICWIDTH_BLK_PLUS1][2][4];
+	uint(size=4)  pictureNeighbRefIdx[POW2_PICWIDTH_BLK_PLUS1][2][4];
 	uint(size=6)  prevCbp;
 	int(size=8)   prevMbQpDelta;
 	uint(size=1)  priorDecBinVal[4];
@@ -228,6 +230,8 @@ actor Algo_VariableLengthDecoding()
 						locNeighbSubMbType[0]);
 					locNeighbMbPtIdx[1] := lumaIdxToMbPartIdx(invNeighbourBIdx[luma4x4Idx], neighbMbType[1],
 						locNeighbSubMbType[1]);
+					locNeighbRefIdx := [neighbourRefIdx[luma4x4Idx][0],
+						neighbourRefIdx[luma4x4Idx][1]];
 					ctxIdxInc := getCtxIdxIncRefIdxLX(neighbAvail, neighbMbType
 						, locNeighbRefIdx, locNeighbMbPtIdx, true,
 						locNeighbSubMbType);
@@ -440,6 +444,53 @@ actor Algo_VariableLengthDecoding()
 			binVal := valMPS[ctxIdx]; 
 			pStateIdx[ctxIdx] := transIdxMPS[pStateIdx[ctxIdx]];
 		end
+	end
+
+	procedure updateNeighbourRefIdx(uint(size=4) sizeMbPart,
+		uint(size=2) mbPartIdx, int(size=16) refIdx)
+	begin
+		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 16, 7, 17, 9, 12,
+			11, 14, 13, 18, 15, 19];
+		uint(size=4) invNeighbourBIdx[16] = [2, 3, 8, 9, 6, 7, 12, 13, 10, 11,
+			16, 17, 14, 15, 18, 19];
+		uint(size=4) idx;
+
+		if(sizeMbPart = SZ_16x16) then
+			foreach uint idxLoop in 0 .. 15
+			do
+				neighbourRefIdx[invNeighbourAIdx[idxLoop]][0] := refIdx;
+				neighbourRefIdx[invNeighbourBIdx[idxLoop]][1] := refIdx;
+			end
+		else if(sizeMbPart = SZ_16x8) then
+			foreach uint idxLoop in 8*mbPartIdx .. 8*mbPartIdx+7
+			do
+				neighbourRefIdx[invNeighbourAIdx[idxLoop]][0]
+					:= refIdx;
+				neighbourRefIdx[invNeighbourBIdx[idxLoop]][1]
+					:= refIdx;
+			end
+		else if(sizeMbPart = SZ_8x16) then
+			foreach int i in 0 .. 1
+			do
+				foreach uint j in 0 .. 3
+				do
+					idx := mbPartIdx*4 + i*8 +j;
+					neighbourRefIdx[invNeighbourAIdx[idx]][0]
+						:= refIdx;
+					neighbourRefIdx[invNeighbourBIdx[idx]][1]
+						:= refIdx;
+				end
+			end
+		else
+			foreach uint i in 0 .. 3
+			do
+				idx := mbPartIdx*4 + i;
+				neighbourRefIdx[invNeighbourAIdx[idx]][0]
+					:= refIdx;
+				neighbourRefIdx[invNeighbourBIdx[idx]][1]
+					:= refIdx;
+			end
+		end end end
 	end
 
 	procedure updateNeighbourMvdLX(uint(size=4) sizeMbPart, uint(size=2) mbPartIdx, int(size=16) mvd)
@@ -944,6 +995,9 @@ actor Algo_VariableLengthDecoding()
 					pictureNeighbSubMbTp[currMbAddr &
 						MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx] :=
 						neighbourSubMbType[16+lumaIdx][aOrB];
+					pictureNeighbRefIdx[currMbAddr &
+						MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx] :=
+						neighbourRefIdx[16+lumaIdx][aOrB];
 				end
 			end
 		end
@@ -977,6 +1031,12 @@ actor Algo_VariableLengthDecoding()
 						MASK_POW2_PICWIDTH_BLK_PLUS1][0][i];
 			neighbourSubMbType[neighbourBIdx[i]][1] :=
 				pictureNeighbSubMbTp[(currMbAddr-picWidthInMbs) &
+							MASK_POW2_PICWIDTH_BLK_PLUS1][1][i];
+			neighbourRefIdx[neighbourAIdx[i]][0] :=
+				pictureNeighbRefIdx[(currMbAddr-1) &
+						MASK_POW2_PICWIDTH_BLK_PLUS1][0][i];
+			neighbourRefIdx[neighbourBIdx[i]][1] :=
+				pictureNeighbRefIdx[(currMbAddr-picWidthInMbs) &
 							MASK_POW2_PICWIDTH_BLK_PLUS1][1][i];
 		end
 		neighboursCbfLumaDc[0] := (param[5]>>1) & 1;
@@ -1403,9 +1463,11 @@ actor Algo_VariableLengthDecoding()
 				else
 					-binIdx / 2
 				end
+			else if(isCabacU(syntaxElement)) then
+				binIdx
 			else
 				getBinarizationValue(binIdx, binString, sliceType, not prefixDecoded, syntaxElement)
-			end end end end end end;
+			end end end end end end end;
 
 		if(signedFlag) then
 			signedFlag := false;
@@ -1442,7 +1504,10 @@ actor Algo_VariableLengthDecoding()
 				sizePart := SizeMbPart(currMbType);
 				updateNeighbourMvdLX(sizePart, currMbPartIdx, decodedVal);
 			end
-		end end end end
+		else if(syntaxElement = CABAC_REF_IDX_LX) then
+			sizePart := SizeMbPart(currMbType);
+			updateNeighbourRefIdx(sizePart, currMbPartIdx, decodedVal);
+		end end end end end
 
 		hasSuffix := false;
 		signedFlagDecoded := false;
