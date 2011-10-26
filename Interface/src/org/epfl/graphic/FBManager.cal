@@ -1,0 +1,138 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+// Author: Richard Thavot <richard.thavot@epfl.ch>
+package org.epfl.graphic;
+
+import org.epfl.graphic.pragma.GraphicsResolution.*;
+import org.epfl.memory.pragma.StdMemory.*;
+import std.util.BitOps.*;
+
+actor FBManager ()
+	uint(size=16) NewWidth,
+	uint(size=16) NewHeight,
+	uint(size=8) CFrame
+	==>
+	uint(size=16) Width,
+	uint(size=16) Height,
+	uint(size=18) Address,
+	uint(size=8)  Command
+	:
+	
+	uint(size=16) width := 0;
+	uint(size=16) height := 0;
+	
+	uint(size=16) Wi := 0;
+	uint(size=16) Wj := 0;
+	
+	uint(size=16) Ri := 0;
+	uint(size=16) Rj := 0;
+	
+	function a(uint(size=9) LSB, uint(size=9) MSB) --> uint(size=18) :
+		concatBits( MSB, 9, LSB, 9)
+	end
+	
+	Loop.New.Exits : action NewHeight:[h], NewWidth:[w], CFrame:[cf] ==> Height:[h], Width:[w]
+	guard cf=0
+	do
+		height := h;
+		width := w;
+		Wi := 0;
+		Wj := 0;
+		Ri := 0;
+		Rj := 0;
+	end
+	
+	Loop.New.Misses : action CFrame:[cf] ==> Height:[height], Width:[width]
+	guard cf=0
+	do
+		Wi := 0;
+		Wj := 0;
+		Ri := 0;
+		Rj := 0;
+	end
+	
+	Loop.Old : action CFrame:[cf] ==> Height:[height], Width:[width]
+	guard cf!=0
+	do
+		Ri := 0;
+		Rj := 0;
+	end
+
+	Write : action ==> Address:[ addr ], Command:[WRITE]
+	var uint(size=18) addr = a(Wi,Wj)
+	do
+		//println("Write Wi=" + Wi + " Wj" + Wj);
+		Wi := Wi + 1;
+		if(Wi >= width) then
+			Wi := 0;
+			Wj :=Wj +1;
+		end
+	end
+	
+	Read : action ==> Address:[ addr ], Command:[READ]
+	var uint(size=18) addr = a(Ri,Rj)
+	do
+		//println("Read Ri=" + Ri + " Rj" + Rj);
+		Ri := Ri + 1;
+		if(Ri >= width) then
+			Ri := 0;
+			Rj :=Rj +1;
+		end
+	end
+	
+	Done : action ==>
+	guard Rj >= height
+	do
+		//println("Done");
+	end
+	
+	schedule fsm Choice :
+		Choice ( Loop.New.Exits ) --> DAW;
+		Choice ( Loop.New.Misses ) --> SAR;
+		Choice ( Loop.Old ) --> SAR;
+		
+		DAW ( Write ) --> DAR;
+		DAW ( Done ) --> Choice;
+		DAR ( Read ) --> DAW;
+		
+		
+		SAR ( Read ) --> SAR;
+		SAR ( Done ) --> Choice;
+	end
+
+	priority  
+		Loop.New > Loop.Old;
+		Loop.New.Exits > Loop.New.Misses;
+		Done > Read;
+		Done > Write;
+	end
+	
+end
+
+

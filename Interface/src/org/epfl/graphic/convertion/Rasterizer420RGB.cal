@@ -1,0 +1,240 @@
+/*
+* richard.thavot@epfl.ch
+* converts macroblock to raster for mpeg4 sp
+*/
+
+package org.epfl.graphic.convertion;
+
+import org.epfl.graphic.pragma.Colors.*;
+
+actor Rasterizer420RGB () int(size=9) YUV420, uint(size=16) Width, uint(size=16) Height ==> 
+				   uint(size=24) RGB :
+
+	int MacroBlkSZ = 7;
+	
+	function getLumaAddr(uint(size=2) blk, uint(size=MacroBlkSZ) mb, uint(size=3) y, uint(size=3) x ) --> uint:
+		(mb << 8) | (blk << 6) | (y << 3) | x
+	end
+	
+	function getChAddr(uint(size=MacroBlkSZ) mb, uint(size=3) y, uint(size=3) x ) --> uint:
+		(mb << 6) | (y << 3) | x
+	end
+	
+	function Clip8(int(size=9) v) --> int(size=9) :
+		if (v > 255) then
+			255 elsif (v < 0) then 0
+		else
+			v
+		end
+	end
+
+	uint LumaSZ = 32768;
+	uint ChromaSZ = 16384;
+
+	List( type:int(size=9), size=LumaSZ) LumaBuffer := [ 0 : for int a in 1 .. LumaSZ ];
+	//List( type:int(size=9), size=ChromaSZ) U := [ 0 : for int b in 1 .. ChromaSZ ];
+	//List( type:int(size=9), size=ChromaSZ) V := [ 0 : for int b in 1 .. ChromaSZ ];
+	
+	int W;
+	int H;
+	
+	uint(size=MacroBlkSZ) mbx;
+	uint(size=MacroBlkSZ) mby;
+	
+	uint(size=3) x;
+	uint(size=3) y;
+	
+	uint(size=16) i;
+	uint(size=16) j;
+
+	uint(size=3) block;
+	
+	GetSize: action Width:[w], Height:[h] ==>
+	do
+		W := w;
+		H := h;
+		mbx := 0;
+		mby := 0;
+		x := 0;
+		y := 0;
+		block := 0;
+		i:=0;
+		j := 0;
+		//println("GetSize w=" + w + "h=" + h );
+	end
+	
+	Set.Luma : action YUV420:[v] ==>
+	var uint a = getLumaAddr( block, mbx, y, x)
+	do
+		
+		LumaBuffer[ a ] := v;
+		//Debug
+		if(mby=12) then
+			if(x=0 and y=0) then
+				println("Set.Luma a=" + a + " mbx" + mbx + " k=" + block);
+			end
+			print(" " + v);
+			if(x=7 and y=7) then
+				println("");
+			end
+		end
+		//
+		x := x + 1;
+		if( x >= 8) then
+			x:=0;
+			y:=y +1;
+			if(y >= 8 ) then
+				y := 0;
+				block := block + 1;
+			end
+		end
+	end
+	
+	Set.RedChroma : action YUV420:[v] ==>
+	guard block = 4
+	var uint a = getChAddr( mbx, y, x )
+	do
+		//println("Set.RedChroma (a=" + a + " v="+ v +")     :     x=" + x + " y=" + y + " mbx=" + mbx + " k=" + kind );
+		//U[ a ] := v;
+		x := x + 1;
+		if( x >= 8) then
+			x:=0;
+			y:=y +1;
+			if(y >= 8 ) then
+				y := 0;
+				block := block + 1;
+			end
+		end
+	end
+	
+	Set.BlueChroma : action YUV420:[v] ==>
+	guard block = 5
+	var uint a = getChAddr( mbx, y, x )
+	do
+		//println("Set.BlueChroma (a=" + a + " v="+ v +")     :     x=" + x + " y=" + y + " mbx=" + mbx + " k=" + kind );
+		//V[ a ] := v;
+		x := x + 1;
+		if( x >= 8) then
+			x:=0;
+			y:=y +1;
+			if(y >= 8 ) then
+				y := 0;
+				block := block + 1;
+			end
+		end
+	end
+	
+	NewOne : action ==> 
+	guard block >= 6
+	do
+		//println("mbx =" + mbx);
+		block := 0;
+		mbx := mbx + 1;
+	end
+	
+	Next : action ==> 
+	guard (mbx >= (W >> 4))
+	do
+		mbx := 0;
+		mby := mby + 1;
+		i := 0;
+		//println("Next");
+	end
+	
+	Rasterize : action ==> RGB:[toRGB(Clip8(r),Clip8(g),Clip8(b))]
+	var
+		uint t_block = (((j >> 3) << 1) & 0x2) | ((i >> 3) & 0x1),
+		uint t_mbx = (i >> 4),
+		uint t_y =  (j & 0x7),
+		uint t_x = (i & 0x7),
+		uint ay = getLumaAddr( t_block, t_mbx, t_y, t_x ),
+		//uint ac,// = getChAddr(   (i >> 4), (blk << 2) | (j & 0x3), (blk << 2) | (i & 0x3) ),
+		uint luma = LumaBuffer[ay],
+		uint u = 0,//U[ac],
+		uint v = 0,//V[ac],
+		uint t = (76306 * (luma - 16)) + 32768,
+		uint r = ((t + (104597 * (v - 128))) >> 16),
+		uint g = r,//((t - ((25675 * (u - 128)) + (53279 * (v - 128)))) >> 16),
+		uint b = r//((t + (132201 * (u - 128))) >> 16)
+	do
+		//Debug
+		if(j >= 192 and j<208) then
+			if(t_x=0 and t_y=0) then
+				print(" Rasterize a=" + ay + " mbx" + t_mbx + " k=" + t_block + "(");
+			end
+			print(luma + ", ");
+			if(t_x=7) then
+				println(")");
+			end
+		end
+		//
+		
+		
+		
+		
+		
+		//block := 
+		//mbx := (i >> 4);
+		//y :=  (j & 0x7);
+		//x := (i & 0x7);
+		
+		//luma := Y[ getYAddr( block, mbx, y, x) ];
+		
+		//t := (76306 * (luma - 16)) + 32768;
+		//r := ((t + (104597 * (luma - 128))) >> 16);
+		//g := r;
+		//b := r;
+		
+		//print(" blk:" + block);
+		//print(" mbx:" + mbx);
+		//print(" y:" + y);
+		//print(" x:" + x);
+		//print(" ay:" + getYAddr( block, mbx, y, x) );
+		//println(" ac:" + ac);
+		//print(" y:" + luma);
+		//print(" u:" + u);
+		//print(" v:" + v);		
+		//println("");
+
+		i := i + 1;
+		if(i >= W) then
+			//print("i=" + i);
+			i := 0;
+			j := j + 1;
+			//println(" j=" + j);
+		end		
+		//println("Rasterize");
+	end
+	
+	Again : action ==>
+	guard ( j = (mby << 4) - 1 )
+	do
+		//println("Again " + j);
+	end
+	
+	Done : action ==>
+	guard ( j >= H )
+	do
+		//println("Done");
+	end
+	
+	schedule fsm Begin:
+		Begin ( GetSize ) --> Consume;
+		
+		Consume ( Set ) --> Consume;
+		Consume ( NewOne ) --> Consume;
+		Consume ( Next ) --> Produce;
+		
+		Produce ( Rasterize ) --> Produce;
+		Produce ( Again ) --> Consume;
+		Produce ( Done ) --> Begin;
+	end
+	
+	priority 
+		Next > NewOne > Set;
+		Set.BlueChroma> Set.RedChroma > Set.Luma;
+		Done > Again > Rasterize;
+	end
+	
+	
+end
