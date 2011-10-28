@@ -121,9 +121,10 @@ actor Algo_VariableLengthDecoding()
 	uint(size=3)  currMbPartIdx;
 	uint(size=6)  currSubMbType;
 	uint(size=3)  currSubMbPartIdx;
+	bool          first0Found := true;
+	bool          isL0;
 	uint(size=4)  levelListIdx;
 	uint(size=4)  luma4x4Idx;
-	bool          first0Found := true;
 	uint(size=6)  mbTypeNeighbours[2][16];
 	bool          neighboursAvail[2][16] :=
 		[[true : for int s in 0 .. 15]: for int t in 0 .. 1];
@@ -136,12 +137,14 @@ actor Algo_VariableLengthDecoding()
 	bool          neighbourMbSkip[2];
 	//Contains mvd's values for neighbours for current Mb and also for future
 	//Mb.
-	int(size=16)  neighbourMvdLX[20][2][2];
+	//predLX - luma4x4Idx - isAorBNeighb - xOrYComponent
+	int(size=16)  neighbourMvdLX[2][20][2][2];
 	uint(size=4)  neighbourSubMbType[20][2];
 	uint(size=4)  neighbourRefIdx[20][2];
 	uint(size=5)  numDecodAbsLvlEq1;
 	uint(size=5)  numDecodAbsLvlGt1;
-	int (size=16) pictureNeighbMvdLX[POW2_PICWIDTH_BLK_PLUS1][2][4][2];
+	//[mbAddr][predLX][aOrB][lumaIdx][vertOrHor]
+	int (size=16) pictureNeighbMvdLX[POW2_PICWIDTH_BLK_PLUS1][2][2][4][2];
 	int (size=16) pictureNeighbSubMbTp[POW2_PICWIDTH_BLK_PLUS1][2][4];
 	uint(size=4)  pictureNeighbRefIdx[POW2_PICWIDTH_BLK_PLUS1][2][4];
 	uint(size=6)  prevCbp;
@@ -178,6 +181,7 @@ actor Algo_VariableLengthDecoding()
 		uint(size=4) locNeighbSubMbType[2];
 		int(size=16) locNeighbMvdLX[2][2];
 		uint(size=4) locNeighbRefIdx[2];
+		uint(size=1) idxPredLX;
 
 
 		if(syntaxElement != CABAC_CODED_BLOCK_FLAG and
@@ -205,16 +209,17 @@ actor Algo_VariableLengthDecoding()
 						locNeighbSubMbType[0]);
 					locNeighbMbPtIdx[1] := lumaIdxToMbPartIdx(invNeighbourBIdx[luma4x4Idx], neighbMbType[1],
 						locNeighbSubMbType[1]);
+					idxPredLX := if(isL0) then 0 else 1 end;
 					foreach int i in 0 .. 1
 					do
 						foreach int j in 0 .. 1
 						do
 							locNeighbMvdLX[i][j] :=
-								neighbourMvdLX[luma4x4Idx][i][j];
+								neighbourMvdLX[idxPredLX][luma4x4Idx][i][j];
 						end
 					end
 					ctxIdxInc := getCtxIdxIncMvdLX(ctxIdxOffset, neighbAvail,
-						neighbMbType, locNeighbMbPtIdx, true,
+						neighbMbType, locNeighbMbPtIdx, isL0,
 						locNeighbSubMbType,
 						locNeighbMvdLX);
 				else if(ctxIdxOffset = 54) then
@@ -502,19 +507,22 @@ actor Algo_VariableLengthDecoding()
 			else
 				1
 			end;
+		uint(size=1) idxPredLX = if(isL0) then 0 else 1 end;
 
 		if(sizeMbPart = SZ_16x16) then
 			foreach uint idxLoop in 0 .. 15
 			do
-				neighbourMvdLX[invNeighbourAIdx[idxLoop]][0][idxLX] := mvd;
-				neighbourMvdLX[invNeighbourBIdx[idxLoop]][1][idxLX] := mvd;
+				neighbourMvdLX[idxPredLX][invNeighbourAIdx[idxLoop]][0][idxLX]
+					:= mvd;
+				neighbourMvdLX[idxPredLX][invNeighbourBIdx[idxLoop]][1][idxLX]
+					:= mvd;
 			end
 		else if(sizeMbPart = SZ_16x8) then
 			foreach uint idxLoop in 8*mbPartIdx .. 8*mbPartIdx+7
 			do
-				neighbourMvdLX[invNeighbourAIdx[idxLoop]][0][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourAIdx[idxLoop]][0][idxLX]
 					:= mvd;
-				neighbourMvdLX[invNeighbourBIdx[idxLoop]][1][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourBIdx[idxLoop]][1][idxLX]
 					:= mvd;
 			end
 		else if(sizeMbPart = SZ_8x16) then
@@ -523,9 +531,9 @@ actor Algo_VariableLengthDecoding()
 				foreach uint j in 0 .. 3
 				do
 					idx := mbPartIdx*4 + i*8 +j;
-					neighbourMvdLX[invNeighbourAIdx[idx]][0][idxLX]
+					neighbourMvdLX[idxPredLX][invNeighbourAIdx[idx]][0][idxLX]
 						:= mvd;
-					neighbourMvdLX[invNeighbourBIdx[idx]][1][idxLX]
+					neighbourMvdLX[idxPredLX][invNeighbourBIdx[idx]][1][idxLX]
 						:= mvd;
 				end
 			end
@@ -533,9 +541,9 @@ actor Algo_VariableLengthDecoding()
 			foreach uint i in 0 .. 3
 			do
 				idx := mbPartIdx*4 + i;
-				neighbourMvdLX[invNeighbourAIdx[idx]][0][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourAIdx[idx]][0][idxLX]
 					:= mvd;
-				neighbourMvdLX[invNeighbourBIdx[idx]][1][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourBIdx[idx]][1][idxLX]
 					:= mvd;
 			end
 		end end end
@@ -554,36 +562,41 @@ actor Algo_VariableLengthDecoding()
 			else
 				1
 			end;
+		uint(size=1) idxPredLX = if(isL0) then 0 else 1 end;
 
 		if(sizeSubMbPart = SZ_8x8) then
 			foreach uint i in 0 .. 3
 			do
 				idx := 4*mbPartIdx + i;
-				neighbourMvdLX[invNeighbourAIdx[idx]][0][idxLX] := mvd;
-				neighbourMvdLX[invNeighbourBIdx[idx]][1][idxLX] := mvd;
+				neighbourMvdLX[idxPredLX][invNeighbourAIdx[idx]][0][idxLX]
+					:= mvd;
+				neighbourMvdLX[idxPredLX][invNeighbourBIdx[idx]][1][idxLX]
+					:= mvd;
 			end
 		else if(sizeSubMbPart = SZ_8x4) then
 			foreach uint i in 0 .. 1
 			do
 				idx := 4*mbPartIdx + 2*subMbPartIdx + i;
-				neighbourMvdLX[invNeighbourAIdx[idx]][0][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourAIdx[idx]][0][idxLX]
 					:= mvd;
-				neighbourMvdLX[invNeighbourBIdx[idx]][1][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourBIdx[idx]][1][idxLX]
 					:= mvd;
 			end
 		else if(sizeSubMbPart = SZ_4x8) then
 			foreach uint i in 0 .. 1
 			do
 				idx := 4*mbPartIdx + subMbPartIdx + 2*i;
-				neighbourMvdLX[invNeighbourAIdx[idx]][0][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourAIdx[idx]][0][idxLX]
 					:= mvd;
-				neighbourMvdLX[invNeighbourBIdx[idx]][1][idxLX]
+				neighbourMvdLX[idxPredLX][invNeighbourBIdx[idx]][1][idxLX]
 					:= mvd;
 			end
 		else
 			idx := 4*mbPartIdx + subMbPartIdx;
-			neighbourMvdLX[invNeighbourAIdx[idx]][0][idxLX] := mvd;
-			neighbourMvdLX[invNeighbourBIdx[idx]][1][idxLX] := mvd;
+			neighbourMvdLX[idxPredLX][invNeighbourAIdx[idx]][0][idxLX]
+				:= mvd;
+			neighbourMvdLX[idxPredLX][invNeighbourBIdx[idx]][1][idxLX]
+				:= mvd;
 		end end end
 	end
 
@@ -887,10 +900,11 @@ actor Algo_VariableLengthDecoding()
 			hasSuffix := true;
 			signedVal := true;
 			CodeNum   := 0;
-			currMbPartIdx := param >> 3;
+			currMbPartIdx := (param >> 3) & 0x07;
 			//We took a neighbour of the first partition of the sub_macroblock
 			currSubMbType := neighbourSubMbType[4*currMbPartIdx+1][0];
 			currSubMbPartIdx := param & 0x07;
+			isL0 := getFlag(param, 6);
 			luma4x4Idx := partIdxToLuma4x4(currMbType, currMbPartIdx,
 				currSubMbType, currSubMbPartIdx);
 		else if(syntaxElement = CABAC_REF_IDX_LX) then
@@ -975,9 +989,12 @@ actor Algo_VariableLengthDecoding()
 				do
 					foreach int aOrB in 0 .. 1
 					do
-						pictureNeighbMvdLX[mbAddr &
-							MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx]
-							[vertOrHor] := 0;
+						foreach int idxPredLX in 0 .. 1
+						do
+							pictureNeighbMvdLX[mbAddr &
+								MASK_POW2_PICWIDTH_BLK_PLUS1][idxPredLX][aOrB]
+								[lumaIdx][vertOrHor] := 0;
+						end
 					end
 				end
 			end
@@ -989,10 +1006,13 @@ actor Algo_VariableLengthDecoding()
 				do
 					foreach int vertOrHor in 0 .. 1
 					do
-						pictureNeighbMvdLX[currMbAddr &
-							MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx]
-							[vertOrHor]	:= neighbourMvdLX[16+lumaIdx][aOrB]
-							[vertOrHor];
+						foreach int idxPredLX in 0 .. 1
+						do
+							pictureNeighbMvdLX[currMbAddr &
+								MASK_POW2_PICWIDTH_BLK_PLUS1][idxPredLX][aOrB][lumaIdx]
+								[vertOrHor]	:= neighbourMvdLX[idxPredLX][16+lumaIdx][aOrB]
+								[vertOrHor];
+						end
 					end
 					pictureNeighbSubMbTp[currMbAddr &
 						MASK_POW2_PICWIDTH_BLK_PLUS1][aOrB][lumaIdx] :=
@@ -1022,12 +1042,17 @@ actor Algo_VariableLengthDecoding()
 			neighboursCbfLumaAc[1][neighbourBIdx[i]]    := (param[4] >> (neighbourBIdx[i] + 10)) & 1;
 			foreach int vertOrHor in 0 .. 1
 			do
-				neighbourMvdLX[neighbourAIdx[i]][0][vertOrHor] :=
-					pictureNeighbMvdLX[(currMbAddr-1) &
-							MASK_POW2_PICWIDTH_BLK_PLUS1][0][i][vertOrHor];
-				neighbourMvdLX[neighbourBIdx[i]][1][vertOrHor] :=
-					pictureNeighbMvdLX[(currMbAddr-picWidthInMbs) &
-							MASK_POW2_PICWIDTH_BLK_PLUS1][1][i][vertOrHor];
+				foreach int idxPredLX in 0 .. 1
+				do
+					neighbourMvdLX[idxPredLX][neighbourAIdx[i]][0][vertOrHor] :=
+						pictureNeighbMvdLX[(currMbAddr-1) &
+						MASK_POW2_PICWIDTH_BLK_PLUS1][idxPredLX][0][i]
+						[vertOrHor];
+					neighbourMvdLX[idxPredLX][neighbourBIdx[i]][1][vertOrHor] :=
+						pictureNeighbMvdLX[(currMbAddr-picWidthInMbs) &
+						MASK_POW2_PICWIDTH_BLK_PLUS1][idxPredLX][1][i]
+						[vertOrHor];
+				end
 			end
 			neighbourSubMbType[neighbourAIdx[i]][0] :=
 				pictureNeighbSubMbTp[(currMbAddr-1) &
