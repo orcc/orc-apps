@@ -1,0 +1,155 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * 
+ * All rights reserved.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the EPFL nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE REGENTS AND CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+package jpeg.decoder.hw;
+
+actor Dequant() 
+	int(size=24) Block, uint(size=8) QT, int(size=32) SOI ==> int(size=32) Out:
+
+	// Reverse zigzag, the ith value give the index of the corresponding
+	// coefficient in the quantization table for the ith zigzag value.
+	List(type:uint(size=6), size=64) zigZag = 
+		[ 0,  1,  5,  6, 14, 15, 27, 28,
+	      2,  4,  7, 13, 16, 26, 29, 42,
+	      3,  8, 12, 17, 25, 30, 41, 43,
+	      9, 11, 18, 24, 31, 40, 44, 53,
+	     10, 19, 23, 32, 39, 45, 52, 54,
+	     20, 22, 33, 38, 46, 51, 55, 60,
+	     21, 34, 37, 47, 50, 56, 59, 61,
+	     35, 36, 48, 49, 57, 58, 62, 63];
+	
+	List(type:List(type:uint(size=8), size=64), size=2) quant;
+	
+	List(type:int(size=9),size=64) qt;
+	List(type:int(size=24),size=64) block;
+	List(type:int(size=32),size=64) outBlock;
+	
+	int count := 0;
+	int comp;
+	int Counter := 0;
+	
+	int SzWidth := 0;
+	int SzHeight := 0;
+	
+	getSzW: action SOI:[w] ==> 
+	do
+		SzWidth := w;
+	end
+	
+	getSzH: action SOI:[h] ==> 
+	do
+		SzHeight := h;
+	end
+	
+	readQt: action QT:[token] ==>
+	do
+		qt[Counter] := token;
+		Counter := Counter + 1;	
+	end
+	
+	readFinish: action ==>
+	guard
+		Counter = 130
+	do
+		Counter := 0;
+		foreach int i in 0 .. 63 do
+			quant[0][i] := qt[i + 1];
+			quant[1][i] := qt[i + 66];
+		end
+		comp := 0;
+	end
+	
+	readBlock:action Block:[token] ==>
+	do
+		block[Counter] := token;
+		Counter := Counter + 1;
+	end
+	
+	processBlock: action ==>
+	guard
+		Counter = 64
+	var 
+		int compType
+	do
+		Counter := 0;
+		compType := comp >> 2;
+		foreach int i in 0 .. 63 do
+			outBlock[i] :=  block[zigZag[i]] * quant[compType][zigZag[i]];
+		end	
+	end
+	
+	sendBlock: action ==> Out:[token]
+	var
+		int token
+	do
+		token := outBlock[Counter];
+		Counter := Counter + 1;
+	end
+	
+	sendFinish: action ==>
+	guard
+		Counter = 64
+	do	
+		Counter := 0;
+		comp := (comp + 1);
+		if comp = 6 then
+			comp := 0;
+		end
+		count := count + 1;
+	end
+	
+	EOI: action ==>
+	guard
+		count = 6 * (SzWidth >> 4) * (SzHeight >> 4)
+	do
+		count := 0;
+	end
+	
+	schedule fsm s0:
+		s0		(getSzW)		--> s1;
+		s1		(getSzH)		--> s2;
+		
+		s2		(readQt)		--> s2;
+		s2		(readFinish)	--> s3;
+		
+		s3		(readBlock)		--> s3;
+		s3		(processBlock)	--> s4;
+		
+		s4		(sendBlock)		--> s4;
+		s4		(sendFinish)	--> s3;
+		
+		s3		(EOI)			--> s0;
+	end
+	
+	priority
+		readFinish > readQt;
+		sendFinish > sendBlock;
+		EOI > processBlock > readBlock;
+	end
+	
+end
