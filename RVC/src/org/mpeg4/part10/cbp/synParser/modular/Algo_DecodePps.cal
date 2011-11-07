@@ -62,12 +62,13 @@ actor Algo_DecodePps(bool IsAvc)
 	List (type:bool         ,size=255) constrained_intra_pred_flag            := [ false : for int i in 0 .. 254];
 	List (type:uint(size=1) ,size=255) redundant_pic_cnt_present_flag         := [ 0     : for int i in 0 .. 254];
 	List (type:int (size=32),size=255) SzSliceGroupChgCycle                   := [ 0     : for int i in 0 .. 254];
-	List (type:bool         ,size=255) transform_8x8_mode_flag                = [ false : for int i in 0 .. 254];
+	List (type:bool         ,size=255) transform_8x8_mode_flag                := [ false : for int i in 0 .. 254];
 
 	uint(size=8)  pps_id;
 	int (size=32) LoopVal;
 	uint(size=32) ValPicWidthInMbs;
 	int (size=6) nalUnitType := -1;
+	bool          moreDataFlag;
 
 	ReadPpsId.Asked: action
 				==>
@@ -297,6 +298,7 @@ actor Algo_DecodePps(bool IsAvc)
 		ValVLD     :[ValueOfVLD] repeat 10,
 		Parameters :[ValPcWdthInMbs]
 			==>
+		TypeOfVLD :[MORE_RBSP_DATA] //more_rbsp_data()
 	do
 		num_ref_idx_l0_active_minus1[pps_id] := ValueOfVLD[0];
 		num_ref_idx_l1_active_minus1[pps_id] := ValueOfVLD[1];
@@ -329,11 +331,29 @@ actor Algo_DecodePps(bool IsAvc)
 		end
 	end
 
-	AskMoreRbspData: action ==>
+	AskMoreRbspData: action ValVLD :[ValueOfVLD] ==>
 	do
-		println("AskMoreRbspData not implemented yet");
+		moreDataFlag := ValueOfVLD != 0;
 	end
-
+	CheckMoreDataFlag.IsEqualToTrue: action ==>
+		TypeOfVLD    :[ READ_BITS],
+		NbBitsToRead :[    1     ]
+	guard
+		moreDataFlag = true
+	end
+	CheckMoreDataFlag.IsEqualToFalse: action ==>
+	guard
+		moreDataFlag = false
+	end
+	
+	readTransform_8x8_mode : action ValVLD :[ValueOfVLD]==>
+	do 
+		transform_8x8_mode_flag[pps_id] := ValueOfVLD != 0;
+		if(DEBUG_FLAG_DECODED)then
+			println("\t\ttransform_8x8_mode_flag : "+ValueOfVLD);
+		end
+	end
+	
 	SendEndPps: action Parameters :[PicHghtInMapUnt] ==> TypeOfVLD :[SKIP_NAL]
 	var
 		int ValMaxSliceGroupChgCycle
@@ -393,9 +413,13 @@ actor Algo_DecodePps(bool IsAvc)
 
 		ReadNumRefIdxAsked        (ReadNumRefIdx.Asked                      )--> ReadNumRefIdxDone;
 
-		ReadNumRefIdxDone         (ReadNumRefIdx.Done                       )--> EndPPS;//AskMoreRbspData;
+		ReadNumRefIdxDone         (ReadNumRefIdx.Done                       )--> AskMoreRbspData;
 
-		AskMoreRbspData           (AskMoreRbspData                          )-->                                 undefined; //Not implemented yet
+		AskMoreRbspData           (AskMoreRbspData                          )--> CheckMoreData;
+		CheckMoreData             (CheckMoreDataFlag.IsEqualToTrue          )--> readTransform_8x8_mode_flag;
+		CheckMoreData             (CheckMoreDataFlag.IsEqualToFalse         )--> EndPPS;
+		
+		readTransform_8x8_mode_flag ( readTransform_8x8_mode                ) --> EndPPS;
 
 		EndPPS                    (SendEndPps                               )--> AskReadPpsId;
 
