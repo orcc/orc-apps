@@ -56,6 +56,7 @@ Copyright (c) ISO/IEC 2008.
 //Modified by Mickael Raulet IETR/INSA of Rennes
 //Modified by Damien de Saint Jorre IETR/INSA of Rennes
 package org.mpeg4.part10.cbp.interPred;
+import std.util.Math.*;
 
 actor Algo_RefList(bool DEBUG)
 	uint(size=31) RefReordering,
@@ -321,9 +322,8 @@ actor Algo_RefList(bool DEBUG)
 		end
 
 
-
 	//Get the Length of the Reference Frame (and send it throw RefList) and initialize the RefListTab
-	InitRefList.RefList0_Pred: action
+	initRefList.RefList0_Pred: action
 			NbRefFrame :[ValIDxMax]
 				==>
 			RefList      :[NumMaxListRefFrame]
@@ -335,11 +335,7 @@ actor Algo_RefList(bool DEBUG)
 				int (size=32) FrameNumBuffer
 		do
 			//IdxCurrentPic = Nb short term and long term ref
-			if(ValIDxMax < NbPOC - 1) then
-				NumMaxListRefFrame := ValIDxMax;
-			else
-				NumMaxListRefFrame := NbPOC - 1;
-			end
+			NumMaxListRefFrame := min(ValIDxMax, NbPOC - 1);
 	
 			foreach int i in 0 .. 15
 			do
@@ -395,26 +391,22 @@ actor Algo_RefList(bool DEBUG)
 		end
 
 	//Get the Length of the Reference Frame (and send it throw RefList) and initialize the RefListTab
-	InitRefList.RefListX_Bi_Pred: action
+	initRefList.RefListX_Bi_Pred: action
 			NbRefFrame :[ValIDxMax]
 				==>
 			RefList      :[NumMaxListRefFrame]
-		var
-				uint(size=4)                     IdxRefList    := 0,
-				uint(size=5)                     j             := 0,
-				List(type:uint(size=4), size=16) RefSTList,
-				uint(size=4)                     SzRefSTList   := 0,
-				int (size=32)                    RefBuffer,
-				uint(size=4)                     IdxLastPocInf := -1
 		do
-			//IdxCurrentPic = Nb short term and long term ref
-			if(ValIDxMax < NbPOC - 1) then
-				NumMaxListRefFrame := ValIDxMax;
-			else
-				NumMaxListRefFrame := NbPOC - 1;
-			end
-	
-			
+			uint(size=4)  IdxRefList := 0;
+			uint(size=5)  j := 0;
+			uint(size=4)  RefSTList[16];
+			uint(size=4)  SzRefSTList := 0;
+			int (size=32) RefBuffer;
+			uint(size=4)  IdxLastPocInf := -1;
+			bool          listsAreIdentical;
+			uint(size=5) buffIdx;
+
+
+			NumMaxListRefFrame := NbPOC - 1;
 			foreach int i in 0 .. NbPOC - 1
 			do
 				if( (IdxLTList[i] = -1) and (i != IdxCurrentPic) )then
@@ -469,7 +461,10 @@ actor Algo_RefList(bool DEBUG)
 					IdxRefList         := IdxRefList + 1;
 				end
 			end
-	
+			//If L0 and L1 use the same loop, they should be identical :)
+			listsAreIdentical := (IdxLastPocInf < 0) or
+				(IdxLastPocInf + 1) > (SzRefSTList - 1);
+
 			while( (j < 16) and (IdxRefList < NumMaxListRefFrame) )
 			do
 				if(ValLTList[j] != -1)then
@@ -478,6 +473,18 @@ actor Algo_RefList(bool DEBUG)
 				end
 				j := j + 1;
 			end
+
+			//If L0 and L1 are identical, we have to invert the two first
+			//elements.
+			if(listsAreIdentical and ListType != REFLIST0_BI_PRED)then
+				if(NumMaxListRefFrame > 1)then
+					buffIdx   := RefIdx[0];
+					RefIdx[0] := RefIdx[1];
+					RefIdx[1] := buffIdx;
+				end
+			end
+
+			NumMaxListRefFrame := min(ValIDxMax, NbPOC - 1);
 			//Indicates that nothing in RefList has been sent
 			CounterRefListTab := 0;
 			if(DEBUG) then
@@ -486,21 +493,17 @@ actor Algo_RefList(bool DEBUG)
 		end
 
 	//If we don't have to reorder the list, we jump to SendRefList (see scheduler)
-	read_ref_pic_list_reordering_flag_0: action 
-			RefReordering :[reordering_flag]
-				==>
-		guard
-			reordering_flag = 0
-		end
+	read_ref_pic_list_reordering_flag_0: action  RefReordering:[reordFlag] ==>
+	guard
+		reordFlag = 0
+	end
 
 
 	//We have to reorder the list
-	read_ref_pic_list_reordering_flag_1: action 
-			RefReordering :[reordering_flag]
-				==> 
-		guard
-			reordering_flag = 1
-		end
+	read_ref_pic_list_reordering_flag_1: action RefReordering :[reordFlag] ==>
+	guard
+		reordFlag = 1
+	end
 
 
 	//A Short Term Reference must be reordered
@@ -645,7 +648,7 @@ actor Algo_RefList(bool DEBUG)
 		ReadSTLists         (ReadLists.ShortTerm )--> ReadSTLists;
 		ReadSTLists         (ReadLists.done      )--> InitRefList;
 
-		InitRefList                       (InitRefList                         )--> read_ref_pic_list_reordering_flag;
+		InitRefList                       (initRefList                         )--> read_ref_pic_list_reordering_flag;
 		read_ref_pic_list_reordering_flag (read_ref_pic_list_reordering_flag_0 )--> SendRefList;
 		read_ref_pic_list_reordering_flag (read_ref_pic_list_reordering_flag_1 )--> read_reordering_of_pic_nums_idc;
 
@@ -659,7 +662,7 @@ actor Algo_RefList(bool DEBUG)
 	priority
 		ReadLists.ShortTerm       > ReadLists.done;
 		SendRefList               > SendRefListDone;
-		InitRefList.RefList0_Pred > InitRefList.RefListX_Bi_Pred;
+		initRefList.RefList0_Pred > initRefList.RefListX_Bi_Pred;
 	end
 
 end
