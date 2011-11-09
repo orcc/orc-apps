@@ -58,6 +58,7 @@ actor Algo_VariableLengthDecoding()
 	bool          Bit1Found       := false;
 	uint(size=5)  leadingZeroBits := 0;
 	/* ue(v) only */
+	uint(size=5)  vlDecoding;
 	int (size=31) CodeNum         := 0;
 	/* u(n) */
 	uint(size=5)  BitsCount       := 0;
@@ -180,23 +181,14 @@ actor Algo_VariableLengthDecoding()
 		NewNalAlreadyDetected := true;
 	end
 
-	IsVldUe: action TypeOfVLD :[ValTypeOfVLD] ==>
+	IsVldUeBased: action TypeOfVLD :[typeOfVLD] ==>
 	guard
-		ValTypeOfVLD = VLD_UE
+		typeOfVLD = VLD_UE or typeOfVLD = VLD_SE 
 	do
 		Bit1Found       := false;
 		leadingZeroBits := 0;
 		CodeNum         := 0;
-	end
-
-
-	IsVldSe: action TypeOfVLD :[ValTypeOfVLD] ==>
-	guard
-		ValTypeOfVLD = VLD_SE
-	do
-		Bit1Found       := false;
-		leadingZeroBits := 0;
-		CodeNum         := 0;
+		vlDecoding      := typeOfVLD;
 	end
 
 	IsReadBits: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[ValNbBits] ==>
@@ -218,14 +210,14 @@ actor Algo_VariableLengthDecoding()
 		TeVal     := 1;
 	end
 
-	IsVldTe.ue: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[TypeOfVld] ==>
+	IsVldTe.ue: action TypeOfVLD :[typeOfVLD], VLD_Param :[param] ==>
 	guard
-		ValTypeOfVLD = VLD_TE,
-		TypeOfVld    > 1
+		typeOfVLD = VLD_TE and param > 1
 	do
 		Bit1Found       := false;
 		leadingZeroBits := 0;
 		CodeNum         := 0;
+		vlDecoding      := VLD_TE;
 	end
 
 	IsCavlcCoeffToken: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[nC] ==>
@@ -359,18 +351,17 @@ actor Algo_VariableLengthDecoding()
 		leadingZeroBits != 0
 	end
 
-	SendUeValue: action ==> ValDecoded :[CodeNum]
+	SendVldValue: action ==> ValDecoded :[CodeNum]
 	do
-		CodeNum := CodeNum - 1;
-	end
-
-	SendSeValue: action ==> ValDecoded :[CodeNum]
-	do
-		//CodeNum computed is equal to CodeNum + 1
-		if( (CodeNum mod 2) = 0 )then
-			CodeNum := CodeNum / 2;
-		else
-			CodeNum := -CodeNum / 2;
+		if(vlDecoding = VLD_UE or vlDecoding = VLD_TE) then
+			CodeNum := CodeNum - 1;
+		else //if(vlDecoding = VLD_SE) then
+			//CodeNum computed is equal to CodeNum + 1
+			if( (CodeNum mod 2) = 0 )then
+				CodeNum := CodeNum / 2;
+			else
+				CodeNum := -CodeNum / 2;
+			end
 		end
 	end
 
@@ -533,18 +524,17 @@ actor Algo_VariableLengthDecoding()
 */
 
 	schedule fsm CheckVLDType:
-		CheckVLDType    (IsEndOfNal                          )--> WaitForNewNal;
-		CheckVLDType    (IsByteAligned                       )--> CheckVLDType;
-		CheckVLDType    (IsVldUe                             )--> VLDecoding_Ue;
-		CheckVLDType    (IsVldSe                             )--> VLDecoding_Se;
-		CheckVLDType    (IsVldTe.ue                          )--> VLDecoding_Ue;
-		CheckVLDType    (IsVldTe.u                           )--> Decode_u;
-		CheckVLDType    (IsReadBits                          )--> Decode_u;
-		CheckVLDType    (IsMoreRbspData                      )--> FillBuffer;
-		CheckVLDType    (IsCavlcLevelPrefix                  )--> DecCavlcLevPre;
-		CheckVLDType    (IsCavlcCoeffToken                   )--> DecCavlcCofTkn;
-		CheckVLDType    (IsCavlcTotalZeros                   )--> DecCavlcTotZer;
-		CheckVLDType    (IsCavlcRunBefore                    )--> DecCavlcRunBef;
+		CheckVLDType    (IsEndOfNal         )--> WaitForNewNal;
+		CheckVLDType    (IsByteAligned      )--> CheckVLDType;
+		CheckVLDType    (IsVldUeBased       )--> VLDecoding;
+		CheckVLDType    (IsVldTe.ue         )--> VLDecoding;
+		CheckVLDType    (IsVldTe.u          )--> Decode_u;
+		CheckVLDType    (IsReadBits         )--> Decode_u;
+		CheckVLDType    (IsMoreRbspData     )--> FillBuffer;
+		CheckVLDType    (IsCavlcLevelPrefix )--> DecCavlcLevPre;
+		CheckVLDType    (IsCavlcCoeffToken  )--> DecCavlcCofTkn;
+		CheckVLDType    (IsCavlcTotalZeros  )--> DecCavlcTotZer;
+		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
 
 		/* more_rbsp_data() */
 		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
@@ -564,29 +554,17 @@ actor Algo_VariableLengthDecoding()
 		WaitForNewNal2  (WaitForNewNal                       )--> WaitForNewNal2;
 		WaitForNewNal2  (NewNalDetected                      )--> CheckVLDType;
 
-		/* ue(v) decoding process */
+		/* ue(v) and se(v) decoding process */
 			/*Fill in the WorkingByte if it's empty*/
-		VLDecoding_Ue   (Buffer                              )--> GetCodeNum4ue;
-		VLDecoding_Ue   (FillBufferRbsp                      )--> VLDecoding_Ue;
+		VLDecoding   (Buffer                              )--> GetCodeNum;
+		VLDecoding   (FillBufferRbsp                      )--> VLDecoding;
 
-		GetCodeNum4ue   (GetCodeNum.Launch                   )--> CheckCodeNum4ue;
+		GetCodeNum   (GetCodeNum.Launch                   )--> CheckCodeNum;
 
-		CheckCodeNum4ue (GetCodeNum.NotFinished              )--> VLDecoding_Ue;
-		CheckCodeNum4ue (GetCodeNum.Finished                 )--> SendUeValue;
+		CheckCodeNum (GetCodeNum.NotFinished              )--> VLDecoding;
+		CheckCodeNum (GetCodeNum.Finished                 )--> SendUeValue;
 
-		SendUeValue     (SendUeValue                         )--> CheckVLDType;
-
-		/* se(v) decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		VLDecoding_Se   (Buffer                              )--> GetCodeNum4se;
-		VLDecoding_Se   (FillBufferRbsp                      )--> VLDecoding_Se;
-
-		GetCodeNum4se   (GetCodeNum.Launch                   )--> CheckCodeNum4se;
-
-		CheckCodeNum4se (GetCodeNum.NotFinished              )--> VLDecoding_Se;
-		CheckCodeNum4se (GetCodeNum.Finished                 )--> SendUeValse;
-
-		SendUeValse     (SendSeValue                         )--> CheckVLDType;
+		SendUeValue     (SendVldValue                         )--> CheckVLDType;
 
 		/* u(n) decoding process */
 			/*Fill in the WorkingByte if it's empty*/
@@ -644,9 +622,9 @@ actor Algo_VariableLengthDecoding()
 	
 	priority
 		NewNalHasBeenSent               > WaitForNewNal                        > NewNalDetected;
-		IsVldUe                         > IsReadBits                           > IsCavlcLevelPrefix;  
-		IsCavlcLevelPrefix              > IsCavlcRunBefore > IsCavlcCoeffToken > IsVldSe;
-		IsVldSe                         > IsVldTe.ue       > IsVldTe.u         > FillBufferRbsp;
+		IsVldUeBased                         > IsReadBits                           > IsCavlcLevelPrefix;  
+		IsCavlcLevelPrefix              > IsCavlcRunBefore > IsCavlcCoeffToken;
+		IsCavlcCoeffToken               > IsVldTe.ue       > IsVldTe.u         > FillBufferRbsp;
 		FillBufferRbsp                  > IsMoreRbspData   > IsByteAligned     > IsEndOfNal;
 		CheckSizeBufferRbsp             > FillBufferRbsp                       > FutureNewNalDetected > NewNalHasBeenSent;
 		GetCodeNum.NotFinished          > GetCodeNum.Finished;
