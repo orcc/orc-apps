@@ -28,8 +28,7 @@
  */
  
 // Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
-
-package org.mpeg4.part10.frext.synParser.modular.decodePicture;
+package ch.epfl.mpeg4.part10.frext.synParser.modular.decodePicture;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import org.mpeg4.part10.Imp_PictureInfo.*;
@@ -39,16 +38,563 @@ import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import std.util.BitOps.*;
 import std.util.Math.*;
 
-actor Algo_VariableLengthDecoding()
+actor MgntAndVLDecoding()
 	uint(size=8)  RbspByte,
 	bool          NewNal,
+	int (size=32) ValVLD,
 
-	uint(size=5)   TypeOfVLD,
-	int (size=32)  VLD_Param
+	int (size=6)  Header1TypeOfVLD,
+	int (size=32) Header1VLDParam,
+	int (size=6)  Header2TypeOfVLD,
+	int (size=32) Header2VLDParam,
+	uint(size=5)  DecRefPicMarkingTypeOfVLD,
+	int (size=32) DecRefPicMarkingNbBitsToRead,
+	uint(size=5)  RefPicListTypeOfVLD,
+	int (size=32) RefPicListNbBitsToRead,
+	int (size=6)  DataTypeOfVLD,
+	int (size=32) DataVLDParam,
+	int (size=6)  MbLayerTypeOfVLD,
+	int (size=32) MbLayerVLDParam,
+	uint(size=5)  MbPredTypeOfVLD,
+	int (size=32) MbPredNbBitsToRead,
+	uint(size=5)  SubMbPredTypeOfVLD,
+	int (size=32) SubMbPredNbBitsToRead,
+	int (size=6)  ResTypeOfVLD,
+	int (size=32) ResActorLaunched,
+	uint(size=5)  ResBlkCavlcTypeOfVLD,
+	int (size=32) ResBlkCavlcVLD_Param,
+	uint(size=5)  ResBlkCabacTypeOfVLD,
+	int (size=32) ResBlkCabacVLD_Param
 		==>
-	int (size=32)  ValDecoded
+	uint(size=5)  TypeOfVLD,
+	int (size=32) VLD_Param,
+	int (size=32) Header1ValVLD,
+	int (size=32) Header2ValVLD,
+	int (size=32) DecRefPicMarkingValVLD,
+	int (size=32) RefPicListValVLD,
+	int (size=32) DataValVLD,
+	int (size=32) MbLayerValVLD,
+	int (size=32) MbPredValVLD,
+	int (size=32) SubMbPredValVLD,
+	int (size=32) ResBlkCavlcValVLD,
+	int (size=32) ResBlkCabacValVLD
 		:
 
+	uint(size=8)  callStack[16];
+	uint(size=32) nbParamToDecod := 0;
+	uint(size=3)  stackIdx;
+
+	initialize ==>
+	do
+		/* We will launch sliceHeader1 at the begining of the picture nal */
+		stackIdx     := 0;
+		callStack[0] := SLICE_HEADER1;
+	end
+
+	/* Choosing next Actor to launch thanks to the call stack */
+	findOutNextActor.isSliceHeader1: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER1
+	end
+
+	findOutNextActor.isSliceHeader2: action ==>
+	guard
+		callStack[stackIdx] = SLICE_HEADER2
+	end
+
+	findOutNextActor.isRefPicMark: action ==>
+	guard
+		callStack[stackIdx] = REF_PIC_MARKING
+	end
+
+	findOutNextActor.isRefPicList: action ==>
+	guard
+		callStack[stackIdx] = REF_PIC_LIST
+	end
+
+	findOutNextActor.isSliceData: action ==>
+	guard
+		callStack[stackIdx] = SLICE_DATA
+	end
+
+	findOutNextActor.isMbLayer: action ==>
+	guard
+		callStack[stackIdx] = MB_LAYER
+	end
+
+	findOutNextActor.isMbPred: action ==>
+	guard
+		callStack[stackIdx] = MB_PRED
+	end
+
+	findOutNextActor.isSubMbPred: action ==>
+	guard
+		callStack[stackIdx] = SUB_MB_PRED
+	end
+
+	findOutNextActor.isResidual: action ==>
+	guard
+		callStack[stackIdx] = RESIDUAL
+	end
+
+	findOutNextActor.isResidualCavlc: action ==>
+	guard
+		callStack[stackIdx] = RESIDUAL_BLOCK_CAVLC
+	end
+
+	findOutNextActor.isResidualCabac: action ==>
+	guard
+		callStack[stackIdx] = RESIDUAL_BLOCK_CABAC
+	end
+
+	getVldVal.done: action ==>
+	guard
+		nbParamToDecod = 0
+	end
+
+	waitVLDVal: action ==>
+	guard
+		nbParamToDecod > 0
+	end
+
+
+	/* Forwarding Slice Header 1 Informations */
+	sliceHeader1.vld.withoutParam: action Header1TypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0 and typeOfVld != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceHeader1.vld.with1Param: action Header1TypeOfVLD:[typeOfVld],
+		Header1VLDParam:[param] ==> TypeOfVLD:[typeOfVld], VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceHeader1.launchActor: action Header1TypeOfVLD:[typeOfVld],
+		Header1VLDParam:[actorName] ==>
+	guard
+		typeOfVld = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := actorName;
+	end
+
+	sliceHeader1.done: action Header1TypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	end
+
+	getVldVal.sliceHeader1: action ValVLD:[vldVal] ==> Header1ValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding Slice Header 2 Informations */
+	sliceHeader2.vld.withoutParam: action Header2TypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0 and typeOfVld != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceHeader2.vld.with1Param: action Header2TypeOfVLD:[typeOfVld],
+		Header2VLDParam:[param] ==> TypeOfVLD:[typeOfVld], VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceHeader2.launchActor: action Header2TypeOfVLD:[typeOfVld],
+		Header2VLDParam:[actorName] ==>
+	guard
+		typeOfVld = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := actorName;
+	end
+
+	sliceHeader2.done: action Header2TypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.sliceHeader2: action ValVLD:[vldVal] ==> Header2ValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding Slice RefPicMarking Informations */
+	refPicMark.vld.withoutParam: action DecRefPicMarkingTypeOfVLD:[typeOfVld]
+		==> TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0 and typeOfVld != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	refPicMark.vld.with1Param: action DecRefPicMarkingTypeOfVLD:[typeOfVld],
+		DecRefPicMarkingNbBitsToRead:[param] ==> TypeOfVLD:[typeOfVld],
+		VLD_Param :[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	refPicMark.done: action DecRefPicMarkingTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.refPicMark: action ValVLD:[vldVal] ==>
+		DecRefPicMarkingValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding RefPicList Informations */
+	refPicList.vld.withoutParam: action RefPicListTypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0,
+		typeOfVld  != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	refPicList.vld.with1Param: action RefPicListTypeOfVLD:[typeOfVld],
+		RefPicListNbBitsToRead:[param] ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	refPicList.done: action RefPicListTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.refPicList: action ValVLD:[vldVal] ==> RefPicListValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding SliceData Informations */
+	sliceData.vld.withoutParam: action DataTypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0 and typeOfVld != SKIP_NAL
+	do
+		if(typeOfVld != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	sliceData.vld.with1Param: action DataTypeOfVLD:[typeOfVld],
+		DataVLDParam:[param] ==> TypeOfVLD:[typeOfVld], VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	sliceData.vld.with3Param: action DataTypeOfVLD:[typeOfVLD],
+		DataVLDParam:[param] repeat 3 ==> TypeOfVLD:[typeOfVLD],
+		VLD_Param:[param] repeat 3
+	guard
+		NbParamForFunction(typeOfVLD) = 3
+	end
+
+	sliceData.vld.with8Param: action DataTypeOfVLD:[typeOfVLD],
+		DataVLDParam:[param] repeat 8 ==> TypeOfVLD:[typeOfVLD],
+		VLD_Param:[param] repeat 8
+	guard
+		NbParamForFunction(typeOfVLD) = 8
+	end
+
+	sliceData.launchActor: action DataTypeOfVLD:[typeOfVld],
+		DataVLDParam:[actorName] ==>
+	guard
+		typeOfVld = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := actorName;
+	end
+
+	sliceData.done: action DataTypeOfVLD:[typeOfVld] ==> TypeOfVLD:[typeOfVld]
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.sliceData: action ValVLD:[vldVal] ==> DataValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding MbLayer Informations */
+	mbLayer.vld.withoutParam: action MbLayerTypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0 and typeOfVld != SKIP_NAL
+	do
+		if(typeOfVld != BYTE_ALIGNED_REQUIRED and
+			typeOfVld != CABAC_INIT_ARITHM)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	mbLayer.vld.with1Param: action MbLayerTypeOfVLD:[typeOfVld],
+		MbLayerVLDParam:[param] ==> TypeOfVLD:[typeOfVld], VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		if(typeOfVld != CABAC_SEND_MB_TYPE) then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	mbLayer.vld.with2Param: action MbLayerTypeOfVLD :[typeOfVld],
+		MbLayerVLDParam:[param] repeat 2 ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param] repeat 2
+	guard
+		NbParamForFunction(typeOfVld) = 2
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	mbLayer.launchActor : action MbLayerTypeOfVLD:[typeOfVld],
+		MbLayerVLDParam:[actorName] ==>
+	guard
+		typeOfVld = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := actorName;
+	end
+
+	mbLayer.done: action MbLayerTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.mbLayer: action ValVLD:[vldVal] ==> MbLayerValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding MbPred Informations */
+	mbPred.vld.withoutParam: action MbPredTypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0 and typeOfVld != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	mbPred.vld.with1Param: action MbPredTypeOfVLD:[typeOfVld],
+		MbPredNbBitsToRead:[param] ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	mbPred.vld.with2Param: action MbPredTypeOfVLD:[typeOfVld],
+		MbPredNbBitsToRead:[param] repeat 2 ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param] repeat 2
+	guard
+		NbParamForFunction(typeOfVld) = 2
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	mbPred.done: action MbPredTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.mbPred: action ValVLD:[vldVal] ==> MbPredValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding SubMbPred Informations */
+	subMbPred.vld.withoutParam: action SubMbPredTypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0,
+		typeOfVld  != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	subMbPred.vld.with1Param: action SubMbPredTypeOfVLD:[typeOfVld],
+		SubMbPredNbBitsToRead :[param] ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	subMbPred.done: action SubMbPredTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.subMbPred: action ValVLD:[vldVal] ==> SubMbPredValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding Residual Informations */
+	residual.launchActor: action ResTypeOfVLD:[typeOfVld],
+		ResActorLaunched:[actorName] ==>
+	guard
+		typeOfVld = LAUNCH_ACTOR
+	do
+		stackIdx := (stackIdx + 1) & 0x0F;
+		callStack[stackIdx] := actorName;
+	end
+
+	residual.done: action ResTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+
+	/* Forwarding ResidualBlockCavlc Informations */
+	resBlkCavlc.vld.withoutParam: action ResBlkCavlcTypeOfVLD:[typeOfVld]
+		==> TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0,
+		typeOfVld != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	resBlkCavlc.vld.with1Param: action ResBlkCavlcTypeOfVLD:[typeOfVld],
+		ResBlkCavlcVLD_Param:[param] ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	resBlkCavlc.vld.with2Param: action ResBlkCavlcTypeOfVLD :[typeOfVld],
+		ResBlkCavlcVLD_Param:[param] repeat 2 ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param] repeat 2
+	guard
+		NbParamForFunction(typeOfVld) = 2
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	resBlkCavlc.done: action ResBlkCavlcTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.resBlkCavlc: action ValVLD:[vldVal] ==>
+		ResBlkCavlcValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding ResidualBlockCabac Informations */
+	resBlkCabac.vld.withoutParam: action ResBlkCabacTypeOfVLD:[typeOfVLD] ==>
+		TypeOfVLD:[typeOfVLD]
+	guard
+		NbParamForFunction(typeOfVLD) = 0 and typeOfVLD != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	resBlkCabac.vld.with1Param: action ResBlkCabacTypeOfVLD:[typeOfVLD],
+		ResBlkCabacVLD_Param :[param] ==> TypeOfVLD:[typeOfVLD],
+		VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	resBlkCabac.done: action ResBlkCabacTypeOfVLD:[typeOfVLD] ==>
+	guard
+		typeOfVLD = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.resBlkCabac: action ValVLD:[vldVal] ==>
+		ResBlkCabacValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	/*************************************************************************/
+	/*************************************************************************/
+	/*************************************************************************/
+	/*********************** VLDECODING ACTOR                 ****************/
+	/*************************************************************************/
+	/*************************************************************************/
 	bool DEBUG_FLAG_DECODED = false;
 	bool DEBUG_CABAC = false;
 
@@ -157,6 +703,10 @@ actor Algo_VariableLengthDecoding()
 	bool          signedFlagDecoded;
 	bool          signedFlagRemaining;
 	uint(size=4)  sliceType;
+
+	uint(size=5)   typeOfVld;
+	int(size=32)   valDecoded;
+	int(size=32)   vldParam[8];
 
 	//Table 9.39 - Assignment of ctxIdxIncto binIdx for all ctxIdxOffset
 	//We give lot of parameters, but the structure doesn't exist yet, that's
@@ -587,7 +1137,7 @@ actor Algo_VariableLengthDecoding()
 
 
 	//Syntaxe decoding have finished the decoding of this Nal
-	IsEndOfNal: action TypeOfVLD :[typeOfVld] ==>
+	IsEndOfNal: action ==>
 	guard
 		typeOfVld = SKIP_NAL
 	do
@@ -618,21 +1168,23 @@ actor Algo_VariableLengthDecoding()
 		NewNalAlreadyDetected := false;
 	end
 
-	IsMoreRbspData: action TypeOfVLD :[ValTypeOfVLD] ==>
+	IsMoreRbspData: action ==>
 	guard
-		ValTypeOfVLD = MORE_RBSP_DATA
+		typeOfVld = MORE_RBSP_DATA
 	end
 
-	CheckSizeBufferRbsp.IsEqualOrSupTo2: action ==> ValDecoded :[1]
+	CheckSizeBufferRbsp.IsEqualOrSupTo2: action ==>
 	guard
 		SizeBufferRbsp >= 2
+	do
+		valDecoded := 1;
 	end
 
-	CheckSizeBufferRbsp.IsEqualTo1: action ==> ValDecoded :[IsMoreDataInRbsp]
+	CheckSizeBufferRbsp.IsEqualTo1: action ==>
 	guard
 		SizeBufferRbsp = 1
 	do
-		uint(size=1) IsMoreDataInRbsp = 
+		valDecoded := 
 			if(((WorkingByte = 0 and (BufferRbsp[0] & 0xFF) = 0x03) or 
 			   ((BufferRbsp[0] & 0xFF) = 0x80)) and (CountBufferRbsp = 0) )then
 				0
@@ -641,13 +1193,11 @@ actor Algo_VariableLengthDecoding()
 			end;
 	end
 
-	CheckSizeBufferRbsp.IsEqualTo0: action ==> ValDecoded :[IsMoreDataInRbsp]
+	CheckSizeBufferRbsp.IsEqualTo0: action ==>
 	guard
 		SizeBufferRbsp = 0
-	var
-		uint(size=1) IsMoreDataInRbsp
 	do
-		IsMoreDataInRbsp :=
+		valDecoded :=
 			if( (WorkingByte & 0xFF) = 0x80 )then
 				 0
 			else
@@ -676,57 +1226,58 @@ actor Algo_VariableLengthDecoding()
 		NewNalAlreadyDetected := true;
 	end
 
-	IsVldUe: action TypeOfVLD :[ValTypeOfVLD] ==>
+	IsVldUe: action ==>
 	guard
-		ValTypeOfVLD = VLD_UE
+		typeOfVld = VLD_UE
 	do
 		Bit1Found       := false;
 		leadingZeroBits := 0;
 		CodeNum         := 0;
 	end
 
-	IsVldSe: action TypeOfVLD :[ValTypeOfVLD] ==>
+	IsVldSe: action ==>
 	guard
-		ValTypeOfVLD = VLD_SE
+		typeOfVld = VLD_SE
 	do
 		Bit1Found       := false;
 		leadingZeroBits := 0;
 		CodeNum         := 0;
 	end
 
-	IsReadBits: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[ValNbBits] ==>
+	IsReadBits: action ==>
 	guard
-		ValTypeOfVLD = READ_BITS
+		typeOfVld = READ_BITS
 	do
-		BitsCount := ValNbBits;
+		BitsCount := vldParam[0];
 		ReadValue := 0;
 		TeVal     := 0;
 	end
 
-	IsVldTe.u: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[TypeOfVld] ==>
+	IsVldTe.u: action ==>
 	guard
-		ValTypeOfVLD = VLD_TE,
-		TypeOfVld    = 1
+		typeOfVld = VLD_TE,
+		vldParam[0]    = 1
 	do
 		BitsCount := 1;
 		ReadValue := 0;
 		TeVal     := 1;
 	end
 
-	IsVldTe.ue: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[TypeOfVld] ==>
+	IsVldTe.ue: action ==>
 	guard
-		ValTypeOfVLD = VLD_TE,
-		TypeOfVld    > 1
+		typeOfVld = VLD_TE,
+		vldParam[0]    > 1
 	do
 		Bit1Found       := false;
 		leadingZeroBits := 0;
 		CodeNum         := 0;
 	end
 
-	IsCavlcCoeffToken: action TypeOfVLD :[ValTypeOfVLD], VLD_Param :[nC] ==>
+	IsCavlcCoeffToken: action ==>
 	guard
-		ValTypeOfVLD = CAVLC_COEFF_TOKEN
+		typeOfVld = CAVLC_COEFF_TOKEN
 	do
+		int(size=32) nC = vldParam[0];
 		Idx_nC :=
 			if(nC < 0)then
 				if(nC = -1)then
@@ -749,11 +1300,12 @@ actor Algo_VariableLengthDecoding()
 		NbBitsRead := 0;
 	end
 
-	IsCavlcTotalZeros: action TypeOfVLD :[ValTypeOfVLD], 
-		VLD_Param :[maxNumCoeff , TotalCoeff] ==>
+	IsCavlcTotalZeros: action ==>
 	guard
-		ValTypeOfVLD = CAVLC_TOTAL_ZEROS
+		typeOfVld = CAVLC_TOTAL_ZEROS
 	do
+		int(size=32) maxNumCoeff = vldParam[0];
+		int(size=32) TotalCoeff = vldParam[1];
 		IdxmaxNumCoeff :=
 			if(maxNumCoeff = 4) then
 				0
@@ -769,10 +1321,11 @@ actor Algo_VariableLengthDecoding()
 		TotalCoeffParam := TotalCoeff & 0x0F;
 	end
 
-	IsCavlcRunBefore: action TypeOfVLD :[ValTypOfVLD], VLD_Param :[zerosLeft] ==>
+	IsCavlcRunBefore: action ==>
 	guard
-		ValTypOfVLD = CAVLC_RUN_BEFORE
+		typeOfVld = CAVLC_RUN_BEFORE
 	do
+		int(size=32) zerosLeft = vldParam[0];
 		IdxzerosLeft :=
 			if(zerosLeft > 0 and zerosLeft <= 6) then
 				zerosLeft - 1
@@ -783,36 +1336,36 @@ actor Algo_VariableLengthDecoding()
 		ValRead         := 0;
 	end
 
-	isCabacInit: action TypeOfVLD:[typeOfVld], VLD_Param:[cabacInit, qpValue, slcType] ==>
+	isCabacInit: action ==>
 	guard
 		typeOfVld = CABAC_INIT
 	do
-		cabacInitIdc := cabacInit;
-		sliceQpY     := qpValue;
-		sliceType    := slcType;
+		cabacInitIdc := vldParam[0];
+		sliceQpY     := vldParam[1];
+		sliceType    := vldParam[2];
 	end
 
-	isCabacInitArithm: action TypeOfVLD:[typeOfVld] ==>
+	isCabacInitArithm: action ==>
 	guard
 		typeOfVld = CABAC_INIT_ARITHM
 	end
 
-	isCabacGetMbType: action TypeOfVLD:[typeOfVld], VLD_Param:[mbType] ==>
+	isCabacGetMbType: action ==>
 	guard
 		typeOfVld = CABAC_SEND_MB_TYPE
 	do
 		uint(size=4) neighbourAIdx[12] = [1, 3, 4, 5, 6, 7,  9, 11, 12, 13, 14, 15];
 		uint(size=4) neighbourBIdx[12] = [2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14 ,15];
 
-		currMbType := mbType;
+		currMbType := vldParam[0];
 		foreach int i in 0 .. 11
 		do
-			mbTypeNeighbours[0][neighbourAIdx[i]] := mbType;
-			mbTypeNeighbours[1][neighbourBIdx[i]] := mbType;
+			mbTypeNeighbours[0][neighbourAIdx[i]] := currMbType;
+			mbTypeNeighbours[1][neighbourBIdx[i]] := currMbType;
 		end
 	end
 
-	isCabacDecod.withoutParam: action TypeOfVLD:[typeOfVld] ==>
+	isCabacDecod.withoutParam: action ==>
 	guard
 		NbParamForFunction(typeOfVld) = 0 && typeOfVld >= CABAC_DECOD_MINI
 	do
@@ -837,8 +1390,7 @@ actor Algo_VariableLengthDecoding()
 		end
 	end
 
-	isCabacDecod.with1Param: action TypeOfVLD:[typeOfVld], VLD_Param:[param]
-		==>
+	isCabacDecod.with1Param: action ==>
 	guard
 		NbParamForFunction(typeOfVld) = 1 && typeOfVld >= CABAC_DECOD_MINI
 	do
@@ -851,9 +1403,9 @@ actor Algo_VariableLengthDecoding()
 		prefixDecoded := false;
 
 		if(syntaxElement = CABAC_CODED_BLOCK_FLAG)then
-			luma4x4Idx  := (param >> 4) & 0x0F;
-			ctxBlockCat := param & 0x0F;
-			neighbChrReceiv := (param >> 14) & 0x3FF;
+			luma4x4Idx  := (vldParam[0] >> 4) & 0x0F;
+			ctxBlockCat := vldParam[0] & 0x0F;
+			neighbChrReceiv := (vldParam[0] >> 14) & 0x3FF;
 			neighboursCbfChroma[0][0] := (neighbChrReceiv >> 9)&1;
 			neighboursCbfChroma[1][0] := (neighbChrReceiv >> 4)&1;
 			neighboursCbfChroma[0][0+1] := (neighbChrReceiv >> 6)&1;
@@ -862,12 +1414,12 @@ actor Algo_VariableLengthDecoding()
 			neighboursCbfChroma[1][1+1] := (neighbChrReceiv >> 3)&1;
 		else if(syntaxElement = CABAC_MB_SKIP_FLAG) then
 			//Used by mb_skip_flag decoding
-			neighbourMbSkip[0] := getFlag(param, 1);
-			neighbourMbSkip[1] := getFlag(param, 0);
-			neighboursAvail[0][0] := getFlag(param, 2);
-			neighboursAvail[1][0] := getFlag(param, 3);
+			neighbourMbSkip[0] := getFlag(vldParam[0], 1);
+			neighbourMbSkip[1] := getFlag(vldParam[0], 0);
+			neighboursAvail[0][0] := getFlag(vldParam[0], 2);
+			neighboursAvail[1][0] := getFlag(vldParam[0], 3);
 		else if(syntaxElement = CABAC_MB_TYPE)then
-			sliceType := param;
+			sliceType := vldParam[0];
 			hasSuffix := true;
 		else if(syntaxElement = CABAC_MVD_LX_0 or
 			syntaxElement = CABAC_MVD_LX_1) then
@@ -875,31 +1427,30 @@ actor Algo_VariableLengthDecoding()
 			hasSuffix := true;
 			signedVal := true;
 			CodeNum   := 0;
-			currMbPartIdx := (param >> 3) & 0x07;
+			currMbPartIdx := (vldParam[0] >> 3) & 0x07;
 			//We took a neighbour of the first partition of the sub_macroblock
 			currSubMbType := neighbourSubMbType[4*currMbPartIdx+1][0];
-			currSubMbPartIdx := param & 0x07;
-			isL0 := getFlag(param, 6);
+			currSubMbPartIdx := vldParam[0] & 0x07;
+			isL0 := getFlag(vldParam[0], 6);
 			luma4x4Idx := partIdxToLuma4x4(currMbType, currMbPartIdx,
 				currSubMbType, currSubMbPartIdx);
 		else if(syntaxElement = CABAC_REF_IDX_LX) then
-			currMbPartIdx := param & 0x07;
-			isL0 := getFlag(param, 3);
+			currMbPartIdx := vldParam[0] & 0x07;
+			isL0 := getFlag(vldParam[0], 3);
 			currSubMbType := neighbourSubMbType[4*currMbPartIdx+1][0];
 			currSubMbPartIdx := 0;
 			luma4x4Idx := partIdxToLuma4x4(currMbType, currMbPartIdx,
 				currSubMbType, currSubMbPartIdx);
 		else
 			//ctxBlockCat did not change.
-			levelListIdx := param;
+			levelListIdx := vldParam[0];
 		end end end end end
 		numDecodAbsLvlEq1 := 0;
 		numDecodAbsLvlGt1 := 0;
 		cabacFLRemainBits := 1;
 	end
 
-	isCabacDecod.with2Param: action TypeOfVLD:[typeOfVld],
-		VLD_Param:[param] repeat 2 ==>
+	isCabacDecod.with2Param: action ==>
 	guard
 		NbParamForFunction(typeOfVld) = 2 && typeOfVld >= CABAC_DECOD_MINI
 	do
@@ -910,54 +1461,53 @@ actor Algo_VariableLengthDecoding()
 		prefixDecoded := false;
 
 		if(typeOfVld = CABAC_INTRA_CHROMA_PRED_MODE) then
-			neighboursIntraPredC[0] := param[0];
-			neighboursIntraPredC[1] := param[1];
+			neighboursIntraPredC[0] := vldParam[0];
+			neighboursIntraPredC[1] := vldParam[1];
 			cMax := 3;
 		else if (typeOfVld = CABAC_CODED_BLOCK_PATERN) then
-			neighboursCbpLuma[0]   := param[0] mod 16;
-			neighboursCbpLuma[1]   := param[1] mod 16;
-			neighboursCbpChroma[0] := param[0]  /  16;
-			neighboursCbpChroma[1] := param[1]  /  16;
+			neighboursCbpLuma[0]   := vldParam[0] mod 16;
+			neighboursCbpLuma[1]   := vldParam[1] mod 16;
+			neighboursCbpChroma[0] := vldParam[0]  /  16;
+			neighboursCbpChroma[1] := vldParam[1]  /  16;
 			cabacFLRemainBits := 4;
 			hasSuffix     := true;
 			cMax := 2;
 		else
-			prevCbp := param[0];
-			prevMbQpDelta := param[1];
+			prevCbp := vldParam[0];
+			prevMbQpDelta := vldParam[1];
 		end end
 	end
 
-	IsCavlcLevelPrefix: action TypeOfVLD :[ValTypeOfVLD] ==>
+	IsCavlcLevelPrefix: action ==>
 	guard
-		ValTypeOfVLD = CAVLC_LEVEL_PREFIX
+		typeOfVld = CAVLC_LEVEL_PREFIX
 	do
 		Bit1Found       := false;
 		leadingZeroBits := 0;
 	end
 
-	IsByteAligned: action TypeOfVLD :[ValTypeOfVLD] ==>
+	IsByteAligned: action ==>
 	guard
-		ValTypeOfVLD = BYTE_ALIGNED_REQUIRED
+		typeOfVld = BYTE_ALIGNED_REQUIRED
 	do
 		if(CountBufferRbsp != 8)then
 			CountBufferRbsp := 0;
 		end
 	end
 
-	isCabacInitMbVal: action TypeOfVLD:[typeOfVld], VLD_Param:[param] repeat 8
-		==>
+	isCabacInitMbVal: action ==>
 	guard
 		typeOfVld = CABAC_INIT_MB_VAL
 	do
 		uint(size=4)  neighbourAIdx[4] = [0, 2, 8, 10];
 		uint(size=4)  neighbourBIdx[4] = [0, 1, 4,  5];
-		uint(size=32) picWidthInMbs = param[7];
+		uint(size=32) picWidthInMbs = vldParam[7];
 
 		/* Saving neighbour mvd */
-		if(param[6] < currMbAddr) then
+		if(vldParam[6] < currMbAddr) then
 			currMbAddr := -1;
 		end
-		foreach int mbAddr in currMbAddr + 2 .. param[6]
+		foreach int mbAddr in currMbAddr + 2 .. vldParam[6]
 		do
 			foreach int lumaIdx in 0 .. 3
 			do
@@ -1005,17 +1555,17 @@ actor Algo_VariableLengthDecoding()
 			neighboursCbfLumaAc[1][i] := 0;
 		end
 
-		currMbAddr := param[6];
+		currMbAddr := vldParam[6];
 		/* Getting neighbour parameters */
-		prevMbAvail := getFlag(param[0], 2);
+		prevMbAvail := getFlag(vldParam[0], 2);
 		foreach int i in 0 .. 3
 		do
-			neighboursAvail[0][neighbourAIdx[i]] := getFlag(param[0], 0);
-			neighboursAvail[1][neighbourBIdx[i]] := getFlag(param[0], 1);
-			mbTypeNeighbours[0][neighbourAIdx[i]] := param[1];
-			mbTypeNeighbours[1][neighbourBIdx[i]] := param[2];
-			neighboursCbfLumaAc[0][neighbourAIdx[i]]    := (param[3] >> (neighbourAIdx[i] + 5)) & 1;
-			neighboursCbfLumaAc[1][neighbourBIdx[i]]    := (param[4] >> (neighbourBIdx[i] + 10)) & 1;
+			neighboursAvail[0][neighbourAIdx[i]] := getFlag(vldParam[0], 0);
+			neighboursAvail[1][neighbourBIdx[i]] := getFlag(vldParam[0], 1);
+			mbTypeNeighbours[0][neighbourAIdx[i]] := vldParam[1];
+			mbTypeNeighbours[1][neighbourBIdx[i]] := vldParam[2];
+			neighboursCbfLumaAc[0][neighbourAIdx[i]]    := (vldParam[3] >> (neighbourAIdx[i] + 5)) & 1;
+			neighboursCbfLumaAc[1][neighbourBIdx[i]]    := (vldParam[4] >> (neighbourBIdx[i] + 10)) & 1;
 			foreach int idxPredLX in 0 .. 1
 			do
 				foreach int vertOrHor in 0 .. 1
@@ -1043,8 +1593,8 @@ actor Algo_VariableLengthDecoding()
 				pictureNeighbSubMbTp[(currMbAddr-picWidthInMbs) &
 							MASK_POW2_PICWIDTH_BLK_PLUS1][1][i];
 		end
-		neighboursCbfLumaDc[0] := (param[5]>>1) & 1;
-		neighboursCbfLumaDc[1] := param[5] & 1;
+		neighboursCbfLumaDc[0] := (vldParam[5]>>1) & 1;
+		neighboursCbfLumaDc[1] := vldParam[5] & 1;
 
 		luma4x4Idx := 0;
 		currMbPartIdx := 0;
@@ -1105,18 +1655,18 @@ actor Algo_VariableLengthDecoding()
 		leadingZeroBits != 0
 	end
 
-	SendUeValue: action ==> ValDecoded :[CodeNum]
+	SendUeValue: action ==>
 	do
-		CodeNum := CodeNum - 1;
+		valDecoded := CodeNum - 1;
 	end
 
-	SendSeValue: action ==> ValDecoded :[CodeNum]
+	SendSeValue: action ==>
 	do
 		//CodeNum computed is equal to CodeNum + 1
 		if( (CodeNum mod 2) = 0 )then
-			CodeNum := CodeNum / 2;
+			valDecoded := CodeNum / 2;
 		else
-			CodeNum := -CodeNum / 2;
+			valDecoded := -CodeNum / 2;
 		end
 	end
 
@@ -1145,11 +1695,9 @@ actor Algo_VariableLengthDecoding()
 		BitsCount != 0
 	end
 
-	SendUValue: action ==> ValDecoded :[ValueDec]
-	var
-		uint(size=31) ValueDec
+	SendUValue: action ==>
 	do
-		ValueDec := ReadValue ^ TeVal;
+		valDecoded := ReadValue ^ TeVal;
 	end
 
 	GetCavlcCoeffToken.Launch: action ==>
@@ -1172,11 +1720,11 @@ actor Algo_VariableLengthDecoding()
 	end
 
 	GetCavlcCoeffToken.Finished: action ==>
-		ValDecoded:[ TotalCoeffValue[Idx_nC][(NbBitsRead-1) & 0x0F][coeff_token & 0x3F] ]
 	do
 		if(DEBUG_FLAG_DECODED)then
 			println("Cavlc CoeffToken; Idx_nc :" + Idx_nC + " ; NbBitsRead : "+NbBitsRead+ " ; coeff_token : "+coeff_token);
 		end
+		valDecoded := TotalCoeffValue[Idx_nC][(NbBitsRead-1) & 0x0F][coeff_token & 0x3F];
 	end
 
 	GetCavlcLevelPrefix.Launch: action ==>
@@ -1200,9 +1748,11 @@ actor Algo_VariableLengthDecoding()
 		not Bit1Found
 	end
 
-	GetCavlcLevelPrefix.Finished: action ==> ValDecoded :[leadingZeroBits]
+	GetCavlcLevelPrefix.Finished: action ==>
 	guard
 		Bit1Found
+	do
+		 valDecoded := leadingZeroBits;
 	end
 
 	GetCavlcTotalZeros.Launch: action ==>
@@ -1225,11 +1775,11 @@ actor Algo_VariableLengthDecoding()
 	end
 
 	GetCavlcTotalZeros.Finished: action ==>
-		ValDecoded :[TotalZerosValue[IdxmaxNumCoeff][TotalCoeffParam][NbBitsRead & 0x0F][ValRead & 0x07]]
 	do
 		if(DEBUG_FLAG_DECODED)then
 			println("Cavlc TotalZeros; Idx :" + IdxmaxNumCoeff +" ; TotalCoeff :"+TotalCoeffParam+ " ; NbBitsRead : "+NbBitsRead+ " ; Codeword : "+ValRead);
 		end
+		valDecoded := TotalZerosValue[IdxmaxNumCoeff][TotalCoeffParam][NbBitsRead & 0x0F][ValRead & 0x07];
 	end
 
 	GetCavlcRunBefore.Launch: action ==>
@@ -1252,8 +1802,6 @@ actor Algo_VariableLengthDecoding()
 	end
 
 	GetCavlcRunBefore.Finished: action ==>
-		ValDecoded :[RunBeforeValue[IdxzerosLeft][NbBitsRead & 0x0F]
-			[ValRead & 0x07]]
 	do
 		if(DEBUG_FLAG_DECODED)then
 			print("Run Before; Idx :" + IdxzerosLeft +" ; Run Before :"+
@@ -1261,6 +1809,8 @@ actor Algo_VariableLengthDecoding()
 				[ValRead & 0x07]);
 			println(" ; NbBitsRead : "+NbBitsRead+ " ; Codeword : "+ValRead);
 		end
+		valDecoded := RunBeforeValue[IdxzerosLeft][NbBitsRead & 0x0F]
+			[ValRead & 0x07];
 	end
 
 /******* Cabac Decoding *******/
@@ -1411,14 +1961,13 @@ actor Algo_VariableLengthDecoding()
 		end end
 	end
 
-	cabacCheckBinarization.done: action ==> ValDecoded:[decodedVal]
+	cabacCheckBinarization.done: action ==>
 	guard
 		binarizationDone(binIdx, binString, syntaxElement, cabacFLRemainBits,
 			binVal, not prefixDecoded, cMax, byPass, sliceType, signedFlagDecoded),
 		not hasSuffix || prefixDecoded and not signedFlagRemaining || signedFlagDecoded ||
 		skipSuffixDecoding(syntaxElement, signedVal, binVal, binIdx, binString, sliceType)
 	do
-		int(size=32) decodedVal;
 		uint(size=4) sizePart;
 
 		uint(size=4) invNeighbourAIdx[16] = [1, 4, 3, 6, 5, 0, 7, 0, 9, 12, 11,
@@ -1430,7 +1979,7 @@ actor Algo_VariableLengthDecoding()
 		uint(size=4) invNeigBWithPicNeig[16] = [2, 3, 8, 9, 6, 7, 12, 13, 10, 11,
 			16, 17, 14, 15, 18, 19];
 
-		decodedVal :=
+		valDecoded :=
 			if(isCabacFL(syntaxElement, not prefixDecoded)) then
 				binString + (binVal << binIdx)
 			else if(syntaxElement = CABAC_CODED_BLOCK_PATERN) then
@@ -1467,42 +2016,42 @@ actor Algo_VariableLengthDecoding()
 
 		if(signedFlag) then
 			signedFlag := false;
-			decodedVal := - decodedVal;
+			valDecoded := - valDecoded;
 		end
 
 		if(syntaxElement = CABAC_COEFF_ABS_LEVEL_MINUS1) then
-			if(abs(decodedVal + 1) > 1) then
+			if(abs(valDecoded + 1) > 1) then
 				numDecodAbsLvlGt1 := numDecodAbsLvlGt1 + 1;
-			else if(abs(decodedVal + 1) = 1) then
+			else if(abs(valDecoded + 1) = 1) then
 				numDecodAbsLvlEq1 := numDecodAbsLvlEq1 + 1;
 			end end
 		else if(syntaxElement = CABAC_CODED_BLOCK_FLAG) then
 			if(ctxBlockCat <= 2) then
-				neighboursCbfLumaAc[0][invNeighbourAIdx[luma4x4Idx]] := decodedVal;
-				neighboursCbfLumaAc[1][invNeighbourBIdx[luma4x4Idx]] := decodedVal;
+				neighboursCbfLumaAc[0][invNeighbourAIdx[luma4x4Idx]] := valDecoded;
+				neighboursCbfLumaAc[1][invNeighbourBIdx[luma4x4Idx]] := valDecoded;
 			else if(ctxBlockCat = 4) then
-				neighboursCbfChroma[0][1+invNeighbourAIdx[luma4x4Idx]] := decodedVal;
-				neighboursCbfChroma[1][1+invNeighbourBIdx[luma4x4Idx]] := decodedVal;
+				neighboursCbfChroma[0][1+invNeighbourAIdx[luma4x4Idx]] := valDecoded;
+				neighboursCbfChroma[1][1+invNeighbourBIdx[luma4x4Idx]] := valDecoded;
 			end end
 		else if(syntaxElement = CABAC_SUB_MB_TYPE) then
 			foreach int i in 4*currMbPartIdx .. 4*currMbPartIdx+3
 			do
-				neighbourSubMbType[invNeigAWithPicNeig[i]][0] := decodedVal;
-				neighbourSubMbType[invNeigBWithPicNeig[i]][1] := decodedVal;
+				neighbourSubMbType[invNeigAWithPicNeig[i]][0] := valDecoded;
+				neighbourSubMbType[invNeigBWithPicNeig[i]][1] := valDecoded;
 			end
 			currMbPartIdx := currMbPartIdx + 1;
 		else if(syntaxElement = CABAC_MVD_LX_0 or
 			    syntaxElement = CABAC_MVD_LX_1) then
 			if(currMbType = BLOCK_TYPE_P_8x8 or currMbType = BLOCK_TYPE_B_8x8) then
 				sizePart := SizeSubMbPart(currMbType, currSubMbType);
-				updateNeighbourSubMvdLX(sizePart, currMbPartIdx, currSubMbPartIdx, decodedVal);
+				updateNeighbourSubMvdLX(sizePart, currMbPartIdx, currSubMbPartIdx, valDecoded);
 			else
 				sizePart := SizeMbPart(currMbType);
-				updateNeighbourMvdLX(sizePart, currMbPartIdx, decodedVal);
+				updateNeighbourMvdLX(sizePart, currMbPartIdx, valDecoded);
 			end
 		else if(syntaxElement = CABAC_REF_IDX_LX) then
 			sizePart := SizeMbPart(currMbType);
-			updateNeighbourRefIdx(sizePart, currMbPartIdx, decodedVal);
+			updateNeighbourRefIdx(sizePart, currMbPartIdx, valDecoded);
 		end end end end end
 
 		hasSuffix := false;
@@ -1558,140 +2107,109 @@ actor Algo_VariableLengthDecoding()
 			binIdx := -1;
 		end end
 	end
+	schedule fsm FindOutNextActor:
+		FindOutNextActor (findOutNextActor.isSliceHeader1  )--> SlcHead1;
+		FindOutNextActor (findOutNextActor.isSliceHeader2  )--> SlcHead2;
+		FindOutNextActor (findOutNextActor.isRefPicMark    )--> RefPicMark;
+		FindOutNextActor (findOutNextActor.isRefPicList    )--> RefPicList;
+		FindOutNextActor (findOutNextActor.isSliceData     )--> SliceData;
+		FindOutNextActor (findOutNextActor.isMbLayer       )--> MbLayer;
+		FindOutNextActor (findOutNextActor.isMbPred        )--> MbPred;
+		FindOutNextActor (findOutNextActor.isSubMbPred     )--> SubMbPred;
+		FindOutNextActor (findOutNextActor.isResidual      )--> Residual;
+		FindOutNextActor (findOutNextActor.isResidualCavlc )--> ResBlkCavlc;
+		FindOutNextActor (findOutNextActor.isResidualCabac )--> ResBlkCabac;
 
-/*
-*
-* Scheduler
-*
-*/
+		SlcHead1 (sliceHeader1.vld         )--> SlcHead1;
+		SlcHead1 (waitVLDVal               )--> SlcHeadGetVLDVal;
+		SlcHead1 (sliceHeader1.launchActor )--> FindOutNextActor;
+		SlcHead1 (sliceHeader1.done        )--> SlcHead1;
+			SlcHeadGetVLDVal (getVldVal.sliceHeader1 )--> SlcHeadGetVLDVal;
+			SlcHeadGetVLDVal (getVldVal.done         )--> SlcHead1;
 
-	schedule fsm CheckVLDType:
-		CheckVLDType    (IsEndOfNal         )--> WaitForNewNal;
-		CheckVLDType    (IsByteAligned      )--> CheckVLDType;
-		CheckVLDType    (IsVldUe            )--> VLDecoding_Ue;
-		CheckVLDType    (IsVldSe            )--> VLDecoding_Se;
-		CheckVLDType    (IsVldTe.ue         )--> VLDecoding_Ue;
-		CheckVLDType    (IsVldTe.u          )--> Decode_u;
-		CheckVLDType    (IsReadBits         )--> Decode_u;
-		CheckVLDType    (IsMoreRbspData     )--> FillBuffer;
-		CheckVLDType    (IsCavlcLevelPrefix )--> DecCavlcLevPre;
-		CheckVLDType    (IsCavlcCoeffToken  )--> DecCavlcCofTkn;
-		CheckVLDType    (IsCavlcTotalZeros  )--> DecCavlcTotZer;
-		CheckVLDType    (IsCavlcRunBefore   )--> DecCavlcRunBef;
-		CheckVLDType    (isCabacInit        )--> CabacInitContextVar;
-		CheckVLDType    (isCabacInitArithm  )--> CabacInitArithDecod;
-		CheckVLDType    (isCabacInitMbVal   )--> CheckVLDType;
-		CheckVLDType    (isCabacGetMbType   )--> CheckVLDType;
-		CheckVLDType    (isCabacDecod       )--> CabacGetCtxIdx;
-
-		/* more_rbsp_data() */
-		FillBuffer      (FillBufferRbsp                      )--> FillBuffer;
-		FillBuffer      (FutureNewNalDetected                )--> CheckBuffer;
-		FillBuffer      (CheckSizeBufferRbsp.IsEqualOrSupTo2 )--> CheckVLDType;
-		FillBuffer      (NewNalHasBeenSent                   )--> CheckBuffer;
-		CheckBuffer     (CheckSizeBufferRbsp                 )--> CheckVLDType;
-
-		/* Skip the others values of the Rbsp */
-		WaitForNewNal   (NewNalHasBeenSent          )--> ResetNewNal;
-		WaitForNewNal   (WaitForNewNal              )--> WaitForNewNal2;
-		WaitForNewNal   (NewNalDetected             )--> CheckVLDType;
-		ResetNewNal     (ResetNewNalAlreadyDetected )--> CheckVLDType;
-		WaitForNewNal2  (WaitForNewNal              )--> WaitForNewNal2;
-		WaitForNewNal2  (NewNalDetected             )--> CheckVLDType;
-
-		/* ue(v) decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		VLDecoding_Ue   (Buffer                 )--> GetCodeNum4ue;
-		VLDecoding_Ue   (FillBufferRbsp         )--> VLDecoding_Ue;
-		GetCodeNum4ue   (GetCodeNum.Launch      )--> CheckCodeNum4ue;
-		CheckCodeNum4ue (GetCodeNum.NotFinished )--> VLDecoding_Ue;
-		CheckCodeNum4ue (GetCodeNum.Finished    )--> SendUeValue;
-		SendUeValue     (SendUeValue            )--> CheckVLDType;
-
-		/* se(v) decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		VLDecoding_Se   (Buffer                 )--> GetCodeNum4se;
-		VLDecoding_Se   (FillBufferRbsp         )--> VLDecoding_Se;
-		GetCodeNum4se   (GetCodeNum.Launch      )--> CheckCodeNum4se;
-		CheckCodeNum4se (GetCodeNum.NotFinished )--> VLDecoding_Se;
-		CheckCodeNum4se (GetCodeNum.Finished    )--> SendUeValse;
-		SendUeValse     (SendSeValue            )--> CheckVLDType;
-
-		/* u(n) decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		Decode_u        (Buffer            )--> Get_u;
-		Decode_u        (FillBufferRbsp    )--> Decode_u;
-		Get_u           (Get_u.Launch      )--> Check_u_Val;
-		Check_u_Val     (Get_u.NotFinished )--> Decode_u;
-		Check_u_Val     (Get_u.Finished    )--> SendUValue;
-		SendUValue      (SendUValue        )--> CheckVLDType;
-
-		/* Cavlc coeff_token() decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcCofTkn  (Buffer                         )--> GetCavlcCofTkn;
-		DecCavlcCofTkn  (FillBufferRbsp                 )--> DecCavlcCofTkn;
-		GetCavlcCofTkn  (GetCavlcCoeffToken.Launch      )--> ChckCavlcCofTkn;
-		ChckCavlcCofTkn (GetCavlcCoeffToken.NotFinished )--> DecCavlcCofTkn;
-		ChckCavlcCofTkn (GetCavlcCoeffToken.Finished    )--> CheckVLDType;
-
-		/* Cavlc level_prefix decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcLevPre  (Buffer                          )--> GetCavlcLevPre;
-		DecCavlcLevPre  (FillBufferRbsp                  )--> DecCavlcLevPre;
-		GetCavlcLevPre  (GetCavlcLevelPrefix.Launch      )--> ChckCavlcLevPre;
-		ChckCavlcLevPre (GetCavlcLevelPrefix.NotFinished )--> DecCavlcLevPre;
-		ChckCavlcLevPre (GetCavlcLevelPrefix.Finished    )--> CheckVLDType;
-
-		/* Cavlc total_zeros decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcTotZer  (Buffer                         )--> GetCavlcTotZer;
-		DecCavlcTotZer  (FillBufferRbsp                 )--> DecCavlcTotZer;
-		GetCavlcTotZer  (GetCavlcTotalZeros.Launch      )--> ChckCavlcTotZer;
-		ChckCavlcTotZer (GetCavlcTotalZeros.NotFinished )--> DecCavlcTotZer;
-		ChckCavlcTotZer (GetCavlcTotalZeros.Finished    )--> CheckVLDType;
-
-		/* Cavlc run_before decoding process */
-			/*Fill in the WorkingByte if it's empty*/
-		DecCavlcRunBef  (Buffer                        )--> GetCavlcRunBef;
-		DecCavlcRunBef  (FillBufferRbsp                )--> DecCavlcRunBef;
-		GetCavlcRunBef  (GetCavlcRunBefore.Launch      )--> ChckCavlcRunBef;
-		ChckCavlcRunBef (GetCavlcRunBefore.NotFinished )--> DecCavlcRunBef;
-		ChckCavlcRunBef (GetCavlcRunBefore.Finished    )--> CheckVLDType;
-
-		/* Cabac Init */
-		CabacInitContextVar (cabacInitContextVar )--> CabacInitArithDecod;
-		CabacInitArithDecod (Buffer.IsEmpty      )--> CabacInitArithDecod;
-		CabacInitArithDecod (cabacInitArithDecod )--> CheckVLDType;
-		CabacInitArithDecod (FillBufferRbsp      )--> CabacInitArithDecod;
-
-		/* Cabac Decode Syntax Element */
-		CabacGetCtxIdx     (cabacGetCtxIdx      )--> CabacFillOutBuffer;
-		CabacFillOutBuffer (Buffer              )--> EndDecodeBin;
-		CabacFillOutBuffer (FillBufferRbsp      )--> CabacFillOutBuffer;
-		CabacFillOutBuffer (cabacEndDecode.skip )--> CabacCheckBinarization;
-		EndDecodeBin (cabacRenormD.launch  )--> CabacFillOutBuffer;
-		EndDecodeBin (cabacEndDecode.skip  )--> CabacCheckBinarization;
-		EndDecodeBin (decodeByPass         )--> CabacCheckBinarization;
-
-		CabacCheckBinarization (cabacCheckBinarization.done        )--> CheckVLDType;
-		CabacCheckBinarization (cabacInitForSuffix                 )--> CabacGetCtxIdx;
-		CabacCheckBinarization (cabacCheckBinarization.notFinished )--> CabacGetCtxIdx;
-	end
+		SlcHead2 (sliceHeader2.vld         )--> SlcHead2;
+		SlcHead2 (waitVLDVal               )--> SlcHead2AvcGetVLDVal;
+		SlcHead2 (sliceHeader2.launchActor )--> FindOutNextActor;
+		SlcHead2 (sliceHeader2.done        )--> FindOutNextActor;
+			SlcHead2AvcGetVLDVal (getVldVal.sliceHeader2 )--> SlcHead2AvcGetVLDVal;
+			SlcHead2AvcGetVLDVal (getVldVal.done         )--> SlcHead2;
 	
+		RefPicMark (refPicMark.vld  )--> RefPicMark;
+		RefPicMark (waitVLDVal      )--> RefPicMarkGetVLDVal;
+		RefPicMark (refPicMark.done )--> FindOutNextActor;
+			RefPicMarkGetVLDVal (getVldVal.refPicMark )--> RefPicMarkGetVLDVal;
+			RefPicMarkGetVLDVal (getVldVal.done       )--> RefPicMark;
+		
+		RefPicList (refPicList.vld  )--> RefPicList;
+		RefPicList (waitVLDVal      )--> RefPicListGetVLDVal;
+		RefPicList (refPicList.done )--> FindOutNextActor;
+			RefPicListGetVLDVal (getVldVal.refPicList )--> RefPicListGetVLDVal;
+			RefPicListGetVLDVal (getVldVal.done       )--> RefPicList;
+	
+		SliceData (sliceData.vld         )--> SliceData;
+		SliceData (waitVLDVal            )--> SliceDataGetVLDVal;
+		SliceData (sliceData.launchActor )--> FindOutNextActor;
+		SliceData (sliceData.done        )--> FindOutNextActor;
+			SliceDataGetVLDVal (getVldVal.sliceData )--> SliceDataGetVLDVal;
+			SliceDataGetVLDVal (getVldVal.done      )--> SliceData;
+		
+		MbLayer (mbLayer.vld         )--> MbLayer;
+		MbLayer (waitVLDVal          )--> MbLayerGetVLDVal;
+		MbLayer (mbLayer.done        )--> FindOutNextActor;
+		MbLayer (mbLayer.launchActor )--> FindOutNextActor;
+			MbLayerGetVLDVal (getVldVal.mbLayer )--> MbLayerGetVLDVal;
+			MbLayerGetVLDVal (getVldVal.done    )--> MbLayer;
+		
+		MbPred (mbPred.vld  )--> MbPred;
+		MbPred (waitVLDVal  )--> LaunchMbPredGetVLDVal;
+		MbPred (mbPred.done )--> FindOutNextActor;
+			LaunchMbPredGetVLDVal (getVldVal.mbPred )--> LaunchMbPredGetVLDVal;
+			LaunchMbPredGetVLDVal (getVldVal.done   )--> MbPred;
+		
+		SubMbPred (subMbPred.vld  )--> SubMbPred;
+		SubMbPred (waitVLDVal     )--> SubMbPredGetVLDVal;
+		SubMbPred (subMbPred.done )--> FindOutNextActor;
+			SubMbPredGetVLDVal (getVldVal.subMbPred )--> SubMbPredGetVLDVal;
+			SubMbPredGetVLDVal (getVldVal.done      )--> SubMbPred;
+	
+		Residual (residual )--> FindOutNextActor;
+	
+		ResBlkCavlc (resBlkCavlc.vld  )--> ResBlkCavlc;
+		ResBlkCavlc (waitVLDVal       )--> ResBlkCavlcGetVLDVal;
+		ResBlkCavlc (resBlkCavlc.done )--> FindOutNextActor;
+			ResBlkCavlcGetVLDVal (getVldVal.resBlkCavlc )--> ResBlkCavlcGetVLDVal;
+			ResBlkCavlcGetVLDVal (getVldVal.done        )--> ResBlkCavlc;
+
+		ResBlkCabac (resBlkCabac.vld  )--> ResBlkCabac;
+		ResBlkCabac (waitVLDVal       )--> ResBlkCabacGetVLDVal;
+		ResBlkCabac (resBlkCabac.done )--> FindOutNextActor;
+			ResBlkCabacGetVLDVal (getVldVal.resBlkCabac )--> ResBlkCabacGetVLDVal;
+			ResBlkCabacGetVLDVal (getVldVal.done        )--> ResBlkCabac;
+	end
 	priority
-		NewNalHasBeenSent               > WaitForNewNal                        > NewNalDetected;
-		IsVldUe                         > IsReadBits                           > IsCavlcLevelPrefix;  
-		IsCavlcLevelPrefix              > IsCavlcRunBefore > IsCavlcCoeffToken > IsVldSe;
-		IsVldSe                         > IsVldTe.ue       > IsVldTe.u         > FillBufferRbsp;
-		FillBufferRbsp                  > IsMoreRbspData   > IsByteAligned     > IsEndOfNal;
-		CheckSizeBufferRbsp             > FillBufferRbsp                       > FutureNewNalDetected > NewNalHasBeenSent;
-		GetCodeNum.NotFinished          > GetCodeNum.Finished;
-		Buffer.IsNotEmpty               > Buffer.IsEmpty                       > FillBufferRbsp;
-		GetCavlcCoeffToken.NotFinished  > GetCavlcCoeffToken.Finished;
-		GetCavlcLevelPrefix.NotFinished > GetCavlcLevelPrefix.Finished;
-		GetCavlcTotalZeros.NotFinished  > GetCavlcTotalZeros.Finished;
-		GetCavlcRunBefore.NotFinished   > GetCavlcRunBefore.Finished;
-		Buffer > cabacInitArithDecod    > FillBufferRbsp;
-		cabacCheckBinarization.done     > cabacInitForSuffix > cabacCheckBinarization.notFinished;
+		sliceHeader1.vld > waitVLDVal > sliceHeader1.launchActor;
+		sliceHeader1.launchActor      > sliceHeader1.done;
+		getVldVal.sliceHeader1        > getVldVal.done;
+		sliceHeader2.vld > waitVLDVal > sliceHeader2.launchActor;
+		sliceHeader2.launchActor      > sliceHeader2.done;
+		getVldVal.sliceHeader2        > getVldVal.done;
+		refPicMark.vld  > waitVLDVal  > refPicMark.done;
+		getVldVal.refPicMark          > getVldVal.done;
+		refPicList.vld  > waitVLDVal  > refPicList.done;
+		getVldVal.refPicList          > getVldVal.done;
+		sliceData.vld > waitVLDVal    > sliceData.launchActor;
+		sliceData.launchActor         > sliceData.done;
+		getVldVal.sliceData           > getVldVal.done;
+		mbLayer.vld   > waitVLDVal    > mbLayer.launchActor;
+		mbLayer.launchActor           > mbLayer.done;
+		getVldVal.mbLayer             > getVldVal.done;
+		mbPred.vld      > waitVLDVal  > mbPred.done;
+		getVldVal.mbPred              > getVldVal.done;
+		subMbPred.vld   > waitVLDVal  > subMbPred.done;
+		getVldVal.subMbPred           > getVldVal.done;
+		resBlkCavlc.vld > waitVLDVal  > resBlkCavlc.done;
+		getVldVal.resBlkCavlc         > getVldVal.done;
+		resBlkCabac.vld > waitVLDVal  > resBlkCabac.done;
+		getVldVal.resBlkCabac         > getVldVal.done;
 	end
 end
