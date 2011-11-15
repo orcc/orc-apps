@@ -1,0 +1,138 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.frext.interPred;
+
+actor FilterSliceInformation()
+	int (size=32) DelListIn,
+	bool          EmptyDpbIn,
+	bool          IsPicOrSlice,
+	int (size=32) LongTermListIn,
+	
+
+
+
+
+	int (size=32) RefList
+		==>
+	int (size=32) DelList,
+	bool          EmptyDpb,
+	int (size=32) LongTermList
+		:
+
+	int (size=32) SENT_DONE = -2;
+
+	bool isNewPict;
+
+	pictInform.forward: action IsPicOrSlice:[isNewPic], EmptyDpbIn:[emptyDpb],
+		LongTermListIn:[ltList] repeat 16 ==> EmptyDpb:[emptyDpb],
+		LongTermList:[ltList] repeat 16 
+	guard
+		isNewPic
+	do
+		isNewPict := true;
+	end
+
+	pictInform.skip: action IsPicOrSlice:[isNewPic], EmptyDpbIn:[emptyDpb],
+		LongTermListIn:[ltList] repeat 16 ==>
+	guard
+		not isNewPic
+	do
+		isNewPict := false;
+	end
+
+	readDelList.body.forward: action DelListIn:[delListVal] ==>
+		DelList:[delListVal]
+	guard
+		delListVal != SENT_DONE and isNewPict
+	end
+
+	readDelList.body.skip: action DelListIn:[delListVal] ==>
+	guard
+		delListVal != SENT_DONE and not isNewPict
+	end
+
+	readDelList.endList.forward: action DelListIn:[delListVal] ==>
+		DelList:[delListVal]
+	guard
+		delListVal = SENT_DONE and isNewPict
+	end
+
+	readDelList.endList.skip: action DelListIn:[delListVal] ==>
+	guard
+		delListVal = SENT_DONE and not isNewPict
+	end
+
+	uint(size=32) RefFrameNum[16];
+	uint(size=6)  SizeList;
+	uint(size=6)  CountRead;
+	ReadSizeList: action RefList :[ SizeRefList ] ==>
+	do
+		SizeList  := SizeRefList;
+		CountRead := 0;
+		if(not isNewPict)then
+			print("Begining matching test .... ");
+		end
+	end
+
+
+	ReadRefList: action RefList :[FrameNum] ==>
+	guard
+		CountRead < SizeList
+	do
+		if(not isNewPict)then
+			if(RefFrameNum[CountRead] != FrameNum)then
+				println("\n Errors !!!");
+			end
+		end
+		RefFrameNum[CountRead] := FrameNum;
+		CountRead              := CountRead + 1;
+	end
+
+	ReadRefListDone: action ==>
+		guard
+			CountRead = SizeList
+		do
+			if(not isNewPict)then
+				println("End of matching test");
+			end
+		end
+	
+
+	schedule fsm CheckPicOrSlice:
+		CheckPicOrSlice (pictInform          )--> ReadDelList;
+		ReadDelList     (readDelList.body    )--> ReadDelList;
+		ReadDelList     (readDelList.endList )--> ReadSz;
+
+		ReadSz(ReadSizeList )--> readref;
+		readref(ReadRefList )--> readref;
+		readref(ReadRefListDone)--> CheckPicOrSlice;
+	end
+end
