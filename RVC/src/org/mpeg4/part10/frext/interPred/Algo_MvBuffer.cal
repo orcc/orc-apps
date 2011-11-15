@@ -67,7 +67,7 @@ actor Algo_MvBuffer()
 	uint(size=7)  MbLocation,
 	uint(size=6)  MbType,
 	int (size=16) Mv,
-	bool          NewPic,
+	uint(size=2)  IsMbSliceOrPic,
 	uint(size=32) Poc,
 	uint(size=4)  RefIdx,
 	int (size=32) RefList0,
@@ -77,6 +77,10 @@ actor Algo_MvBuffer()
 	bool         ColZeroFlag,
 	int(size=32) TemporalInfo
 		:
+
+	uint(size=2) NEW_PIC   = 0;
+	uint(size=2) NEW_SLICE = 1;
+	uint(size=2) NEW_MB    = 2;
 
 	int (size=32) SENT_DONE = -2;
 	uint(size=4)  B_DIRECT_8x8 = 0;
@@ -225,11 +229,11 @@ actor Algo_MvBuffer()
 		(Idx & 0xFFFFFFFE) + ((Idx >> 1)&1)
 	end
 
-	getNewPic: action NewPic:[isNewPic], FrameNum :[frameNum], Poc :[poc],
-			Direct8x8Inference  :[direct8x8InferFlag], 
-			DirectSpatialMvPred :[directSpatMvPred] ==>
+	getNewPic: action IsMbSliceOrPic:[newPic], FrameNum:[frameNum], Poc:[poc],
+		Direct8x8Inference:[direct8x8InferFlag],
+		DirectSpatialMvPred:[directSpatMvPred] ==>
 	guard
-		isNewPic
+		newPic = NEW_PIC
 	do
 		currFrameNum := frameNum;
 		currPoc := poc;
@@ -243,10 +247,15 @@ actor Algo_MvBuffer()
 		directSpatialMvPred         := directSpatMvPred;
 	end
 
-	getMbType: action MbType :[macroBlkType], NewPic :[isNewPic],
-		MbLocation :[mbLocX, mbLocY] ==>
+	getNewSlice: action IsMbSliceOrPic:[newSlice] ==>
 	guard
-		not isNewPic
+		newSlice = NEW_SLICE
+	end
+
+	getMbType: action MbType:[macroBlkType], IsMbSliceOrPic:[newMb],
+		MbLocation:[mbLocX, mbLocY] ==>
+	guard
+		newMb = NEW_MB
 	do
 		mbType := macroBlkType;
 		//There are 16 Partitions in a macroblock
@@ -469,8 +478,9 @@ actor Algo_MvBuffer()
 
 	schedule fsm GetMbType:
 
-		GetMbType (getNewPic )--> ReadSizeRefList0;
-		GetMbType (getMbType )--> CheckMbType;
+		GetMbType (getNewPic   )--> ReadSizeRefList0;
+		GetMbType (getNewSlice )--> GetMbType;
+		GetMbType (getMbType   )--> CheckMbType;
 
 		CheckMbType (checkMbType.macroBlkIorSI         )--> GetMbType;
 		CheckMbType (checkMbType.isBSkipOrBDirect16x16 )--> GetMvVectors;
