@@ -65,7 +65,8 @@ actor Algo_MMCO ()
 	uint(size=31) FraNum,
 	uint(size=31) MaxFrameNum,
 	uint(size=5)  NumReferenceFrame,
-	uint(size=32) Poc
+	uint(size=32) Poc,
+	bool          IsPicOrSlice
 		==>
 	int (size=32) DelList,
 	int (size=32) LongTermList,
@@ -83,7 +84,7 @@ actor Algo_MMCO ()
 
 	int (size=32) SENT_DONE = -2;
 
-	bool DEBUG_OUTPUT = true;
+	bool DEBUG_OUTPUT = false;
 	bool DEBUG_INPUT  = false;
 
 /*
@@ -112,12 +113,15 @@ actor Algo_MMCO ()
 	uint(size=7)  IdxPocList       := 0;
 	bool          ValIsIDR         := false;
 	uint(size=31) ValDelFrame      := 0;
+	uint(size=8)  nbSlice          := 0;
 
 /*
 *
 * Actions
 *
 */
+	getFirstPicToken: action IsPicOrSlice:[isPic] ==> 
+	end
 
 	//Get the Frame Num and others informations about the current picture
 	read_num_ref_frames: action
@@ -267,6 +271,34 @@ actor Algo_MMCO ()
 			end
 		end
 
+	IsNewPic: action IsPicOrSlice:[isPic] ==>
+	guard
+		isPic
+	do
+		nbSlice := nbSlice + 1;
+	end
+
+	IsNewSlice: action IsPicOrSlice:[isPic] ==> DelList:[SENT_DONE], EmptyDPB:[false]
+	guard
+		not isPic
+	do
+		nbSlice := nbSlice + 1;
+		if(DEBUG_OUTPUT)then
+			println("Output Mmco DelList: "+SENT_DONE);
+		end
+	end
+
+	chckNumSlc.isEqTo0: action ==>
+	guard
+		nbSlice = 0
+	end
+
+	chckNumSlc.isSupTo0: action ==>
+	guard
+		nbSlice > 0
+	do
+		nbSlice := nbSlice - 1;
+	end
 
 	read_IDR: action
 			Mmco :[NotIdr , is_long_term]
@@ -614,12 +646,6 @@ actor Algo_MMCO ()
 		end
 
 
-	//Sent part of the DelList is completed. 
-	SendDelList.skip : action
-				==>
-		end
-
-
 	//Sent of the DelList is completed
 	SendDelList.done : action
 				==>
@@ -648,33 +674,33 @@ actor Algo_MMCO ()
 * Scheduler
 *
 */
-	schedule fsm  read_num_ref_frames:
-		read_num_ref_frames  (read_num_ref_frames    )--> FillFalseRefFrame;
+	schedule fsm  GetFirstPicToken:
+		GetFirstPicToken    (getFirstPicToken    )--> read_num_ref_frames;
+		read_num_ref_frames (read_num_ref_frames )--> FillFalseRefFrame;
 
 		FillFalseRefFrame    (FillFalseRefFrame      )--> SendLists;
 
 		SendLists            (SendLists.ShortTerm        )--> SendLists;
 		SendLists            (SendLists.ShortTermSkipVal )--> SendLists;
-		SendLists            (SendLists.LongTerm         )--> check_IDR;
+		SendLists            (SendLists.LongTerm         )--> CheckIsNewPic;
 
+		CheckIsNewPic (IsNewPic   )--> CheckNumSliceLeft;
+		CheckIsNewPic (IsNewSlice )--> read_num_ref_frames;
+
+		CheckNumSliceLeft (chckNumSlc.isEqTo0  )--> AddFrameInList;
+		CheckNumSliceLeft (chckNumSlc.isSupTo0 )--> check_IDR;
 		/* Get values about memory_management_control_operation */
-		check_IDR            (read_IDR               )--> AddFrameInList;
-		check_IDR            (read_not_IDR_not_MMCO  )--> AddFrameInList;
+		check_IDR            (read_IDR               )--> CheckNumSliceLeft;
+		check_IDR            (read_not_IDR_not_MMCO  )--> CheckNumSliceLeft;
 		check_IDR            (read_not_IDR_MMCO      )--> MMCO_opcode;
 
-		MMCO_opcode          (MMCO_opcode.IsEqualTo0 )--> AddFrameInList;
-		MMCO_opcode          (MMCO_opcode.IsEqualTo1 )--> GetNextPocToDel_Temp;
-		MMCO_opcode          (MMCO_opcode.IsEqualTo2 )--> GetNextPocToDel_Temp;
+		MMCO_opcode          (MMCO_opcode.IsEqualTo0 )--> CheckNumSliceLeft;
+		MMCO_opcode          (MMCO_opcode.IsEqualTo1 )--> MMCO_opcode;
+		MMCO_opcode          (MMCO_opcode.IsEqualTo2 )--> MMCO_opcode;
 		MMCO_opcode          (MMCO_opcode.IsEqualTo3 )--> MMCO_opcode;
-		MMCO_opcode          (MMCO_opcode.IsEqualTo4 )--> GetNextPocToDel_Temp;
+		MMCO_opcode          (MMCO_opcode.IsEqualTo4 )--> MMCO_opcode;
 		MMCO_opcode          (MMCO_opcode.IsEqualTo5 )--> MMCO_opcode;
 		MMCO_opcode          (MMCO_opcode.IsEqualTo6 )--> MMCO_opcode;
-
-		/* Send part of the DelList */
-		GetNextPocToDel_Temp (GetNextPocToDel        )--> SendPartDelLists;
-
-		SendPartDelLists     (SendDelList.PocValue   )--> GetNextPocToDel_Temp;
-		SendPartDelLists     (SendDelList.skip       )--> MMCO_opcode;
 
 		AddFrameInList       (AddFrame               )--> GetNextPocToDel;
 
@@ -685,7 +711,7 @@ actor Algo_MMCO ()
 	end
 
 	priority
-		SendDelList.PocValue     > SendDelList.done           > SendDelList.skip;
+		SendDelList.PocValue     > SendDelList.done;
 		SendLists.ShortTerm      > SendLists.ShortTermSkipVal > SendLists.LongTerm;
 		FillFalseRefFrame.skip   > FillFalseRefFrame.launch;
 		AddFrame.InSTList        > AddFrame.InLTList;
