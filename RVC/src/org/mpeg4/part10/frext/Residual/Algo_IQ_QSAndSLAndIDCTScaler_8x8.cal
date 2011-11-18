@@ -1,0 +1,151 @@
+/*************************************************************************
+This software module was originally developed by 
+Kenji Otoi, Yoshihisa Yamada and Kohtaro Asai (Mitsubishi Electric Corporation), 
+in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-4.
+
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+license to copy, distribute, and make derivative works of this software 
+module or modifications thereof for use in implementations of the 
+ISO/IEC 23002-4 in products that satisfy conformance criteria (if any). 
+
+Those intending to use this software module in products are advised that 
+its use may infringe existing patents. ISO/IEC have no liability for use 
+of this software module or modifications thereof.
+
+Copyright is not released for products that do not conform to audiovisual 
+and image-coding related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+Assurance that the originally developed software module can be used 
+(1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and 
+(2) to develop the ISO/IEC 23002-4: 
+
+Mitsubishi Electric Corporation grants ISO/IEC all rights necessary to 
+include the originally developed software module or modifications thereof 
+in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, 
+worldwide, non-exclusive, copyright license to copy, distribute, and make 
+derivative works for use in implementations of the ISO/IEC 23002-4 in 
+products that satisfy conformance criteria (if any), and to the extent 
+that such originally developed software module or portions of it are 
+included in the ISO/IEC 23002-4.  To the extent that Mitsubishi Electric 
+Corporation owns patent rights that would be required to make, use, or 
+sell the originally developed software module or portions thereof 
+included in the ISO/IEC 23002-4 in a conforming product, Mitsubishi 
+Electric Corporation will assure the ISO/IEC that it is willing to 
+negotiate licenses under reasonable and non-discriminatory terms and 
+conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications 
+thereof for the sole  purpose of developing theISO/IEC 23002-4
+
+Mitsubishi Electric Corporation retains full right to modify and use the 
+code for its own purpose, assign or donate the code to a third party and 
+to inhibit third parties from using the code for products that do not 
+conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+This copyright notice must be included in all copies or derivative works. 
+Copyright (c) ISO/IEC 2007.
+
+: modified 7/22/08 with a guard in the action read_coeff, 
+  and a parameter NB4x4 which is set to 16 for luma or 4 for chroma
+*************************************************************************/
+package org.mpeg4.part10.frext.Residual;
+
+actor Algo_IQ_QSAndSLAndIDCTScaler_8x8 ()
+		int(size=16) Lev2d, 
+		int(size=8) QP
+		==> 
+		int(size=16) Cof:
+				
+  	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+	uint(size=8) Default_W8[6][6] = [
+  								[20,18,32,19,25,24],
+  								[22,19,35,21,28,26],
+  								[26,23,42,24,33,31],
+  								[28,25,45,26,35,33],
+  								[32,28,51,30,40,38],
+  								[36,32,58,34,46,43]
+							  ];
+	uint(size=8) W8_scan[16] = [ 0, 3, 4, 3, 3, 1, 5, 1, 4, 5, 2, 5, 3, 1, 5, 1];
+	uint(size=8) Div6[52]    = [ 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8];
+	uint(size=8) Rem6[52]    = [ 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3];
+
+  	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+  	uint(size=8) nb_8x8;
+	int(size= 8) qp;
+  	int(size= 8) rem6;
+  	int(size= 8) div6;
+  	int(size=16) w8x8_intra[6][64];
+  	
+	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+	init: action ==>
+  	do
+		foreach int i in 0 .. 5 do
+	      	foreach int j in 0 .. 63 do
+				w8x8_intra[i][j]:= Default_W8 [i][W8_scan[((j>>1)&12) | (j&3)] ] << 4;
+      		end
+    	end
+    	nb_8x8 := 0;
+    end
+  	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+	read_qp: action QP:[x] ==>
+  	do
+    	qp    := x;
+    	rem6  := Rem6[qp];
+    	div6  := Div6[qp];
+  	end  
+  	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+	read_coeff: action Lev2d:[ x ] repeat 64 ==> Cof:[buff] repeat 64
+	guard
+		nb_8x8 < 4
+  	var
+  		uint(size=8) i_shift,
+    	int(size=16) buff[64]
+  	do
+  		if div6 <= 5 then
+  			i_shift := 6 - div6; 
+			foreach int i in 0 .. 63 do
+        		buff[i] :=  (x[i]*w8x8_intra[rem6][i] + (1 << ( i_shift - 1 ))) >> i_shift;
+        	end
+  		else
+  			i_shift := div6 - 6; 
+			foreach int i in 0 .. 63 do
+        		buff[i] :=  (x[i]*w8x8_intra[rem6][i] ) << i_shift;
+        	end
+	    end
+	    nb_8x8 := nb_8x8 + 1;
+  	end
+  	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+	read_coeff_done : action ==> 
+  	guard 
+  		nb_8x8 = 4
+  	do
+	  	nb_8x8 := 0;
+  	end
+  	/**************************************************************************
+  	 * 
+  	 *************************************************************************/
+  	schedule fsm Init:
+	    Init         ( init 	  		) --> read_qp;
+	    read_qp      ( read_qp 	  		) --> read_coeff;
+    	read_coeff   ( read_coeff 		) --> read_coeff;
+    	read_coeff   ( read_coeff_done  ) --> read_qp;
+  	end
+ end
+

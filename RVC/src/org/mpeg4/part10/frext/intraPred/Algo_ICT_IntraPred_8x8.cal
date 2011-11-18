@@ -1,0 +1,145 @@
+
+package org.mpeg4.part10.frext.intraPred;
+
+actor Algo_ICT_IntraPred_8x8 ()	int(size=16) X ==> int(size= 16) Y :
+
+/******************************************************************************
+ * Global
+ *****************************************************************************/
+	int(size=16) c[8];
+	int(size=16) block8x8[64];
+	uint(size=8) cptOut;	
+	uint(size=8) cptBlock :=0;	
+ /******************************************************************************
+  * ict8x8_1D procedure
+   *****************************************************************************/
+ 	procedure ict8x8_1D(uint(size=8) idx)
+ 	var
+ 		int(size=16) a[8],
+ 		int(size=16) b[8]
+ 	begin
+  		a[0] :=  block8x8[idx+0]       + block8x8[idx+4];
+  		a[2] :=  block8x8[idx+0]       - block8x8[idx+4];
+  		a[4] := (block8x8[idx+2] >> 1) - block8x8[idx+6];
+  		a[6] := (block8x8[idx+6] >> 1) + block8x8[idx+2];
+  
+		b[0] := a[0] + a[6];
+  		b[2] := a[2] + a[4];
+  		b[4] := a[2] - a[4];
+  		b[6] := a[0] - a[6];
+  
+  		a[1] := -block8x8[idx+3] + block8x8[idx+5] - block8x8[idx+7] - (block8x8[idx+7] >> 1);
+  		a[3] :=  block8x8[idx+1] + block8x8[idx+7] - block8x8[idx+3] - (block8x8[idx+3] >> 1);
+  		a[5] := -block8x8[idx+1] + block8x8[idx+7] + block8x8[idx+5] + (block8x8[idx+5] >> 1);
+  		a[7] :=  block8x8[idx+3] + block8x8[idx+5] + block8x8[idx+1] + (block8x8[idx+1] >> 1);
+  
+  		b[1] := (a[7] >> 2) +  a[1];
+  		b[3] :=  a[3]       + (a[5] >> 2);
+  		b[5] := (a[3] >> 2) -  a[5];
+  		b[7] :=  a[7]       - (a[1] >> 2);
+
+  		c[0] := b[0] + b[7];
+  		c[1] := b[2] + b[5];
+  		c[2] := b[4] + b[3];
+  		c[3] := b[6] + b[1];
+  		c[4] := b[6] - b[1];
+  		c[5] := b[4] - b[3];
+  		c[6] := b[2] - b[5];
+  		c[7] := b[0] - b[7];
+ 	end
+/******************************************************************************
+  * transpose procedure
+  *****************************************************************************/
+ 	procedure transpose()
+ 	var
+ 		int(size=16) tmp
+ 	begin
+		foreach uint(size=8) l in 0 .. 7 do
+    		foreach uint(size=8) c in l .. 7 do
+      			tmp                := block8x8[(l<<3)+c];
+      			block8x8[(l<<3)+c] := block8x8[(c<<3)+l];
+      			block8x8[(c<<3)+l] := tmp;
+    		end
+    	end	
+ 	end
+/******************************************************************************
+ * clip255 function
+ *****************************************************************************/
+ 	function clip255(int(size=16) data) --> int(size=16) :
+ 		if data > 255 then
+ 			255
+ 		else 
+ 			if data < 0 then
+ 			0
+	 		else
+ 				data
+	 		end
+	 	end
+ 	end
+/******************************************************************************
+ * GetInput action
+ *****************************************************************************/
+	GetInput : action X:[x_in] repeat 64 ==>
+	do 
+		foreach uint(size=8) i in 0 .. 63 do
+			block8x8[i] := x_in[i];
+		end
+		block8x8[0] := block8x8[0] + 32;
+		cptOut      := 0;
+		cptBlock := cptBlock + 1;
+    end
+/******************************************************************************
+ * Ict8x8_1D_Row action
+ *****************************************************************************/
+	Ict8x8_1D_Row : action ==>
+	do
+		foreach uint(size=8) i in 0 .. 7 do
+      		ict8x8_1D(i<<3);
+			foreach uint(size=8) j in 0 .. 7 do
+				block8x8[(i<<3)+j] := c[j];
+			end
+    	end
+    	transpose();
+    end
+/******************************************************************************
+ * Ict8x8_1D_Col action
+ *****************************************************************************/
+	Ict8x8_1D_Col : action ==>
+	do
+		foreach uint(size=8) i in 0 .. 7 do
+      		ict8x8_1D(i<<3);
+			foreach uint(size=8) j in 0 .. 7 do
+				block8x8[(i<<3)+j] := clip255(c[j]>>6);
+			end
+    	end
+    	transpose();
+    end
+/******************************************************************************
+ * PutOutput action
+ *****************************************************************************/
+	PutOutput : action ==> Y:[out]
+	guard
+		cptOut != 64
+	var
+		uint(size=8) out = block8x8[cptOut]
+	do 
+		cptOut := cptOut + 1;
+    end
+/******************************************************************************
+ * EndBlock8x8 action
+ *****************************************************************************/
+	EndBlock8x8 : action ==>
+	guard
+		cptOut = 64
+	end
+ /******************************************************************************
+ * Scheduler
+ *****************************************************************************/	
+	schedule fsm getInput_st:
+		getInput_st   ( GetInput      ) --> ict8x8_ROW_st;
+		ict8x8_ROW_st ( Ict8x8_1D_Row ) --> ict8x8_COL_st;
+		ict8x8_COL_st ( Ict8x8_1D_Col ) --> putOutput_st;
+		putOutput_st  ( PutOutput     ) --> putOutput_st;
+		putOutput_st  ( EndBlock8x8   ) --> getInput_st;
+	end
+end
