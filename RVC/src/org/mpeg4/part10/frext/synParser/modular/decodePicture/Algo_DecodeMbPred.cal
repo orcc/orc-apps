@@ -44,13 +44,11 @@ actor Algo_DecodeMbPred()
 	List (type:uint(size=4),size=16) rem_intraYxY_pred_mode := [ 0 : for int i in 0 .. 15];
 
 	uint(size=5)  lumaYxYBlkIdx := 0;
-	uint(size=2)  BitMissed     := 0;
-	int (size=6)  CountBit      := 0;
 	uint(size=5)  mbPartIdx     := 0;
 	uint(size=5)  mbPartIdxMax  := 0;
 	//MbLayer Parameters
 	uint(size=6)  mb_type;
-	uint(size=2)  Chroma_Array_Type;
+	uint(size=2)  chroma_Array_Type;
 	uint(size=5)  num_ref_idx_l0_active;
 	uint(size=5)  num_ref_idx_l1_active;
 	bool          mb_field_decoding_flag;
@@ -60,25 +58,24 @@ actor Algo_DecodeMbPred()
 	bool          entropyCodingMode;
 	uint(size=4)  intraPredModeChTab[POW2_PICWIDTH_BLK_PLUS1];
 
-	ReadParameters: action
+	readParameters: action
 			Parameters :[ MbType            , ChromaArrayType , 
 			              NumRefIdxL0Active , NumRefIdxL1Active ,
 			              Flags, picWidthInMbsVal, currMbAddrVal]
 				==>
 		do
 			mb_type                 := MbType;
-			Chroma_Array_Type       := ChromaArrayType;
+			chroma_Array_Type       := ChromaArrayType;
 			num_ref_idx_l0_active   := NumRefIdxL0Active;
 			num_ref_idx_l1_active   := NumRefIdxL1Active;
 			entropyCodingMode       := getFlag(Flags,2);
 			mb_field_decoding_flag  := getFlag(Flags,0);
 			lumaYxYBlkIdx           := 0;
-			BitMissed               := 0;
-			picWidthInMbs := picWidthInMbsVal;
-			currMbAddr    := currMbAddrVal;
+			picWidthInMbs           := picWidthInMbsVal;
+			currMbAddr              := currMbAddrVal;
 		end
 
-	MbType.IsIntra_YxY: action ==>
+	mbType.IsIntra_YxY: action ==>
 	guard
 		Mb_IsIntra(mb_type) and mb_type != BLOCK_TYPE_I_PCM
 	end
@@ -90,24 +87,31 @@ actor Algo_DecodeMbPred()
        rem_intra4x4_pred_mode[ luma4x4BlkIdx ]
 }*/
 
-	MbType.IsIntra_4x4.cabac: action ==>
+	mbType.IsIntra_4x4.cabac: action ==>
 		TypeOfVLD:[CABAC_PREV_INTRA4x4_8x8_PRED_MODE_FLAG]
 	guard
 		lumaYxYBlkIdx < 16 and mb_type = BLOCK_TYPE_I_4x4 and entropyCodingMode
 	end
 
 
-	MbType.IsIntra_4x4.cavlc: action ==> TypeOfVLD:[READ_BITS],
+	mbType.IsIntra_4x4.cavlc: action ==> TypeOfVLD:[READ_BITS],
 		NbBitsToRead:[1]
 	guard
 		lumaYxYBlkIdx < 16 and mb_type = BLOCK_TYPE_I_4x4 and not entropyCodingMode
 	end
 
-	readPrevAndRem.finished: action ==>
+	readPrevAndRem.finished_I4x4: action ==>
 		RemIntraYxYPredMode:[rem_intraYxY_pred_mode] repeat 16
+	guard
+		lumaYxYBlkIdx = 16 and mb_type = BLOCK_TYPE_I_4x4
+	end
+	readPrevAndRem.finished_I8x8: action ==>
+		RemIntraYxYPredMode:[rem_intraYxY_pred_mode] repeat 4
+	guard
+		lumaYxYBlkIdx = 4 and mb_type = BLOCK_TYPE_I_8x8
 	end
 
-	ReadRemIntraYxY.asked.cabac: action ValVLD:[prevIntraYxY] ==>
+	readRemIntraYxY.asked.cabac: action ValVLD:[prevIntraYxY] ==>
 		TypeOfVLD:[CABAC_REM_INTRA4x4_8x8_PRED_MODE]
 	guard
 		prevIntraYxY = 0 and entropyCodingMode
@@ -117,7 +121,7 @@ actor Algo_DecodeMbPred()
 		end
 	end
 
-	ReadRemIntraYxY.asked.cavlc: action ValVLD:[prevIntraYxY] ==>
+	readRemIntraYxY.asked.cavlc: action ValVLD:[prevIntraYxY] ==>
 		TypeOfVLD:[READ_BITS], NbBitsToRead:[3]
 	guard
 		prevIntraYxY = 0 and not entropyCodingMode
@@ -127,7 +131,7 @@ actor Algo_DecodeMbPred()
 		end
 	end
 
-	ReadRemIntraYxY.skip: action ValVLD:[prevIntraYxY] ==>
+	readRemIntraYxY.skip: action ValVLD:[prevIntraYxY] ==>
 	guard
 		prevIntraYxY = 1
 	do
@@ -147,89 +151,26 @@ actor Algo_DecodeMbPred()
 		lumaYxYBlkIdx := lumaYxYBlkIdx + 1;
 	end
 
-	MbType.IsIntra_8x8: action
-				==>
-			//  prev_intra4x4_pred_mode_flag and rem_intra4x4_pred_mode
-			TypeOfVLD    :[    READ_BITS     ],
-			NbBitsToRead :[        4 ]
+	mbType.IsIntra_8x8: action ==>
+			//  prev_intra8x8_pred_mode_flag
+			TypeOfVLD    :[ READ_BITS ],
+			NbBitsToRead :[ 1 ]
 		guard
-			mb_type = BLOCK_TYPE_I_8x8
-		do
-			CountBit := 4;
+			lumaYxYBlkIdx < 4 and mb_type = BLOCK_TYPE_I_8x8
 		end
-
-
-	ReadPrevAndRemIntraYxY: action
-			ValVLD :[ValueOfVLD]
-				==>
-		var
-			uint(size=16) Buff
-		do
-			Buff := ValueOfVLD;
-			Buff := Buff << (16-CountBit);
-
-			if(BitMissed > 0)then
-				rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1] := rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1] + (Buff >> (16-BitMissed));
-				CountBit := CountBit - BitMissed;
-				Buff := (Buff << BitMissed);
-				if(DEBUG_FLAG_DECODED)then
-					println("rem_intraYxY_pred_mode["+(lumaYxYBlkIdx - 1)+"] : "+rem_intraYxY_pred_mode[lumaYxYBlkIdx - 1]);
-				end
-			end
-			while(CountBit > 0)
-			do
-				if((Buff & 0x8000) = 0) then
-					CountBit := CountBit - 1;
-					Buff     := (Buff << 1);
-					rem_intraYxY_pred_mode[lumaYxYBlkIdx] := (Buff >> 13);
-					CountBit := CountBit - 3;
-					Buff     := (Buff << 3);
-					if(CountBit >= 0 and DEBUG_FLAG_DECODED)then
-						println("rem_intraYxY_pred_mode["+lumaYxYBlkIdx+"] : "+rem_intraYxY_pred_mode[lumaYxYBlkIdx]);
-					end
-				else
-					rem_intraYxY_pred_mode[lumaYxYBlkIdx] := 15;
-					CountBit := CountBit - 1;
-					Buff     := (Buff << 1);
-					if(DEBUG_FLAG_DECODED)then
-						println("rem_intraYxY_pred_mode["+lumaYxYBlkIdx+"] : -1");
-					end
-				end
-				lumaYxYBlkIdx := lumaYxYBlkIdx + 1;
-			end
-			BitMissed := -CountBit;
-		end
-
-	ReadPrevAndRemIntra8x8.NotFinished: action
-				==>
-			//  prev_intra4x4_pred_mode_flag and rem_intra4x4_pred_mode
-			TypeOfVLD    :[    READ_BITS     ],
-			NbBitsToRead :[      CountBit ]
-		guard
-			(lumaYxYBlkIdx < 4) or (BitMissed > 0)
-		do
-			//Compute the minimal remaining bits
-			CountBit := BitMissed + 4 - lumaYxYBlkIdx;
-		end
-
-	ReadPrevAndRemIntra8x8.Finished: action
-				==>
-			RemIntraYxYPredMode:[rem_intraYxY_pred_mode] repeat 4
-		end
-
 	//                                           intra_chroma_pred_mode
-	ChromaArrayTp.IsEqualTo1or2.cavlc: action ==> TypeOfVLD:[VLD_UE]
+	chromaArrayTp.IsEqualTo1or2.cavlc: action ==> TypeOfVLD:[VLD_UE]
 	guard
-	   Chroma_Array_Type = 1 or Chroma_Array_Type = 2,
+	   chroma_Array_Type = 1 or chroma_Array_Type = 2,
 	   not entropyCodingMode
 	end
 
 	//          intra_chroma_pred_mode
-	ChromaArrayTp.IsEqualTo1or2.cabac: action ==>
+	chromaArrayTp.IsEqualTo1or2.cabac: action ==>
 		TypeOfVLD:[CABAC_INTRA_CHROMA_PRED_MODE],
 		NbBitsToRead:[chromaArray] repeat 2
 	guard
-		Chroma_Array_Type = 1 or Chroma_Array_Type = 2,
+		chroma_Array_Type = 1 or chroma_Array_Type = 2,
 		entropyCodingMode
 	do
 		uint(size=4) chromaArray[2];
@@ -240,7 +181,7 @@ actor Algo_DecodeMbPred()
 			 MASK_POW2_PICWIDTH_BLK_PLUS1];
 	end
 
-	ReadIntraChroma: action ValVLD:[ValueOfVLD] ==>
+	readIntraChroma: action ValVLD:[ValueOfVLD] ==>
 		IntraPredModeC :[ValueOfVLD]
 	do
 		intraPredModeChTab[currMbAddr & MASK_POW2_PICWIDTH_BLK_PLUS1] :=
@@ -250,7 +191,7 @@ actor Algo_DecodeMbPred()
 		end
 	end
 
-	Mb_Type.IsNotEqualToDirect: action
+	mb_Type.IsNotEqualToDirect: action
 				==>
 		guard
 			   mbIsPred(mb_type)
@@ -268,7 +209,7 @@ actor Algo_DecodeMbPred()
 */
 
 	//                                 ref_idx_l0
-	ReadRefIdxl0: action ==> TypeOfVLD:[typeOfVld], NbBitsToRead :[param]
+	readRefIdxl0: action ==> TypeOfVLD:[typeOfVld], NbBitsToRead :[param]
 	guard
 		mbPartIdx < mbPartIdxMax,
 		(num_ref_idx_l0_active > 1) or (mb_field_decoding_flag = true),
@@ -298,7 +239,7 @@ actor Algo_DecodeMbPred()
 */
 	/*Not used with I and P Blocks*/
 	//                                 ref_idx_l1
-	ReadRefIdxl1: action ==> TypeOfVLD:[typeOfVld], NbBitsToRead:[param]
+	readRefIdxl1: action ==> TypeOfVLD:[typeOfVld], NbBitsToRead:[param]
 	guard
 		mbPartIdx < mbPartIdxMax,
 		(num_ref_idx_l1_active > 1) or (mb_field_decoding_flag = true),
@@ -319,7 +260,7 @@ actor Algo_DecodeMbPred()
 		mbPartIdx := mbPartIdx + 1;
 	end
 
-	ReadParam.Skip1Parameter: action
+	readParam.Skip1Parameter: action
 				==>
 			//            We read nothing
 			TypeOfVLD    :[ READ_BITS ],
@@ -336,7 +277,7 @@ actor Algo_DecodeMbPred()
           mvd_l0[ mbPartIdx ][ 0 ][ compIdx ]
 */
 	//                   mvd_l0
-	ReadMvdL0.Asked.cavlc: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
+	readMvdL0.Asked.cavlc: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
 	guard
 		mbPartIdx < mbPartIdxMax and Mb_Is_PredL0(mb_type,mbPartIdx),
 		not entropyCodingMode
@@ -344,7 +285,7 @@ actor Algo_DecodeMbPred()
 		mbPartIdx := mbPartIdx + 1;
 	end
 
-	ReadMvdL0.Asked.cabac: action ==> TypeOfVLD:[CABAC_MVD_LX_0,
+	readMvdL0.Asked.cabac: action ==> TypeOfVLD:[CABAC_MVD_LX_0,
 		CABAC_MVD_LX_1], NbBitsToRead:[partsIdx, partsIdx]
 	guard
 		mbPartIdx < mbPartIdxMax and Mb_Is_PredL0(mb_type,mbPartIdx),
@@ -354,7 +295,7 @@ actor Algo_DecodeMbPred()
 		mbPartIdx := mbPartIdx + 1;
 	end
 
-	ReadMvdL0.Skip: action ==>
+	readMvdL0.Skip: action ==>
 	guard
 		mbPartIdx < mbPartIdxMax and not Mb_Is_PredL0(mb_type,mbPartIdx)
 	do
@@ -368,7 +309,7 @@ actor Algo_DecodeMbPred()
 */
 	/*Not used with I and P Blocks*/
 	//             mvd_l1
-	ReadMvdL1.Asked.cavlc: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
+	readMvdL1.Asked.cavlc: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
 	guard
 		mbPartIdx < mbPartIdxMax and Mb_Is_PredL1(mb_type,mbPartIdx),
 		not entropyCodingMode
@@ -376,7 +317,7 @@ actor Algo_DecodeMbPred()
 		mbPartIdx := mbPartIdx + 1;
 	end
 
-	ReadMvdL1.Asked.cabac: action ==> TypeOfVLD:[CABAC_MVD_LX_0,
+	readMvdL1.Asked.cabac: action ==> TypeOfVLD:[CABAC_MVD_LX_0,
 		CABAC_MVD_LX_1], NbBitsToRead:[partsIdx, partsIdx]
 	guard
 		mbPartIdx < mbPartIdxMax and Mb_Is_PredL1(mb_type,mbPartIdx),
@@ -386,21 +327,21 @@ actor Algo_DecodeMbPred()
 		mbPartIdx := mbPartIdx + 1;
 	end
 
-	ReadMvdL1.Skip: action ==>
+	readMvdL1.Skip: action ==>
 	guard
 		mbPartIdx < mbPartIdxMax and not Mb_Is_PredL1(mb_type,mbPartIdx)
 	do
 		mbPartIdx := mbPartIdx + 1;
 	end
 
-	SendOrReadDone: action ==>
+	sendOrReadDone: action ==>
 	guard
 		mbPartIdx = mbPartIdxMax
 	do
 		mbPartIdx    := 0;
 	end
 
-	ReadRefIdxL0.Done: action
+	readRefIdxL0.Done: action
 			ValVLD   :[val_ref_idx]
 				==>
 			RefIdxL0     :[val_ref_idx]
@@ -414,7 +355,7 @@ actor Algo_DecodeMbPred()
 			mbPartIdx := mbPartIdx + 1;
 		end
 //Delete me!!
-	ReadRefIdxL0.DoneSkip: action
+	readRefIdxL0.DoneSkip: action
 			ValVLD   :[val_ref_idx]
 				==>
 		guard
@@ -427,7 +368,7 @@ actor Algo_DecodeMbPred()
 			mbPartIdx := mbPartIdx + 1;
 		end
 
-	ReadRefIdxL1.Done: action
+	readRefIdxL1.Done: action
 			ValVLD :[val_ref_idx]
 				==>
 			RefIdxL1 :[val_ref_idx]
@@ -441,7 +382,7 @@ actor Algo_DecodeMbPred()
 			mbPartIdx := mbPartIdx + 1;
 		end
 //Delete me!!
-	ReadRefIdxL1.DoneSkip: action
+	readRefIdxL1.DoneSkip: action
 			ValVLD   :[val_ref_idx]
 				==>
 		guard
@@ -454,7 +395,7 @@ actor Algo_DecodeMbPred()
 			mbPartIdx := mbPartIdx + 1;
 		end
 
-	ReadMvdL0.Done: action
+	readMvdL0.Done: action
 			ValVLD   :[ValueOfVLD] repeat 2
 				==>
 			MvResl0  :[ValueOfVLD] repeat 2
@@ -468,7 +409,7 @@ actor Algo_DecodeMbPred()
 			mbPartIdx := mbPartIdx + 1;
 		end
 
-	ReadMvdL1.Done: action
+	readMvdL1.Done: action
 			ValVLD :[ValueOfVLD] repeat 2
 				==>
 			MvResl1 :[ValueOfVLD] repeat 2
@@ -483,94 +424,84 @@ actor Algo_DecodeMbPred()
 		end
 
 
-	SendEndMbPred: action
+	sendEndMbPred: action
 				==>
 			TypeOfVLD   :[ SKIP_NAL ]
 		end
 
 	schedule fsm ReadParameters:
-		ReadParameters (ReadParameters )--> CheckMbType;
+		ReadParameters        ( readParameters               ) --> CheckMbType;
 
-		CheckMbType   (MbType.IsIntra_YxY )--> CheckMbTypeYxY;
-		CheckMbType   (Mb_Type.IsNotEqualToDirect )-->ReadRefIdxl0Asked;
-		CheckMbType   (SendEndMbPred)--> ReadParameters;
-
-		CheckMbTypeYxY (MbType.IsIntra_4x4 )--> ReadRemIntra4x4;
-		CheckMbTypeYxY (MbType.IsIntra_8x8       )--> ReadPrevAndRemIntra8x8;
-		CheckMbTypeYxY (ChromaArrayTp.IsEqualTo1or2  )--> ReadIntraChroma;
-		CheckMbTypeYxY (SendEndMbPred  )--> ReadParameters;
-
-		ReadRemIntra4x4       (ReadRemIntraYxY.asked    )--> GetRemIntra4x4;
-		ReadRemIntra4x4       (ReadRemIntraYxY.skip     )--> CheckEndOfReadPrev4x4;
-
-		GetRemIntra4x4 (getRemIntraYxY )--> CheckEndOfReadPrev4x4;
-
-		CheckEndOfReadPrev4x4 (MbType.IsIntra_4x4       )--> ReadRemIntra4x4;
-		CheckEndOfReadPrev4x4 (readPrevAndRem.finished  )--> CheckChromaArrayTp;
-
-		ReadPrevAndRemIntra8x8 ( ReadPrevAndRemIntraYxY)-->CheckEndOfReadPrev8x8;
-
-		CheckEndOfReadPrev8x8( ReadPrevAndRemIntra8x8.NotFinished )--> ReadPrevAndRemIntra8x8;
-		CheckEndOfReadPrev8x8( ReadPrevAndRemIntra8x8.Finished    )--> CheckChromaArrayTp;
-
-		CheckChromaArrayTp (ChromaArrayTp.IsEqualTo1or2  )--> ReadIntraChroma;
-		CheckChromaArrayTp (SendEndMbPred  )--> ReadParameters;
-
-		ReadIntraChroma   (ReadIntraChroma)--> SendEndMbPred;
-
-		ReadRefIdxl0Asked (ReadRefIdxl0 )--> ReadRefIdxl0Asked;
-		ReadRefIdxl0Asked (ReadParam.Skip1Parameter )--> ReadRefIdxl0Asked;
-		ReadRefIdxl0Asked (SendOrReadDone )--> ReadRefIdxl1Asked;
-
-		ReadRefIdxl1Asked (ReadRefIdxl1 )--> ReadRefIdxl1Asked;
-		ReadRefIdxl1Asked (ReadParam.Skip1Parameter )--> ReadRefIdxl1Asked;
-		ReadRefIdxl1Asked (SendOrReadDone )--> ReadMvdL0Asked;
-
-		ReadMvdL0Asked (ReadMvdL0.Asked )--> ReadMvdL0Asked;
-		ReadMvdL0Asked (ReadMvdL0.Skip )--> ReadMvdL0Asked;
-		ReadMvdL0Asked (SendOrReadDone )--> ReadMvdL1Asked;
-
-		ReadMvdL1Asked (ReadMvdL1.Asked )--> ReadMvdL1Asked;
-		ReadMvdL1Asked (ReadMvdL1.Skip  )--> ReadMvdL1Asked;
-		ReadMvdL1Asked (SendOrReadDone  )--> ReadRefIdxL0Done;
-
-		ReadRefIdxL0Done ( ReadRefIdxL0.Done)--> ReadRefIdxL0Done;
-		ReadRefIdxL0Done ( ReadRefIdxL0.DoneSkip)--> ReadRefIdxL0Done;
-		ReadRefIdxL0Done ( SendOrReadDone)--> ReadRefIdxL1Done;
-
-		ReadRefIdxL1Done ( ReadRefIdxL1.Done)--> ReadRefIdxL1Done;
-		ReadRefIdxL1Done ( ReadRefIdxL1.DoneSkip)--> ReadRefIdxL1Done;
-		ReadRefIdxL1Done ( SendOrReadDone)--> ReadMvdL0Done;
-
-		ReadMvdL0Done (ReadMvdL0.Done)--> ReadMvdL0Done;
-		ReadMvdL0Done (ReadMvdL0.Skip)--> ReadMvdL0Done;
-		ReadMvdL0Done (SendOrReadDone)--> ReadMvdL1Done;
-
-		ReadMvdL1Done (ReadMvdL1.Done)--> ReadMvdL1Done;
-		ReadMvdL1Done (ReadMvdL1.Skip)--> ReadMvdL1Done;
-		ReadMvdL1Done (SendOrReadDone)--> SendEndMbPred;
-
-		SendEndMbPred (SendEndMbPred )--> ReadParameters;
+		CheckMbType           ( mbType.IsIntra_YxY           ) --> CheckMbTypeYxY;
+		CheckMbType           ( mb_Type.IsNotEqualToDirect   ) --> ReadRefIdxl0Asked;
+		CheckMbType           ( sendEndMbPred                ) --> ReadParameters;
+		// prev_rem_loop
+		CheckMbTypeYxY        ( mbType.IsIntra_4x4           ) --> ReadRemIntraYxY;
+		CheckMbTypeYxY        ( mbType.IsIntra_8x8           ) --> ReadRemIntraYxY;
+		CheckMbTypeYxY        ( chromaArrayTp.IsEqualTo1or2  ) --> ReadIntraChroma;
+		CheckMbTypeYxY        ( sendEndMbPred                ) --> ReadParameters;
+		ReadRemIntraYxY       ( readRemIntraYxY.asked        ) --> GetRemIntraYxY;
+		ReadRemIntraYxY       ( readRemIntraYxY.skip         ) --> CheckEndOfReadPrevYxY;
+		GetRemIntraYxY        ( getRemIntraYxY               ) --> CheckEndOfReadPrevYxY;
+		CheckEndOfReadPrevYxY ( mbType.IsIntra_4x4           ) --> ReadRemIntraYxY;
+		CheckEndOfReadPrevYxY ( mbType.IsIntra_8x8           ) --> ReadRemIntraYxY;
+		CheckEndOfReadPrevYxY ( readPrevAndRem               ) --> CheckChromaArrayTp;
+		// get intra_chroma_pred_mode
+		CheckChromaArrayTp    ( chromaArrayTp.IsEqualTo1or2   ) --> ReadIntraChroma;
+		CheckChromaArrayTp    ( sendEndMbPred                 ) --> ReadParameters;
+		ReadIntraChroma       ( readIntraChroma               ) --> SendEndMbPred;
+		// refIdxL0 asked loop
+		ReadRefIdxl0Asked     ( readRefIdxl0                  ) --> ReadRefIdxl0Asked;
+		ReadRefIdxl0Asked     ( readParam.Skip1Parameter      ) --> ReadRefIdxl0Asked;
+		ReadRefIdxl0Asked     ( sendOrReadDone                ) --> ReadRefIdxl1Asked;
+		// refIdxL1 asked loop
+		ReadRefIdxl1Asked     ( readRefIdxl1                  ) --> ReadRefIdxl1Asked;
+		ReadRefIdxl1Asked     ( readParam.Skip1Parameter      ) --> ReadRefIdxl1Asked;
+		ReadRefIdxl1Asked     ( sendOrReadDone                ) --> ReadMvdL0Asked;
+		// mvdL0 asked loop
+		ReadMvdL0Asked        ( readMvdL0.Asked               ) --> ReadMvdL0Asked;
+		ReadMvdL0Asked        ( readMvdL0.Skip                ) --> ReadMvdL0Asked;
+		ReadMvdL0Asked        ( sendOrReadDone                ) --> ReadMvdL1Asked;
+		// mvdL1 asked loop
+		ReadMvdL1Asked        ( readMvdL1.Asked               ) --> ReadMvdL1Asked;
+		ReadMvdL1Asked        ( readMvdL1.Skip                ) --> ReadMvdL1Asked;
+		ReadMvdL1Asked        ( sendOrReadDone                ) --> ReadRefIdxL0Done;
+		// refIdxL0 done loop
+		ReadRefIdxL0Done      ( readRefIdxL0.Done             ) --> ReadRefIdxL0Done;
+		ReadRefIdxL0Done      ( readRefIdxL0.DoneSkip         ) --> ReadRefIdxL0Done;
+		ReadRefIdxL0Done      ( sendOrReadDone                ) --> ReadRefIdxL1Done;
+		// refIdxL1 done loop
+		ReadRefIdxL1Done      ( readRefIdxL1.Done             ) --> ReadRefIdxL1Done;
+		ReadRefIdxL1Done      ( readRefIdxL1.DoneSkip         ) --> ReadRefIdxL1Done;
+		ReadRefIdxL1Done      ( sendOrReadDone                ) --> ReadMvdL0Done;
+		// mvdL0 done loop
+		ReadMvdL0Done         ( readMvdL0.Done                ) --> ReadMvdL0Done;
+		ReadMvdL0Done         ( readMvdL0.Skip                ) --> ReadMvdL0Done;
+		ReadMvdL0Done         ( sendOrReadDone                ) --> ReadMvdL1Done;
+		// mvdL1 done loop
+		ReadMvdL1Done         ( readMvdL1.Done                ) --> ReadMvdL1Done;
+		ReadMvdL1Done         ( readMvdL1.Skip                ) --> ReadMvdL1Done;
+		ReadMvdL1Done         ( sendOrReadDone                ) --> SendEndMbPred;
+		// end
+		SendEndMbPred         ( sendEndMbPred                 ) --> ReadParameters;
 	end
 
 	priority
-		MbType.IsIntra_YxY                 > Mb_Type.IsNotEqualToDirect       > SendEndMbPred;
-		MbType.IsIntra_4x4                 > MbType.IsIntra_8x8               > ChromaArrayTp.IsEqualTo1or2;
-		ChromaArrayTp.IsEqualTo1or2        > SendEndMbPred;
-		ReadPrevAndRemIntra8x8.NotFinished > ReadPrevAndRemIntra8x8.Finished;
-		ReadRefIdxl0             > ReadParam.Skip1Parameter;
-		ReadRefIdxl1             > ReadParam.Skip1Parameter;
-		ReadParam.Skip1Parameter > SendOrReadDone;
-		ReadMvdL0                > SendOrReadDone;
-		ReadMvdL1                > SendOrReadDone;
-		ReadMvdL0.Skip           > SendOrReadDone;
-		ReadMvdL1.Skip           > SendOrReadDone;
-		ReadRefIdxL0.DoneSkip    > SendOrReadDone;
-		ReadRefIdxL0.Done        > SendOrReadDone;
-		ReadRefIdxL1.Done        > SendOrReadDone;
-		ReadRefIdxL1.DoneSkip    > SendOrReadDone;
-		ReadMvdL0.Done           > SendOrReadDone;
-		ReadMvdL1.Done           > SendOrReadDone;
-		MbType.IsIntra_4x4       > readPrevAndRem.finished;
+		mbType.IsIntra_YxY          > mb_Type.IsNotEqualToDirect > sendEndMbPred;
+		mbType.IsIntra_4x4          > mbType.IsIntra_8x8         > chromaArrayTp.IsEqualTo1or2;
+		chromaArrayTp.IsEqualTo1or2 > sendEndMbPred;
+		readRefIdxl0                > readParam.Skip1Parameter;
+		readRefIdxl1                > readParam.Skip1Parameter;
+		readParam.Skip1Parameter    > sendOrReadDone;
+		readMvdL0                   > sendOrReadDone;
+		readMvdL1                   > sendOrReadDone;
+		readMvdL0.Skip              > sendOrReadDone;
+		readMvdL1.Skip              > sendOrReadDone;
+		readRefIdxL0.DoneSkip       > sendOrReadDone;
+		readRefIdxL0.Done           > sendOrReadDone;
+		readRefIdxL1.Done           > sendOrReadDone;
+		readRefIdxL1.DoneSkip       > sendOrReadDone;
+		readMvdL0.Done              > sendOrReadDone;
+		readMvdL1.Done              > sendOrReadDone;
 	end
 end
