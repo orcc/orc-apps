@@ -18,7 +18,7 @@ package org.mpeg4.part10.cbp.synParser.modular.decodePicture;
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
 import std.util.BitOps.*;
 
-actor Algo_DecodeSliceHeaderPart2()
+actor Algo_DecodeSliceHeaderPart2(bool IsAvcCbp)
 	uint(size=32) Header1Param,
 	int (size=32) PpsParameters,
 	int (size=32) ValVLD
@@ -27,6 +27,7 @@ actor Algo_DecodeSliceHeaderPart2()
 	int (size=32) VLDParam,
 	int (size=14) SliceDataParam
 		:
+
 	uint(size=4) SLICE_TYPE_I  = 2;
 	uint(size=4) SLICE_TYPE_SP = 3;
 	uint(size=4) SLICE_TYPE_SI = 4;
@@ -53,7 +54,7 @@ actor Algo_DecodeSliceHeaderPart2()
 	//Slice Data Parameters
 	bool          MbaffFrameFlag := false;
 
-	readPpsAndHeader1Info: action  PpsParameters :[PpsParam] repeat 5,
+	readPpsAndHeader1Info: action  PpsParameters:[PpsParam] repeat 6,
 		Header1Param :[header1Param] repeat 3 ==>
 		SliceDataParam :[dataParam] repeat 3
 	do
@@ -61,12 +62,12 @@ actor Algo_DecodeSliceHeaderPart2()
 		uint(size=32) firstMbInSlice;
 
 		disable_deblocking_filter_idc := 0;
-		slice_alpha_c0_offset         := 0;
-		slice_beta_offset             := 0;
-		num_slice_groups                       := PpsParam[0];
-		ValPicInitQp                           := PpsParam[1];
-		SzSliceGroupChgCycle                   := PpsParam[2];
-		slice_group_map_type                   := PpsParam[3];
+		slice_alpha_c0_offset := 0;
+		slice_beta_offset     := 0;
+		num_slice_groups     := PpsParam[0];
+		ValPicInitQp         := PpsParam[1];
+		SzSliceGroupChgCycle := PpsParam[2];
+		slice_group_map_type := PpsParam[3];
 		deblocking_filter_control_present_flag := getFlag(PpsParam[4],0);
 		entropy_coding_mode_flag               := getFlag(PpsParam[4],3);
 		slice_type := header1Param[0];
@@ -84,14 +85,23 @@ actor Algo_DecodeSliceHeaderPart2()
 		VLDParam  :[REF_PIC_LIST]
 	end
 
-	DecRefPicMarking.Launch: action
-			==>
-		TypeOfVLD          :[LAUNCH_ACTOR],
-		VLDParam           :[REF_PIC_MARKING]
+	PredWeightTable.launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+		VLDParam:[PRED_WEIGHT_TABLE]
+	guard
+		not IsAvcCbp
 	end
 
-	//                                         cabac_init_idc
-	ReadCabacInitDc.Asked: action ==> TypeOfVLD :[ VLD_UE ]
+	PredWeightTable.skip: action ==>
+	guard
+		IsAvcCbp
+	end
+
+	DecRefPicMarking.Launch: action ==> TypeOfVLD:[LAUNCH_ACTOR],
+		VLDParam:[REF_PIC_MARKING]
+	end
+
+	//                                  cabac_init_idc
+	ReadCabacInitDc.Asked: action ==> TypeOfVLD:[VLD_UE]
 	guard
 		entropy_coding_mode_flag  = true,
 		slice_type               != SLICE_TYPE_I,
@@ -216,8 +226,8 @@ actor Algo_DecodeSliceHeaderPart2()
 
 	schedule fsm ReadPpsAndHeader1Info:
 		ReadPpsAndHeader1Info          (readPpsAndHeader1Info             )--> DecodeRefPicList;
-		DecodeRefPicList               (RefPicList.Launch                 )-->                             DecodeDecRefPicMarking;//DecodeWeightedPred;
-		//DecodeWeightedPred           (LaunchWeightedPred                )--> ...;
+		DecodeRefPicList               (RefPicList.Launch                 )--> DecodeWeightedPred;
+		DecodeWeightedPred             (PredWeightTable                   )--> DecodeDecRefPicMarking;
 		DecodeDecRefPicMarking         (DecRefPicMarking.Launch           )--> CheckEntropyCodingMode;
 
 		CheckEntropyCodingMode         (ReadCabacInitDc.Asked             )--> ReadCabacInitIdc;
