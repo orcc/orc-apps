@@ -43,6 +43,8 @@ actor MgntDecodePic()
 	int (size=32) DecRefPicMarkingNbBitsToRead,
 	uint(size=5)  RefPicListTypeOfVLD,
 	int (size=32) RefPicListNbBitsToRead,
+	uint(size=5)  WeightPredTypeOfVLD,
+	int (size=32) WeightPredVldParam,
 	int (size=6)  DataTypeOfVLD,
 	int (size=32) DataVLDParam,
 	int (size=6)  MbLayerTypeOfVLD,
@@ -64,6 +66,7 @@ actor MgntDecodePic()
 	int (size=32) Header2ValVLD,
 	int (size=32) DecRefPicMarkingValVLD,
 	int (size=32) RefPicListValVLD,
+	int (size=32) WeightedPredValVld,
 	int (size=32) DataValVLD,
 	int (size=32) MbLayerValVLD,
 	int (size=32) MbPredValVLD,
@@ -137,6 +140,11 @@ actor MgntDecodePic()
 	findOutNextActor.isResidualCabac: action ==>
 	guard
 		callStack[stackIdx] = RESIDUAL_BLOCK_CABAC
+	end
+
+	findOutNextActor.isWeightedPred: action ==>
+	guard
+		callStack[stackIdx] = PRED_WEIGHT_TABLE
 	end
 
 	getVldVal.done: action ==>
@@ -291,6 +299,40 @@ actor MgntDecodePic()
 	end
 
 	getVldVal.refPicList: action ValVLD:[vldVal] ==> RefPicListValVLD:[vldVal]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+
+	/* Forwarding WeightedPred Informations */
+	weightedPred.vld.withoutParam: action WeightPredTypeOfVLD:[typeOfVld] ==>
+		TypeOfVLD:[typeOfVld]
+	guard
+		NbParamForFunction(typeOfVld) = 0,
+		typeOfVld  != SKIP_NAL
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	weightedPred.vld.with1Param: action WeightPredTypeOfVLD:[typeOfVld],
+		WeightPredVldParam:[param] ==> TypeOfVLD:[typeOfVld],
+		VLD_Param:[param]
+	guard
+		NbParamForFunction(typeOfVld) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	weightedPred.done: action WeightPredTypeOfVLD:[typeOfVld] ==>
+	guard
+		typeOfVld = SKIP_NAL
+	do
+		stackIdx := (stackIdx - 1) & 0x0F;
+	end
+
+	getVldVal.weightedPred: action ValVLD:[vldVal] ==> WeightedPredValVld:[vldVal]
 	guard
 		nbParamToDecod > 0
 	do
@@ -586,6 +628,7 @@ actor MgntDecodePic()
 		FindOutNextActor (findOutNextActor.isSliceHeader2  )--> SlcHead2;
 		FindOutNextActor (findOutNextActor.isRefPicMark    )--> RefPicMark;
 		FindOutNextActor (findOutNextActor.isRefPicList    )--> RefPicList;
+		FindOutNextActor (findOutNextActor.isWeightedPred  )--> WeightedPred;
 		FindOutNextActor (findOutNextActor.isSliceData     )--> SliceData;
 		FindOutNextActor (findOutNextActor.isMbLayer       )--> MbLayer;
 		FindOutNextActor (findOutNextActor.isMbPred        )--> MbPred;
@@ -619,6 +662,12 @@ actor MgntDecodePic()
 		RefPicList (refPicList.done )--> FindOutNextActor;
 			RefPicListGetVLDVal (getVldVal.refPicList )--> RefPicListGetVLDVal;
 			RefPicListGetVLDVal (getVldVal.done       )--> RefPicList;
+		
+		WeightedPred (weightedPred.vld  )--> WeightedPred;
+		WeightedPred (waitVLDVal        )--> WeightedPredGetVLDVal;
+		WeightedPred (weightedPred.done )--> FindOutNextActor;
+			WeightedPredGetVLDVal (getVldVal.weightedPred )--> WeightedPredGetVLDVal;
+			WeightedPredGetVLDVal (getVldVal.done         )--> WeightedPred;
 	
 		SliceData (sliceData.vld         )--> SliceData;
 		SliceData (waitVLDVal            )--> SliceDataGetVLDVal;
@@ -671,6 +720,8 @@ actor MgntDecodePic()
 		getVldVal.refPicMark          > getVldVal.done;
 		refPicList.vld  > waitVLDVal  > refPicList.done;
 		getVldVal.refPicList          > getVldVal.done;
+		weightedPred.vld > waitVLDVal > weightedPred.done;
+		getVldVal.weightedPred        > getVldVal.done;
 		sliceData.vld > waitVLDVal    > sliceData.launchActor;
 		sliceData.launchActor         > sliceData.done;
 		getVldVal.sliceData           > getVldVal.done;

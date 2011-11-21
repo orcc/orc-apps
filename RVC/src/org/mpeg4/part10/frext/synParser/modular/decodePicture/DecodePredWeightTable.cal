@@ -31,16 +31,22 @@
 package org.mpeg4.part10.frext.synParser.modular.decodePicture;
 
 import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import std.util.BitOps.*;
 
 actor DecodePredWeightTable(bool DEBUG)
-	uint(size=5)  Parameters,
+	uint(size=5)  NumRefIdxLXAct,
+	int (size=32)  PpsParameters,
+	uint(size=4)  SliceType,
+	int (size=32) SpsParameters,
 	int (size=32) ValVld
 		==>
 	uint(size=5)  TypeOfVld,
 	int (size=32) VldParam
 		:
 
+	uint(size=3) SLICE_TYPE_P  = 0;
 	uint(size=3) SLICE_TYPE_B  = 1;
+	uint(size=4) SLICE_TYPE_SP = 3;
 
 	uint(size=2) chromaArrayType;
 	uint(size=5) iLoop;
@@ -48,17 +54,29 @@ actor DecodePredWeightTable(bool DEBUG)
 	uint(size=5) numRefIdxL0Active;
 	uint(size=5) numRefIdxL1Active;
 	uint(size=3) sliceType;
+	bool         weightedPred;
+	uint(size=2) weightedBiPredIdc;
 
 
-	readLumaWeightDenom.asked: action Parameters:[param] repeat 4 ==>
-		TypeOfVld:[VLD_UE]
+	getParam: action
+		NumRefIdxLXAct:[numRefIdxLXAct] repeat 2, PpsParameters:[ppsParam] repeat 6, SliceType:[sliceTypeVal],
+		SpsParameters:[spsParam] repeat 10 ==>
 	do
-		chromaArrayType := param[0];
-		numRefIdxL0Active := param[1];
-		numRefIdxL1Active := param[2];
-		sliceType := param[3];
+		chromaArrayType   := spsParam[2];
+		numRefIdxL0Active := numRefIdxLXAct[0];
+		numRefIdxL1Active := numRefIdxLXAct[1];
+		sliceType    := sliceTypeVal;
+		weightedPred := getFlag(ppsParam[4],4);
+		weightedBiPredIdc := ppsParam[5];
 		iLoop := 0;
 		isL0  := true;
+	end
+
+	readLumaWeightDenom.asked: action  ==> TypeOfVld:[VLD_UE]
+	guard
+		weightedPred and (sliceType = SLICE_TYPE_P or
+			sliceType = SLICE_TYPE_SP) or
+		weightedBiPredIdc = 1 and sliceType = SLICE_TYPE_B
 	end
 
 	readLumaWeightDenom.done: action ValVld:[vldVal] ==>
@@ -137,8 +155,11 @@ actor DecodePredWeightTable(bool DEBUG)
 	sendEndOfNal: action ==> TypeOfVld:[SKIP_NAL]
 	end
 
-	schedule fsm ReadLumWgtDenAsked:
+	schedule fsm GetParam:
+		GetParam           (getParam                  )--> ReadLumWgtDenAsked;
 		ReadLumWgtDenAsked (readLumaWeightDenom.asked )--> ReadLumWgtDenDone;
+		ReadLumWgtDenAsked (sendEndOfNal              )--> GetParam;
+
 		ReadLumWgtDenDone  (readLumaWeightDenom.done  )--> ReadChrWgtDenAsked;
 		ReadChrWgtDenAsked (readChrWeightDenom.asked  )--> ReadChrWgtDenDone;
 		ReadChrWgtDenAsked (readChrWeightDenom.skip   )--> CheckILoop;
@@ -146,7 +167,7 @@ actor DecodePredWeightTable(bool DEBUG)
 		ReadChrWgtDenDone (readChrWeightDenom.done  )--> CheckILoop;
 		CheckILoop        (checkILoop.isNotFinished )--> ReadLumWgtLXFlgAsked;
 		CheckILoop        (checkSliceType           )--> CheckILoop;
-		CheckILoop        (sendEndOfNal             )--> ReadLumWgtDenAsked;
+		CheckILoop        (sendEndOfNal             )--> GetParam;
 
 		ReadLumWgtLXFlgAsked (readLumaWeightLXFlag.asked  )--> CheckLumWgtLXFlg;
 		CheckLumWgtLXFlg (readLumaWeightLXFlag.isTrue  )--> ReadLumaWeightLX;
@@ -160,5 +181,9 @@ actor DecodePredWeightTable(bool DEBUG)
 		CheckChrWgtLXFlg (readChrWeightLXFlag.isFalse )--> CheckILoop;
 
 		ReadChrWeightLX (readChrWeightLX )--> CheckILoop;
+	end
+	priority
+		readLumaWeightDenom > sendEndOfNal;
+		checkILoop > checkSliceType > sendEndOfNal;
 	end
 end
