@@ -40,6 +40,7 @@ actor DecodePredWeightTable(bool DEBUG)
 	uint(size=32) SpsParameters,
 	int (size=32) ValVld
 		==>
+	int (size=9)  WeightedParam,
 	uint(size=5)  TypeOfVld,
 	int (size=32) VldParam,
 	uint(size=2)  WeightedPredIdc
@@ -49,9 +50,11 @@ actor DecodePredWeightTable(bool DEBUG)
 	uint(size=3) SLICE_TYPE_B  = 1;
 	uint(size=4) SLICE_TYPE_SP = 3;
 
+	uint(size=3) chrLog2WeightDenom;
 	uint(size=2) chromaArrayType;
 	uint(size=5) iLoop;
 	bool         isL0;
+	uint(size=3) lumaLog2WeightDenom;
 	uint(size=5) numRefIdxL0Active;
 	uint(size=5) numRefIdxL1Active;
 	uint(size=3) sliceType;
@@ -74,13 +77,15 @@ actor DecodePredWeightTable(bool DEBUG)
 		weightedPredOutput :=
 			if(sliceType = SLICE_TYPE_B) then
 				weightedBiPredIdc
-			else
+			else if(sliceType = SLICE_TYPE_P or sliceType = SLICE_TYPE_SP) then
 				if(weightedPred) then
 					1
 				else
 					0
 				end
-			end;
+			else
+				0
+			end end;
 		iLoop := 0;
 		isL0  := true;
 	end
@@ -91,12 +96,13 @@ actor DecodePredWeightTable(bool DEBUG)
 			sliceType = SLICE_TYPE_SP) or
 		weightedBiPredIdc = 1 and sliceType = SLICE_TYPE_B
 	end
-uint nb;
+
 	readLumaWeightDenom.done: action ValVld:[vldVal] ==>
+		WeightedParam:[vldVal]
 	do
+		lumaLog2WeightDenom := vldVal;
 		if(DEBUG) then
-		nb := nb + 1;
-			println("\nluma_log2_weight_denom : "+vldVal+" ; "+nb);
+			println("luma_log2_weight_denom : "+vldVal+" ; ");
 		end
 	end
 
@@ -112,6 +118,7 @@ uint nb;
 
 	readChrWeightDenom.done: action ValVld:[vldVal] ==>
 	do
+		chrLog2WeightDenom := vldVal;
 		if(DEBUG) then
 			println("chroma_log2_weight_denom : "+vldVal);
 		end
@@ -139,6 +146,7 @@ uint nb;
 	end
 
 	readLumaWeightLXFlag.isFalse: action ValVld:[lumaWeightFlag] ==>
+		WeightedParam:[1<<lumaLog2WeightDenom, 0]
 	guard
 		lumaWeightFlag = 0
 	do
@@ -148,6 +156,7 @@ uint nb;
 	end
 
 	readLumaWeightLX.done: action ValVld:[lumaWeightLX, lumaOffsetLX] ==>
+		WeightedParam:[lumaWeightLX, lumaOffsetLX]
 	do
 		if(DEBUG) then
 			println("luma_weight_l"+ not isL0+" : "+lumaWeightLX);
@@ -176,6 +185,7 @@ uint nb;
 	end
 
 	readChrWeightLXFlag.isFalse: action ValVld:[chrWeightFlag] ==>
+		WeightedParam:[1<<chrLog2WeightDenom, 0, 1<<chrLog2WeightDenom, 0]
 	guard
 		chrWeightFlag = 0
 	do
@@ -185,6 +195,7 @@ uint nb;
 	end
 
 	readChrWeightLX.done: action ValVld:[chrWeightParam] repeat 4 ==>
+		WeightedParam:[chrWeightParam] repeat 4
 	do
 		if(DEBUG) then
 			println("chroma_weight_l"+ not isL0+"[0] : "+chrWeightParam[0]);
@@ -194,12 +205,15 @@ uint nb;
 		end
 	end
 
-	checkSliceType.launchL1: action ==>
+	checkSliceType.launchL1: action ==> WeightedParam:[1]
 	guard
 		sliceType = SLICE_TYPE_B and isL0
 	do
 		isL0 := false;
 		iLoop := 0;
+	end
+
+	checkSliceType.skipL1: action ==> WeightedParam:[0]
 	end
 
 	sendEndOfNal: action ==> TypeOfVld:[SKIP_NAL]
@@ -216,8 +230,8 @@ uint nb;
 
 		ReadChrWgtDenDone (readChrWeightDenom.done  )--> CheckILoop;
 		CheckILoop        (checkILoop.isNotFinished )--> ReadLumWgtLXFlgAsked;
-		CheckILoop        (checkSliceType           )--> CheckILoop;
-		CheckILoop        (sendEndOfNal             )--> GetParam;
+		CheckILoop        (checkSliceType.launchL1  )--> CheckILoop;
+		CheckILoop        (checkSliceType.skipL1    )--> SendEndOfNal;
 
 		ReadLumWgtLXFlgAsked (readLumaWeightLXFlag.asked  )--> CheckLumWgtLXFlg;
 		CheckLumWgtLXFlg (readLumaWeightLXFlag.isTrue  )--> ReadLumaWeightLX;
@@ -231,6 +245,8 @@ uint nb;
 		CheckChrWgtLXFlg (readChrWeightLXFlag.isFalse )--> CheckILoop;
 
 		ReadChrWeightLX (readChrWeightLX )--> CheckILoop;
+
+		SendEndOfNal (sendEndOfNal )--> GetParam;
 	end
 	priority
 		readLumaWeightDenom > sendEndOfNal;
