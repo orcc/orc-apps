@@ -1,0 +1,246 @@
+/********************************************************************************
+
+This software module was originally developed by 
+Damien de Saint Jorre (IETR/INSA of Rennes), 
+in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-4.
+
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+license to copy, distribute, and make derivative works of this software 
+module or modifications thereof for use in implementations of the 
+ISO/IEC 23002-4 in products that satisfy conformance criteria (if any). 
+
+Those intending to use this software module in products are advised that 
+its use may infringe existing patents. ISO/IEC have no liability for use 
+of this software module or modifications thereof.
+
+Copyright is not released for products that do not conform to audiovisual 
+and image-coding related ITU Recommendations and/or ISO/IEC International 
+Standards.
+
+Assurance that the originally developed software module can be used 
+(1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and 
+(2) to develop the ISO/IEC 23002-4: 
+
+IETR/INSA of Rennes grants ISO/IEC all rights necessary to 
+include the originally developed software module or modifications thereof 
+in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, 
+worldwide, non-exclusive, copyright license to copy, distribute, and make 
+derivative works for use in implementations of the ISO/IEC 23002-4 in 
+products that satisfy conformance criteria (if any), and to the extent 
+that such originally developed software module or portions of it are 
+included in the ISO/IEC 23002-4.  To the extent that IETR/INSA of Rennes
+owns patent rights that would be required to make, use, or 
+sell the originally developed software module or portions thereof 
+included in the ISO/IEC 23002-4 in a conforming product, IETR/INSA of
+Rennes will assure the ISO/IEC that it is willing to 
+negotiate licenses under reasonable and non-discriminatory terms and 
+conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications 
+thereof for the sole  purpose of developing theISO/IEC 23002-4
+
+IETR/INSA of Rennes retains full right to modify and use the 
+code for its own purpose, assign or donate the code to a third party and 
+to inhibit third parties from using the code for products that do not 
+conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+This copyright notice must be included in all copies or derivative works. 
+Copyright (c) ISO/IEC 2008.
+*****************************************************************************/
+package org.mpeg4.part10.frext.interPred;
+
+import org.mpeg4.part10.cbp.MacroBlockInfo.*;
+import org.mpeg4.part10.Imp_PictureInfo.*;
+import std.util.Math.*;
+
+actor FrameNumToPocList()
+	int (size=32) DelList,
+	bool          Empty_DPB,
+	uint(size=31) FrameNum,
+	int (size=32) LongTermList,
+	int (size=32) Poc,
+	int (size=32) RefList0,
+	int (size=32) RefList1
+		==>
+	int (size=8)  WeightsWpIdc2
+		:
+
+	int (size=32) SENT_DONE = -2;
+
+	bool          IsReference[17];
+	int (size=32) listFrameNum[17];
+	int (size=32) listPicOrdCnt[17];
+
+	int(size=32) pocPict0;
+	int(size=32) framNumPict0;
+	bool         pict0IsLT;
+	int(size=32) pocPict1;
+	int(size=32) framNumPict1;
+	bool         pict1IsLT;
+
+	uint(size=5)  refListIdx;
+	uint(size=5)  refListSize;
+	uint(size=5)  writeListIdx;
+
+	getPicData: action FrameNum:[frameNum], Poc:[poc] ==>
+	do
+		foreach int i in 0 .. 16
+		do
+			if(listFrameNum[i] = frameNum)then
+				IsReference[i] := false;
+			end
+		end
+
+		writeListIdx := 0;
+		while(IsReference[writeListIdx] and writeListIdx < 16)
+		do
+			writeListIdx := writeListIdx + 1;
+		end
+
+		IsReference [writeListIdx]  := true;
+		listFrameNum[writeListIdx]  := frameNum;
+		listPicOrdCnt[writeListIdx] := poc;
+	end
+
+	readSizeRefList0: action RefList0 :[sizeRefList] ==>
+	do
+		refListSize := sizeRefList;
+		refListIdx  := 0;
+		pict0IsLT   := false;
+		pict1IsLT   := false;
+	end
+
+	readRefList0.launch: action RefList0 :[refFrame0] ==>
+	guard
+		refListIdx < refListSize
+	do
+		if(refListIdx = 0) then
+			framNumPict0 := refFrame0;
+			foreach int readListIdx in 0 .. 16
+			do
+				if(refFrame0 = listFrameNum[readListIdx])then
+					pocPict0 := listPicOrdCnt[readListIdx];
+				end
+			end
+		end
+		refListIdx := refListIdx + 1;
+	end
+
+	readRefList0.done: action ==>
+	guard
+		refListIdx = refListSize
+	end
+
+	readSizeRefList1: action RefList1 :[SizeRefList] ==>
+	do
+		refListSize := SizeRefList;
+		refListIdx  := 0;
+	end
+
+	readRefList1.launch: action RefList1:[refFrame1] ==>
+	guard
+		refListIdx < refListSize
+	do
+		if(refListIdx = 0) then
+			framNumPict1 := refFrame1;
+			foreach int readListIdx in 0 .. 16
+			do
+				if(refFrame1 = listFrameNum[readListIdx])then
+					pocPict1 := listPicOrdCnt[readListIdx];
+				end
+			end
+		end
+		refListIdx := refListIdx + 1;
+	end
+
+	readRefList1.done: action ==>
+	guard
+		refListIdx = refListSize
+	end
+
+	readLTList: action LongTermList :[lTList] repeat 16 ==>
+	do
+		foreach int i in 0 .. 15
+		do
+			if(lTList[i] = framNumPict0)then
+				pict0IsLT := true;
+			end
+			if(lTList[i] = framNumPict1)then
+				pict1IsLT := true;
+			end
+		end
+	end
+
+	readDelList.launch: action DelList:[delFrame] ==>
+	guard
+		delFrame != SENT_DONE
+	do
+		foreach int i in 0 .. 16
+		do
+			if(delFrame = listFrameNum[i] and i != writeListIdx)then
+				IsReference[i] := false;
+			end
+		end
+	end
+
+	readDelList.done: action DelList :[delVal], Empty_DPB :[emptyList] ==>
+	guard
+		delVal = SENT_DONE
+	do
+		if(emptyList)then
+			foreach int i in 0 .. 16
+			do
+				IsReference[i] := false;
+			end
+		end
+	end
+
+	sendWeightsWpIdc2: action ==> WeightsWpIdc2:[w0c, w1c]
+	do
+		int(size=8) w0c;
+		int(size=8) w1c;
+		int (size=11) distScaleFactor;
+		int (size=8)  tb;
+		int (size=8)  td;
+		uint(size=14) tx;
+
+		if((pocPict1 - pocPict0 = 0) or pict0IsLT or pict1IsLT) then
+			w0c := 32;
+			w1c := 32;
+		else
+			tb := clip_i32(listPicOrdCnt[writeListIdx] - pocPict0,-128,127);
+			td := clip_i32(pocPict1 - pocPict0,-128,127);
+			tx := (16384 + abs(td/2))/td;
+			distScaleFactor := clip_i32((tb*tx+32)>>6, -1024, 1023);
+			if((distScaleFactor>>2) > 128) then
+				w0c := 32;
+				w1c := 32;
+			else
+				w0c := 64 -(distScaleFactor>>2);
+				w1c := distScaleFactor>>2;
+			end
+		end
+	end
+
+	schedule fsm GetPicData:
+		ReadDelList (readDelList.launch )--> ReadDelList;
+		ReadDelList (readDelList.done   )--> GetPicData;
+
+		GetPicData (getPicData )--> ReadSizeRefList0;
+
+		ReadSizeRefList0 (readSizeRefList0    )--> ReadRefList0;
+		ReadRefList0     (readRefList0.launch )--> ReadRefList0;
+		ReadRefList0     (readRefList0.done   )--> ReadSizeRefList1;
+
+		ReadSizeRefList1 (readSizeRefList1    )--> ReadRefList1;
+		ReadRefList1     (readRefList1.launch )--> ReadRefList1;
+		ReadRefList1     (readRefList1.done   )--> ReadLTList;
+
+		ReadLTList        (readLTList        )--> SendWeightsWpIdc2;
+		SendWeightsWpIdc2 (sendWeightsWpIdc2 )--> ReadDelList;
+	end
+end
