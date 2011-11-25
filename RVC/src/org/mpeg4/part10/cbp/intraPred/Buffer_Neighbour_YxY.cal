@@ -18,12 +18,16 @@ Edge are provided from bottom to top, then corner, then left to right
 Jerome GORIN IETR/ARTEMIS
 gorinje@gmail.com
 *****************************************************************************/
+
+//Modified by Jerome Gorin IETR/ARTEMIS <gorinje@gmail.com>
+//Modified by Gildas Cocherel IETR/INSA of Rennes
+
 package org.mpeg4.part10.cbp.intraPred;
 
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import org.mpeg4.part10.Imp_PictureInfo.*;
 
-actor Buffer_Neighbour_4x4()
+actor Buffer_Neighbour_YxY(bool IsIntra4x4)
 	uint(size=6) Mb_Type,
 	uint(size=8) MB_IN,
 	uint(size=7) MbLocation
@@ -37,6 +41,7 @@ actor Buffer_Neighbour_4x4()
 	uint(size=16) left_edge[16]                   := [ 0 : for int i in 0 .. 15 ];
 	uint(size=16) topLeft_edge := 0;
 	uint(size=16) result[MAX_PICWIDTH_BLK * 16] := [ 0 : for int i in 0 .. MAX_PICWIDTH_BLK * 16 - 1 ];
+
 	/**************************************************************************
 	 * Mb_Type_OK : Send value of edge needed and store the edge of macroblock decoded
 	 *************************************************************************/
@@ -53,14 +58,15 @@ actor Buffer_Neighbour_4x4()
 	 *************************************************************************/
 	NOT_EDGE_CALC: action ==>
 	guard
-		mb_type != BLOCK_TYPE_I_4x4
+		mb_type != BLOCK_TYPE_I_4x4 and IsIntra4x4 or
+		mb_type != BLOCK_TYPE_I_8x8 and not IsIntra4x4
 	end
 	/**************************************************************************
 	 * Send the edge needed to process the intra prediction of the current macroblock
 	 *************************************************************************/
-	CALCEDGE1: action ==> EDGE:[result] repeat 37
+	CALCEDGE1.intra4x4: action ==> EDGE:[result] repeat 37
 	guard
-		mb_type = BLOCK_TYPE_I_4x4,
+		mb_type = BLOCK_TYPE_I_4x4 and IsIntra4x4,
 		mb_Index < MAX_PICWIDTH_BLK - 1
 	do
 		foreach int i in 0 .. 15 do
@@ -71,12 +77,27 @@ actor Buffer_Neighbour_4x4()
 			result[16 + 1 + s] := top_edge[s + mb_Index * 16];
 		end
 	end
+
+	CALCEDGE1.isIntra8x8: action ==> EDGE:[result] repeat 41
+	guard
+		mb_type = BLOCK_TYPE_I_8x8 and not IsIntra4x4,
+		mb_Index < MAX_PICWIDTH_BLK - 1
+	do
+		foreach int i in 0 .. 15 do
+			result[i]      := left_edge[i];
+			result[i+17]   := top_edge[mb_Index * 16 + i];
+		end
+		result[16]         := topLeft_edge;
+		foreach int i in 0 .. 7 do
+			result[33 + i] := 0;
+		end
+	end
 	/**************************************************************************
 	 * Send the edge needed to process the intra prediction of the current macroblock
 	 *************************************************************************/
-	CALCEDGE2: action ==> EDGE:[result] repeat 37
+	CALCEDGE2.isIntra4x4: action ==> EDGE:[result] repeat 37
 	guard
-		mb_type = BLOCK_TYPE_I_4x4,
+		mb_type = BLOCK_TYPE_I_4x4 and IsIntra4x4,
 		mb_Index = MAX_PICWIDTH_BLK - 1
 	do
 		foreach int i in 0 .. 15 do
@@ -90,13 +111,32 @@ actor Buffer_Neighbour_4x4()
 			result[16 + 1 + s] := top_edge[s + mb_Index * 16];
 		end
 	end
+
+	CALCEDGE2.isIntra8x8: action ==> EDGE:[result] repeat 41
+	guard
+		mb_type = BLOCK_TYPE_I_8x8 and not IsIntra4x4,
+		mb_Index = MAX_PICWIDTH_BLK - 1
+	do
+		foreach int i in 0 .. 15 do
+			result[i]      := left_edge[i];
+			result[i+17]   := top_edge[mb_Index * 16 + i];
+		end
+		result[16] := topLeft_edge;
+		foreach int i in 0 .. 7 do
+			result[33 + i] := top_edge[(mb_Index+1) * 16 + i];
+		end
+	end
 	/**************************************************************************
 	 * Receive pixel value from current decoded macroblock
 	 *************************************************************************/
 	Mb_Neighbour: action MB_IN:[ v ] repeat 16 * 16 ==>
 	do
 		//Store bottom , right and bottom right edge
-		topLeft_edge := top_edge[mb_Index * 16 - 1 + 16];
+		if(IsIntra4x4) then
+			topLeft_edge := top_edge[mb_Index * 16 - 1 + 16];
+		else
+			topLeft_edge := top_edge[mb_Index * 16 - 1];
+		end
 		foreach int i in 0 .. 15 do
 			top_edge[mb_Index * 16 + i] := v[15*16+i];
 		end
