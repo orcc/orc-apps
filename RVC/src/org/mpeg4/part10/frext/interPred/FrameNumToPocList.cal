@@ -61,51 +61,38 @@ actor FrameNumToPocList()
 	int (size=32) DelList,
 	bool          Empty_DPB,
 	uint(size=31) FrameNum,
-	uint(size=2)  IsMbSliceOrPic,
+	bool          IsPicOrSlice,
 	int (size=32) LongTermList,
 	int (size=32) Poc,
 	int (size=32) RefList0,
 	int (size=32) RefList1
 		==>
-	int (size=8)  WeightsWpIdc2
+	int (size=32)  PocListX,
+	bool           PocIsLTList
 		:
-
-	uint(size=2) NEW_PIC   = 0;
-	uint(size=2) NEW_SLICE = 1;
-	uint(size=2) NEW_MB    = 2;
 
 	int (size=32) SENT_DONE = -2;
 
 	bool          IsReference[17];
 	int (size=32) listFrameNum[17];
+	bool          isLTList[17];
 	int (size=32) listPicOrdCnt[17];
 
-	int(size=32) pocPict0;
-	int(size=32) framNumPict0;
-	bool         pict0IsLT;
-	int(size=32) pocPict1;
-	int(size=32) framNumPict1;
-	bool         pict1IsLT;
-	int(size=8)  w0c;
-	int(size=8)  w1c;
+	uint(size=5) idxL0[16];
+	uint(size=5) idxL1[16];
 
 	uint(size=5)  refListIdx;
 	uint(size=5)  refListSize;
 	uint(size=5)  writeListIdx;
 
-	ChckPicOrSlc.isPic: action IsMbSliceOrPic:[newPic] ==>
+	ChckPicOrSlc.isPic: action IsPicOrSlice:[isPic] ==>
 	guard
-		newPic = NEW_PIC
+		isPic
 	end
 
-	ChckPicOrSlc.isSlc: action IsMbSliceOrPic:[newSlc] ==> WeightsWpIdc2:[w0c, w1c]
+	ChckPicOrSlc.isSlc: action IsPicOrSlice:[isPic] ==>
 	guard
-		newSlc = NEW_SLICE
-	end
-
-	ChckPicOrSlc.isMb: action IsMbSliceOrPic:[newMb] ==>
-	guard
-		newMb = NEW_MB
+		not isPic
 	end
 
 	getPicData: action FrameNum:[frameNum], Poc:[poc] ==>
@@ -132,21 +119,21 @@ actor FrameNumToPocList()
 	do
 		refListSize := sizeRefList;
 		refListIdx  := 0;
-		pict0IsLT   := false;
-		pict1IsLT   := false;
+		foreach int i in 0 .. 15
+		do
+			idxL0[i] := 0;
+			idxL1[i] := 0;
+		end
 	end
 
 	readRefList0.launch: action RefList0 :[refFrame0] ==>
 	guard
 		refListIdx < refListSize
 	do
-		if(refListIdx = 0) then
-			framNumPict0 := refFrame0;
-			foreach int readListIdx in 0 .. 16
-			do
-				if(refFrame0 = listFrameNum[readListIdx])then
-					pocPict0 := listPicOrdCnt[readListIdx];
-				end
+		foreach int readListIdx in 0 .. 16
+		do
+			if(refFrame0 = listFrameNum[readListIdx])then
+				idxL0[refListIdx] := readListIdx;
 			end
 		end
 		refListIdx := refListIdx + 1;
@@ -167,13 +154,10 @@ actor FrameNumToPocList()
 	guard
 		refListIdx < refListSize
 	do
-		if(refListIdx = 0) then
-			framNumPict1 := refFrame1;
-			foreach int readListIdx in 0 .. 16
-			do
-				if(refFrame1 = listFrameNum[readListIdx])then
-					pocPict1 := listPicOrdCnt[readListIdx];
-				end
+		foreach int readListIdx in 0 .. 16
+		do
+			if(refFrame1 = listFrameNum[readListIdx])then
+				idxL1[refListIdx] := readListIdx;
 			end
 		end
 		refListIdx := refListIdx + 1;
@@ -186,13 +170,17 @@ actor FrameNumToPocList()
 
 	readLTList: action LongTermList :[lTList] repeat 16 ==>
 	do
+		foreach int i in 0 .. 16
+		do
+			isLTList[i] := false;
+		end
 		foreach int i in 0 .. 15
 		do
-			if(lTList[i] = framNumPict0)then
-				pict0IsLT := true;
-			end
-			if(lTList[i] = framNumPict1)then
-				pict1IsLT := true;
+			foreach int readListIdx in 0 .. 16
+			do
+				if(lTList[i] = listFrameNum[readListIdx])then
+					isLTList[readListIdx] := true;
+				end
 			end
 		end
 	end
@@ -221,30 +209,10 @@ actor FrameNumToPocList()
 		end
 	end
 
-	sendWeightsWpIdc2: action ==> WeightsWpIdc2:[w0c, w1c]
+	sendWeightsWpIdc2.info: action ==> PocListX:[pocListX] repeat 32, PocIsLTList:[pocIsLT] repeat 32
 	do
-		int (size=11) distScaleFactor;
-		int (size=8)  tb;
-		int (size=8)  td;
-		uint(size=14) tx;
-
-		if((pocPict1 - pocPict0 = 0) or pict0IsLT or pict1IsLT) then
-			w0c := 32;
-			w1c := 32;
-		else
-			tb := clip_i32(listPicOrdCnt[writeListIdx] - pocPict0,-128,127);
-			td := clip_i32(pocPict1 - pocPict0,-128,127);
-			tx := (16384 + abs(td/2))/td;
-			distScaleFactor := clip_i32((tb*tx+32)>>6, -1024, 1023);
-			distScaleFactor := distScaleFactor>>2;
-			if(distScaleFactor < -64 or distScaleFactor > 128) then
-				w0c := 32;
-				w1c := 32;
-			else
-				w0c := 64 - distScaleFactor;
-				w1c := distScaleFactor;
-			end
-		end
+		int(size=32) pocListX[32];
+		bool         pocIsLT[32];
 	end
 
 	schedule fsm GetPicData:
@@ -252,7 +220,6 @@ actor FrameNumToPocList()
 
 		ChckPicOrSlc (ChckPicOrSlc.isSlc )--> GetPicData;
 		ChckPicOrSlc (ChckPicOrSlc.isPic )--> ReadDelList;
-		ChckPicOrSlc (ChckPicOrSlc.isMb  )--> ChckPicOrSlc;
 
 		ReadDelList (readDelList.launch )--> ReadDelList;
 		ReadDelList (readDelList.done   )--> GetPicData;
