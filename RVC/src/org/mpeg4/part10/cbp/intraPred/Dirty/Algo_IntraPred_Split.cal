@@ -95,13 +95,13 @@ actor Algo_IntraPred_Split()
 	bool Is_MbB_Avail;
 
 
-	List(type: List(type: int(size=5), size=16), size=MAX_PICWIDTH_BLK) intra4x4predmode:=
+	int(size=5) intra4x4predmode[MAX_PICWIDTH_BLK][16]:=
 		[ [ 2 : for int j in 0 .. 15 ] : for int i in 0 .. MAX_PICWIDTH_BLK - 1 ];
-	List(type: uint(size=4) , size=16)   InverseScan4x4Tab = [ 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ];
-	//FIXME! Maximum size of a line in macroclock
+	uint(size=4) InverseScan4x4Tab[16]  = [ 0,  1,  4,  5,  2,  3,  6,  7,  8,  9, 12, 13, 10, 11, 14, 15];
 	uint(size=4) NEIGHBOUR_4X4_TOP[16]  = [12, 13,  0,  1, 14, 15,  2,  3,  4,  5,  8,  9,  6,  7, 10, 11];
 	uint(size=4) NEIGHBOUR_4X4_LEFT[16] = [ 3,  0,  7,  4,  1,  2,  5,  6, 11,  8, 15, 12,  9, 10, 13, 14];
-	List(type: bool, size=MAX_PICWIDTH_BLK) is_constrained_i_flag := [ false : for int i in 0 .. MAX_PICWIDTH_BLK - 1 ];
+	//FIXME! Maximum size of a line in macroclock
+	bool is_constrained_i_flag[MAX_PICWIDTH_BLK] := [ false : for int i in 0 .. MAX_PICWIDTH_BLK - 1 ];
 
 	Get_MbType: action MbType:[mbType] ==>
 	do
@@ -140,12 +140,12 @@ actor Algo_IntraPred_Split()
 		end
 
 
-	get_intra4x4: action
+	get_intraNxN: action
 			IntraPredMode :[ Intra_Pred_Mode ]
 				==>
 			PredMode :[ pred_mode ]
 		guard
-			isIntra = INTRA_4x4 and count < 16
+			(isIntra = INTRA_4x4 or isIntra = INTRA_8x8) and count < 16
 		var
 			int(size=5) top , int(size=5) left , int(size=5) predicted ,
 			int(size=5) pred_mode
@@ -192,84 +192,23 @@ actor Algo_IntraPred_Split()
 			if Intra_Pred_Mode = 15 then
 				pred_mode := predicted;
 			end
-			intra4x4predmode[MbLocationxInPic][InverseScan4x4Tab[count]] := pred_mode;
-			count := count + 1;
-		end
-
-
-	get_intra4x4_done: action 
-			ConstrainedIFlag :[ Constrained_I_Flag ]
-				==>
-		guard
-			isIntra = INTRA_4x4 and count = 16
-		do
-			count := 0;
-			is_constrained_i_flag[MbLocationxInPic] := true;
-		end
-
-	get_intra8x8: action
-			IntraPredMode :[ Intra_Pred_Mode ]
-				==>
-			PredMode :[ pred_mode, pred_mode, pred_mode, pred_mode ]
-		guard
-			isIntra = INTRA_8x8 and count < 4
-		var
-			int(size=5) top , int(size=5) left , int(size=5) predicted ,
-			int(size=5) pred_mode
-		do
-			/*****************************************************************
-			 * select Top neighbour
-			 ****************************************************************/
-			if NEIGHBOUR_4X4_TOP[count<<2] > 11 and
-			 ( not Is_MbB_Avail or not is_constrained_i_flag[MbLocationxInPic]) then  
-				top := -1;
-			else
-				top := intra4x4predmode[MbLocationxInPic][NEIGHBOUR_4X4_TOP[count<<2]];
-			end			
-			/*****************************************************************
-			 * select Left neighbour
-			 ****************************************************************/
-			left := -1;
-			if (NEIGHBOUR_4X4_LEFT[count<<2] & 3) = 3 then   
-			 	if Is_MbA_Avail then
-			 		if is_constrained_i_flag[MbLocationxInPic - 1] then
-						left := intra4x4predmode[MbLocationxInPic-1][NEIGHBOUR_4X4_LEFT[count<<2]];
-					end
+			if isIntra = INTRA_8x8 then
+				foreach int i in 0 .. 3
+				do
+					intra4x4predmode[MbLocationxInPic][count + InverseScan4x4Tab[i]] := pred_mode;
 				end
+				count := count + 4;
 			else
-				left := intra4x4predmode[MbLocationxInPic][NEIGHBOUR_4X4_LEFT[count<<2]];
+				intra4x4predmode[MbLocationxInPic][InverseScan4x4Tab[count]] := pred_mode;
+				count := count + 1;
 			end
-			/*****************************************************************
-			 *
-			 ****************************************************************/
-			if left < top then
-				predicted := left;
-			else
-				predicted := top;
-			end
-			if predicted < 0 then
-				predicted := 2;
-			end
-			//INTRA_8x8_DC
-			if Intra_Pred_Mode < predicted then
-				pred_mode := Intra_Pred_Mode;
-			else
-				pred_mode := Intra_Pred_Mode + 1;
-			end
-			if Intra_Pred_Mode = 15 then
-				pred_mode := predicted;
-			end
-			foreach int i in 0 .. 3
-			do
-				intra4x4predmode[MbLocationxInPic][(count<<2) + InverseScan4x4Tab[i]] := pred_mode;
-			end
-			count := count + 1;
 		end
-	get_intra8x8_done: action 
+
+	get_intraNxN_done: action 
 			ConstrainedIFlag :[ Constrained_I_Flag ]
 				==>
 		guard
-			isIntra = INTRA_8x8 and count = 4
+			(isIntra = INTRA_4x4 or isIntra = INTRA_8x8) and count = 16
 		do
 			count := 0;
 			is_constrained_i_flag[MbLocationxInPic] := true;
@@ -301,16 +240,12 @@ actor Algo_IntraPred_Split()
 
 	schedule fsm GetType :
 		GetType ( Get_MbType          ) --> MbType;
-
 		//Decode Mb Inter
 		MbType ( get_inter            ) --> GetType;
 		MbType ( get_intratype        ) --> IntraType;
-		//Decode Mb Intra 4x4
-		IntraType ( get_intra4x4      ) --> IntraType;
-		IntraType ( get_intra4x4_done ) --> GetType;
-		//Decode Mb Intra 8x8
-		IntraType ( get_intra8x8      ) --> IntraType;
-		IntraType ( get_intra8x8_done ) --> GetType;
+		//Decode Mb Intra 4x4 or Intra8x8
+		IntraType ( get_intraNxN      ) --> IntraType;
+		IntraType ( get_intraNxN_done ) --> GetType;
 		//Decode Mb Intra 16x16
 		IntraType ( get_intra16x16    ) --> GetType;
 		//Decode Mb I PCM
