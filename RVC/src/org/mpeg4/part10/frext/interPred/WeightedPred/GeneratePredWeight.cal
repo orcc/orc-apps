@@ -31,6 +31,7 @@
 package org.mpeg4.part10.frext.interPred.WeightedPred;
 
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
+import std.util.Math.*;
 
 actor GeneratePredWeight()
 	bool          NewMbL0,
@@ -53,13 +54,44 @@ actor GeneratePredWeight()
 	int(size=8) offset[3][2][32];
 	int(size=9) weight[3][2][32];
 
-	uint(size=3) chrLog2WeightDenom;
-	uint(size=5) iLoop;
-	bool         isL0;
-	uint(size=3) lumaLog2WeightDenom;
-	uint(size=5) numRefIdxL0Active;
-	uint(size=5) numRefIdxL1Active;
-	uint(size=2) wpIdc;
+	int(size=32)  currPoc;
+	uint(size=3)  chrLog2WeightDenom;
+	uint(size=5)  iLoop;
+	bool          isL0;
+	bool          isLTList0[16];
+	bool          isLTList1[16];
+	uint(size=3)  lumaLog2WeightDenom;
+	uint(size=5)  numRefIdxL0Active;
+	uint(size=5)  numRefIdxL1Active;
+	int (size=32) pocList0[16];
+	int (size=32) pocList1[16];
+	uint(size=2)  wpIdc;
+
+	procedure computeImplicitWeights(int(size=32) pic0, int(size=32) pic1, bool pict0IsLT, bool pict1IsLT, int(size=8) weights[2])
+	begin
+		int (size=11) distScaleFactor;
+		int (size=8)  tb;
+		int (size=8)  td;
+		uint(size=14) tx;
+
+		if((pic1 - pic0 = 0) or pict0IsLT or pict1IsLT) then 
+			weights[0] := 32; 
+			weights[1] := 32; 
+		else 
+			tb := clip_i32(currPoc - pic0,-128,127); 
+			td := clip_i32(pic1 - pic0,-128,127); 
+			tx := (16384 + abs(td/2))/td; 
+			distScaleFactor := clip_i32((tb*tx+32)>>6, -1024, 1023); 
+			distScaleFactor := distScaleFactor>>2; 
+			if(distScaleFactor < -64 or distScaleFactor > 128) then 
+				weights[0] := 32; 
+				weights[1] := 32; 
+			else 
+				weights[0] := 64 - distScaleFactor; 
+				weights[1] := distScaleFactor; 
+			end 
+		end
+	end
 
 	SendWeightParam.launch.l0: action NewMbL0:[isNewMb], RefIdxL0:[refIdx],
 		SelectList:[listSelected] ==> PredWeightY:[predInfoY] repeat 3,
@@ -116,32 +148,48 @@ actor GeneratePredWeight()
 	guard
 		isNewMbL0 and isNewMbL1 and wpIdc != 0 and listSelected = BIPRED
 	do
-		int(size=9) predInfoY[6];
-		int(size=9) predInfoU[6];
-		int(size=9) predInfoV[6];
 		uint(size=1) idxL0 = 0;
 		uint(size=1) idxL1 = 1;
 
+		int(size=9) predInfoY[6];
+		int(size=9) predInfoU[6];
+		int(size=9) predInfoV[6];
+		int(size=8) implicitWeights[2];
+
 		predInfoY[0] := lumaLog2WeightDenom;
-		predInfoY[1] := weight[0][idxL0][refIdxl0];
 		predInfoY[2] := offset[0][idxL0][refIdxl0];
 		predInfoY[3] := lumaLog2WeightDenom;
-		predInfoY[4] := weight[0][idxL1][refIdxl1];
 		predInfoY[5] := offset[0][idxL1][refIdxl1];
-
 		predInfoU[0] := chrLog2WeightDenom;
-		predInfoU[1] := weight[1][idxL0][refIdxl0];
 		predInfoU[2] := offset[1][idxL0][refIdxl0];
 		predInfoU[3] := chrLog2WeightDenom;
-		predInfoU[4] := weight[1][idxL1][refIdxl1];
 		predInfoU[5] := offset[1][idxL1][refIdxl1];
-
-		predInfoV[0] := chrLog2WeightDenom;
-		predInfoV[1] := weight[2][idxL0][refIdxl0];
 		predInfoV[2] := offset[2][idxL0][refIdxl0];
 		predInfoV[3] := chrLog2WeightDenom;
-		predInfoV[4] := weight[2][idxL1][refIdxl1];
+		predInfoV[0] := chrLog2WeightDenom;
 		predInfoV[5] := offset[2][idxL1][refIdxl1];
+		if(wpIdc = 1) then
+			predInfoY[1] := weight[0][idxL0][refIdxl0];
+			predInfoY[4] := weight[0][idxL1][refIdxl1];
+	
+			predInfoU[1] := weight[1][idxL0][refIdxl0];
+			predInfoU[4] := weight[1][idxL1][refIdxl1];
+	
+			predInfoV[1] := weight[2][idxL0][refIdxl0];
+			predInfoV[4] := weight[2][idxL1][refIdxl1];
+		else
+			computeImplicitWeights(pocList0[refIdxl0], pocList1[refIdxl1], isLTList0[refIdxl0], isLTList1[refIdxl1], implicitWeights);
+			implicitWeights[0] := 43;
+			implicitWeights[1] := 21;
+			predInfoY[1] := implicitWeights[0];
+			predInfoY[4] := implicitWeights[1];
+
+			predInfoU[1] := implicitWeights[0];
+			predInfoU[4] := implicitWeights[1];
+	
+			predInfoV[1] := implicitWeights[0];
+			predInfoV[4] := implicitWeights[1];
+		end
 	end
 
 	SendWeightParam.skip.l0: action NewMbL0:[isNewMb], RefIdxL0:[refIdx],
@@ -188,6 +236,14 @@ actor GeneratePredWeight()
 				do
 					offset[Component][idxL1][refIdx] := 0;
 				end
+			end
+			currPoc := pocListX[0];
+			foreach int i in 0 .. 15
+			do
+				pocList0[i] := pocListX[i+1];
+				pocList1[i] := pocListX[i+17];
+				isLTList0[i] := pocIsLTList[i];
+				isLTList1[i] := pocIsLTList[i+16];
 			end
 		end
 	end
