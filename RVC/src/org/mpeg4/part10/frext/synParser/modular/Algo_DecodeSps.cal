@@ -99,10 +99,10 @@ actor Algo_DecodeSps(bool IsAvc)
 	List (type: uint(size=1) , size=32) mb_adaptive_frame_field_flag          := [ 0     : for int i in 0 .. 31 ];
 	List (type: uint(size=1) , size=32) direct_8x8_inference_flag             := [ 0     : for int i in 0 .. 31 ];
 	List (type: uint(size=1) , size=32) frame_cropping_flag                   := [ 0     : for int i in 0 .. 31 ];
-//	List (type: uint(size=32), size=32) frame_crop_left_offset                := [ 0     : for int i in 0 .. 31 ];
-//	List (type: uint(size=32), size=32) frame_crop_right_offset               := [ 0     : for int i in 0 .. 31 ];
-//	List (type: uint(size=32), size=32) frame_crop_top_offset                 := [ 0     : for int i in 0 .. 31 ];
-//	List (type: uint(size=32), size=32) frame_crop_bottom_offset              := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) frame_crop_x_min;
+	List (type: uint(size=32), size=32) frame_crop_x_max;
+	List (type: uint(size=32), size=32) frame_crop_y_min;
+	List (type: uint(size=32), size=32) frame_crop_y_max;
 //	List (type: uint(size=1) , size=32) vui_parameters_present_flag           := [ 0     : for int i in 0 .. 31 ];
 	List (type: uint(size=5) , size=32) MaxDPBSz                              := [16     : for int i in 0 .. 31 ];
 	List (type: int (size=32), size=32) expected_delta_per_poc_cycle          := [ 0     : for int i in 0 .. 31 ];
@@ -165,7 +165,7 @@ actor Algo_DecodeSps(bool IsAvc)
 	end
 
 	SpsParam.AskedFromPic: action NumSpsAsked     :[ValSps] ==>
-			SpsParameters         :[paramToSend] repeat 11,
+			SpsParameters         :[paramToSend] repeat 15,
 			SzDPB                 :[MaxDPBSz[ValSps]],
 			Direct8x8Inference    :[ValDirect8x8Inference],
 
@@ -180,7 +180,7 @@ actor Algo_DecodeSps(bool IsAvc)
 			bool ValDeltaPic,
 			bool ValMbAdaptFrameField
 		do
-			int(size=32) paramToSend[11];
+			int(size=32) paramToSend[15];
 
 			nalUnitType := -1;	
 			val_frame_mbs_only    := (frame_mbs_only_flag[ValSps]              != 0);
@@ -189,7 +189,7 @@ actor Algo_DecodeSps(bool IsAvc)
 			ValDirect8x8Inference := (direct_8x8_inference_flag[ValSps]        != 0);
 
 			/*Size of List Header Param*/
-			paramToSend[0] := 10 + num_ref_frames_in_pic_order_cnt_cycle[ValSps] + 1;
+			paramToSend[0] := 14 + num_ref_frames_in_pic_order_cnt_cycle[ValSps] + 1;
 
 			paramToSend[1]  := expected_delta_per_poc_cycle[ValSps];
 			paramToSend[2]  := log2_max_frame_num_minus4[ValSps] + 4;
@@ -201,6 +201,10 @@ actor Algo_DecodeSps(bool IsAvc)
 			paramToSend[8]  := setFlag(val_frame_mbs_only,2,setFlag(ValDeltaPic,1,setFlag(ValMbAdaptFrameField,0,0)));
 			paramToSend[9]  := pic_width_in_mbs_minus1[ValSps] + 1;
 			paramToSend[10] := pic_height_in_map_units_minus1[ValSps] + 1;
+			paramToSend[11] := frame_crop_x_min[ValSps];
+			paramToSend[12] := frame_crop_x_max[ValSps];
+			paramToSend[13] := frame_crop_y_min[ValSps];
+			paramToSend[14] := frame_crop_y_max[ValSps];
 
 			spsId  := ValSps;
 			LoopVal := 0;
@@ -542,17 +546,26 @@ actor Algo_DecodeSps(bool IsAvc)
 			ValVLD :[ValueOfVLD] repeat 2
 				==>
 		do
+			uint(size=32) picWidthInSampleL =
+				(pic_width_in_mbs_minus1[spsId]+1) * 16;
+			uint(size=32) picHeightInSampleL =
+				(pic_height_in_map_units_minus1[spsId]+1) * 16;
+
 			direct_8x8_inference_flag[spsId] := ValueOfVLD[0];
 			frame_cropping_flag[spsId]          := ValueOfVLD[1];
 			if(DEBUG_FLAG_DECODED)then
 				println("\t\tdirect_8x8_inference_flag : "+ValueOfVLD[0]);
 				println("\t\tframe_cropping_flag : "+ValueOfVLD[1]);
 			end
+
+			frame_crop_x_min[spsId] := 0;
+			frame_crop_x_max[spsId] := picWidthInSampleL-1;
+			frame_crop_y_min[spsId] := 0;
+			frame_crop_y_max[spsId] := picHeightInSampleL-1;
 		end
 
 
-	FrameCroppingFlag.IsEqualTo1: action
-				==>
+	FrameCroppingFlag.IsEqualTo1: action ==>
 			//              frame_ , frame_ , frame_ , frame_ 
 			TypeOfVLD    :[ VLD_UE , VLD_UE , VLD_UE , VLD_UE ]
 		guard
@@ -564,10 +577,29 @@ actor Algo_DecodeSps(bool IsAvc)
 			ValVLD :[ValueOfVLD] repeat 4
 				==>
 		do
-//			frame_crop_left_offset[spsId]   := ValueOfVLD[0];
-//			frame_crop_right_offset[spsId]  := ValueOfVLD[1];
-//			frame_crop_top_offset[spsId]    := ValueOfVLD[2];
-//			frame_crop_bottom_offset[spsId] := ValueOfVLD[3];
+			uint(size=3) cropUnitX;
+			uint(size=4) cropUnitY;
+			uint(size=3) subWidthC = 2;
+			uint(size=3) subHeightC = 2;
+			uint(size=32) picWidthInSampleL =
+				(pic_width_in_mbs_minus1[spsId]+1) * 16;
+			uint(size=32) picHeightInSampleL =
+				(pic_height_in_map_units_minus1[spsId]+1) * 16;
+
+			if(Chroma_Array_Type[spsId] = 0)then
+				cropUnitX := 1;
+				cropUnitY := 2 - frame_mbs_only_flag[spsId];
+			else
+				cropUnitX := subWidthC;
+				cropUnitY := subHeightC * (2 - frame_mbs_only_flag[spsId]);
+			end
+			frame_crop_x_min[spsId] := cropUnitX * ValueOfVLD[0];
+			frame_crop_x_max[spsId] := picWidthInSampleL -(cropUnitX *
+				ValueOfVLD[1] + 1);
+			frame_crop_y_min[spsId] := cropUnitY * ValueOfVLD[2];
+			frame_crop_y_max[spsId] := picHeightInSampleL -(cropUnitY *
+				ValueOfVLD[3] + 1);
+
 			if(DEBUG_FLAG_DECODED)then
 				println("\t\tframe_crop_left_offset : "+ValueOfVLD[0]);
 				println("\t\tframe_crop_right_offset : "+ValueOfVLD[1]);
