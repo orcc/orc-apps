@@ -30,6 +30,7 @@
 // Author: Damien de Saint Jorre
 package std.video;
 
+import std.util.Math.*;
 
 actor DisplayYUV()
 	uint(size=8)  Byte,
@@ -88,9 +89,13 @@ actor DisplayYUV()
 	uint(size=16) pictureWidthLuma;
 	uint(size=16) pictureHeightLuma;
 	uint(size=12) xIdxLuma;
-	uint(size=32) yOffLuma;
+	uint(size=12) yIdxLuma;
 	uint(size=12) xIdxChroma;
 	uint(size=32) yOffChroma;
+	uint(size=14) xMin;
+	uint(size=14) xMax;
+	uint(size=14) yMin;
+	uint(size=14) yMax;
 
 
 	initialize ==>
@@ -106,13 +111,27 @@ actor DisplayYUV()
 	guard
 		(displayYUV_getFlags() & DISP_READY) != 0
 	do
+		uint(size=11) picWidthInMb;
+		uint(size=11) picHeightInMb;
 		pictureWidthLuma  := dispCoord[1] - dispCoord[0] + 1;
 		pictureHeightLuma := dispCoord[3] - dispCoord[2] + 1;
-		pictureSizeInMb   := (pictureWidthLuma * pictureHeightLuma) / 256;
+		picWidthInMb      := pictureWidthLuma /16;
+		if((pictureWidthLuma & 15) !=0) then
+			pictureWidthLuma := pictureWidthLuma + 1;
+		end
+		picHeightInMb      := pictureHeightLuma /16;
+		if((pictureHeightLuma & 15) !=0) then
+			picHeightInMb := picHeightInMb + 1;
+		end
+		pictureSizeInMb   := picWidthInMb * picHeightInMb;
+		xMin := dispCoord[0];
+		xMax := dispCoord[1];
+		yMin := dispCoord[2];
+		yMax := dispCoord[3];
 		nbBlockGot := 0;
 		xIdxLuma   := 0;
+		yIdxLuma   := 0;
 		xIdxChroma := 0;
-		yOffLuma   := 0;
 		yOffChroma := 0;
 	end
 
@@ -120,18 +139,18 @@ actor DisplayYUV()
 	guard
 		nbBlockGot < pictureSizeInMb
 	do
-		uint(size=32) yOff := yOffLuma;
-		uint(size=9)  idx  := 0;
+		uint(size=14) xIdxMin = max(xIdxLuma, xMin);
+		uint(size=14) xIdxMax = min(xIdxLuma + 15, xMax);
+		uint(size=14) yIdxMin = max(yIdxLuma, yMin);
+		uint(size=14) yIdxMax = min(yIdxLuma + 15, yMax);
 
 		nbBlockGot := nbBlockGot + 1;
-		foreach int y in 0 .. 15
+		foreach int y in yIdxMin .. yIdxMax
 		do
-			foreach int x in xIdxLuma .. xIdxLuma + 15
+			foreach int x in xIdxMin .. xIdxMax
 			do
-				pictureBufferY[yOff+x] := Bytes[idx];
-				idx := idx + 1;
+				pictureBufferY[y*pictureWidthLuma+x] := Bytes[(y-yIdxLuma)*16 + x-xIdxLuma];
 			end
-			yOff := yOff + pictureWidthLuma;
 		end
 		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
 		chromaComponent := 0;
@@ -160,7 +179,7 @@ actor DisplayYUV()
 			if xIdxLuma = pictureWidthLuma then
 				xIdxLuma   := 0;
 				xIdxChroma := 0;
-				yOffLuma   := yOffLuma + MB_SIZE_LUMA   * pictureWidthLuma;
+				yIdxLuma   := yIdxLuma + MB_SIZE_LUMA;
 				yOffChroma := yOffChroma + MB_SIZE_CHROMA * pictureWidthLuma / 2;
 			end
 		end
@@ -185,7 +204,7 @@ actor DisplayYUV()
 	end
 
 	schedule fsm GetPictureSize:
-		GetPictureSize  (getPictureSize                    )--> GetLumaBlock;
+		GetPictureSize  (getPictureSize            )--> GetLumaBlock;
 		GetLumaBlock    (getPixValue.launch.Luma   )--> GetChroma1Block;
 		GetChroma1Block (getPixValue.launch.Chroma )--> GetChroma2Block;
 		GetChroma2Block (getPixValue.launch.Chroma )--> GetLumaBlock;
