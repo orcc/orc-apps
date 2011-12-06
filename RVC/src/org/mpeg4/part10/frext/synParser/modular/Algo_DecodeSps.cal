@@ -122,7 +122,10 @@ actor Algo_DecodeSps(bool IsAvc)
 	int (size=32) LoopVal     := 0;
 	int (size=32) PrevOffForRefFramAccum;
 	int (size=6) nalUnitType := -1;
-
+	
+	int(size=9) varScaling[6];
+	uint(size=8) ScalingList4x4[32][6][16];
+	uint(size=8) ScalingList8x8[32][2][64];
 
 /*
 *
@@ -245,13 +248,37 @@ actor Algo_DecodeSps(bool IsAvc)
 		end
 
 	SpsParam.AskedFromPps: action NumSpsAsked:[ValSps] ==>
-			SpsParameters :[2 , pic_width_in_mbs_minus1[ValSps] + 1 , pic_height_in_map_units_minus1[ValSps] + 1]
+			SpsParameters :[param] repeat (6*16+2*64)/4+3
 		guard
 			nalUnitType = NAL_PPS
+		var
+			uint(size=8)  ScalingListSize = (6*16+2*64)/4,
+			uint(size=32) param[ScalingListSize+3]
 		do
 			nalUnitType := -1;	
-		end
+			param[0]    := 2+ScalingListSize;
+			param[1]    := pic_width_in_mbs_minus1[ValSps] + 1;
+			foreach int i in 0 .. 5 do
+				foreach int j in 0 .. 3 do
+					param[2+i*4+j] := (ScalingList4x4[ValSps][i][4*j  ]<<24) +
+								   	  (ScalingList4x4[ValSps][i][4*j+1]<<16) +
+								      (ScalingList4x4[ValSps][i][4*j+2]<< 8) +
+								   	  (ScalingList4x4[ValSps][i][4*j+3]);
+				end
+			end
+			foreach int i in 0 .. 1 do
+				foreach int j in 0 .. 15 do
+					param[2+6*4+i*16+j] := (ScalingList8x8[ValSps][i][4*j  ]<<24) +
+										   (ScalingList8x8[ValSps][i][4*j+1]<<16) +
+										   (ScalingList8x8[ValSps][i][4*j+2]<< 8) +
+								   		   (ScalingList8x8[ValSps][i][4*j+3]);
+				end
+			end
+			param[ScalingListSize+2] := pic_height_in_map_units_minus1[ValSps] + 1;
+			
 
+		end
+	
 	ReadSpsId.Done: action ValVLD:[ValueOfVLD] repeat 5 ==>
 	guard
 		nalUnitType = NAL_SPS or nalUnitType = NAL_SUBSET_SPS
@@ -272,6 +299,9 @@ actor Algo_DecodeSps(bool IsAvc)
 		expected_delta_per_poc_cycle[spsId]          := 0;
 		PrevOffForRefFramAccum                        := 0;
 		num_ref_frames_in_pic_order_cnt_cycle[spsId] := 0;
+		
+		ScalingList4x4[spsId] := [[16 : for int i in 0 .. 15] : for int j in 0 .. 5];
+		ScalingList8x8[spsId] := [[16 : for int i in 0 .. 63] : for int j in 0 .. 1];
 	end
 
 
@@ -315,7 +345,7 @@ actor Algo_DecodeSps(bool IsAvc)
 				while true do end
 			end
 		end
-
+		
 	readBitDepth.Done : action ValVLD:[bitDepthLuma , bitDepthChroma , 
 	                                   qprimeY , secScaling] ==>
 	do
@@ -325,14 +355,105 @@ actor Algo_DecodeSps(bool IsAvc)
 		seq_scaling_matrix_present_flag := (secScaling != 0);
 	end
 
+/******************************************************************************
+ * ScalingMatrix Loop
+ *****************************************************************************/
 	secScalingFlag.isEqualToTrue: action ==>
+										 // seq_scaling_list_present_flag
+										 TypeOfVLD    :[ READ_BITS ],
+										 NbBitsToRead :[     1     ]
 	guard
 		seq_scaling_matrix_present_flag
 	do
-		println("seq_scaling_matrix_present_flag = true is not managed yet !");
+		varScaling[0]  := 0; // i index loop
+		varScaling[5]  := 7; // end index loop
 	end
-
-	ReadSeparColourPlane.Done: action
+	scalingMatrix.present: action 
+						// seq_scaling_list_present_flag
+						ValVLD :[ValueOfVLD]
+						==>
+						// delta_scale 
+						TypeOfVLD:[ VLD_SE ]
+	guard
+		ValueOfVLD = 1
+	do
+		varScaling[1] := 0; // j index loop
+		if varScaling[0] < 6 then
+			varScaling[2] := 15; // j index end
+		else
+			varScaling[2] := 63; // j index end
+		end
+		varScaling[3] := 8; // lastScale
+		varScaling[4] := 8; // nextScale
+	end
+	scalingMatrix.noPresent: action  
+						// seq_scaling_list_present_flag
+						ValVLD :[ValueOfVLD]
+						==>
+	guard
+		ValueOfVLD = 0
+	end
+	scalingMatrix.loopNext: action
+						==>
+						// seq_scaling_list_present_flag
+						TypeOfVLD    :[ READ_BITS ],
+						NbBitsToRead :[     1     ]
+	guard
+		varScaling[0] != varScaling[5]
+	do
+		varScaling[0] := varScaling[0] + 1;
+	end
+/******************************************************************************
+ * ScalingList Loop
+ *****************************************************************************/
+	scalingListLoop: action
+						// delta_scale
+						ValVLD :[ValueOfVLD] ==>
+	guard
+		varScaling[4] != 0
+	var 
+		int(size=9) tmp := varScaling[3] 
+	do
+		varScaling[4] := (varScaling[4] + ValueOfVLD + 256) & 255;
+		if varScaling[4] != 0 then
+			tmp := varScaling[4];
+		end
+		if varScaling[0] < 6 then
+			ScalingList4x4[spsId][varScaling[0]][varScaling[1]] := tmp;
+		else
+			ScalingList8x8[spsId][varScaling[0]-6][varScaling[1]] := tmp;
+		end
+		varScaling[3] := tmp;
+	end
+	scalingListNext: action ==> 
+						// delta_scale
+						TypeOfVLD:[ VLD_SE ]
+	guard
+		varScaling[4] != 0 and varScaling[1] != varScaling[2]
+	do
+		varScaling[1] := varScaling[1] + 1;
+	end
+	scalingListEnd.nextScaleNull: action ==>
+	guard
+		varScaling[4] = 0
+	do
+		if varScaling[0]<6 then
+			foreach int i in varScaling[1] .. 15 do
+				ScalingList4x4[spsId][varScaling[0]][i] := varScaling[3];
+			end
+		else
+			foreach int i in varScaling[1] .. 63 do
+				ScalingList8x8[spsId][varScaling[0]-6][i] := varScaling[3];
+			end
+		end
+	end
+	scalingListEnd.nextScaleNoNull: action ==>
+	guard
+		varScaling[4] != 0
+	end
+/*****************************************************************************/
+   
+   ReadSeparColourPlane.Done: action
 			ValVLD :[ValueOfVLD]
 				==>
 		do
@@ -695,9 +816,23 @@ actor Algo_DecodeSps(bool IsAvc)
 
 		ReadBitDepthDone             (readBitDepth.Done                 )--> ChecksecScalingFlag;
 
-		ChecksecScalingFlag          (secScalingFlag.isEqualToTrue     )-->                              undefined;//Not implemented yet
+		ChecksecScalingFlag          (secScalingFlag.isEqualToTrue     )--> getScalingMatrixLoop;
 		ChecksecScalingFlag          (Read_MaxFrameNum_PocType.Asked   )--> Read_MaxFrameNum_PocTypeDone;
 
+		/*********************************************************************
+		 * Scaling_Matrix
+		 ********************************************************************/
+		getScalingMatrixLoop         (scalingMatrix.present          ) --> getScalingListLoop;
+		getScalingMatrixLoop         (scalingMatrix.noPresent        ) --> getScalingMatrixLoopNext;
+		//
+		getScalingListLoop           (scalingListLoop                ) --> getScalingListNext;
+		getScalingListNext           (scalingListNext                ) --> getScalingListLoop;
+		getScalingListNext           (scalingListEnd                 ) --> getScalingMatrixLoopNext;
+		//		
+		getScalingMatrixLoopNext     (scalingMatrix.loopNext         ) --> getScalingMatrixLoop;
+		getScalingMatrixLoopNext     (Read_MaxFrameNum_PocType.Asked ) --> Read_MaxFrameNum_PocTypeDone;
+		
+		
 		Read_MaxFrameNum_PocTypeDone (Read_MaxFrameNum_PocType.Done  )--> CheckValPocType;
 
 		CheckValPocType              (ReadPocType.IsEqualTo0         )--> ReadLog2MaxPocLsbDone;
@@ -751,5 +886,6 @@ actor Algo_DecodeSps(bool IsAvc)
 		FrameMbsOnlyFlag.IsEqualTo0  > ReadDirect8x8.Asked;
 		FrameCroppingFlag.IsEqualTo1 > ReadVuiParameters.Asked;
 		secScalingFlag.isEqualToTrue > Read_MaxFrameNum_PocType.Asked;
+		scalingMatrix.loopNext       > Read_MaxFrameNum_PocType.Asked;
 	end
 end
