@@ -94,7 +94,7 @@ actor Algo_MvBuffer(bool DEBUG)
 	int (size=32) longTermList[16];
 	int (size=16) mvList[17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4][2];
 	int (size=5)  refIdxList [17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4];
-//	int (size=5)  refNumList [17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4];
+	int (size=32) refNumList [17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4];
 	int (size=32) refListX[2][16];
 
 	bool          colPic_IsShortTermRef;
@@ -133,34 +133,32 @@ actor Algo_MvBuffer(bool DEBUG)
 			else
 				idxY
 			end;
-		int(size=32) colPic;
+		int(size=32) colPic := 0;
 		int(size=5)  refIdxCol;
+		uint(size=1) numList =
+			if(refIdxList[readListIdx][0][idxXInfer][idxYInfer] != -1) then
+				0
+			else
+				1
+			end;
 
 		//for spatial prediction, we need : colZeroFlag
 		//for temporal prediction, we need : refIdxL0Temporal, MvL0, MvL1
-		if(refIdxList[readListIdx][0][idxXInfer][idxYInfer] != -1)then
-			refIdxCol := refIdxList[readListIdx][0][idxXInfer][idxYInfer];
-			mvCol[0]  := mvList[readListIdx][0][idxXInfer][idxYInfer][0];
-			mvCol[1]  := mvList[readListIdx][0][idxXInfer][idxYInfer][1];
-			refIdxL0Temporal := refIdxList[readListIdx][0][idxXInfer][idxYInfer];
+		if(refIdxList[readListIdx][0][idxXInfer][idxYInfer] = -1 and
+		   refIdxList[readListIdx][1][idxXInfer][idxYInfer] = -1) then
+			refIdxCol := -1;
+			mvCol     := [0,0];
+			refIdxL0Temporal := 0;
 		else
-			if(refIdxList[readListIdx][1][idxXInfer][idxYInfer] != -1)then
-				refIdxCol := refIdxList[readListIdx][1][idxXInfer][idxYInfer];
-				mvCol[0]  := mvList[readListIdx][1][idxXInfer][idxYInfer][0];
-				mvCol[1]  := mvList[readListIdx][1][idxXInfer][idxYInfer][1];
-
-				colPic := refListX[1][refIdxCol];
-				refIdxL0Temporal := 0;
-				foreach int i in 15 .. 0
-				do
-					if(refListX[0][i] = colPic)then
-						refIdxL0Temporal := i;
-					end
+			refIdxCol := refIdxList[readListIdx][numList][idxXInfer][idxYInfer];
+			mvCol[0] := mvList[readListIdx][numList][idxXInfer][idxYInfer][0];
+			mvCol[1] := mvList[readListIdx][numList][idxXInfer][idxYInfer][1];
+			colPic := refNumList[readListIdx][numList][idxXInfer][idxYInfer];
+			foreach int i in 15 .. 0
+			do
+				if(refListX[0][i] = colPic)then
+					refIdxL0Temporal := i;
 				end
-			else
-				refIdxCol := -1;
-				mvCol     := [0,0];
-				refIdxL0Temporal := 0;
 			end
 		end
 
@@ -173,7 +171,7 @@ actor Algo_MvBuffer(bool DEBUG)
 					   and mvCol[1] >= -1 and mvCol[1] <=  1
 				end;
 		else
-			computeMvComponent4Temporal(refListX[0][refIdxL0Temporal]);
+			computeMvComponent4Temporal(colPic);
 		end
 	end
 
@@ -314,6 +312,8 @@ actor Algo_MvBuffer(bool DEBUG)
 			do
 				refIdxList[writeListIdx][0][i][j] := -1;
 				refIdxList[writeListIdx][1][i][j] := -1;
+				refNumList[writeListIdx][0][i][j] := -1;
+				refNumList[writeListIdx][1][i][j] := -1;
 				mvList[writeListIdx][0][i][j][0]  :=  0;
 				mvList[writeListIdx][0][i][j][1]  :=  0;
 				mvList[writeListIdx][1][i][j][0]  :=  0;
@@ -394,8 +394,8 @@ actor Algo_MvBuffer(bool DEBUG)
 				do
 					refIdxList[writeListIdx][numList][mbX+x][mbY+y] :=
 						refIdx[numList*16 + y*4+x];
-//					refNumList[writeListIdx][numList][mbX+x][mbY+y] :=
-//						refIdx[numList*16 + y*4+x];
+					refNumList[writeListIdx][numList][mbX+x][mbY+y] :=
+						refListX[numList][refIdx[numList*16 + y*4+x] &15];
 					mvList[writeListIdx][numList][mbX+x][mbY+y][0] :=
 						mv[numList*32 + y*4+x];
 					mvList[writeListIdx][numList][mbX+x][mbY+y][1] :=
@@ -486,16 +486,12 @@ actor Algo_MvBuffer(bool DEBUG)
 	readRefList1.launch: action RefList1 :[valRefList] ==>
 	guard
 		refListIdx < refListSize
-	var
-		bool IdxNotFound//Delete me when the bug in Orcc will be solved
 	do
 		if(refListIdx = 0)then
 			readListIdx := 0;
-			IdxNotFound := (listFrameNum[readListIdx] != valRefList) or (not IsReference[readListIdx]);
-			while(/*(ListPoc[ReadListIdx] != ValRefList) or (not IsReference[ReadListIdx])*/IdxNotFound and readListIdx < 16)
+			while(listFrameNum[readListIdx] != valRefList) or (not IsReference[readListIdx])
 			do
 				readListIdx := readListIdx + 1;
-				IdxNotFound := (listFrameNum[readListIdx] != valRefList)  or (not IsReference[readListIdx]);
 			end
 		end
 		refListX[1][refListIdx] := valRefList;
