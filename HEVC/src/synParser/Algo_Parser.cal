@@ -8,8 +8,8 @@ actor Algo_Parser ()
 				==>
 :
 	bool DEBUG = true;
-	uint(size=8) se_idx;
-	uint(size=8) cnt;
+	uint(size= 8) se_idx;
+	uint(size=32) cnt_i;
 	/**************************************************************************
 	 * search_start_code or getByte
 	 *************************************************************************/
@@ -21,8 +21,8 @@ actor Algo_Parser ()
 	/* */
  	action byte:[ b ] ==>
 	guard 
-		(searchStartCodeFlag = false and (bit_read_cnt[0]>>3) <= FIFO_SIZE-1) or
-		(searchStartCodeFlag = true  and  bit_read_cnt[0]     <  24)
+		(searchStartCodeFlag = false and bit_read_cnt[0] <= (FIFO_SIZE-1)<<3 ) or
+		(searchStartCodeFlag = true  and bit_read_cnt[0] <  24)
 	var
 		uint(size=4) fifo_idx2 = (fifo_idx-2) & (FIFO_SIZE-1),
 		uint(size=4) fifo_idx1 = (fifo_idx-1) & (FIFO_SIZE-1)
@@ -69,19 +69,25 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	uint(size=6) nal_unit_type;
 	uint(size=1) nal_ref_flag;
+	uint(size=3) temporal_id;
+	uint(size=1) output_flag;
+	
 	read_nal_unit_header : action ==>
-	guard
-		bit_read_cnt[0] > 7
 	var
 		uint(size=32) res[1]
 	do
 		flushBits(bit_read_cnt, 1);
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
+		vld_u(bit_read_cnt, 2, fifo, fifo_idx, res);
 		nal_ref_flag  := res[0];
-		vld_u(bit_read_cnt, 6, fifo, fifo_idx, res);
+		vld_u(bit_read_cnt, 5, fifo, fifo_idx, res);
 		nal_unit_type := res[0];
+		temporal_id   := 0;
+		output_flag   := 1; 
 		if DEBUG then
-			println("\t\t Parser nal_unit_type "+ nal_unit_type +" nal_ref_flag "+ nal_ref_flag);
+			println("=========== NAL_UNIT ===========");
+			println("          reserved_zero_1bits                      u(1) : 0");
+			println("          nal_ref_flag                             u(2) : "+nal_ref_flag);
+			println("          nal_unit_type                            u(8) : "+nal_unit_type);
 		end
 	end
 	/**************************************************************************
@@ -93,7 +99,7 @@ actor Algo_Parser ()
 	do
 		se_idx := 1;
 		if DEBUG then
-			println("\t SPS Header");
+			println("=========== Sequence Parameter Set ID    ===========");
 		end
 	end
 	/**************************************************************************
@@ -103,8 +109,9 @@ actor Algo_Parser ()
 	guard
 		nal_unit_type = NAL_UNIT_PPS
 	do
+		se_idx := 1;
 		if DEBUG then
-			println("\t PPS Header");
+			println("=========== Picture Parameter Set ID    ===========");
 		end
 	end
 	/**************************************************************************
@@ -112,12 +119,22 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	look_for.Slice_header: action ==>
 	guard
-		nal_unit_type = NAL_UNIT_NON_IDR_AND_NON_CRA or
-		nal_unit_type = NAL_UNIT_CRA                 or
-		nal_unit_type = NAL_UNIT_IDR
+		(nal_unit_type = NAL_UNIT_NON_IDR_AND_NON_CRA or
+		 nal_unit_type = NAL_UNIT_CRA                 or
+		 nal_unit_type = NAL_UNIT_IDR)
+	var
+		uint(size=32) res[1]
 	do
+		vld_u(bit_read_cnt, 3, fifo, fifo_idx, res);
+		temporal_id  := res[0];
+		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
+		output_flag := res[0];
+		flushBits(bit_read_cnt, 4);
 		if DEBUG then
-			println("\t Slice Header");
+			println("          temporal_id                              u(3) : "+temporal_id);
+			println("          output_flag                              u(1) : "+output_flag);
+			println("          reserved_zero_4bits                      u(4) : 0");
+			println("=========== Slice ===========");
 		end
 	end
 	/**************************************************************************
@@ -130,344 +147,451 @@ actor Algo_Parser ()
 	 ********        Sequence Parameter Set HEADER        *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 8) profile_idc;
-	uint(size= 8) level_idc;
-	uint(size= 8) sps_id;
-	uint(size= 8) max_temporal_layers_minus1;
-	uint(size=16) pic_width_in_luma_samples;
-	uint(size=16) pic_height_in_luma_samples;
-	uint(size= 3) bit_depth_luma_minus8;
-	uint(size= 3) bit_depth_chroma_minus8;
-	uint(size= 4) pcm_bit_depth_luma_minus1; 
-	uint(size= 4) pcm_bit_depth_chroma_minus1;
-	uint(size= 4) log2_max_frame_num_minus4;
-	uint(size= 2) pic_order_cnt_type;
-	uint(size= 4) log2_max_pic_order_cnt_lsb_minus4;
-	uint(size= 1) delta_pic_order_always_zero_flag;
-	 int(size=32) offset_for_non_ref_pic;
-	uint(size= 8) num_ref_frames_in_pic_order_cnt_cycle;
-	 int(size=32) offset_for_ref_frame[255];
-	uint(size=32) max_num_ref_frames;
-	uint(size= 1) gaps_in_frame_num_value_allowed_flag;
-	uint(size=32) log2_min_coding_block_size_minus3;
-	uint(size=32) log2_diff_max_min_coding_block_size;
-	uint(size=32) log2_min_transform_block_size_minus2;
-	uint(size=32) log2_diff_max_min_transform_block_size;
-	uint(size=32) log2_min_pcm_coding_block_size_minus3;
-	uint(size=32) max_transform_hierarchy_depth_inter;
-	uint(size=32) max_transform_hierarchy_depth_intra;
-	uint(size= 1) chroma_pred_from_luma_enabled_flag;
-	uint(size= 1) loop_filter_across_slice_flag;
-	uint(size= 1) sample_adaptive_offset_enabled_flag;
-	uint(size= 1) adaptive_loop_filter_enabled_flag;
-	uint(size= 1) pcm_loop_filter_disable_flag;
-	uint(size= 1) temporal_id_nesting_flag;
-	uint(size= 1) inter_4x4_enabled_flag;	
-	
+	uint(size= 8) sps_profile_idc;
+	uint(size= 8) sps_level_idc;
+	uint(size= 8) sps_sps_id;
+	uint(size= 8) sps_max_temporal_layers_minus1;
+	uint(size=16) sps_pic_width_in_luma_samples;
+	uint(size=16) sps_pic_height_in_luma_samples;
+	uint(size= 3) sps_bit_depth_luma_minus8;
+	uint(size= 3) sps_bit_depth_chroma_minus8;
+	uint(size= 4) sps_pcm_bit_depth_luma_minus1; 
+	uint(size= 4) sps_pcm_bit_depth_chroma_minus1;
+	uint(size= 1) sps_disableInter4x4;
+	uint(size= 8) sps_log2_min_coding_block_size_minus3;
+	uint(size= 8) sps_log2_diff_max_min_coding_block_size;	
+	uint(size=32) sps_log2_min_transform_block_size_minus2;
+	uint(size=32) sps_log2_diff_max_min_transform_block_size;
+	uint(size=32) sps_log2_min_pcm_coding_block_size_minus3;
+	uint(size=32) sps_max_transform_hierarchy_depth_inter;
+	uint(size=32) sps_max_transform_hierarchy_depth_intra;
+	uint(size= 1) sps_chroma_pred_from_luma_enabled_flag;
+	uint(size= 1) sps_loop_filter_across_slice_flag;
+	uint(size= 1) sps_sample_adaptive_offset_enabled_flag;
+	uint(size= 1) sps_adaptive_loop_filter_enabled_flag;
+	uint(size= 1) sps_pcm_loop_filter_disable_flag;
+	uint(size= 1) sps_cu_qp_delta_enabled_flag;
+	uint(size= 1) sps_temporal_id_nesting_flag;
+	uint(size=32) sps_padX;
+	uint(size=32) sps_padY;
+	uint(size= 1) sps_useLDC;
+	uint(size= 1) sps_useMRG;
+	uint(size= 1) sps_amvpMode[MAX_TLAYER];
+	uint(size=32) sps_maxNumRefFrames;
+	uint(size= 1) sps_uniform_spacing_idc;
+	uint(size= 1) sps_tile_boundary_independence_idc;
+	uint(size= 1) sps_num_tile_columns_minus1;
+	uint(size= 1) sps_num_tile_rows_minus1;	
+	uint(size=32) sps_column_width[32];
+	uint(size=32) sps_row_height[32];
+
 	/**************************************************************************
-	 * read_SPS_Header.profile_idc
+	 * read_SPS_Header.se_idx_1
 	 *************************************************************************/
-	read_SPS_Header.profile_idc : action ==>
+	read_SPS_Header.se_idx_1 : action ==>
 	guard
-		se_idx = 1 and bit_read_cnt[0] >= 53 //8 + 8 + 8 + 10 + 3 + 16
+		se_idx = 1
 	var
 		uint(size=32) res[1]
 	do
-		vld_u(bit_read_cnt, 8, fifo, fifo_idx, res);
-		profile_idc := res[0];
+		vld_u( bit_read_cnt,  8, fifo, fifo_idx, res); sps_profile_idc                := res[0];
 		flushBits(bit_read_cnt, 8);
-		vld_u(bit_read_cnt, 8, fifo, fifo_idx, res);
-		level_idc := res[0];
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(10) max
-		sps_id := res[0];
-		vld_u(bit_read_cnt, 3, fifo, fifo_idx, res);
-		max_temporal_layers_minus1 := res[0];
-		vld_u(bit_read_cnt, 16, fifo, fifo_idx, res);
-		pic_width_in_luma_samples := res[0];
+		vld_u( bit_read_cnt,  8, fifo, fifo_idx, res); sps_level_idc                  := res[0];
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_sps_id                     := res[0]; // getBits(10) max
+		vld_u( bit_read_cnt,  3, fifo, fifo_idx, res); sps_max_temporal_layers_minus1 := res[0];
+		vld_u( bit_read_cnt, 16, fifo, fifo_idx, res); sps_pic_width_in_luma_samples  := res[0];
 		se_idx := se_idx + 1;
 		if DEBUG then
-			println("\t\t profile_idc                           : "+profile_idc);
-			println("\t\t level_idc                             : "+level_idc);
-			println("\t\t sps_id                                : "+sps_id);
-			println("\t\t max_temporal_layers_minus             : "+max_temporal_layers_minus1);
-			println("\t\t pic_width_in_luma_samples             : "+pic_width_in_luma_samples );
+			println("          profile_idc                              u(8) : "+sps_profile_idc);
+			println("          reserved_zero_8bits                      u(8) : 0");
+			println("          level_idc                                u(8) : "+sps_level_idc);
+			println("          seq_parameter_set_id                     u(v) : "+sps_sps_id);
+			println("          max_temporal_layers_minus1               u(3) : "+sps_max_temporal_layers_minus1);
+			println("          pic_width_in_luma_samples                u(16) : "+sps_pic_width_in_luma_samples );
 		end
 	end
 	/**************************************************************************
-	 * read_SPS_Header.pic_width_in_luma_samples
+	 * read_SPS_Header.se_idx_2
 	 *************************************************************************/
-	read_SPS_Header.pic_width_in_luma_samples : action ==>
+	read_SPS_Header.se_idx_2 : action ==>
 	guard
-		se_idx = 2 and bit_read_cnt[0] >= 44 // 16 + 5 + 5 + 4 + 4 + 7 + 3
+		se_idx = 2
 	var
 		uint(size=32) res[1]
    	do
-		vld_u(bit_read_cnt, 16, fifo, fifo_idx, res);
-		pic_height_in_luma_samples := res[0];
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(5) max
-		bit_depth_luma_minus8 := res[0];
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(5) max
-		bit_depth_chroma_minus8 := res[0];
-		vld_u(bit_read_cnt, 4, fifo, fifo_idx, res);
-		pcm_bit_depth_luma_minus1 := res[0];
-		vld_u(bit_read_cnt, 4, fifo, fifo_idx, res);
-		pcm_bit_depth_chroma_minus1 := res[0];		
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(7) max
-		log2_max_frame_num_minus4 := res[0];
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(3) max
-		pic_order_cnt_type := res[0];	
+		vld_u( bit_read_cnt, 16, fifo, fifo_idx, res); sps_pic_height_in_luma_samples := res[0];
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_bit_depth_luma_minus8      := res[0]; // getBits(5) max
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_bit_depth_chroma_minus8    := res[0]; // getBits(5) max
+		vld_u( bit_read_cnt,  4, fifo, fifo_idx, res); sps_pcm_bit_depth_luma_minus1  := res[0];
+		vld_u( bit_read_cnt,  4, fifo, fifo_idx, res); sps_pcm_bit_depth_chroma_minus1:= res[0];		
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_disableInter4x4            := res[0];		
 		se_idx := se_idx + 1;
 		if DEBUG then
-			println("\t\t pic_height_in_luma_samples            : "+pic_height_in_luma_samples );
-			println("\t\t bit_depth_luma_minus8                 : "+bit_depth_luma_minus8 );
-			println("\t\t bit_depth_chroma_minus8               : "+bit_depth_chroma_minus8 );
-			println("\t\t pcm_bit_depth_luma_minus1             : "+pcm_bit_depth_luma_minus1 );
-			println("\t\t pcm_bit_depth_chroma_minus1           : "+pcm_bit_depth_chroma_minus1 );
-			println("\t\t log2_max_frame_num_minus4             : "+log2_max_frame_num_minus4 );
-			println("\t\t pic_order_cnt_type                    : "+pic_order_cnt_type );
+			println("          pic_height_in_luma_samples               u(16) : "+sps_pic_height_in_luma_samples );
+			println("          bit_depth_luma_minus8                    u(v) : "+sps_bit_depth_luma_minus8 );
+			println("          bit_depth_chroma_minus8                  u(v) : "+sps_bit_depth_chroma_minus8 );
+			println("          pcm_bit_depth_luma_minus1                u(4) : "+sps_pcm_bit_depth_luma_minus1 );
+			println("          pcm_bit_depth_chroma_minus1              u(4) : "+sps_pcm_bit_depth_chroma_minus1 );
 		end
 	end
 	/**************************************************************************
-	 * read_SPS_Header.log2_max_pic_order_cnt_lsb_minus4
+	 * read_SPS_Header.se_idx_3
 	 *************************************************************************/
-	read_SPS_Header.log2_max_pic_order_cnt_lsb_minus4 : action ==>
+	read_SPS_Header.se_idx_3 : action ==>
 	guard
-		se_idx = 3 and pic_order_cnt_type = 0 and bit_read_cnt[0] >= 7
+		se_idx = 3
 	var
 		uint(size=32) res[1]
    	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(7) max
-		log2_max_pic_order_cnt_lsb_minus4 := res[0];
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_log2_min_coding_block_size_minus3      := res[0]; // getBits(7) max
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_log2_diff_max_min_coding_block_size    := res[0]; // getBits(32) max ?????
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_log2_min_transform_block_size_minus2   := res[0]; // getBits(32) max ?????
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_log2_diff_max_min_transform_block_size := res[0]; // getBits(32) max ?????
+		se_idx := se_idx + 1;
+		if DEBUG then
+			println("          log2_min_coding_block_size_minus3        u(v) : "+sps_log2_min_coding_block_size_minus3 );
+			println("          log2_diff_max_min_coding_block_size      u(v) : "+sps_log2_diff_max_min_coding_block_size );
+			println("          log2_min_transform_block_size_minus2     u(v) : "+sps_log2_min_transform_block_size_minus2 );
+			println("          log2_diff_max_min_transform_block_size   u(v) : "+sps_log2_diff_max_min_transform_block_size );
+		end
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_4
+	 *************************************************************************/	
+	read_SPS_Header.se_idx_4 : action ==>
+	guard
+		se_idx = 4
+	var
+		uint(size=32) res[1]
+   	do
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_log2_min_pcm_coding_block_size_minus3 := res[0]; // getBits(32) max ?????
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_max_transform_hierarchy_depth_inter   := res[0]; // getBits(32) max ?????
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_max_transform_hierarchy_depth_intra   := res[0]; // getBits(32) max ?????
+		se_idx := se_idx + 1;
+		if DEBUG then
+			println("          log2_min_pcm_coding_block_size_minus3    u(v) : "+sps_log2_min_pcm_coding_block_size_minus3 );
+			println("          max_transform_hierarchy_depth_inter      u(v) : "+sps_max_transform_hierarchy_depth_inter );
+			println("          max_transform_hierarchy_depth_intra      u(v) : "+sps_max_transform_hierarchy_depth_intra );
+		end
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_5
+	 *************************************************************************/	
+	read_SPS_Header.se_idx_5 : action ==>
+	guard
+		se_idx = 5
+	var
+		uint(size=32) res[1]
+   	do
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_chroma_pred_from_luma_enabled_flag  := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_loop_filter_across_slice_flag       := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_sample_adaptive_offset_enabled_flag := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_adaptive_loop_filter_enabled_flag   := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_pcm_loop_filter_disable_flag        := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_cu_qp_delta_enabled_flag            := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_temporal_id_nesting_flag            := res[0];
+		se_idx := se_idx + 1;
+		cnt_i  := 0;
+		if DEBUG then
+			println("          chroma_pred_from_luma_enabled_flag       u(1) : "+sps_chroma_pred_from_luma_enabled_flag );
+			println("          loop_filter_across_slice_flag            u(1) : "+sps_loop_filter_across_slice_flag );
+			println("          sample_adaptive_offset_enabled_flag      u(1) : "+sps_sample_adaptive_offset_enabled_flag );
+			println("          adaptive_loop_filter_enabled_flag        u(1) : "+sps_adaptive_loop_filter_enabled_flag );
+			println("          pcm_loop_filter_disable_flag             u(1) : "+sps_pcm_loop_filter_disable_flag );
+			println("          cu_qp_delta_enabled_flag                 u(1) : "+sps_cu_qp_delta_enabled_flag );
+			println("          temporal_id_nesting_flag                 u(1) : "+sps_temporal_id_nesting_flag );
+		end
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_6
+	 *************************************************************************/
+	read_SPS_Header.se_idx_6 : action ==>
+	guard
+		se_idx = 6
+	var
+		uint(size= 8) uiAddCUDepth := 0,
+		uint(size=32) maxCUWidth,
+		uint(size= 8) maxCUDepth,
+		uint(size=32) res[1]
+   	do
+		maxCUWidth  := 1<<(sps_log2_min_coding_block_size_minus3 + 3 + sps_log2_diff_max_min_coding_block_size);
+  		while( ( maxCUWidth >> sps_log2_diff_max_min_coding_block_size ) > ( 1 << ( sps_log2_min_transform_block_size_minus2 + 2 + uiAddCUDepth )  ) ) 
+  		do
+  			uiAddCUDepth := uiAddCUDepth + 1;
+  		end    
+  		maxCUDepth := sps_log2_diff_max_min_coding_block_size + uiAddCUDepth;
+
+
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_padX                := res[0]; // getBits(32) max ?????
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_padY                := res[0]; // getBits(32) max ?????
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_useLDC              := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_useMRG              := res[0];
+
+   		foreach uint(size=8) i in 0 .. maxCUDepth - 1 do
+   			vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_amvpMode[i]     := res[0];
+			if DEBUG then
+				//println("          amvpMode["+i+"]                              u(1) : "+sps_amvpMode[i] );
+			end
+		end
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res);
+		if res[0] = 1 then
+			vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_maxNumRefFrames := res[0]; // getBits(32) max ?????
+			if DEBUG then
+				//println("          maxNumRefFrames                              u(1) : "+maxNumRefFrames );
+			end
+		end
+		se_idx := se_idx + 1;
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_7
+	 *************************************************************************/	
+	read_SPS_Header.se_idx_7 : action ==>
+	guard
+		se_idx = 7
+	var
+		uint(size=32) res[1]
+   	do
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_uniform_spacing_idc            := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); sps_tile_boundary_independence_idc := res[0];
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_num_tile_columns_minus1        := res[0];
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_num_tile_rows_minus1           := res[0];
+		se_idx := se_idx + 1;
+		cnt_i  := 0;
+		if DEBUG then
+			println("          uniform_spacing_idc                      u(1) : "+sps_uniform_spacing_idc );
+			println("          tile_boundary_independence_idc           u(1) : "+sps_tile_boundary_independence_idc );
+			println("          num_tile_columns_minus1                  u(v) : "+sps_num_tile_columns_minus1 );
+			println("          num_tile_rows_minus1                     u(v) : "+sps_num_tile_rows_minus1 );
+		end
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_8
+	 *************************************************************************/	
+	read_SPS_Header.se_idx_8.loop : action ==>
+	guard
+		se_idx = 8 and sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_columns_minus1
+	var
+		uint(size=32) res[1]
+   	do
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_column_width[cnt_i] := res[0];
+		cnt_i := cnt_i + 1;
+		if DEBUG then
+			println("          column_width["+cnt_i+"]                          u(v) : "+sps_column_width[cnt_i] );
+		end
+	end 
+	read_SPS_Header.se_idx_8.loopEnd : action ==>
+	guard
+		se_idx = 8 and sps_uniform_spacing_idc = 1 and cnt_i > sps_num_tile_columns_minus1
+   	do
+		se_idx := se_idx + 1;
+		cnt_i  := 0;
+	end 
+	read_SPS_Header.se_idx_8.noLoop : action ==>
+	guard
+		se_idx = 8 and sps_uniform_spacing_idc = 0
+   	do
 		se_idx := se_idx + 2;
-		if DEBUG then
-			println("\t\t log2_max_pic_order_cnt_lsb_minus4     : "+log2_max_pic_order_cnt_lsb_minus4 );
-		end
-	end 	 
-	/**************************************************************************
-	 * read_SPS_Header.delta_pic_order_always_zero_flag
-	 *************************************************************************/
-	read_SPS_Header.delta_pic_order_always_zero_flag : action ==>
-	guard
-		se_idx = 3 and pic_order_cnt_type = 1 and bit_read_cnt[0] >= 50 // 1 + 32 + 17
-	var
-		int(size=32) res[1]
-   	do
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		delta_pic_order_always_zero_flag := res[0];
-		vld_se(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max
-		offset_for_non_ref_pic := res[0];
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(17) max
-		num_ref_frames_in_pic_order_cnt_cycle := res[0]; 
-		cnt    := 0;
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t delta_pic_order_always_zero_flag      : "+delta_pic_order_always_zero_flag );
-			println("\t\t offset_for_non_ref_pic                : "+offset_for_non_ref_pic );
-			println("\t\t num_ref_frames_in_pic_order_cnt_cycle : "+num_ref_frames_in_pic_order_cnt_cycle );
-		end
 	end 
 	/**************************************************************************
-	 * read_SPS_Header.offset_for_ref_frame
+	 * read_SPS_Header.se_idx_9
 	 *************************************************************************/	
-	read_SPS_Header.offset_for_ref_frame.loop : action ==>
+	read_SPS_Header.se_idx_9.loop : action ==>
 	guard
-		se_idx = 4 and cnt < num_ref_frames_in_pic_order_cnt_cycle and bit_read_cnt[0] >= 32 // 32
-	var
-		int(size=32) res[1]
-   	do
-		vld_se(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max
-		offset_for_ref_frame[cnt] := res[0];
-		if DEBUG then
-			println("\t\t offset_for_ref_frame["+cnt+"]          : "+offset_for_ref_frame[cnt] );
-		end
-		cnt := cnt + 1;
-	end 
-	read_SPS_Header.offset_for_ref_frame.endLoop : action ==>
-	guard
-		se_idx = 4 and cnt = num_ref_frames_in_pic_order_cnt_cycle
-   	do
-		se_idx := se_idx + 1;
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.max_num_ref_frames
-	 *************************************************************************/	
-	read_SPS_Header.max_num_ref_frames : action ==>
-	guard
-		se_idx = 5 and bit_read_cnt[0] >= 33 // 32 + 1
+		se_idx = 9 and sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_rows_minus1
 	var
 		uint(size=32) res[1]
    	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		max_num_ref_frames := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		gaps_in_frame_num_value_allowed_flag := res[0];		
-		se_idx := se_idx + 1;
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); sps_row_height[cnt_i] := res[0];
+		cnt_i := cnt_i + 1;
 		if DEBUG then
-			println("\t\t max_num_ref_frames                    : "+max_num_ref_frames );
-			println("\t\t gaps_in_frame_num_value_allowed_flag  : "+gaps_in_frame_num_value_allowed_flag );
+			println("          row_height["+cnt_i+"]                          u(v) : "+sps_row_height[cnt_i] );
 		end
 	end 
-	/**************************************************************************
-	 * read_SPS_Header.log2_min_coding_block_size_minus3
-	 *************************************************************************/	
-	read_SPS_Header.log2_min_coding_block_size_minus3 : action ==>
+	read_SPS_Header.se_idx_9.loopEnd : action ==>
 	guard
-		se_idx = 6 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
+		se_idx = 9 and sps_uniform_spacing_idc = 1 and cnt_i > sps_num_tile_rows_minus1
    	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		log2_min_coding_block_size_minus3 := res[0];
 		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t log2_min_coding_block_size_minus3     : "+log2_min_coding_block_size_minus3 );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.log2_diff_max_min_coding_block_size
-	 *************************************************************************/	
-	read_SPS_Header.log2_diff_max_min_coding_block_size : action ==>
-	guard
-		se_idx = 7 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
-   	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		log2_diff_max_min_coding_block_size := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t log2_diff_max_min_coding_block_size     : "+log2_diff_max_min_coding_block_size );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.log2_min_transform_block_size_minus2
-	 *************************************************************************/	
-	read_SPS_Header.log2_min_transform_block_size_minus2 : action ==>
-	guard
-		se_idx = 8 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
-   	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		log2_min_transform_block_size_minus2 := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t log2_min_transform_block_size_minus2     : "+log2_min_transform_block_size_minus2 );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.log2_diff_max_min_transform_block_size
-	 *************************************************************************/	
-	read_SPS_Header.log2_diff_max_min_transform_block_size : action ==>
-	guard
-		se_idx = 9 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
-   	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		log2_diff_max_min_transform_block_size := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t log2_diff_max_min_transform_block_size     : "+log2_diff_max_min_transform_block_size );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.log2_min_pcm_coding_block_size_minus3
-	 *************************************************************************/	
-	read_SPS_Header.log2_min_pcm_coding_block_size_minus3 : action ==>
-	guard
-		se_idx = 10 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
-   	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		log2_min_pcm_coding_block_size_minus3 := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t log2_min_pcm_coding_block_size_minus3     : "+log2_min_pcm_coding_block_size_minus3 );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.max_transform_hierarchy_depth_inter
-	 *************************************************************************/	
-	read_SPS_Header.max_transform_hierarchy_depth_inter : action ==>
-	guard
-		se_idx = 11 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
-   	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		max_transform_hierarchy_depth_inter := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t max_transform_hierarchy_depth_inter     : "+max_transform_hierarchy_depth_inter );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.max_transform_hierarchy_depth_intra
-	 *************************************************************************/	
-	read_SPS_Header.max_transform_hierarchy_depth_intra : action ==>
-	guard
-		se_idx = 12 and bit_read_cnt[0] >= 32 // 32
-	var
-		uint(size=32) res[1]
-   	do
-		vld_ue(bit_read_cnt, fifo, fifo_idx, res); // getBits(32) max ?????
-		max_transform_hierarchy_depth_intra := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t max_transform_hierarchy_depth_intra     : "+max_transform_hierarchy_depth_intra );
-		end
-	end 
-	/**************************************************************************
-	 * read_SPS_Header.chroma_pred_from_luma_enabled_flag
-	 *************************************************************************/	
-	read_SPS_Header.chroma_pred_from_luma_enabled_flag : action ==>
-	guard
-		se_idx = 13 and bit_read_cnt[0] >= 7 // 1 + 1 + 1 + 1 + 1 + 1 + 1
-	var
-		uint(size=32) res[1]
-   	do
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		chroma_pred_from_luma_enabled_flag := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		loop_filter_across_slice_flag := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		sample_adaptive_offset_enabled_flag := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		adaptive_loop_filter_enabled_flag := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		pcm_loop_filter_disable_flag := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		temporal_id_nesting_flag := res[0];
-		vld_u(bit_read_cnt, 1, fifo, fifo_idx, res);
-		inter_4x4_enabled_flag := res[0];
-		se_idx := se_idx + 1;
-		if DEBUG then
-			println("\t\t chroma_pred_from_luma_enabled_flag    : "+chroma_pred_from_luma_enabled_flag );
-			println("\t\t loop_filter_across_slice_flag         : "+loop_filter_across_slice_flag );
-			println("\t\t sample_adaptive_offset_enabled_flag   : "+sample_adaptive_offset_enabled_flag );
-			println("\t\t adaptive_loop_filter_enabled_flag     : "+adaptive_loop_filter_enabled_flag );
-			println("\t\t pcm_loop_filter_disable_flag          : "+pcm_loop_filter_disable_flag );
-			println("\t\t temporal_id_nesting_flag              : "+temporal_id_nesting_flag );
-			println("\t\t inter_4x4_enabled_flag                : "+inter_4x4_enabled_flag );
-		end
 	end 
 	/**************************************************************************
 	 * read_SPS_Header_done
 	 *************************************************************************/	
 	read_SPS_Header_done : action ==>
 	guard
-		se_idx = 14
+		se_idx = 10
+	do
+		byte_align(bit_read_cnt);
+		searchStartCodeFlag := true;
 	end 
 	/**************************************************************************
 	 **************************************************************************
 	 ********        Picture Parameter Set HEADER        *********************
 	 **************************************************************************
 	 *************************************************************************/
-	read_PPS_id : action ==>
-	end
-	
+	uint(size=32) pps_pps_id;
+	uint(size=32) pps_sps_id;
+	uint(size= 1) pps_entropy_coding_mode_flag;
+	uint(size=32) pps_entropy_coding_synchro;
+	uint(size= 1) pps_cabac_istate_reset;
+	uint(size=32) pps_num_substreams_minus1;
+	uint(size= 8) pps_num_temporal_layer_switching_point_flags;
+	uint(size= 1) pps_temporal_layer_switching_point_flag[MAX_TLAYER];
+	uint(size= 1) pps_constrained_intra_pred_flag;
+	uint(size= 2) pps_slice_granularity;
+	uint(size=32) pps_max_cu_qp_delta_depth;
+	uint(size= 1) pps_weighted_pred_flag;
+	uint(size= 2) pps_weighted_bipred_idc;
+	uint(size= 1) pps_tile_info_present_flag;
+	uint(size= 1) pps_uniform_spacing_idc;
+	uint(size= 1) pps_tile_boundary_independence_idc;
+	uint(size=32) pps_num_tile_columns_minus1;
+	uint(size=32) pps_num_tile_rows_minus1;
+	uint(size=32) pps_column_width[32];
+	uint(size=32) pps_row_height[32];
+	/**************************************************************************
+	 * read_PPS_Header.se_idx_1
+	 *************************************************************************/	
+	read_PPS_Header.se_idx_1 : action ==>
+	guard
+		se_idx = 1
+	var
+		uint(size=32) res[1]
+   	do
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_pps_id                     := res[0];
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_sps_id                     := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_entropy_coding_mode_flag   := res[0];
+		if DEBUG then
+			println("          pic_parameter_set_id                     u(v) : "+pps_pps_id );
+			println("          seq_parameter_set_id                     u(v) : "+pps_sps_id );
+			println("          pps_entropy_coding_mode_flag             u(1) : "+pps_entropy_coding_mode_flag );
+		end
+		if pps_entropy_coding_mode_flag = 1 then
+			vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_entropy_coding_synchro := res[0];
+			vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_cabac_istate_reset     := res[0];
+			if DEBUG then
+				println("          entropy_coding_synchro                   u(v) : "+pps_entropy_coding_synchro );
+				println("          pps_cabac_istate_reset                   u(1) : "+pps_cabac_istate_reset );
+			end
+			if pps_entropy_coding_synchro != 0 then
+				vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_entropy_coding_synchro := res[0];
+				if DEBUG then
+					println("          num_substreams_minus1                    u(v) : "+pps_num_substreams_minus1 );
+				end
+			end
+		end
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_num_temporal_layer_switching_point_flags := res[0];
+		if DEBUG then
+			println("          num_temporal_layer_switching_point_flags     u(v) : "+pps_num_temporal_layer_switching_point_flags );
+		end
+		foreach uint(size=8) i in 0 .. pps_num_temporal_layer_switching_point_flags - 1 do
+			vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_temporal_layer_switching_point_flag[i]     := res[0];
+			if DEBUG then
+				println("          pps_temporal_layer_switching_point_flag["+i+"]   u(v) : "+pps_temporal_layer_switching_point_flag[i] );
+			end		
+		end	
+		se_idx := se_idx + 1;
+ 	end
+	/**************************************************************************
+	 * read_PPS_Header.se_idx_2
+	 *************************************************************************/	
+	read_PPS_Header.se_idx_2 : action ==>
+	guard
+		se_idx = 2
+	var
+		uint(size=32) res[1]
+   	do
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_constrained_intra_pred_flag   := res[0];
+		vld_u( bit_read_cnt,  2, fifo, fifo_idx, res); pps_slice_granularity             := res[0];
+		if DEBUG then
+			println("          constrained_intra_pred_flag             u(1) : "+pps_constrained_intra_pred_flag );
+			println("          slice_granularity                       u(2) : "+pps_slice_granularity );
+		end
+		if sps_cu_qp_delta_enabled_flag = 1 then
+			vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_max_cu_qp_delta_depth := res[0];
+			if DEBUG then
+				println("          max_cu_qp_delta_depth                   u(v) : "+pps_max_cu_qp_delta_depth );
+			end
+		end
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_weighted_pred_flag     := res[0];
+		vld_u( bit_read_cnt,  2, fifo, fifo_idx, res); pps_weighted_bipred_idc    := res[0];
+		vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_tile_info_present_flag := res[0];
+		if DEBUG then
+			println("          weighted_pred_flag                      u(1) : "+pps_weighted_pred_flag );
+			println("          weighted_bipred_idc                     u(2) : "+pps_weighted_bipred_idc );
+			println("          tile_info_present_flag                  u(2) : "+pps_tile_info_present_flag );
+		end
+		pps_uniform_spacing_idc := 0;
+		if pps_tile_info_present_flag = 1 then
+			vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_uniform_spacing_idc            := res[0];
+			vld_u( bit_read_cnt,  1, fifo, fifo_idx, res); pps_tile_boundary_independence_idc := res[0];
+			vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_num_tile_columns_minus1        := res[0];
+			vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_num_tile_rows_minus1           := res[0];
+			if DEBUG then
+				println("          uniform_spacing_idc                     u(1) : "+pps_uniform_spacing_idc );
+				println("          tile_boundary_independence_idc          u(1) : "+pps_tile_boundary_independence_idc );
+				println("          num_tile_columns_minus1                 u(v) : "+pps_num_tile_columns_minus1 );
+				println("          num_tile_rows_minus1                    u(v) : "+pps_num_tile_rows_minus1 );
+			end	
+		end
+		se_idx := se_idx + 1;
+		cnt_i  := 0;
+ 	end
+	/**************************************************************************
+	 * read_PPS_Header.se_idx_3
+	 *************************************************************************/	
+  	read_PPS_Header.se_idx_3.loop : action ==>
+	guard
+		se_idx = 3 and pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_columns_minus1
+	var
+		uint(size=32) res[1]
+   	do
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_column_width[cnt_i] := res[0];
+		cnt_i := cnt_i + 1;
+		if DEBUG then
+			println("          column_width["+cnt_i+"]                          u(v) : "+pps_column_width[cnt_i] );
+		end
+	end 
+	read_PPS_Header.se_idx_3.loopEnd : action ==>
+	guard
+		se_idx = 3 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_columns_minus1
+   	do
+		se_idx := se_idx + 1;
+		cnt_i  := 0;
+	end 
+	read_PPS_Header.se_idx_3.noLoop : action ==>
+	guard
+		se_idx = 3 and pps_uniform_spacing_idc = 0
+   	do
+		se_idx := se_idx + 2;
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_4
+	 *************************************************************************/	
+	read_SPS_Header.se_idx_4.loop : action ==>
+	guard
+		se_idx = 4 and pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_rows_minus1
+	var
+		uint(size=32) res[1]
+   	do
+		vld_ue(bit_read_cnt,     fifo, fifo_idx, res); pps_row_height[cnt_i] := res[0];
+		cnt_i := cnt_i + 1;
+		if DEBUG then
+			println("          row_height["+cnt_i+"]                          u(v) : "+pps_row_height[cnt_i] );
+		end
+	end 
+	read_SPS_Header.se_idx_4.loopEnd : action ==>
+	guard
+		se_idx = 4 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_rows_minus1
+   	do
+		se_idx := se_idx + 1;
+	end 
+	/**************************************************************************
+	 * read_PPS_Header_done
+	 *************************************************************************/	
+	read_PPS_Header_done : action ==>
+	guard
+		se_idx = 5
+	end 	
 	/**************************************************************************
 	 **************************************************************************
 	 ********        Picture Parameter Set HEADER        *********************
@@ -502,14 +626,15 @@ actor Algo_Parser ()
 		// read Nal Unit header
 		read_Nal_unit_header			( read_nal_unit_header				) --> find_header;
 		find_header	  					( look_for.SPS_header	  			) --> read_SPS_Header;
-		find_header	  					( look_for.PPS_header	  			) --> read_PPS_id;
+		find_header	  					( look_for.PPS_header	  			) --> read_PPS_Header;
 		find_header	  					( look_for.Slice_header	  			) --> read_SliceHeader;
 		find_header	  					( look_for_other_header				) --> read_Nal_unit_header;
 		// read SPS header
 		read_SPS_Header	  				( read_SPS_Header	    			) --> read_SPS_Header;
-		read_SPS_Header	  				( read_SPS_Header_done    			) --> undefined;
+		read_SPS_Header	  				( read_SPS_Header_done    			) --> start_code;
 		// read PPS header
-		read_PPS_id	  					( read_PPS_id	    				) --> undefined;
+		read_PPS_Header 				( read_PPS_Header   				) --> read_PPS_Header;
+		read_PPS_Header	  				( read_PPS_Header_done    			) --> undefined;
 		// read_SliceHeader
 		read_SliceHeader				( read_SliceHeader					) --> undefined;
 		
