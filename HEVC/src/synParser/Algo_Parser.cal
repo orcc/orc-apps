@@ -77,8 +77,8 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_nal_unit_header
 	 *************************************************************************/
-	uint(size=6) nal_unit_type;
-	uint(size=1) nal_ref_flag;
+	uint(size=2) nal_ref_flag;
+	uint(size=5) nal_unit_type;
 	uint(size=3) temporal_id;
 	uint(size=1) output_flag;
 	
@@ -618,7 +618,28 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_4
 	 *************************************************************************/	
-	read_SliceHeader.se_idx_4.useWP : action ==>
+	 procedure initWpScaling()
+	 begin
+		foreach uint(size=8) e in 0 .. 1 do
+			foreach uint(size=8) i in 0 .. MAX_NUM_REF-1 do
+				foreach uint(size=8) yuv in 0 .. 2 do
+					if wp[e][i][yuv][WP_PRESENT_FLAG] = 1 then
+						wp[e][i][yuv][WP_I_WEIGHT] := (1 << wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM]);
+						wp[e][i][yuv][WP_I_OFFSET] := 0;
+					end
+					wp[e][i][yuv][WP_W]     := wp[e][i][yuv][WP_I_WEIGHT];
+					wp[e][i][yuv][WP_O]     := wp[e][i][yuv][WP_I_OFFSET] * (1);
+					wp[e][i][yuv][WP_SHIFT] := wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM];
+					if wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM] >= 1 then
+						wp[e][i][yuv][WP_ROUND] := (1 << wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM]) - 1;
+					else
+						wp[e][i][yuv][WP_ROUND] := 0;
+					end
+				end
+			end
+		end
+	end
+   	read_SliceHeader.se_idx_4.useWP : action ==>
 	guard
 		se_idx = 4 and 
 		(pps_weighted_pred_flag  = 1 and slice_slice_type = P_SLICE) or 
@@ -674,30 +695,103 @@ actor Algo_Parser ()
 				wp[iNumRef][iRefIdx][2][WP_PRESENT_FLAG] := 0;
 			end
 		end
-	    se_idx := se_idx + 1;
-	end
-	read_SliceHeader.se_idx_4.useWPImplicit : action ==>
-	guard
-		se_idx = 4 and 
-		(pps_weighted_pred_flag   = 0 or slice_slice_type != P_SLICE) and 
-		(pps_weighted_bipred_idc  = 2 or slice_slice_type != B_SLICE)
-   	do	
+		initWpScaling();
 	    se_idx := se_idx + 1;
 	end
 	read_SliceHeader.se_idx_4.noUseWP : action ==>
 	guard
 		se_idx = 4 and 
-		(pps_weighted_pred_flag   = 0 or slice_slice_type != P_SLICE) and 
-		(pps_weighted_bipred_idc  = 0 or slice_slice_type != B_SLICE)
+		(pps_weighted_pred_flag  != 1 or slice_slice_type != P_SLICE) and 
+		(pps_weighted_bipred_idc != 1 or slice_slice_type != B_SLICE)
    	do	
 	    se_idx := se_idx + 1;
+	end
+	/**************************************************************************
+	 * read_SliceHeader.se_idx_5
+	 *************************************************************************/	
+	uint(size= 1) slice_symbolMode; 
+	uint(size= 1) slice_drbFlag; 
+	uint(size= 2) slice_erbIndex; 
+	uint(size= 1) slice_tileMarkerFlag; 
+	uint(size=32) slice_puiSubstreamSizes[255];
+	read_SliceHeader.se_idx_5 : action ==>
+	guard
+		se_idx = 5
+	var
+		uint(size=32) res[1]
+   	do	
+ 		slice_tileMarkerFlag := 0;
+   		if slice_lightweight_slice_flag = 0 then
+ 			vld_u_name(  1, fifo, res, "symbolMode                              "); slice_symbolMode     := res[0];
+ 			vld_u_name(  1, fifo, res, "drbFlag                                 "); slice_drbFlag        := res[0];
+ 			if res[0] = 0 then
+	 			vld_u_name(  2, fifo, res, "erbIndex                                "); slice_erbIndex   := res[0];
+ 			end
+ 			if sps_tile_boundary_independence_idc = 1 then
+ 				vld_u_name(  1, fifo, res, "tileMarkerFlag                          "); slice_tileMarkerFlag := res[0];
+ 			end
+ 		end
+ 		if pps_entropy_coding_synchro = 1 then
+ 			foreach uint(size=8) ui in 0 .. pps_num_substreams_minus1 do
+ 				vld_u(  2, fifo, res);
+ 				if res[0] > 3 then
+ 					println("Error in parseSliceHeader");
+ 				else
+ 					vld_u_name(  8<<res[0], fifo, res, "puiSubstreamSizes[ ]                    "); slice_puiSubstreamSizes[ui] := res[0]; 				
+ 				end
+ 				
+ 			end
+ 		end
+	    se_idx := se_idx + 1;
+	end
+	/**************************************************************************
+	 * read_SliceHeader.se_idx_6
+	 *************************************************************************/
+	uint(size=5) slice_tileLocationCount_minus1;
+	uint(size=5) slice_bitsUsedByDiff_minus1;
+	uint(size=5) slice_tileLocation[32];
+	read_SliceHeader.se_idx_6 : action ==>
+	guard
+		se_idx = 6
+	var
+		uint(size=32) res[1],
+		uint(size= 5) iLastSize,
+         int(size= 5) iCurSize,
+         int(size= 5) iCurDiff,
+        uint(size= 1) iSign
+   	do	
+   		if slice_lightweight_slice_flag = 0 then
+   			if sps_tile_boundary_independence_idc = 0 then
+ 				vld_u(  1, fifo, res);
+ 				if res[0] = 1 then
+	 				vld_u_name(  5, fifo, res, "tileLocationCount_minus1                "); slice_tileLocationCount_minus1 := res[0];
+	 				vld_u_name(  5, fifo, res, "bitsUsedByDiff_minus1                   "); slice_bitsUsedByDiff_minus1    := res[0];
+	 				iLastSize := 0;
+	 				foreach uint(size=8) uiIdx in 0 .. slice_tileLocationCount_minus1 do
+	 					if uiIdx = 0 then
+			 				vld_u_name(  slice_bitsUsedByDiff_minus1, fifo, res, "tileLocation                            ");
+			 				slice_tileLocation[uiIdx] := res[0];
+			 				iCurDiff  := res[0];
+            				iLastSize := res[0];
+	 					else
+	 						vld_u_name(  1, fifo, res, "sign                                    "); iSign := res[0];	 					
+	 						vld_u_name(  slice_bitsUsedByDiff_minus1, fifo, res, "tileLocation                            ");
+	 						if iSign = 1 then iCurDiff  := -res[0]; else iCurDiff := res[0]; end 
+            				iLastSize := iLastSize + iCurDiff;
+			 				slice_tileLocation[uiIdx] := slice_tileLocation[uiIdx-1] + iLastSize;
+	 					end
+	 				end
+ 				end
+ 			end
+ 		end
+ 		se_idx := se_idx + 1;
 	end
 	/**************************************************************************
 	 * read_SliceHeader_done
 	 *************************************************************************/	
 	read_SliceHeader_done : action ==>
 	guard
-		se_idx = 5
+		se_idx = 7
 	do
 		byte_align(fifo);
 	end 	
