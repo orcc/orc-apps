@@ -2582,40 +2582,26 @@ actor Algo_Synp_AVC_CBP()
 		IS_Intra_8x8()
 	do
 		luma4x4BlkIdx := 0;
-		set_bits_to_read(1);
 	end
 
 	//for( luma8x8BlkIdx=0; luma8x8BlkIdx<4; luma8x8BlkIdx++ )
 	read_MB_pred_rem_intra8x8_pred_mode: action ==>
 	guard
-		done_reading_bits(),
 		luma4x4BlkIdx < 4
+	var
+		uint(size=32) res[1]
 	do
-		prev_intra4x4_pred_mode_flag := read_result();
-		if prev_intra4x4_pred_mode_flag = 0 then set_bits_to_read(3); end
+		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ", bit_count);
+		prev_intra4x4_pred_mode_flag := res[0];
+		if prev_intra4x4_pred_mode_flag = 0 then 
+			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ", bit_count);
+			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := res[0];
+		else
+			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := 15; // indicates that the mode is predicted using the neighbourhood 
+		end
+		luma4x4BlkIdx := luma4x4BlkIdx +1;
 	end
 
-	//if( !prev_intra8x8_pred_mode_flag[ luma8x8BlkIdx ] )
-	read_MB_pred_rem_intra8x8_pred_mode_done: action ==>
-	guard
-		done_reading_bits(),
-		prev_intra4x4_pred_mode_flag = 0
-	do
-		rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := read_result();
-		luma4x4BlkIdx := luma4x4BlkIdx +1;
-		if luma4x4BlkIdx < 4 then set_bits_to_read(1); end
-	end
-
-	//else
-	read_MB_pred_skip_rem_intra8x8_pred_mode_done: action ==>
-	guard
-		prev_intra4x4_pred_mode_flag = 1
-	do
-		rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := 15; // indicates that the mode is predicted using the neighbourhood 
-		luma4x4BlkIdx := luma4x4BlkIdx +1;
-		if luma4x4BlkIdx < 4 then set_bits_to_read(1); end
-	end
-	//end if
 
 	read_MB_pred_skip_rem_intra8x8_pred_mode: action ==> IntraPredMode: [ [ rem_intra4x4_pred_mode[ s ] :for int s in 0 .. 3] ] repeat 4
 	guard
@@ -2631,19 +2617,15 @@ actor Algo_Synp_AVC_CBP()
 	//end if
 
 	//if( ChromaArrayType = = 1 | | ChromaArrayType = = 2 )
-	read_MB_pred_intra_chroma_pred_mode: action ==>
+	read_MB_pred_intra_chroma_pred_mode: action ==> IntraPredModeC: [intra_chroma_pred_mode]
 	guard
 		IS_Intra_4x4() or IS_Intra_8x8() or IS_Intra_16x16(),
 		chroma_format_idc[sps_id[0]] = 1 or chroma_format_idc[sps_id[0]] = 2
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
-	end
-
-	read_MB_pred_intra_chroma_pred_mode_done: action ==> IntraPredModeC: [intra_chroma_pred_mode]
-	guard
-		vld_end()
-	do
-		intra_chroma_pred_mode := vld_ue_();
+		vld_ue_name(  fifo, res, "intra_chroma_pred_mode                             ", bit_count);
+		intra_chroma_pred_mode := res[0];
 	end
 
 	//else
@@ -2665,20 +2647,21 @@ actor Algo_Synp_AVC_CBP()
 
 	//  for( mbPartIdx = 0; mbPartIdx < NumMbPart( mb_type ); mbPartIdx++)
 	//    if( ( num_ref_idx_l0_active_minus1 > 0 || mb_field_decoding_flag ) && MbPartPredMode( mb_type, mbPartIdx ) != Pred_L1 )
-	read_MB_pred_ref_idx_l0: action ==> 
+	read_MB_pred_ref_idx_l0: action ==> MbPredRefIdxL0:[ref_idx_l0[mbPartIdx-1]]
 	guard
 		mbPartIdx < NumMbPart(),
 		(slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1),
 		not IS_MBPred_L1(mbPartIdx), not IS_MBNA(mbPartIdx)
+	var
+		uint(size=32) res[1]
 	do
-		if slice_num_ref_idx_l0_active_minus1 = 1 then set_bits_to_read(1); else start_vld(); end
-	end
-
-	read_MB_pred_ref_idx_l0_done: action ==> MbPredRefIdxL0:[ref_idx_l0[mbPartIdx-1]]
-	guard
-		(slice_num_ref_idx_l0_active_minus1 = 1 and done_reading_bits()) or (slice_num_ref_idx_l0_active_minus1 > 1 and vld_end())
-	do
-		ref_idx_l0[mbPartIdx] := if slice_num_ref_idx_l0_active_minus1 = 1 then 1 - read_result() else vld_ue_() end;
+		if slice_num_ref_idx_l0_active_minus1 = 1 then 
+			vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			ref_idx_l0[mbPartIdx] := 1 - res[0];
+		else 
+			vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			ref_idx_l0[mbPartIdx] := res[0];
+		end
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2707,14 +2690,14 @@ actor Algo_Synp_AVC_CBP()
 		mbPartIdx < NumMbPart(),
 		(slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1),
 		not IS_MBPred_L0(mbPartIdx), not IS_MBNA(mbPartIdx)
+	var
+		uint(size=32) res[1]
 	do
-		if slice_num_ref_idx_l1_active_minus1 = 1 then set_bits_to_read(1); else start_vld(); end
-	end
-
-	read_MB_pred_ref_idx_l1_done: action ==> 
-	guard
-		(slice_num_ref_idx_l1_active_minus1 = 1 and done_reading_bits()) or (slice_num_ref_idx_l1_active_minus1 > 1 and vld_end())
-	do
+		if slice_num_ref_idx_l1_active_minus1 = 1 then 
+			vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+		else 
+			vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+		end
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2741,23 +2724,22 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		mbPartIdx < NumMbPart(),
 		not IS_MBPred_L1(mbPartIdx), not IS_MBNA(mbPartIdx)
-	do
-		start_vld();
 	end
 
 	read_MB_pred_mvd_l0_done0: action ==> MbPredResMvL0:[mvd_l0]
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		mvd_l0 := vld_se_();
-		start_vld();
+		vld_se_name(  fifo, res, "mvd_l0                             ", bit_count);
+		mvd_l0 := res[0];
 	end
 
 	read_MB_pred_mvd_l0_done1: action ==> MbPredResMvL0:[mvd_l0]
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		mvd_l0 := vld_se_();
+		vld_se_name(  fifo, res, "mvd_l0                             ", bit_count);
+		mvd_l0 := res[0];
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2784,21 +2766,20 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		mbPartIdx < NumMbPart(),
 		not IS_MBPred_L0(mbPartIdx), not IS_MBNA(mbPartIdx)
-	do
-		start_vld();
 	end
 
 	read_MB_pred_mvd_l1_done0: action ==> 
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		vld_se_name(  fifo, res, "mvd_l1                            ", bit_count);
 	end
 
 	read_MB_pred_mvd_l1_done1: action ==> 
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
+		vld_se_name(  fifo, res, "mvd_l1                             ", bit_count);
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -3608,21 +3589,16 @@ actor Algo_Synp_AVC_CBP()
 		read_MB_pred_rem_intra4x4_pred_mode					( read_MB_pred_rem_intra4x4_pred_mode				) --> read_MB_pred_rem_intra4x4_pred_mode;
 		read_MB_pred_rem_intra4x4_pred_mode					( read_MB_pred_skip_rem_intra4x4_pred_mode			) --> read_MB_pred_intra_chroma_pred_mode;
 		MB_pred												( MB_pred_init_Intra_8x8							) --> read_MB_pred_rem_intra8x8_pred_mode;
-		read_MB_pred_rem_intra8x8_pred_mode					( read_MB_pred_rem_intra8x8_pred_mode				) --> read_MB_pred_rem_intra8x8_pred_mode_done;
-		read_MB_pred_rem_intra8x8_pred_mode_done			( read_MB_pred_rem_intra8x8_pred_mode_done			) --> read_MB_pred_rem_intra8x8_pred_mode;
-		read_MB_pred_rem_intra8x8_pred_mode_done			( read_MB_pred_skip_rem_intra8x8_pred_mode_done		) --> read_MB_pred_rem_intra8x8_pred_mode;	
+		read_MB_pred_rem_intra8x8_pred_mode					( read_MB_pred_rem_intra8x8_pred_mode				) --> read_MB_pred_rem_intra8x8_pred_mode;
 		read_MB_pred_rem_intra8x8_pred_mode					( read_MB_pred_skip_rem_intra8x8_pred_mode			) --> read_MB_pred_intra_chroma_pred_mode;
 		MB_pred												( MB_pred_init_Intra_16x16							) --> read_MB_pred_intra_chroma_pred_mode;
-		read_MB_pred_intra_chroma_pred_mode					( read_MB_pred_intra_chroma_pred_mode				) --> read_MB_pred_intra_chroma_pred_mode_done;
-		read_MB_pred_intra_chroma_pred_mode_done			( read_MB_pred_intra_chroma_pred_mode_done			) --> read_MB_layer_coded_block_pattern; // --> macrobloc_layer()
+		read_MB_pred_intra_chroma_pred_mode					( read_MB_pred_intra_chroma_pred_mode				) --> read_MB_layer_coded_block_pattern;
 		read_MB_pred_intra_chroma_pred_mode					( read_MB_pred_skip_intra_chroma_pred_mode			) --> read_MB_layer_coded_block_pattern; // --> macrobloc_layer()
 		MB_pred												( MB_pred_Inter_not_direct							) --> read_MB_pred_ref_idx_l0;
-		read_MB_pred_ref_idx_l0								( read_MB_pred_ref_idx_l0							) --> read_MB_pred_ref_idx_l0_done;
-		read_MB_pred_ref_idx_l0_done						( read_MB_pred_ref_idx_l0_done						) --> read_MB_pred_ref_idx_l0;
+		read_MB_pred_ref_idx_l0								( read_MB_pred_ref_idx_l0							) --> read_MB_pred_ref_idx_l0;
 		read_MB_pred_ref_idx_l0								( read_MB_pred_skip_ref_idx_l0						) --> read_MB_pred_ref_idx_l0;
 		read_MB_pred_ref_idx_l0								( MB_pred_init_ref_idx_l1							) --> read_MB_pred_ref_idx_l1;
-		read_MB_pred_ref_idx_l1								( read_MB_pred_ref_idx_l1							) --> read_MB_pred_ref_idx_l1_done;
-		read_MB_pred_ref_idx_l1_done						( read_MB_pred_ref_idx_l1_done						) --> read_MB_pred_ref_idx_l1;
+		read_MB_pred_ref_idx_l1								( read_MB_pred_ref_idx_l1							) --> read_MB_pred_ref_idx_l1;
 		read_MB_pred_ref_idx_l1								( read_MB_pred_skip_ref_idx_l1						) --> read_MB_pred_ref_idx_l1;
 		read_MB_pred_ref_idx_l1								( MB_pred_init_mvd_l0								) --> read_MB_pred_mvd_l0;
 		read_MB_pred_mvd_l0									( read_MB_pred_mvd_l0								) --> read_MB_pred_mvd_l0_done0;
