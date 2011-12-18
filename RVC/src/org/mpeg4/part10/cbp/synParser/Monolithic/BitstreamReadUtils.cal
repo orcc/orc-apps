@@ -1,0 +1,190 @@
+/******************************************************************************
+ * Definition of CommonPackage
+ *****************************************************************************/
+package org.mpeg4.part10.cbp.synParser.Monolithic;
+
+import  org.mpeg4.part10.cbp.MacroBlockInfo.*;
+
+unit BitstreamReadUtils :
+	bool DEBUG_PARSER    = false;
+	/**************************************************************************
+	 * GLOBAL BISTREAM READER
+ 	 *************************************************************************/
+	uint(size= 8) FIFO_SIZE        =  8;
+	uint(size= 8) FIFO_DEPTH       =  9;
+	uint(size= 8) FIFO_CPT_BITS    =  FIFO_SIZE;
+	uint(size= 8) FIFO_IDX         =  FIFO_SIZE+1;
+	uint(size= 8) FIFO_SIZE_ALL    =  FIFO_SIZE+2;
+	
+	/**************************************************************************
+	 * function getFifoIdx
+	 *************************************************************************/
+  	function getFifoIdx (uint(size=4) cptBits,
+  						 uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+  	) --> uint(size=4)
+  		var 
+  			uint(size=4) fifo_idx =  fifo[FIFO_IDX]
+  		:
+  		if (cptBits & (FIFO_SIZE - 1)) != 0 then
+	    	(fifo_idx - 1 - (cptBits>>3)) & (FIFO_SIZE-1)
+	    else
+	    	(fifo_idx - (cptBits>>3)) & (FIFO_SIZE-1)
+	    end
+  	end
+	/**************************************************************************
+	 * function IsStartCode
+	 *************************************************************************/
+  	function IsStartCode (uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]) --> bool
+  		var 
+  		uint(size=4) cptBits = fifo[FIFO_CPT_BITS],
+  		uint(size=4) idx     = getFifoIdx(cptBits, fifo)
+  		:
+  		if (fifo[idx] & 0x100) != 0 then
+	    	true
+	    else
+	    	false
+	    end
+  	end
+	/**************************************************************************
+	 * procedure flushBits
+	 *************************************************************************/
+ 	procedure flushBits_name (uint(size= 8) nb,
+ 							  uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 							  String name,
+ 							  uint(size=32) bit_count[1])
+  	begin
+  		flushBits( nb, fifo, bit_count);
+  		if DEBUG_PARSER then
+			println("          "+name+" u("+nb+") : 0");
+		end
+  	end
+  	procedure flushBits (uint(size= 8) nb,
+ 						 uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 						 uint(size=32) bit_count[1])
+  	begin
+	    fifo[FIFO_CPT_BITS] := fifo[FIFO_CPT_BITS] - nb;
+	    bit_count[0]:=bit_count[0]+nb;
+  	end
+  	/**************************************************************************
+	 * procedure showBits
+	 *************************************************************************/
+  	procedure showBits (uint(size= 8) nb,
+ 						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 						uint(size=32) res[1])
+  	var
+  		uint(size=8) nb_v    := nb,
+  		uint(size=4) cptBits := fifo[FIFO_CPT_BITS],
+  		uint(size=4) idx     := getFifoIdx(cptBits, fifo),
+  		uint(size=4) cpt     := cptBits & (FIFO_SIZE - 1)
+  	begin
+  		if nb > cptBits then println(" Error vld_u : out of range !!!"); end
+  		res[0] := 0;
+	    while nb_v != 0
+	    do
+	    	if cpt = 0 then cpt := FIFO_SIZE; end
+	    	if nb_v > cpt then
+	    		res[0]  := (res[0]<<cpt) + (fifo[idx] & ((1<<cpt)-1) );
+	    		cptBits := cptBits - cpt;
+	    		nb_v    := nb_v - cpt;
+	    		idx     := (idx + 1) & (FIFO_SIZE-1); 
+	    	else
+	    		cpt     := cpt - nb_v;
+	    		res[0]  := (res[0]<<nb_v) + ( (fifo[idx]>>cpt) & ((1<<nb_v)-1) );
+	    		cptBits := cptBits - nb_v;	    		
+	    		nb_v    := 0;
+	    	end
+	    	cpt := cptBits & (FIFO_SIZE - 1);
+	  	end	    
+  	end
+  	/**************************************************************************
+	 * procedure byte_align
+	 *************************************************************************/
+  	procedure byte_align (uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL])
+  	var 
+  		uint(size=4) cptBits = fifo[FIFO_CPT_BITS]
+   	begin
+	    fifo[FIFO_CPT_BITS] := cptBits - (cptBits & 0x7);
+  	end
+	/**************************************************************************
+	 * procedure vld_u
+	 *************************************************************************/
+  	procedure vld_u_name (uint(size= 8) nb,
+ 						  uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 						  uint(size=32) res[1],
+ 						  String name,
+ 					 	  uint(size=32) bit_count[1])
+  	begin
+  		vld_u(nb, fifo, res, bit_count);
+  		if DEBUG_PARSER then
+			println("          "+name+" u("+nb+") : "+res[0]);
+		end
+	end
+  	procedure vld_u (uint(size= 8) nb,
+ 					 uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 					 uint(size=32) res[1],
+ 					 uint(size=32) bit_count[1])
+  	begin
+  		showBits(nb, fifo, res);  		
+  		flushBits(nb, fifo, bit_count);  		
+  	end
+	/**************************************************************************
+	 * procedure vld_ue
+	 *************************************************************************/
+  	procedure vld_ue_name (uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 					 	   uint(size=32) res[1],
+ 					 	   String name,
+ 					 	   uint(size=32) bit_count[1])
+  	begin
+  		vld_ue(fifo, res, bit_count);
+  		if DEBUG_PARSER then
+			println("          "+name+" u(v) : "+res[0]);
+		end
+	end
+	procedure vld_ue (uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 					  uint(size=32) res[1],
+ 					  uint(size=32) bit_count[1])
+  	var
+  		uint(size=4) cptBits := fifo[FIFO_CPT_BITS],
+  		uint(size=4) idx     := getFifoIdx(cptBits, fifo),
+  		uint(size=4) cpt     := (cptBits-1) & (FIFO_SIZE - 1),
+  		uint(size=4) cptSave := cptBits,
+  		uint codeLen
+  	begin
+		while ((fifo[idx] >> cpt) & 0x1) = 0
+		do
+	  		if cptBits = 0 then println(" Error vld_ue : out of range !!!"); end
+			cptBits := cptBits - 1;
+			idx     := getFifoIdx(cptBits, fifo);
+			cpt     := (cpt - 1) & (FIFO_SIZE - 1);
+		end
+		codeLen := cptSave - cptBits;
+		fifo[FIFO_CPT_BITS] := cptBits - 1;
+		bit_count[0]:=bit_count[0]+1+codeLen;
+		vld_u(codeLen, fifo, res, bit_count);
+		res[0]     := (1 << codeLen) + res[0] - 1;
+  	end
+	/**************************************************************************
+	 * vld_se
+ 	 *************************************************************************/
+ 	procedure vld_se_name (uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 					 	    int(size=32) res[1],
+ 					 	    String name,
+ 					  		uint(size=32) bit_count[1])
+  	begin
+  		vld_se(fifo, res, bit_count);
+  		if DEBUG_PARSER then
+			println("          "+name+" s(v) : "+res[0]);
+		end
+	end
+	procedure vld_se(uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+ 					  int(size=32) res[1],
+ 					  uint(size=32) bit_count[1])
+	begin
+		vld_ue(fifo, res, bit_count);
+		if (res[0] & 1) = 0 then
+			res[0] := -(res[0] >> 1);
+		else
+			res[0] :=  (res[0] >> 1) + 1;
+		end
+	end
+end

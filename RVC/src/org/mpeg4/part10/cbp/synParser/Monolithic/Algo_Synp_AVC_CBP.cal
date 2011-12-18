@@ -62,6 +62,7 @@ import org.mpeg4.part10.Imp_PictureInfo.*;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 import std.util.BitOps.*;
 import org.mpeg4.part10.cbp.synParser.Monolithic.ParserUtils.*;
+import org.mpeg4.part10.cbp.synParser.Monolithic.BitstreamReadUtils.*;
 
 actor Algo_Synp_AVC_CBP()
 		uint(size=8) BYTE, 
@@ -117,13 +118,46 @@ actor Algo_Synp_AVC_CBP()
 	uint(size=2) NEW_SLICE = 1;
 	uint(size=2) NEW_MB    = 2;
 
+	bool DEBUG_BITSTREAM = false;
+	/**************************************************************************
+	 * search_start_code or getByte
+	 *************************************************************************/
+	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
+	uint(size= 2) zeroByte := 0;
+	/* */
+  	action BYTE:[ b ] ==>
+	guard 
+		fifo[FIFO_CPT_BITS] <= (FIFO_SIZE-1)<<3
+	var
+		uint(size=4) fifo_idx  =  fifo[FIFO_IDX],
+		uint(size=4) fifo_idx1 = (fifo[FIFO_IDX]-1) & (FIFO_SIZE-1),
+		uint(size=4) fifo_idx2 = (fifo[FIFO_IDX]-2) & (FIFO_SIZE-1)
+	do
+		if fifo[fifo_idx2] != 0 or fifo[fifo_idx1] != 0 or b != EPR_VALUE then
+			if b = START_CODE_VALUE and zeroByte = 3 then
+				fifo[fifo_idx]      := b + START_CODE_FLAG;
+			else
+				fifo[fifo_idx]      := b;
+			end
+			fifo[FIFO_CPT_BITS] := fifo[FIFO_CPT_BITS] + 8;
+			if DEBUG_BITSTREAM then
+				println("fifo["+fifo_idx+"] := "+b+" \t "+fifo[FIFO_CPT_BITS]);
+			end
+			fifo[FIFO_IDX]      := (fifo_idx+1) & (FIFO_SIZE-1);
+		end
+		if b = 0 then
+			zeroByte := ((zeroByte << 1) + 1) & 0x3;
+		else
+			zeroByte := 0;
+		end
+	end
 	
 	
 	uint(size=2) REFLIST0_PRED    = 0;
 	// ********** Read bits ********** //  
 	int(size=9) bits_to_read_count := -1;
 	int(size=41) read_result_in_progress; 
-	uint bit_count := 0;
+	uint bit_count[1] := [0];
 	uint val_nb_rbsp_bytes := 0;
 
 	// ********** Read VLD ********** //
@@ -139,81 +173,6 @@ actor Algo_Synp_AVC_CBP()
 	uint(size=7) coeff_token:=0;
 	uint(size=4) total_zeros:=0;
 	uint(size=4) run_before :=0;
-
-	/*************************************************************
-	*************************************************************
-	********              NAL Unit HEADER                ********
-	*************************************************************
-	*************************************************************/
-	int NAL_UNIT_HEADER_LENGTH = 8; //forbidden_zero_bit | nal_ref_idc | nal_unit_type
-
-	uint(size=2) nal_ref_idc :=0;
-	uint(size=5) nal_unit_type :=0;
-
-	/*************************************************************
-	*************************************************************
-	********        Sequence Parameter Set HEADER        ********
-	*************************************************************
-	*************************************************************/
-
-	uint Sps_inc;
-	List (type: uint(size=8), size=32) level_idc := [ 0 : for int i in 0 .. 31 ];
-	uint(size=5) sps_id ;
-
-	// High Profile
-	List (type:uint(size=2), size=32 ) chroma_format_idc := [ 1 : for int i in 0 .. 31 ];
-	List (type:uint(size=1), size=32 ) separate_colour_plane_flag := [ 0 : for int i in 0 .. 31 ];
-	List (type:uint(size=3), size=32 ) bit_depth_luma_minus8 := [ 0 : for int i in 0 .. 31 ];
-	List (type:uint(size=3), size=32 ) bit_depth_chroma_minus8 := [ 0 : for int i in 0 .. 31 ];
-
-	List (type: uint(size=4), size=32) log2_max_frame_num_minus4 := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint(size=2), size=32) pic_order_cnt_type := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint(size=4), size=32) log2_max_pic_order_cnt_lsb_minus4 := [ 0 : for int i in 0 .. 31 ];
-  
-	List (type: uint(size=1), size=32) delta_pic_order_always_zero_flag := [ 0 : for int i in 0 .. 31 ];
-	List (type: int, size=32) offset_for_non_ref_pic := [ 0 : for int i in 0 .. 31 ];
-	List (type: int, size=32) offset_for_top_to_bottom_field := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint(size=8), size=32) num_ref_frames_in_pic_order_cnt_cycle := [ 0 : for int i in 0 .. 31 ];
-	List (type: List ( type: int, size=255), size=32 ) offset_for_ref_frame := [[ 0 : for int i in 0 .. 254 ]: for int j in 0 .. 31 ];
-
-	List (type: uint, size=32) num_ref_frames := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint, size=32) pic_width_in_mbs_minus1 := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint, size=32) pic_height_in_map_units_minus1 := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint(size=1), size=32) frame_mbs_only_flag := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint(size=1), size=32) mb_adaptive_frame_field_flag := [ 0 : for int i in 0 .. 31 ];
-	List (type: uint(size=1), size=32) direct_8x8_interference_flag := [ 0 : for int i in 0 .. 31 ];
-
-	List (type: uint(size=5), size=32) MaxDPBSz := [16 : for int i in 0 .. 31];
-
-	/*************************************************************
-	*************************************************************
-	********        Picture Parameter Set HEADER        *********
-	*************************************************************
-	*************************************************************/
-
-	uint(size=8) pps_id;
-	List (type:uint(size=5),size=255) sequence_parameter_set_id := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=1),size=255) entropy_coding_mode_flag := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=1),size=255) pic_order_present_flag := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=3),size=255) num_slice_groups_minus1 := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=3),size=255) slice_group_map_type := [ 0 : for int i in 0 .. 254];
-
-	uint Pps_inc;
-	List (type:uint,size=255) slice_group_change_rate_minus1 := [ 0 : for int i in 0 .. 254];
-
-	List (type:uint(size=5),size=255) num_ref_idx_l0_active_minus1 := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=5),size=255) num_ref_idx_l1_active_minus1 := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=1),size=255) weighted_pred_flag := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=2),size=255) weighted_bipred_idc := [ 0 : for int i in 0 .. 254];
-	List (type:int(size=6),size=255) pic_init_qp_minus26 := [ 0 : for int i in 0 .. 254];
-	List (type:int(size=5),size=255) chroma_qp_index_offset := [ 0 : for int i in 0 .. 254];
-	List (type:uint(size=1),size=255) deblocking_filter_control_present_flag := [ 0 : for int i in 0 .. 254];
-	List (type:bool,size=255) constrained_intra_pred_flag := [ false : for int i in 0 .. 254];
-	List (type:uint(size=1),size=255) redundant_pic_cnt_present_flag := [ 0 : for int i in 0 .. 254];
-
-	//High profile 
-	List (type:uint(size=1),size=255) transform_8x8_mode_flag := [ 0 : for int i in 0 .. 254];
-	List (type:int(size=5),size=255) second_chroma_qp_index_offset := [ 0 : for int i in 0 .. 254];
 
 	/*************************************************************
 	*************************************************************
@@ -386,17 +345,17 @@ actor Algo_Synp_AVC_CBP()
 	function IS_B_Direct_8x8() --> bool : slice_type = SLICE_TYPE_B and sub_mb_type[ mbPartIdx ] = 0 end
 
 	function vld_end() --> bool : not NewVLD end
-	function vld_ue() --> int : (1 << CodeLen)+Codeword-1 end
-	function vld_se() --> int : if (vld_ue() mod 2) = 0 then - (vld_ue() / 2) else (vld_ue() / 2) + 1 end end
-	function vld_me() --> int : 
+	function vld_ue_() --> int : (1 << CodeLen)+Codeword-1 end
+	function vld_se_() --> int : if (vld_ue_() mod 2) = 0 then - (vld_ue_() / 2) else (vld_ue_() / 2) + 1 end end
+	function vld_me_() --> int : 
 		if chroma_format_idc[sps_id] = 0 then 
-			CBP_Table[vld_ue()] [if IS_Intra_4x4() or IS_Intra_8x8()  then 0 else 1 end] 
+			CBP_Table[vld_ue_()] [if IS_Intra_4x4() or IS_Intra_8x8()  then 0 else 1 end] 
 		else 
-			CBP_Table[16 + vld_ue()] [if IS_Intra_4x4() or IS_Intra_8x8() then 0 else 1 end] 
+			CBP_Table[16 + vld_ue_()] [if IS_Intra_4x4() or IS_Intra_8x8() then 0 else 1 end] 
 		end 
 	end
 
-	procedure set_bits_to_read( int count )
+  	procedure set_bits_to_read( int count )
 	begin
 		bits_to_read_count := count - 1;
 		read_result_in_progress := 0;
@@ -406,21 +365,12 @@ actor Algo_Synp_AVC_CBP()
 	function read_result() --> int : read_result_in_progress end
 	function more_rbsp_data() --> uint(size=1)  
 	var 
-		int b7=if bit_read[7] then 1 << 7 else 0 end,
-		int b6=if bit_read[6] then 1 << 6 else 0 end,
-		int b5=if bit_read[5] then 1 << 5 else 0 end,
-		int b4=if bit_read[4] then 1 << 4 else 0 end,
-		int b3=if bit_read[3] then 1 << 3 else 0 end,
-		int b2=if bit_read[2] then 1 << 2 else 0 end,
-		int b1=if bit_read[1] then 1 << 1 else 0 end,
-		int b0=if bit_read[0] then 1 else 0 end,
-		int byte=b7+b6+b5+b4+b3+b2+b1+b0,
-		int bit_shift=bit_count & 7
+		int bit_shift=bit_count[0] & 7
 		:
-		if (bit_count + 8)/ 8  < val_nb_rbsp_bytes 
+		if (bit_count[0] + 8)/ 8  < val_nb_rbsp_bytes 
 			then 1 
 			else 
-				if(mask_bits(byte >> bit_shift, 8-bit_shift) = 1) then 0 else 1 end
+				if(byte[0] = 1<<(7-bit_shift)) then 0 else 1 end
 			end
 		end
 	
@@ -429,55 +379,47 @@ actor Algo_Synp_AVC_CBP()
 		( v & (1 << n)-1 )
 	end
 
-	List (type:bool, size=8 ) bit_read:=[false: for int i in 0 .. 7];
-	int bit_read_cnt[1]:=[8];
-
-	action BYTE:[ b ] ==>
-	guard 
-		bit_read_cnt[0]=8
-	do
-		bit_read_cnt[0]:=0;
-		bit_read:=[if (b & (1<<(7-i)))!=0 then true else false end :for int i in 0 .. 7];
-	end 
+	int byte[1];
   
 	action /*bits:[ b ]*/ ==>
 	guard 
-		not done_reading_bits(), bit_read_cnt[0]!=8
+		not done_reading_bits(), fifo[FIFO_CPT_BITS] > (FIFO_SIZE-1)<<3
+
+	var int res[1]
 	do
-		read_result_in_progress := ( (read_result_in_progress << 1) | if bit_read[bit_read_cnt[0]] = true then 1 else 0 end );
+		vld_u(  1, fifo, res, bit_count);
+		read_result_in_progress := ( (read_result_in_progress << 1) | if res[0] = 1 then 1 else 0 end );
 		bits_to_read_count := bits_to_read_count - 1;
-		bit_count := bit_count + 1;
-		bit_read_cnt[0] := bit_read_cnt[0] + 1;
 	end
 
 	action /*bits:[ b ]*/ ==>
 	guard
 		NewVLD,
 		First_part,
-		bit_read_cnt[0]!=8
+		fifo[FIFO_CPT_BITS] > (FIFO_SIZE-1)<<3
+	var int res[1]
 	do
-		if bit_read[bit_read_cnt[0]] = true then
+		vld_u(  1, fifo, res, bit_count);
+		if res[0] = 1 then
 			First_part := false;
 			CodeLen := VLD_Counter;
 			if CodeLen = 0 then NewVLD := false; end
 		else
 			VLD_Counter := VLD_Counter + 1;
 		end
-		bit_count := bit_count + 1;
-		bit_read_cnt[0] := bit_read_cnt[0] + 1;
 	end
   
 	action /*bits:[ b ]*/ ==>
 	guard
 		NewVLD,
 		not First_part,
-		bit_read_cnt[0]!=8
+		fifo[FIFO_CPT_BITS] > (FIFO_SIZE-1)<<3
+	var int res[1]
 	do
+		vld_u(  1, fifo, res, bit_count);
 		VLD_Counter := VLD_Counter - 1;
-		Codeword := ( (Codeword << 1) | if bit_read[bit_read_cnt[0]] = true then 1 else 0 end);
-		bit_count := bit_count + 1;
+		Codeword := ( (Codeword << 1) | if res[0] = 1 then 1 else 0 end);
 		if   VLD_Counter = 0 then NewVLD := false; end
-		bit_read_cnt[0] := bit_read_cnt[0] + 1;
 	end  
 
 	// ********** Read CAVLC ********** //
@@ -499,10 +441,12 @@ actor Algo_Synp_AVC_CBP()
 	action /*bits:[ b ]*/ ==>
 	guard
 	NewCoeff,
-	bit_read_cnt[0]!=8
+	fifo[FIFO_CPT_BITS] > (FIFO_SIZE-1)<<3
+	var int res[1]
 	do
+		vld_u(  1, fifo, res, bit_count);
 		VLD_Counter := VLD_Counter + 1;
-		Codeword := ( (Codeword << 1) | if bit_read[bit_read_cnt[0]] = true then 1 else 0 end);
+		Codeword := ( (Codeword << 1) | if res[0] = 1 then 1 else 0 end);
 		if CAVLC_type =0 then // coeff_token
 			foreach int i in 0 .. 61 do
 				if nc >=0 and nc < 2 then
@@ -560,8 +504,6 @@ actor Algo_Synp_AVC_CBP()
 				end
 			end
 		end
-		bit_count := bit_count + 1;
-		bit_read_cnt[0]:=bit_read_cnt[0] + 1;
 	end
   
 
@@ -579,47 +521,55 @@ actor Algo_Synp_AVC_CBP()
 	search_start_code: action ==>
 	end
 
+
+	uint(size=2) nal_ref_idc :=0;
+	uint(size=5) nal_unit_type :=0;
+	
 	read_Nal_unit_header: action nb_rbsp_bytes:[n] ==>
 	guard
     	done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
 		val_nb_rbsp_bytes := n;
-		set_bits_to_read(NAL_UNIT_HEADER_LENGTH);
-	end
-  
-  
-	look_for_which_Header: action ==>
-	guard
-		done_reading_bits()
-	do
-		nal_unit_type := mask_bits(read_result(), 5);
-		nal_ref_idc := mask_bits((read_result() >> 5), 2);
-//		println("\t\tParser nal_unit_type "+ nal_unit_type +" nal_ref_idc "+ nal_ref_idc);
-		bit_count := 0;
-	end
+		//println("=========== NAL_UNIT ===========");
+		flushBits_name( 1, fifo,   "reserved_zero_1bits                     ", bit_count);
+		vld_u_name(  2, fifo, res, "nal_ref_idc                             ", bit_count); nal_ref_idc  := res[0];
+		vld_u_name(  5, fifo, res, "nal_unit_type                           ", bit_count); nal_unit_type := res[0];
+		bit_count[0] := 0;
+	end 
  
 	look_for_other_header: action ==>
 	end
- 
+
+	uint(size=8) sps_profile_idc;
+	uint(size=8) sps_level_idc;
+
+
 	look_for.Sps_header: action ==>
 	guard
-		nal_unit_type = 7
+		nal_unit_type = NAL_UNIT_SPS
+	var
+		uint(size=32) res[1]
 	do
-		set_bits_to_read(24); //8 + 1+1+1+1 + 4 + 8
+		vld_u_name(  8, fifo, res, "profile_idc                             ", bit_count); sps_profile_idc                := res[0];
+		flushBits_name( 1, fifo,   "constraint_set0_flag                     ", bit_count);
+		flushBits_name( 1, fifo,   "constraint_set1_flag                     ", bit_count);
+		flushBits_name( 1, fifo,   "constraint_set2_flag                     ", bit_count);
+		flushBits_name( 1, fifo,   "constraint_set3_flag                     ", bit_count);
+		flushBits_name( 1, fifo,   "constraint_set4_flag                     ", bit_count);
+		flushBits_name( 3, fifo,   "reserved_zero_3bits                     ", bit_count);
+		vld_u_name(  8, fifo, res, "level_idc                               ", bit_count); sps_level_idc                  := res[0];
 	end
 
 	look_for.Pps_header: action ==>
 	guard
-		nal_unit_type = 8
-	do
-		start_vld();
+		nal_unit_type = NAL_UNIT_PPS
 	end
  
 	look_for.Slice_header: action ==>
 	guard
-		nal_unit_type = 5 or nal_unit_type = 1
-	do
-		start_vld();
+		nal_unit_type = NAL_UNIT_IDR or nal_unit_type = NAL_UNIT_NON_IDR
 	end
 
 	/*************************************************************
@@ -628,162 +578,181 @@ actor Algo_Synp_AVC_CBP()
 	*************************************************************
 	*************************************************************/
 
+	int sps_i;
+	List (type: uint(size=8), size=32) level_idc := [ 0 : for int i in 0 .. 31 ];
+	uint(size=5) sps_id ;
+
+	// High Profile
+	List (type:uint(size=2), size=32 ) chroma_format_idc := [ 1 : for int i in 0 .. 31 ];
+	List (type:uint(size=1), size=32 ) separate_colour_plane_flag := [ 0 : for int i in 0 .. 31 ];
+	List (type:uint(size=3), size=32 ) bit_depth_luma_minus8 := [ 0 : for int i in 0 .. 31 ];
+	List (type:uint(size=3), size=32 ) bit_depth_chroma_minus8 := [ 0 : for int i in 0 .. 31 ];
+
+	List (type: uint(size=4), size=32) log2_max_frame_num_minus4 := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint(size=2), size=32) pic_order_cnt_type := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint(size=4), size=32) log2_max_pic_order_cnt_lsb_minus4 := [ 0 : for int i in 0 .. 31 ];
+  
+	List (type: uint(size=1), size=32) delta_pic_order_always_zero_flag := [ 0 : for int i in 0 .. 31 ];
+	List (type: int, size=32) offset_for_non_ref_pic := [ 0 : for int i in 0 .. 31 ];
+	List (type: int, size=32) offset_for_top_to_bottom_field := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint(size=8), size=32) num_ref_frames_in_pic_order_cnt_cycle := [ 0 : for int i in 0 .. 31 ];
+	List (type: List ( type: int, size=255), size=32 ) offset_for_ref_frame := [[ 0 : for int i in 0 .. 254 ]: for int j in 0 .. 31 ];
+
+	List (type: uint, size=32) num_ref_frames := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint, size=32) pic_width_in_mbs_minus1 := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint, size=32) pic_height_in_map_units_minus1 := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint(size=1), size=32) frame_mbs_only_flag := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint(size=1), size=32) mb_adaptive_frame_field_flag := [ 0 : for int i in 0 .. 31 ];
+	List (type: uint(size=1), size=32) direct_8x8_interference_flag := [ 0 : for int i in 0 .. 31 ];
+
+	List (type: uint(size=5), size=32) MaxDPBSz := [16 : for int i in 0 .. 31];
+	uint(size=1) frame_cropping_flag;
+	uint(size=1) vui_parameters_present_flag;
 
 	read_Sps_id: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
-	end
-
-	read_Sps_id_done: action ==>
-	guard
-		vld_end()
-	do
-		sps_id := vld_ue();
-		level_idc[sps_id] := mask_bits(read_result(), 8);
+		vld_ue_name(    fifo, res, "seq_parameter_set_id                    ", bit_count); sps_id                     := res[0]; // getBits(10) max
+		level_idc[sps_id] := sps_level_idc;
 	end
   
+	read_Sps_chroma_format_idc: action ==>
+	guard
+		sps_profile_idc = 100 or sps_profile_idc = 110 or
+		sps_profile_idc = 122 or sps_profile_idc = 244 or sps_profile_idc = 44 or
+		sps_profile_idc = 83 or sps_profile_idc = 86 or sps_profile_idc = 118
+	end
+	
 	read_Sps_log2_max_frame_num_minus4: action ==>
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		vld_ue_name(    fifo, res, "log2_max_frame_num_minus4               ", bit_count);
+		log2_max_frame_num_minus4[sps_id] := res[0];
 	end
  
 	read_Sps_pic_order_cnt_type: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		log2_max_frame_num_minus4[sps_id] := vld_ue();
-		start_vld();
+		vld_ue_name(    fifo, res, "pic_order_cnt_type                      ", bit_count);
+		pic_order_cnt_type[sps_id] := res[0];
 	end
 
 	// if pic_order_cnt_type == 0
 	read_Sps_log2_max_pic_order_cnt_lsb_minus4: action ==>
 	guard
-		vld_end(),
-		vld_ue() = 0
+		pic_order_cnt_type[sps_id] = 0
+	var
+		uint(size=32) res[1]
 	do
-		pic_order_cnt_type[sps_id] := 0;
-		start_vld();
+		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       ", bit_count);
+		log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
 	end
  
-	read_Sps_log2_max_pic_order_cnt_lsb_minus4_done: action ==>
-	guard
-		vld_end()
-	do
-		log2_max_pic_order_cnt_lsb_minus4[sps_id] := vld_ue();
-	end
-
 	// else if pic_order_cnt_type == 1
 	read_Sps_delta_pic_order_always_zero_flag: action ==>
 	guard
-		vld_end() and
-		vld_ue() = 1
+		pic_order_cnt_type[sps_id] = 1
+	var
+		uint(size=32) res[1]
 	do
-		pic_order_cnt_type[sps_id] := 1;
-		set_bits_to_read(1);
+		vld_u_name( 1, fifo, res,  "delta_pic_order_always_zero_flag        ", bit_count);
+		delta_pic_order_always_zero_flag[sps_id] := res[0];
 	end
 
 	read_Sps_offset_for_non_ref_pic: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		delta_pic_order_always_zero_flag[sps_id] := read_result();
-		start_vld();
+		vld_se_name(    fifo, res, "offset_for_non_ref_pic                  ", bit_count);
+		offset_for_non_ref_pic[sps_id] := res[0];
 	end
 
 	read_Sps_offset_for_top_to_bottom_field: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		offset_for_non_ref_pic[sps_id] := vld_se();
-		start_vld();
+		vld_se_name(    fifo, res, "offset_for_top_to_bottom_field          ", bit_count);
+		offset_for_top_to_bottom_field[sps_id] := res[0];
 	end
 
 	read_Sps_num_ref_frames_in_pic_order_cnt_cycle: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		offset_for_top_to_bottom_field[sps_id] := vld_se();
-		start_vld();
+		vld_ue_name(    fifo, res, "num_ref_frames_in_pic_order_cnt_cycle   ", bit_count);
+		num_ref_frames_in_pic_order_cnt_cycle[sps_id] := res[0];
 	end
 
-	// for (Sps_inc=0 ; Sps_inc<num_ref_frames_in_pic_order_cnt_cycle ; Sps_inc++) 
-	read_Sps_offset_for_ref_frame0: action ==>
-	guard
-		vld_end()
+	// for (i=0 ; i<num_ref_frames_in_pic_order_cnt_cycle ; i++) 
+	read_Sps_offset_for_ref_frame.loop: action ==>
+	guard sps_i<num_ref_frames_in_pic_order_cnt_cycle[sps_id]
+	var
+		uint(size=32) res[1]
 	do
-		num_ref_frames_in_pic_order_cnt_cycle[sps_id] := vld_ue();
-		if num_ref_frames_in_pic_order_cnt_cycle[sps_id] >0 then start_vld(); Sps_inc:=0; end
+		vld_se_name(    fifo, res, "offset_for_ref_frame                    ", bit_count);
+		offset_for_ref_frame[sps_id][sps_i] := res[0];
+		sps_i := sps_i + 1;
 	end
 
-	read_Sps_offset_for_ref_frame1: action ==>
-	guard
-		vld_end(),
-		Sps_inc < num_ref_frames_in_pic_order_cnt_cycle[sps_id]
+	read_Sps_offset_for_ref_frame.done: action ==>
+	guard sps_i=num_ref_frames_in_pic_order_cnt_cycle[sps_id]
 	do
-		offset_for_ref_frame[sps_id][Sps_inc] := vld_se();
-		Sps_inc := Sps_inc + 1;
-		if Sps_inc < num_ref_frames_in_pic_order_cnt_cycle[sps_id] then start_vld();  end
-	end
-
-	read_Sps_skip_offset_for_ref_frame1: action ==>
-	guard
-		Sps_inc = num_ref_frames_in_pic_order_cnt_cycle[sps_id]
+		sps_i:=0;
 	end
 	// end for
 
 	// else (pic_order_cnt_type != 0 and !=1)
 	read_Sps_pic_order_cnt_type_skip01: action ==>
 	guard
-		vld_end() and   vld_ue() = 2
-	do
-		pic_order_cnt_type[sps_id] := 2;
+		pic_order_cnt_type[sps_id] !=0,
+		pic_order_cnt_type[sps_id] !=1
 	end
 	// end if
 
 	read_Sps_num_ref_frames: action ==>
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		vld_ue_name(  fifo, res,   "num_ref_frames                          ", bit_count);
+		num_ref_frames[sps_id] := res[0];
 	end
 
 	read_Sps_gaps_in_frame_num_value_allowed_flag: action ==>
-	guard
-		vld_end()
 	do
-		num_ref_frames[sps_id] := vld_ue();
-		set_bits_to_read(1);
+		flushBits_name(1,  fifo,   "gaps_in_frame_num_value_allowed_flag    ", bit_count);
 	end
 
 	read_Sps_pic_width_in_mbs_minus1: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		//gaps_in_frame_num_value_allowed_flag[sps_id] := mask_bits(read_result(), 1);
-		start_vld();
+		vld_ue_name(    fifo, res, "pic_width_in_mbs_minus1                 ", bit_count);
+		pic_width_in_mbs_minus1[sps_id] := res[0];
 	end
 
 	read_Sps_pic_height_in_map_units_minus1: action ==> 
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		pic_width_in_mbs_minus1[sps_id] := vld_ue();
-		start_vld();
+		vld_ue_name(    fifo, res, "pic_height_in_map_units_minus1          ", bit_count);
+		pic_height_in_map_units_minus1[sps_id] := res[0];
 	end
 
 	read_Sps_frame_mbs_only_flag: action ==> 
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		pic_height_in_map_units_minus1[sps_id] := vld_ue();
-		set_bits_to_read(1);
+		vld_u_name(1, fifo, res,   "frame_mbs_only_flag                     ", bit_count);
+		frame_mbs_only_flag[sps_id] := res[0];
 	end
 
 	// if (!frame_mbs_only_flag)
 	read_Sps_mb_adaptive_frame_field_flag: action ==>
 	guard
-		done_reading_bits(),
-		read_result() = 0
+		frame_mbs_only_flag[sps_id] = 0
 	var
 		uint(size=32) PicWidthInMacroBs,
 		uint(size=32) FrameHeightInMacroBs,
@@ -792,7 +761,8 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) MaxFS,
 		uint(size=32) Sqrt_8MaxFS,
 		uint(size=32) FrameHeight_x_PicWidth,
-		uint(size=32) MaxDPBSize
+		uint(size=32) MaxDPBSize,
+		uint(size=32) res[1]
 	do
 		frame_mbs_only_flag[sps_id] := 0;
 		Val_Level_IDC := level_idc[sps_id];
@@ -878,21 +848,17 @@ actor Algo_Synp_AVC_CBP()
 		else
 			MaxDPBSz[sps_id] := MaxDPBSize;
 		end
-		set_bits_to_read(1);
+		vld_u_name(1, fifo, res,   "mb_adaptive_frame_field_flag                             ", bit_count);
+		mb_adaptive_frame_field_flag[sps_id] := res[0];
 	end
 
 	read_Sps_mb_adaptive_frame_field_flag_done: action ==>
-	guard
-		done_reading_bits()
-	do
-		mb_adaptive_frame_field_flag[sps_id] := mask_bits(read_result(), 1);
 	end
  
 	//else (frame_mbs_only_flag)
 	read_Sps_skip_mb_adaptive_frame_field_flag: action ==>
 	guard
-		done_reading_bits(),
-		read_result() = 1
+		frame_mbs_only_flag[sps_id] != 0
 	var
 		uint(size=32) PicWidthInMacroBs,
 		uint(size=32) FrameHeightInMacroBs,
@@ -903,7 +869,6 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) FrameHeight_x_PicWidth,
 		uint(size=32) MaxDPBSize
 	do
-		frame_mbs_only_flag[sps_id] := 1;
 		Val_Level_IDC := level_idc[sps_id];
 		if(Val_Level_IDC < 31) then                          // 1 <= Level Number <= 3
 			if(Val_Level_IDC < 12) then                           // 1 <= Level Number <= 1.1
@@ -991,75 +956,51 @@ actor Algo_Synp_AVC_CBP()
 	//end if
 
 	read_Sps_direct_8x8_interference_flag: action ==>
+	var
+		uint(size=32) res[1]
 	do
-		set_bits_to_read(1);
+		vld_u_name(1, fifo, res,   "direct_8x8_interference_flag                             ", bit_count);
+		direct_8x8_interference_flag[sps_id] := res[0];
 	end
 
 	read_Sps_frame_cropping_flag: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		direct_8x8_interference_flag[sps_id] := mask_bits(read_result(), 1);
-		set_bits_to_read(1);
+		vld_u_name(1, fifo, res,   "frame_cropping_flag                             ", bit_count);
+		frame_cropping_flag := res[0];
 	end
 
 	// if (frame_cropping_flag)
 	read_Sps_frame_crop_left_offset: action ==>
 	guard
-		done_reading_bits(),
-		read_result() = 1
-	do
-		start_vld();
+		frame_cropping_flag = 1
 	end
 
-	read_Sps_frame_crop_right_offset: action ==>
-	guard
-		vld_end()
-	do
-		start_vld();
-	end
-
-	read_Sps_frame_crop_top_offset: action ==>
-	guard
-		vld_end()
-	do
-		start_vld();
-	end
-
-	read_Sps_frame_crop_bottom_offset: action ==>
-	guard
-		vld_end()
-	do
-		start_vld();
-	end
-
-	read_Sps_frame_crop_bottom_offset_done: action ==>
-	guard
-		vld_end()
-	end
 
 	// else (!frame_cropping_flag)
 	read_Sps_skip_frame_crop_left_offset: action ==>
 	guard
-		done_reading_bits(),
-		read_result() = 0
+		frame_cropping_flag = 0
 	end
 	//end if 
 
 	read_Sps_vui_parameters_present_flag: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		set_bits_to_read(1);
+		vld_u_name(1, fifo, res,   "vui_parameters_present_flag                             ", bit_count);
+		vui_parameters_present_flag := res[0];
 	end
 
-	read_Sps_vui_parameters_present_flag_done: action ==>
+	read_Sps_vui_parameters: action ==>
 	guard
-		done_reading_bits()
-	do
-		set_bits_to_read(1); //to continue reading the bitstream
-		//println("read Sps header done");
-		//println("");
+		vui_parameters_present_flag=1
+	end
+		
+	read_Sps_done: action ==>
+	guard
+			vui_parameters_present_flag=0
 	end
 	/******* End of Sequence Parameter Set HEADER  ********/
  
@@ -1070,199 +1011,149 @@ actor Algo_Synp_AVC_CBP()
 	********        Picture Parameter Set HEADER        *********
 	*************************************************************
 	*************************************************************/
+	uint(size=8) pps_id;
+	List (type:uint(size=5),size=255) sequence_parameter_set_id := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=1),size=255) entropy_coding_mode_flag := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=1),size=255) bottom_field_pic_order_in_frame_present_flag := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=3),size=255) num_slice_groups_minus1 := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=3),size=255) slice_group_map_type := [ 0 : for int i in 0 .. 254];
+
+	List (type:uint,size=255) slice_group_change_rate_minus1 := [ 0 : for int i in 0 .. 254];
+
+	List (type:uint(size=5),size=255) num_ref_idx_l0_active_minus1 := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=5),size=255) num_ref_idx_l1_active_minus1 := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=1),size=255) weighted_pred_flag := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=2),size=255) weighted_bipred_idc := [ 0 : for int i in 0 .. 254];
+	List (type:int(size=6),size=255) pic_init_qp_minus26 := [ 0 : for int i in 0 .. 254];
+	List (type:int(size=6),size=255) pic_init_qs_minus26 := [ 0 : for int i in 0 .. 254];
+	List (type:int(size=5),size=255) chroma_qp_index_offset := [ 0 : for int i in 0 .. 254];
+	List (type:uint(size=1),size=255) deblocking_filter_control_present_flag := [ 0 : for int i in 0 .. 254];
+	List (type:bool,size=255) constrained_intra_pred_flag := [ false : for int i in 0 .. 254];
+	List (type:uint(size=1),size=255) redundant_pic_cnt_present_flag := [ 0 : for int i in 0 .. 254];
+
+	//High profile 
+	List (type:uint(size=1),size=255) transform_8x8_mode_flag := [ 0 : for int i in 0 .. 254];
+	List (type:int(size=5),size=255) second_chroma_qp_index_offset := [ 0 : for int i in 0 .. 254];
 
 
 	//*************************************
 	read_Pps_seq_parameter_set_id: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		pps_id := vld_ue();
-		start_vld();
+		vld_ue_name(  fifo, res,   "pps_id                             ", bit_count);
+		pps_id := res[0];
 	end
 
 	read_Pps_entropy_coding_mode_pic_order_flag: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		sequence_parameter_set_id[pps_id] := vld_ue();
-		set_bits_to_read(2);
+		vld_ue_name(  fifo, res,   "sequence_parameter_set_id                             ", bit_count);
+		sequence_parameter_set_id[pps_id] := res[0];
 	end
 
 	read_Pps_num_slice_groups_minus1: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		pic_order_present_flag[pps_id] := mask_bits(read_result(), 1);
-		entropy_coding_mode_flag[pps_id] := mask_bits((read_result() >> 1), 1);
-		start_vld();
+		vld_u_name(1,  fifo, res,  "entropy_coding_mode_flag                             ", bit_count);
+		entropy_coding_mode_flag[pps_id] := res[0];
+		vld_u_name(1,  fifo, res,  "bottom_field_pic_order_in_frame_present_flag                             ", bit_count);
+		bottom_field_pic_order_in_frame_present_flag[pps_id] := res[0];
+		vld_ue_name(  fifo, res,   "num_slice_groups_minus1                             ", bit_count);
+		num_slice_groups_minus1[pps_id] := res[0];
 	end
 
 	// if (num_slice_groups_minus1 <=0)
 	read_Pps_slice_group_map_type_skip: action ==>
 	guard
-		vld_end(),
-		vld_ue() <= 0
-	do
-		num_slice_groups_minus1[pps_id] := vld_ue();
+		num_slice_groups_minus1[pps_id] = 0
 	end
 
 	// if (num_slice_groups_minus1 >0)
 	read_Pps_slice_group_map_type: action ==>
 	guard
-		vld_end(),
-		vld_ue() > 0
+		num_slice_groups_minus1[pps_id] > 0
 	do
-		num_slice_groups_minus1[pps_id] := vld_ue();
-		start_vld();
 		println("num_slice_groups_minus1 > 0 not yet implemented");
-	end
-
-	read_Pps_check_slice_group_map_type: action ==>
-	guard
-		vld_end()
-	do
-		slice_group_map_type[pps_id] := vld_ue();
-		println("read_Pps_check_slice_group_map_type : "+slice_group_map_type[pps_id]);
-		if slice_group_map_type[pps_id] = 0 or slice_group_map_type[pps_id] = 2 or slice_group_map_type[pps_id] = 6 then start_vld(); end
-		if slice_group_map_type[pps_id] = 3 or slice_group_map_type[pps_id] = 4 or slice_group_map_type[pps_id] =5 then set_bits_to_read(1); end
-		Pps_inc :=0;
-	end
-
-	// if (slice_group_map_type == 0)
-	//   for (Pps_inc =0 ; Pps_inc < num_slice_groups_minus1 ; Pps_inc++)
-	read_Pps_run_length_minus1: action ==>
-	guard
-		vld_end(),
-		slice_group_map_type[pps_id] = 0,
-		Pps_inc < num_slice_groups_minus1[pps_id]
-	do
-		Pps_inc := Pps_inc +1;
-		if Pps_inc < num_slice_groups_minus1[pps_id] then start_vld();end
-	end
-	// end for
-
-	// else if (slice_group_map_type == 1)
-	read_Pps_check_slice_group_map_type1: action ==>
-	guard
-		slice_group_map_type[pps_id] = 1
-	end
-
-	// else if (slice_group_map_type == 2)
-	//   for (Pps_inc =0 ; Pps_inc < num_slice_groups_minus1 ; Pps_inc++)
-	read_Pps_top_left: action ==>
-	guard
-		vld_end(),
-		slice_group_map_type[pps_id] = 2,
-		Pps_inc < num_slice_groups_minus1[pps_id]
-	do
-		start_vld();
-	end
-
-	read_Pps_bottom_right: action ==>
-	guard
-		vld_end()
-	do
-		Pps_inc := Pps_inc +1;
-		if Pps_inc < num_slice_groups_minus1[pps_id] then start_vld();end
-	end
-	//end for
-
-	// else if (slice_group_map_type == 3 | 4 | 5)
-	read_Pps_slice_group_change_direction_flag: action ==>
-	guard
-		done_reading_bits(),
-		slice_group_map_type[pps_id] = 3 or slice_group_map_type[pps_id] = 4 or slice_group_map_type[pps_id] = 5
-	do
-		start_vld();
-	end
-
-	read_Pps_slice_group_change_rate_minus1: action ==>
-	guard
-		vld_end()
-	do
-		slice_group_change_rate_minus1[pps_id] := vld_ue();
-	end
-
-	// else if (slice_group_map_type == 6)
-	read_Pps_pic_size_in_map_units_minus1: action ==>
-	guard
-		vld_end(),
-		slice_group_map_type[pps_id] = 6
-	do
-		println(" PB : slice_group_map_type = 6 -> search code_start"); 
 	end
 	// end if
 
 	read_Pps_num_ref_idx_l0_active_minus1: action ==>
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		vld_ue_name(  fifo, res,   "num_ref_idx_l0_active_minus1                             ", bit_count);
+		num_ref_idx_l0_active_minus1[pps_id] := res[0];
 	end
 
 	read_Pps_num_ref_idx_l1_active_minus1: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		num_ref_idx_l0_active_minus1[pps_id] := vld_ue();
-		start_vld();
+		vld_ue_name(  fifo, res,   "num_ref_idx_l1_active_minus1                             ", bit_count);
+		num_ref_idx_l1_active_minus1[pps_id] := res[0];
 	end
 
 	read_Pps_weighted_pred_bipred: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		num_ref_idx_l1_active_minus1[pps_id] := vld_ue();
-		set_bits_to_read(3);
+		vld_u_name(1,  fifo, res,  "weighted_pred_flag                             ", bit_count);
+		weighted_pred_flag[pps_id] := res[0];
+		vld_u_name(2,  fifo, res,  "weighted_bipred_idc                             ", bit_count);
+		weighted_bipred_idc[pps_id] := res[0];
 	end
 
 	read_Pps_pic_init_qp_minus26: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		weighted_pred_flag[pps_id] := mask_bits((read_result() >> 2), 1);
-		weighted_bipred_idc[pps_id] := mask_bits(read_result(), 2);
-		start_vld();
+		vld_se_name(  fifo, res,   "pic_init_qp_minus26                             ", bit_count);
+		pic_init_qp_minus26[pps_id] := res[0];
 	end
 
 	read_Pps_pic_init_qs_minus26: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		pic_init_qp_minus26[pps_id] := vld_se();
-		start_vld();
+		vld_se_name(  fifo, res,   "pic_init_qs_minus26                             ", bit_count);
+		pic_init_qs_minus26[pps_id] := res[0];
 	end
 
 	read_Pps_chroma_qp_index_offset: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		vld_se_name(  fifo, res,   "chroma_qp_index_offset                             ", bit_count);
+		chroma_qp_index_offset[pps_id] := res[0];
+		second_chroma_qp_index_offset[pps_id]:=res[0];
 	end
 
 	read_Pps_flag_deblocking_constrained_redundant: action ==>
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		chroma_qp_index_offset[pps_id] := vld_se();
-		second_chroma_qp_index_offset[pps_id] := vld_se();
-		set_bits_to_read(3);
+		vld_u_name(1,  fifo, res,  "deblocking_filter_control_present_flag                             ", bit_count);
+		deblocking_filter_control_present_flag[pps_id] := res[0];
+		vld_u_name(1,  fifo, res,  "constrained_intra_pred_flag                             ", bit_count);
+		constrained_intra_pred_flag[pps_id] := if (res[0] = 1) then true else false end ;
+		vld_u_name(1,  fifo, res,  "redundant_pic_cnt_present_flag                             ", bit_count);
+		redundant_pic_cnt_present_flag[pps_id] := res[0];
 	end
 
 	read_Pps_check_High_Profile: action ==>
-	guard
-		done_reading_bits()
 	do
-		deblocking_filter_control_present_flag[pps_id] := mask_bits((read_result() >> 2), 1);
-		constrained_intra_pred_flag[pps_id] := (mask_bits((read_result() >> 1), 1) = 1);
-		redundant_pic_cnt_present_flag[pps_id] := mask_bits(read_result(), 1);
-		set_bits_to_read(8 -  bit_count mod 8); //byte_alignment
+		if((bit_count[0] & 7) != 0) then
+			set_bits_to_read( 8 - (bit_count[0] & 7) );
+		end
 	end 
 
 	//if (!more_rbsp_data)
 	read_Pps_not_High_Profile: action ==>
 	guard
-		done_reading_bits()
-	do
+	done_reading_bits()
 		//println("read Pps header done");
 	end
 
@@ -1287,219 +1178,101 @@ actor Algo_Synp_AVC_CBP()
 
 
 	read_SliceH_slice_type: action ==> 
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1],
+		uint(size=2) colour_plane_id
 	do
-		first_mb_in_slice := vld_ue();
-		start_vld();
-	end
-
-	read_SliceH_pps_id: action ==> PicSize:[0, (pic_width_in_mbs_minus1[sps_id] + 1) * 16 - 1, 0, (pic_height_in_map_units_minus1[sps_id] + 1) * 16 - 1], WIDTH:[pic_width_in_mbs_minus1[sps_id] + 1], HEIGHT:[pic_height_in_map_units_minus1[sps_id] + 1]
-	guard
-		vld_end(), first_mb_in_slice = 0
-	do
-		slice_type := vld_ue();
+		vld_ue_name(  fifo, res,   "first_mb_in_slice                             ", bit_count);
+		first_mb_in_slice := res[0];
+		vld_ue_name(  fifo, res,   "slice_type                             ", bit_count);
+		slice_type := res[0];
 		slice_type := slice_type mod 5;
-		start_vld();
-	end
-
-	skip_read_SliceH_pps_id: action ==> 
-	guard
-		vld_end(), first_mb_in_slice != 0
-	do
-		slice_type := vld_ue();
-		slice_type := slice_type mod 5;
-		start_vld();
-	end
-
-	read_SliceH_check_separate_colour_plane_flag: action ==> 
-	guard
-		vld_end()
-	do
-		pps_id := vld_ue();
+		vld_ue_name(  fifo, res,   "pps_id                             ", bit_count);
+		pps_id := res[0];
 		sps_id := sequence_parameter_set_id[pps_id];
+		if (separate_colour_plane_flag[sps_id] = 1) then
+			vld_u_name(2,  fifo, res,   "colour_plane_id                             ", bit_count);
+			colour_plane_id := res[0];
+		end
 	end
 
-	read_SliceH_separate_colour_plane_flag_done: action ==> 
+	read_SliceH_picSize: action ==> PicSize:[0, (pic_width_in_mbs_minus1[sps_id] + 1) * 16 - 1, 0, (pic_height_in_map_units_minus1[sps_id] + 1) * 16 - 1], WIDTH:[pic_width_in_mbs_minus1[sps_id] + 1], HEIGHT:[pic_height_in_map_units_minus1[sps_id] + 1]
 	guard
-		separate_colour_plane_flag[sps_id] = 1
-	do
-		set_bits_to_read(2);
+		first_mb_in_slice = 0
 	end
 
-	// if(separate_colour_plane_flag ==1)
-	read_SliceH_read_colour_plane_id: action ==>
+	read_SliceH_skip_picSize: action ==> 
 	guard
-		done_reading_bits()
-	do
-		set_bits_to_read(4+log2_max_frame_num_minus4[sps_id]);
+		first_mb_in_slice != 0
 	end
-	//end if 
-
-	read_SliceH_skip_separate_colour_plane_flag: action ==> 
-	guard
-		separate_colour_plane_flag[sps_id] != 1
-	do
-		set_bits_to_read(4+log2_max_frame_num_minus4[sps_id]);
-	end
-
 
 	read_SliceH_frame_num: action ==> NumRefFrame:[num_ref_frames[sps_id] ],FramNumCurrPic:[frame_num], MaxFrameNum:[ValMaxFrameNum]
-	guard
-		done_reading_bits()
 	var
+		uint(size=32) res[1],
 		int(size=32) ValMaxFrameNum
 	do
-		frame_num      := read_result();
+		vld_u_name(4+log2_max_frame_num_minus4[sps_id],  fifo, res, "frame_num                             ", bit_count);
+		frame_num := res[0];
 		ValMaxFrameNum := 1 << (log2_max_frame_num_minus4[sps_id] + 4);
 	end
 
 	//if (!frame_mbs_only_flag)
 	read_SliceH_field_pic_flag: action ==>
-	guard
-		frame_mbs_only_flag[sps_id] = 0
+	var
+		uint(size=32) res[1],
+		uint(size=1) bottom_field_flag
 	do
-		set_bits_to_read(1);
+		if(frame_mbs_only_flag[sps_id] = 0) then
+			vld_u_name(1,  fifo, res,   "field_pic_flag                             ", bit_count);
+			field_pic_flag := res[0];
+			if (field_pic_flag=1) then
+				vld_u_name(1,  fifo, res,  "bottom_field_flag                             ", bit_count);
+				bottom_field_flag := res[0];
+			end
+		end
 	end
-
-	//if (field_pic_flag)
-	read_SliceH_bottom_field_flag: action ==>
-	guard
-		done_reading_bits(),
-		read_result() = 1
-	do
-		field_pic_flag := 1;
-		set_bits_to_read(1);
-	end
-
-
-	read_SliceH_bottom_field_flag_done: action ==>
-	guard
-		done_reading_bits()
-	end
-
-	//else (!field_flag)
-	read_SliceH_skip_bottom_field_flag: action ==>
-	guard
-		done_reading_bits(),
-		read_result() = 0
-	do
-		field_pic_flag := 0;
-	end
-	//end if
-
-	// else (frame_mbs_only_flag)
-	read_SliceH_skip_field_pic_flag: action ==>
-	guard
-		frame_mbs_only_flag[sps_id] = 1
-	end
-	//end if
 
 	//if (nal_unit_type == 5)
 	read_SliceH_idr_pic_id: action ==>
-	guard
-		nal_unit_type = 5
+	var
+		uint(size=32) res[1],
+		uint(size=32) idr_pic_id
 	do
-		start_vld();
+		if(nal_unit_type = 5) then
+			vld_ue_name(  fifo, res, "idr_pic_id                             ", bit_count);
+			idr_pic_id := res[0];
+		end
 	end
-
-	read_SliceH_idr_pic_id_done: action ==>
-	guard
-		vld_end()
-	end
-
-	//else (nal_unit_type != 5)
-	read_SliceH_skip_idr_pic_id: action ==>
-	guard
-		nal_unit_type != 5
-	end
-	//end if
 
 	read_SliceH_pic_order_cnt_lsb: action ==>
-	guard 
-		pic_order_cnt_type[sps_id] = 0
+	var
+		uint(size=32) res[1],
+		uint(size=32) delta_pic_order_cnt_bottom
 	do
-		set_bits_to_read(log2_max_pic_order_cnt_lsb_minus4[sps_id] +4);
+		if (pic_order_cnt_type[sps_id] = 0) then
+			vld_u_name(log2_max_pic_order_cnt_lsb_minus4[sps_id] +4,  fifo, res, "pic_order_cnt_lsb                             ", bit_count);
+			pic_order_cnt_lsb := res[0];
+			if (bottom_field_pic_order_in_frame_present_flag[pps_id] = 1 and field_pic_flag = 0) then
+				vld_ue_name(  fifo, res, "delta_pic_order_cnt_bottom                             ", bit_count);
+				delta_pic_order_cnt_bottom := res[0];
+			end
+		end
 	end
-
-	read_SliceH_skip_pic_order_cnt_lsb: action ==>
-	guard 
-		pic_order_cnt_type[sps_id] != 0
-	end
-
-	//if (pic_order_cnt_type == 0)
-	read_SliceH_pic_order_cnt_lsb_done: action ==>
-	guard
-		done_reading_bits(),
-		pic_order_cnt_type[sps_id] = 0
-	do
-		pic_order_cnt_lsb := read_result();
-	end
-
-	read_SliceH_delta_pic_order_cnt_bottom:action ==>
-	guard 
-		pic_order_present_flag[pps_id] = 1 and field_pic_flag = 0
-	do
-		start_vld();
-	end
-
-	//if (pic_order_present_flag && !field_pic_flag )
-	read_SliceH_delta_pic_order_cnt_bottom_done: action ==>
-	guard
-		vld_end(),
-		pic_order_present_flag[pps_id] = 1 and field_pic_flag = 0
-	end
-
-	//else (!pic_order_present_flag || field_pic_flag )
-	read_SliceH_skip_delta_pic_order_cnt_bottom: action ==>
-	guard
-		pic_order_present_flag[pps_id] != 1 or field_pic_flag != 0
-	end
-	//end if
 
 	read_SliceH_delta_pic_order_cnt0: action ==>
-	guard
-		pic_order_cnt_type[sps_id] = 1 and delta_pic_order_always_zero_flag[sps_id] = 0
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		if (pic_order_cnt_type[sps_id] = 1 and delta_pic_order_always_zero_flag[sps_id] = 0) then
+			vld_se_name(  fifo, res, "idr_pic_id[0]                             ", bit_count);
+			delta_pic_order_cnt[0] := res[0];
+			if( bottom_field_pic_order_in_frame_present_flag[sps_id] = 1 and field_pic_flag = 0 ) then
+				vld_se_name(  fifo, res, "delta_pic_order_cnt[1]                             ", bit_count);
+				delta_pic_order_cnt[1] := res[0];
+			end
+		end
 	end
 
-	read_SliceH_skip_delta_pic_order_cnt0 : action ==>
-	guard
-		pic_order_cnt_type[sps_id] != 1 or delta_pic_order_always_zero_flag[sps_id] != 0
-	end
-
-	//else if (pic_order_cnt_type ==1 && !delta_pic_order_always_zero_flag)
-	read_SliceH_delta_pic_order_cnt0_done: action ==>
-	guard
-		vld_end(),
-		pic_order_cnt_type[sps_id] = 1 and delta_pic_order_always_zero_flag[sps_id] = 0
-	do
-		delta_pic_order_cnt[0] := vld_se();
-	end
-
-	read_SliceH_delta_pic_order_cnt1: action ==>
-	guard 
-		pic_order_present_flag[pps_id] = 1 and field_pic_flag = 0
-	do
-		start_vld(); 
-	end
-
-	//if (pic_order_present_flag && !field_pic_flag )
-	read_SliceH_delta_pic_order_cnt1_done: action ==>
-	guard
-		vld_end(),
-		pic_order_present_flag[pps_id] = 1 and field_pic_flag = 0
-	do
-		delta_pic_order_cnt[1] := vld_se();
-	end
-
-	//else (!pic_order_present_flag || field_pic_flag )
-	read_SliceH_skip_delta_pic_order_cnt1: action ==>
-	guard
-		pic_order_present_flag[pps_id] != 1 or field_pic_flag != 0
-	end
-	//end if
 	
 	int POC_val:=0;
 
@@ -1577,161 +1350,91 @@ actor Algo_Synp_AVC_CBP()
 
 	//if (redundant_pic_cnt_present_flag)
 	read_SliceH_redundant_pic_cnt: action ==>
-	guard
-		redundant_pic_cnt_present_flag[pps_id] = 1
+	var
+		uint(size=32) res[1],
+		uint(size=32) redundant_pic_cnt,
+		uint(size=1) direct_spatial_mv_pred_flag,
+		uint(size=1) num_ref_idx_active_override_flag
 	do
-		start_vld();
+		if(redundant_pic_cnt_present_flag[pps_id] = 1) then
+			vld_ue_name(  fifo, res, "redundant_pic_cnt                             ", bit_count);
+			redundant_pic_cnt := res[0];
+		end
+		if( slice_type = SLICE_TYPE_B ) then
+			vld_u_name(1,  fifo, res, "direct_spatial_mv_pred_flag                             ", bit_count);
+			direct_spatial_mv_pred_flag := res[0];
+		end
+		if( slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_B ) then
+			vld_u_name(1,  fifo, res, "num_ref_idx_active_override_flag                             ", bit_count);
+			num_ref_idx_active_override_flag := res[0];
+			if( num_ref_idx_active_override_flag=1) then
+				vld_ue_name(  fifo, res, "num_ref_idx_l0_active_minus1                             ", bit_count);
+				slice_num_ref_idx_l0_active_minus1 := res[0];
+				if( slice_type = SLICE_TYPE_B ) then
+					vld_ue_name(  fifo, res, "num_ref_idx_l1_active_minus1                             ", bit_count);
+					slice_num_ref_idx_l1_active_minus1 := res[0];
+				end
+			else
+				slice_num_ref_idx_l0_active_minus1 := num_ref_idx_l0_active_minus1[pps_id];
+				slice_num_ref_idx_l1_active_minus1 := num_ref_idx_l1_active_minus1[pps_id];
+			end
+		end
 	end
-
-	read_SliceH_redundant_pic_cnt_done: action ==>
-	guard
-		vld_end()
-	end
-
-	//else
-	read_SliceH_skip_redundant_pic_cnt: action ==>
-	guard
-		redundant_pic_cnt_present_flag[pps_id] = 0
-	end
-	//end if
-
-	//if (slice_type == B)
-	read_SliceH_direct_spatial_mv_pred_flag: action ==>
-	guard
-		slice_type = SLICE_TYPE_B
-	do
-		set_bits_to_read(1);
-	end
-
-	read_SliceH_direct_spatial_mv_pred_flag_done: action ==>
-	guard
-		done_reading_bits()
-	end
-
-	//else
-	read_SliceH_skip_direct_spatial_mv_pred_flag: action ==>
-	guard
-		slice_type != SLICE_TYPE_B
-	end
-	//end if
-
-	//if (slice_type == P || slice_type == SP || slice_type == B)
-	read_SliceH_num_ref_idx_active_override_flag: action ==>
-	guard
-		slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_B
-	do
-		set_bits_to_read(1);
-	end
-
-	//if (num_ref_idx_active_override_flag)
-	read_SliceH_num_ref_idx_l0_active_minus1: action ==>
-	guard
-		done_reading_bits(),
-		read_result() = 1
-	do
-		start_vld();
-	end
-
-	//if (slice_type == B)
-	read_SliceH_num_ref_idx_l1_active_minus1: action ==>
-	guard
-		vld_end(),
-		slice_type = SLICE_TYPE_B
-	do
-		slice_num_ref_idx_l0_active_minus1 := vld_ue();
-		start_vld();
-	end
-
-	read_SliceH_num_ref_idx_l1_active_minus1_done: action ==>
-	guard
-		vld_end()
-	do
-		slice_num_ref_idx_l1_active_minus1 := vld_ue();
-	end
- 
-	//else (slice_type != B)
-	read_SliceH_skip_num_ref_idx_l1_active_minus1: action ==>
-	guard
-		vld_end(),
-		slice_type != SLICE_TYPE_B
-	do
-		slice_num_ref_idx_l0_active_minus1 := vld_ue();
-	end
-	//end if
-
-	//else (!num_ref_idx_active_override_flag)
-	read_SliceH_skip_num_ref_idx_l0_active_minus1: action ==>
-	guard
-		done_reading_bits(),
-		read_result() = 0
-	do
-		slice_num_ref_idx_l0_active_minus1 := num_ref_idx_l0_active_minus1[pps_id];
-		slice_num_ref_idx_l1_active_minus1 := num_ref_idx_l1_active_minus1[pps_id];
-	end
-	//end if
-
-	//else (slice_type != P & slice_type != SP && slice_type != B)
-	read_SliceH_skip_num_ref_idx_active_override_flag: action ==>
-	guard
-		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
-	do
-		slice_num_ref_idx_l0_active_minus1 := num_ref_idx_l0_active_minus1[pps_id];
-		slice_num_ref_idx_l1_active_minus1 := num_ref_idx_l1_active_minus1[pps_id];
-	end
-	//end if
-
 
 	//*******  ref_pic_list_reordering  ********/
 
 	//if (slice_type % 5 != 2 && slice_type % 5 != 4)
-	read_SliceH_ref_pic_list_reordering_flag_l0: action ==> RefList0Type:[REFLIST0_PRED]
+	read_SliceH_ref_pic_list_reordering_flag_l0: action ==> RefList0Type:[REFLIST0_PRED], RefReordering:[ref_pic_list_reordering_flag_l0], Nb_RefFrame_l0:[slice_num_ref_idx_l0_active_minus1 + 1]
 	guard
 		slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI
+	var
+		uint(size=32) res[1]
 	do
-		set_bits_to_read(1);
-	end
-
-	read_SliceH_ref_pic_list_reordering_flag_l0_done: action ==> RefReordering:[ref_pic_list_reordering_flag_l0], Nb_RefFrame_l0:[slice_num_ref_idx_l0_active_minus1 + 1]
-	guard 
-		done_reading_bits()
-	do
-		ref_pic_list_reordering_flag_l0 := read_result();
+		vld_u_name(1,  fifo, res, "ref_pic_list_reordering_flag_l0                             ", bit_count);
+		ref_pic_list_reordering_flag_l0 := res[0];
 		reordering_of_pic_nums_idc :=0;
 	end
 
 	//if (ref_pic_list_reordering_flag_l0) || (ref_pic_list_reordering_flag_l1)
 	//do
-	read_SliceH_reordering_of_pic_nums_idc: action ==>
+	read_SliceH_ref_pic_list_reordering_flag.isl0: action ==>
 	guard 
 		ref_pic_list_reordering_flag_l0 = 1
-	do
-		start_vld();
 	end
 
-	read_SliceH_reordering_of_pic_nums_idc_done: action ==> RefReordering:[reordering_of_pic_nums_idc]
-	guard
-		vld_end()
+	read_SliceH_reordering_of_pic_nums_idc: action ==> RefReordering:[reordering_of_pic_nums_idc]
+	var
+		uint(size=32) res[1]
 	do
-		reordering_of_pic_nums_idc := vld_ue();
-		if reordering_of_pic_nums_idc != 3 then start_vld(); end
+		vld_ue_name(  fifo, res, "reordering_of_pic_nums_idc                             ", bit_count);
+		reordering_of_pic_nums_idc := res[0];
 	end
 
 	//if (reordering_of_pic_nums_idc == 0 || reordering_of_pic_nums_idc == 1)
-	read_SliceH_abs_diff_pic_num_minus1_done: action ==> RefReordering:[vld_ue()]
+	read_SliceH_reordering_of_pic_nums_idc.idc1: action ==> RefReordering:[abs_diff_pic_num_minus1]
 	guard
-		vld_end(),
 		reordering_of_pic_nums_idc =0 or reordering_of_pic_nums_idc =1
+	var
+		uint(size=32) res[1],
+		uint(size=32) abs_diff_pic_num_minus1
+	do
+		vld_ue_name(  fifo, res, "abs_diff_pic_num_minus1                             ", bit_count);
+		abs_diff_pic_num_minus1 := res[0];
 	end
 
 	// else if (reordering_of_pic_nums_idc == 2)
-	read_SliceH_long_term_pic_num_done_idc2: action ==> RefReordering:[vld_ue()]
+	read_SliceH_reordering_of_pic_nums_idc.idc2: action ==> RefReordering:[long_term_pic_num]
 	guard
-		vld_end(),
 		reordering_of_pic_nums_idc =2
+	var
+		uint(size=32) res[1]
+	do
+		vld_ue_name(  fifo, res, "long_term_pic_num                             ", bit_count);
+		long_term_pic_num := res[0];
 	end
 
 	//else (reordering_of_pic_nums_idc == 3)
-	read_SliceH_skip_reordering_of_pic_nums_idc3: action ==>
+	read_SliceH_reordering_of_pic_nums_idc.idc3: action ==>
 	guard
 		reordering_of_pic_nums_idc = 3
 	end
@@ -1778,55 +1481,55 @@ actor Algo_Synp_AVC_CBP()
 	read_SliceH_dec_ref_pic_marking: action ==>
 	guard
 		nal_ref_idc !=0
-	do
-		if nal_unit_type = 5 then set_bits_to_read(2); else set_bits_to_read(1); end  
 	end
 
 	// if (IdrPicFlag)
 	read_SliceH_no_output_of_prior_pics_flag_done: action ==> MMCO:[0, long_term_reference_flag]
 	guard
-		nal_unit_type = 5,
-		done_reading_bits()
+		nal_unit_type = 5
+	var
+		uint(size=32) res[1],
+		uint(size=1) no_output_of_prior_pics_flag
 	do
-		long_term_reference_flag := mask_bits(read_result(),1);
+		vld_u_name(1,  fifo, res, "no_output_of_prior_pics_flag                             ", bit_count);
+		no_output_of_prior_pics_flag := res[0];
+		vld_u_name(1,  fifo, res, "long_term_reference_flag                             ", bit_count);
+		long_term_reference_flag := res[0];
 	end
 
 	// else (!IdrPicFlag)
 	read_SliceH_adaptative_ref_pic_marking_mode_flag_done: action ==> MMCO:[1,adaptative_ref_pic_marking_mode_flag]
 	guard
-		nal_unit_type != 5,
-		done_reading_bits()
+		nal_unit_type != 5
+	var
+		uint(size=32) res[1]
 	do
-//	println("\t\tParser NalUnitType:"+nal_unit_type);
-		adaptative_ref_pic_marking_mode_flag := read_result();
-		if adaptative_ref_pic_marking_mode_flag = 1 then start_vld(); end
+		vld_u_name(1,  fifo, res, "adaptative_ref_pic_marking_mode_flag                             ", bit_count);
+		adaptative_ref_pic_marking_mode_flag := res[0];
+//		if adaptative_ref_pic_marking_mode_flag = 1 then start_vld(); end
 	end
 	
 	// if (adaptative_ref_pic_marking_mode_flag)
 	//do
 	read_SliceH_memory_management_control_operation_done: action ==> MMCO:[memory_management_control_operation]
 	guard
-		adaptative_ref_pic_marking_mode_flag = 1,
-		vld_end()
+		adaptative_ref_pic_marking_mode_flag = 1
+	var
+		uint(size=32) res[1]
 	do
-		memory_management_control_operation := vld_ue();
-		if 	memory_management_control_operation = 1 or 
-			memory_management_control_operation = 2 or 
-			memory_management_control_operation = 3 or 
-			memory_management_control_operation = 4 or 
-			memory_management_control_operation = 6 then 
-				start_vld(); 
-		end
+		vld_ue_name(  fifo, res, "memory_management_control_operation                             ", bit_count);
+		memory_management_control_operation := res[0];
 	end
 
 	// if (mmco == 1 || mmco == 3)
 	read_SliceH_difference_of_pic_nums_minus1_done: action ==> MMCO:[difference_of_pic_nums_minus1]
 	guard
-		memory_management_control_operation = 1 or memory_management_control_operation = 3,
-		vld_end()
+		memory_management_control_operation = 1 or memory_management_control_operation = 3
+	var
+		uint(size=32) res[1]
 	do
-		difference_of_pic_nums_minus1 := vld_ue();
-		start_vld();
+		vld_ue_name(  fifo, res, "difference_of_pic_nums_minus1                             ", bit_count);
+		difference_of_pic_nums_minus1 := res[0];
 	end
 
 	// end if
@@ -1834,22 +1537,24 @@ actor Algo_Synp_AVC_CBP()
 	// if (mmco == 2)
 	read_SliceH_long_term_pic_num_done: action ==> MMCO:[long_term_pic_num]
 	guard
-		memory_management_control_operation = 2,
-		vld_end()
+		memory_management_control_operation = 2
+	var
+		uint(size=32) res[1]
 	do
-		long_term_pic_num := vld_ue();
-		start_vld();
+		vld_ue_name(  fifo, res, "long_term_pic_num                             ", bit_count);
+		long_term_pic_num := res[0];
 	end
 	// end if
 
 	// if (mmco == 3 || mmco == 6)
 	read_SliceH_long_term_frame_idx_done: action ==> MMCO:[long_term_frame_idx]
 	guard
-		memory_management_control_operation = 3 or memory_management_control_operation = 6,
-		vld_end()
+		memory_management_control_operation = 3 or memory_management_control_operation = 6
+	var
+		uint(size=32) res[1]
 	do
-		long_term_frame_idx := vld_ue();
-		start_vld();
+		vld_ue_name(  fifo, res, "long_term_frame_idx                             ", bit_count);
+		long_term_frame_idx := res[0];
 	end
 
 	// if (mmco == 3 || mmco == 6)
@@ -1857,18 +1562,17 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		memory_management_control_operation != 3 and memory_management_control_operation != 6
 	end
-
-
 	// end if
 
 	// if (mmco == 4)
 	read_SliceH_max_long_term_frame_idx_plus1_done: action ==> MMCO:[max_long_term_frame_idx_plus1]
 	guard
-		memory_management_control_operation = 4,
-		vld_end()
+		memory_management_control_operation = 4
+	var
+		uint(size=32) res[1]
 	do
-		max_long_term_frame_idx_plus1 := vld_ue();
-		start_vld();
+		vld_ue_name(  fifo, res, "max_long_term_frame_idx_plus1                             ", bit_count);
+		max_long_term_frame_idx_plus1 := res[0];
 	end
 
 	// if (mmco == 5)
@@ -1876,7 +1580,6 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		memory_management_control_operation = 5
 	do
-		start_vld();
 		prev_frame_num:=0;
 	end
 	// end if
@@ -1912,115 +1615,63 @@ actor Algo_Synp_AVC_CBP()
 
 	//if (entropy_coding_mode_flag && slice_type != I && slice_type != SI)
 	read_SliceH_cabac_init_idc: action ==>
-	guard
-		entropy_coding_mode_flag[pps_id] = 1,
-		slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI
+	var
+		uint(size=32) res[1],
+		uint(size=32) cabac_init_idc
 	do
-		start_vld();
-	end
-
-	read_SliceH_cabac_init_idc_done: action ==>
-	guard
-		vld_end()
-	do
-		start_vld();
-	end
-
-	//else 
-	read_SliceH_skip_cabac_init_idc: action ==>
-	guard
-		entropy_coding_mode_flag[pps_id] = 0 or slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
-	do
-		start_vld();
-	end
-	//end if
-
-	read_SliceH_slice_qp_delta_done: action ==>
-	guard
-		vld_end()
-	do
-		slice_qp_delta := vld_se();
+		if (entropy_coding_mode_flag[pps_id] = 1 and
+			slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI) then
+			vld_ue_name(  fifo, res, "cabac_init_idc                             ", bit_count);
+			cabac_init_idc := res[0];
+		end
+		vld_se_name(  fifo, res, "slice_qp_delta                             ", bit_count);
+		slice_qp_delta := res[0];
 		val_QP := 26 + pic_init_qp_minus26[pps_id] + slice_qp_delta;
 		val_QP_Cb := qP_tab[val_QP + chroma_qp_index_offset[pps_id]];
 		val_QP_Cr := qP_tab[val_QP + second_chroma_qp_index_offset[pps_id]];
 	end
 
+
 	// if ( slice_type == SP || slice_type == SI )
 	read_SliceH_sp_for_switch_flag: action ==>
-	guard
-		slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_SI 
+	var
+		uint(size=32) res[1],
+		uint(size=1) sp_for_switch_flag,
+		uint(size=32) slice_qs_delta
 	do
-		if slice_type = SLICE_TYPE_SP then set_bits_to_read(1); else start_vld(); end
+		if (slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_SI) then
+			if slice_type = SLICE_TYPE_SP then 
+				vld_u_name(1,  fifo, res, "sp_for_switch_flag                             ", bit_count);
+				sp_for_switch_flag := res[0];
+			end
+			vld_se_name(  fifo, res, "slice_qs_delta                             ", bit_count);
+			slice_qs_delta := res[0];
+		end
 	end
 
-	// if ( slice_type == SP )
-	read_SliceH_sp_for_switch_flag_done: action ==>
-	guard
-		slice_type = SLICE_TYPE_SP,
-		done_reading_bits()
-	do
-		start_vld();
-	end
-	// end if
-
-	read_SliceH_slice_qs_delta_done: action ==>
-	guard
-		vld_end()
-	end
-
-	// else (slice_type != SP && slice_type != SI)
-	read_SliceH_skip_sp_for_switch_flag: action ==>
-	guard
-		slice_type != SLICE_TYPE_SP and slice_type != SLICE_TYPE_SI 
-	end
-	//end if
 
 	// if ( deblocking_filter_control_present_flag )
 	read_SliceH_disable_deblocking_filter_idc: action ==>
 	guard
 		deblocking_filter_control_present_flag[pps_id] = 1
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
+		vld_ue_name(  fifo, res, "disable_deblocking_filter_idc                             ", bit_count);
+		disable_deblocking_filter_idc := res[0];
+		if (disable_deblocking_filter_idc!=1) then
+			vld_se_name(  fifo, res, "slice_alpha_c0_offset_div2                             ", bit_count);
+			slice_alpha_c0_offset_div2 := res[0];
+			val_slice_alpha_c0_offset:=(slice_alpha_c0_offset_div2 << 1);
+			vld_se_name(  fifo, res, "slice_beta_offset_div2                             ", bit_count);
+			slice_beta_offset_div2 := res[0];
+			val_slice_beta_offset:=(slice_beta_offset_div2 << 1);
+		else
+			val_slice_alpha_c0_offset:=0;
+			val_slice_beta_offset:=0;
+		end
+	
 	end
-
-	// if ( disable_deblocking_filter_idc != 1 )
-	read_SliceH_slice_alpha_c0_offset_div2: action ==> 
-	guard
-		vld_end(),
-		vld_ue() != 1
-	do
-		disable_deblocking_filter_idc := vld_ue();
-		start_vld();
-	end
-
-	read_SliceH_slice_beta_offset_div2: action ==>  
-	guard
-		vld_end()
-	do
-		slice_alpha_c0_offset_div2 := vld_se();
-		val_slice_alpha_c0_offset:=(slice_alpha_c0_offset_div2 << 1);
-		start_vld();
-	end
-
-	read_SliceH_slice_beta_offset_div2_done: action ==> 
-	guard
-		vld_end()
-	do
-		slice_beta_offset_div2 := vld_se();
-		val_slice_beta_offset:=(slice_beta_offset_div2 << 1);
-	end
-
-	// else
-	read_SliceH_skip_slice_alpha_c0_offset_div2: action ==>
-	guard
-		vld_end(),
-		vld_ue() = 1
-	do
-		disable_deblocking_filter_idc := vld_ue();
-		val_slice_alpha_c0_offset:=0;
-		val_slice_beta_offset:=0;
-	end
-	// end if
 
 	// else (!deblocking_filter_control_present_flag )
 	read_SliceH_skip_disable_deblocking_filter_idc: action ==>
@@ -2040,7 +1691,9 @@ actor Algo_Synp_AVC_CBP()
 		slice_group_map_type[pps_id] <= 5
 	var 
 		int x, 
-		int n
+		int n,
+		uint(size=32) res[1],
+		uint(size=32) slice_group_change_cycle
 	do
 		x := (pic_width_in_mbs_minus1[sps_id] + 1) * (pic_height_in_map_units_minus1[sps_id] +1) / slice_group_change_rate_minus1[pps_id] +1;
 		//n := log_base2( x )
@@ -2050,20 +1703,11 @@ actor Algo_Synp_AVC_CBP()
 			x := (x >> 1);
 			n := n+1;
 		end
-		set_bits_to_read( n );
+		vld_u_name(n,  fifo, res, "slice_group_change_cycle                             ", bit_count);
+		slice_group_change_cycle := res[0];
 	end
 
-	read_SliceH_slice_group_change_cycle_done: action ==>
-	guard
-		done_reading_bits()
-	do
-		//println("read Slice header done");
-	end
-
-	//else
 	read_SliceH_skip_slice_group_change_cycle: action ==>
-	//do
-	//println("read Slice header done");
 	end
 	//end if
 
@@ -2089,7 +1733,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		entropy_coding_mode_flag[pps_id] = 1
 	do
-		if bit_count mod 8 != 0 then set_bits_to_read(8-bit_count mod 8); /*else bits_to_read_count := -1;*/ end
+		if bit_count[0] mod 8 != 0 then set_bits_to_read(8-bit_count[0] mod 8); /*else bits_to_read_count := -1;*/ end
 	end
 
 	read_SliceD_skip_CABAC_alignement: action ==>
@@ -2135,7 +1779,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		mb_skip_run := vld_ue();
+		mb_skip_run := vld_ue_();
 		if mb_skip_run >0 then 
 			prevMbSkipped := 1; 
 		else 
@@ -2182,6 +1826,7 @@ actor Algo_Synp_AVC_CBP()
 		mb_skip_run := mb_skip_run -1;
 		if mb_skip_run = 0 then 
 			prevMbSkipped := 0; 
+			showBits (8-(bit_count[0] & 7), fifo, byte);
 			moreDataFlag := more_rbsp_data();
 		end
 	end
@@ -2225,6 +1870,7 @@ actor Algo_Synp_AVC_CBP()
 		mb_skip_run := mb_skip_run -1;
 		if mb_skip_run = 0 then 
 			prevMbSkipped := 0; 
+			showBits (8-(bit_count[0] & 7), fifo, byte);
 			moreDataFlag := more_rbsp_data();
 		end
 	end
@@ -2263,6 +1909,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		entropy_coding_mode_flag[pps_id] = 0
 	do
+		showBits (8-(bit_count[0] & 7), fifo, byte);
 		moreDataFlag := more_rbsp_data();
 	end
 
@@ -2456,17 +2103,13 @@ actor Algo_Synp_AVC_CBP()
 	function IS_MBNA(uint(size=1) x) --> bool : MbPartPredMode(x) = 7 end
 
 
-	read_MB_layer_mb_type: action ==>
+	read_MB_layer_mb_type: action ==> 
+	var
+		uint(size=32) res[1]
 	do
-		start_vld();
-	end
-
-	read_MB_layer_mb_type_done: action ==> 
-	guard
-		vld_end()
-	do
-		vld_mb_type := vld_ue();
-		mb_type := vld_mb_type;
+		vld_ue_name(  fifo, res, "mb_type                             ", bit_count);
+		mb_type := res[0];
+		vld_mb_type := mb_type;
 		if slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI then mb_intra_flag := 1; end
 		if slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP then if mb_type < 5 then mb_intra_flag := 0; else mb_type:= mb_type - 5; mb_intra_flag := 1; end end
 		if slice_type = SLICE_TYPE_B then if mb_type < 23 then mb_intra_flag := 0; else mb_type:= mb_type -23; mb_intra_flag := 1; end end
@@ -2509,7 +2152,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		IS_I_PCM()
 	do
-		if bit_count mod 8 != 0 then set_bits_to_read(8-bit_count mod 8); /*else bits_to_read_count := -1;*/ end
+		if bit_count[0] mod 8 != 0 then set_bits_to_read(8-bit_count[0] mod 8); /*else bits_to_read_count := -1;*/ end
 	end
 
 	//for( i = 0; i < 256; i++ )
@@ -2646,7 +2289,7 @@ actor Algo_Synp_AVC_CBP()
 	var 
 		uint(size=6) coded_block_pattern
 	do
-		coded_block_pattern := vld_me();
+		coded_block_pattern := vld_me_();
 		val_CodedBlockPatternLuma := coded_block_pattern mod 16;
 		CodedBlockPatternChroma := coded_block_pattern / 16;
 		if( val_CodedBlockPatternLuma > 0 and 
@@ -2691,7 +2334,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		mb_qp_delta := vld_se();
+		mb_qp_delta := vld_se_();
 		val_QP := (val_QP + mb_qp_delta + 52) mod 52;
 		val_QP_Cb := qP_tab[val_QP + chroma_qp_index_offset[pps_id]];
 		val_QP_Cr := qP_tab[val_QP + second_chroma_qp_index_offset[pps_id]];
@@ -2743,7 +2386,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=4) subMbType
 	do
-		sub_mb_type[mbPartIdx] := vld_ue();
+		sub_mb_type[mbPartIdx] := vld_ue_();
 		subMbType := sub_mb_type[mbPartIdx];
 		mbPartIdx := mbPartIdx +1;
 		if mbPartIdx < 4 then start_vld(); end
@@ -2772,7 +2415,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		ref_idx_l0[mbPartIdx] := if slice_num_ref_idx_l0_active_minus1 = 1 then 1 - read_result() else vld_ue() end;
+		ref_idx_l0[mbPartIdx] := if slice_num_ref_idx_l0_active_minus1 = 1 then 1 - read_result() else vld_ue_() end;
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2850,7 +2493,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		mvd_l0 := vld_se();
+		mvd_l0 := vld_se_();
 		start_vld();
 	end
 
@@ -2858,7 +2501,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		mvd_l0 := vld_se();
+		mvd_l0 := vld_se_();
 		subMbPartIdx := subMbPartIdx +1;
 	end
 	//end for
@@ -3065,7 +2708,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		intra_chroma_pred_mode := vld_ue();
+		intra_chroma_pred_mode := vld_ue_();
 	end
 
 	//else
@@ -3100,7 +2743,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		(slice_num_ref_idx_l0_active_minus1 = 1 and done_reading_bits()) or (slice_num_ref_idx_l0_active_minus1 > 1 and vld_end())
 	do
-		ref_idx_l0[mbPartIdx] := if slice_num_ref_idx_l0_active_minus1 = 1 then 1 - read_result() else vld_ue() end;
+		ref_idx_l0[mbPartIdx] := if slice_num_ref_idx_l0_active_minus1 = 1 then 1 - read_result() else vld_ue_() end;
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -3171,7 +2814,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		mvd_l0 := vld_se();
+		mvd_l0 := vld_se_();
 		start_vld();
 	end
 
@@ -3179,7 +2822,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		vld_end()
 	do
-		mvd_l0 := vld_se();
+		mvd_l0 := vld_se_();
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -3788,11 +3431,25 @@ actor Algo_Synp_AVC_CBP()
 		done_reading_bits()
 	end
 
-	byte_align: action ==>
+	byte_align_: action ==>
 	do
-		if((bit_count & 7) != 0) then
-			set_bits_to_read( 8 - (bit_count & 7) );
+		if((bit_count[0] & 7) != 0) then
+			set_bits_to_read( 8 - (bit_count[0] & 7) );
 		end
+	end
+	
+	/**************************************************************************
+	 **************************************************************************
+	 ********        undefined                            *********************
+	 **************************************************************************
+	 *************************************************************************/
+  	bool actorNotFinished := true;
+	undefined: action ==>
+	guard
+		actorNotFinished
+	do
+		println("Algo_Parser doesn't manage this case yet");
+		actorNotFinished := false;
 	end
 	
 	
@@ -3804,7 +3461,7 @@ actor Algo_Synp_AVC_CBP()
 	    // FIXME: add minimal error resilience.
 	    // byte align, then look for a starting on any byte boundary.
 	    // is hex 00000100.
-	    stuck    ( byte_align     ) --> stuck_1a;
+	    stuck    ( byte_align_     ) --> stuck_1a;
 	
 	    stuck_1a ( request_byte   ) --> stuck_1b;
 	    stuck_1b ( test_zero_byte ) --> stuck_2a;
@@ -3821,31 +3478,27 @@ actor Algo_Synp_AVC_CBP()
 	    
 
 		// read Nal Unit header
-		read_Nal_unit_header							( read_Nal_unit_header								) --> look_for_which_Header;
+		read_Nal_unit_header							( read_Nal_unit_header								) --> find_header;
 
 		//
-		look_for_which_Header                         	( look_for_which_Header								) --> find_header;
 		find_header	  									( look_for_other_header								) --> search_start_code;
 		find_header	  									( look_for.Sps_header	  							) --> read_Sps_id;
 		find_header	  									( look_for.Pps_header	  							) --> read_Pps_seq_parameter_set_id;
 		find_header	  									( look_for.Slice_header	  							) --> read_SliceH_slice_type;
 
 		// read Sps header
-		read_Sps_id	  										( read_Sps_id	    								) --> read_Sps_id_done;
-		read_Sps_id_done	 								( read_Sps_id_done	    							) --> read_Sps_check_profile_idc;
-//		read_Sps_check_profile_idc	 						( read_Sps_chroma_format_idc	  					) --> undefined; //not yet realized
+		read_Sps_id	  										( read_Sps_id	    								) --> read_Sps_check_profile_idc;
+		read_Sps_check_profile_idc	 						( read_Sps_chroma_format_idc	  					) --> undefined; //not yet realized
 		read_Sps_check_profile_idc	 						( read_Sps_log2_max_frame_num_minus4				) --> read_Sps_pic_order_cnt_type;
 		read_Sps_pic_order_cnt_type	 						( read_Sps_pic_order_cnt_type	   					) --> read_Sps_check_pic_order_cnt_type; 
 		read_Sps_check_pic_order_cnt_type	 				( read_Sps_pic_order_cnt_type_skip01				) --> read_Sps_num_ref_frames; 
-		read_Sps_check_pic_order_cnt_type	 				( read_Sps_log2_max_pic_order_cnt_lsb_minus4		) --> read_Sps_log2_max_pic_order_cnt_lsb_minus4_done;
-		read_Sps_log2_max_pic_order_cnt_lsb_minus4_done		( read_Sps_log2_max_pic_order_cnt_lsb_minus4_done 	) --> read_Sps_num_ref_frames;
+		read_Sps_check_pic_order_cnt_type	 				( read_Sps_log2_max_pic_order_cnt_lsb_minus4		) --> read_Sps_num_ref_frames;
 		read_Sps_check_pic_order_cnt_type	 				( read_Sps_delta_pic_order_always_zero_flag			) --> read_Sps_offset_for_non_ref_pic;   
 		read_Sps_offset_for_non_ref_pic						( read_Sps_offset_for_non_ref_pic					) --> read_Sps_offset_for_top_to_bottom_field;	
 		read_Sps_offset_for_top_to_bottom_field				( read_Sps_offset_for_top_to_bottom_field	        ) --> read_Sps_num_ref_frames_in_pic_order_cnt_cycle;
-		read_Sps_num_ref_frames_in_pic_order_cnt_cycle		( read_Sps_num_ref_frames_in_pic_order_cnt_cycle	) --> read_Sps_offset_for_ref_frame0;
-		read_Sps_offset_for_ref_frame0						( read_Sps_offset_for_ref_frame0	                ) --> read_Sps_offset_for_ref_frame1;
-		read_Sps_offset_for_ref_frame1						( read_Sps_offset_for_ref_frame1 	                ) --> read_Sps_offset_for_ref_frame1;
-		read_Sps_offset_for_ref_frame1						( read_Sps_skip_offset_for_ref_frame1				) --> read_Sps_num_ref_frames;      
+		read_Sps_num_ref_frames_in_pic_order_cnt_cycle		( read_Sps_num_ref_frames_in_pic_order_cnt_cycle	) --> read_Sps_offset_for_ref_frame;
+		read_Sps_offset_for_ref_frame						( read_Sps_offset_for_ref_frame.loop	            ) --> read_Sps_offset_for_ref_frame;
+		read_Sps_offset_for_ref_frame						( read_Sps_offset_for_ref_frame.done 	                ) --> read_Sps_num_ref_frames;
 		read_Sps_num_ref_frames 							( read_Sps_num_ref_frames  	                        ) --> read_Sps_gaps_in_frame_num_value_allowed_flag;
 		read_Sps_gaps_in_frame_num_value_allowed_flag		( read_Sps_gaps_in_frame_num_value_allowed_flag  	) --> read_Sps_pic_width_in_mbs_minus1;
 		read_Sps_pic_width_in_mbs_minus1	 				( read_Sps_pic_width_in_mbs_minus1              	) --> read_Sps_pic_height_in_map_units_minus1;
@@ -3857,29 +3510,17 @@ actor Algo_Synp_AVC_CBP()
 		read_Sps_direct_8x8_interference_flag 				( read_Sps_direct_8x8_interference_flag             ) --> read_Sps_frame_cropping_flag;    
 		read_Sps_frame_cropping_flag						( read_Sps_frame_cropping_flag	  	                ) --> read_Sps_frame_crop_left_offset;
 
-		read_Sps_frame_crop_left_offset						( read_Sps_frame_crop_left_offset  	                ) --> read_Sps_frame_crop_right_offset;
-		read_Sps_frame_crop_right_offset					( read_Sps_frame_crop_right_offset				  	) --> read_Sps_frame_crop_top_offset;
-		read_Sps_frame_crop_top_offset						( read_Sps_frame_crop_top_offset  	                ) --> read_Sps_frame_crop_bottom_offset;
-		read_Sps_frame_crop_bottom_offset					( read_Sps_frame_crop_bottom_offset				  	) --> read_Sps_frame_crop_bottom_offset_done;
-		read_Sps_frame_crop_bottom_offset_done				( read_Sps_frame_crop_bottom_offset_done	        ) --> read_Sps_vui_parameters_present_flag;    
+		read_Sps_frame_crop_left_offset						( read_Sps_frame_crop_left_offset  	                ) --> undefined;
 		read_Sps_frame_crop_left_offset						( read_Sps_skip_frame_crop_left_offset	  	        ) --> read_Sps_vui_parameters_present_flag; 
 		read_Sps_vui_parameters_present_flag				( read_Sps_vui_parameters_present_flag	  	        ) --> read_Sps_vui_parameters_present_flag_done;
-		read_Sps_vui_parameters_present_flag_done			( read_Sps_vui_parameters_present_flag_done	  		) --> search_start_code; //end of Sps
+		read_Sps_vui_parameters_present_flag_done			( read_Sps_done	                            		) --> search_start_code; //end of Sps
+		read_Sps_vui_parameters_present_flag_done			( read_Sps_vui_parameters                    		) --> undefined; //end of Sps
 
 		// read Pps header
 		read_Pps_seq_parameter_set_id 						( read_Pps_seq_parameter_set_id                     ) --> read_Pps_entropy_coding_mode_pic_order_flag;
 		read_Pps_entropy_coding_mode_pic_order_flag  		( read_Pps_entropy_coding_mode_pic_order_flag	  	) --> read_Pps_num_slice_groups_minus1;
 		read_Pps_num_slice_groups_minus1					( read_Pps_num_slice_groups_minus1				  	) --> look_Pps_slice_group_map_type; 			  
-		look_Pps_slice_group_map_type						( read_Pps_slice_group_map_type                     ) --> read_Pps_check_slice_group_map_type;
-		read_Pps_check_slice_group_map_type					( read_Pps_check_slice_group_map_type				) --> read_Pps_check_slice_group_map_type0;
-		read_Pps_check_slice_group_map_type0				( read_Pps_run_length_minus1						) --> read_Pps_check_slice_group_map_type0;
-		read_Pps_check_slice_group_map_type1				( read_Pps_check_slice_group_map_type1				) --> read_Pps_num_ref_idx_l0_active_minus1;
-		read_Pps_check_slice_group_map_type2				( read_Pps_top_left	                                ) --> read_Pps_bottom_right;
-		read_Pps_bottom_right								( read_Pps_bottom_right								) --> read_Pps_check_slice_group_map_type2;
-		read_Pps_check_slice_group_map_type345				( read_Pps_slice_group_change_direction_flag		) --> read_Pps_slice_group_change_rate_minus1;
-		read_Pps_slice_group_change_rate_minus1			    ( read_Pps_slice_group_change_rate_minus1	        ) --> read_Pps_num_ref_idx_l0_active_minus1;
-		read_Pps_check_slice_group_map_type6				( read_Pps_pic_size_in_map_units_minus1				) --> search_start_code; //not yet realized
-		  	
+		look_Pps_slice_group_map_type						( read_Pps_slice_group_map_type                     ) --> undefined;
 		look_Pps_slice_group_map_type					    ( read_Pps_slice_group_map_type_skip 	  	        ) --> read_Pps_num_ref_idx_l0_active_minus1;
 		read_Pps_num_ref_idx_l0_active_minus1				( read_Pps_num_ref_idx_l0_active_minus1	 	        ) --> read_Pps_num_ref_idx_l1_active_minus1;
 		read_Pps_num_ref_idx_l1_active_minus1				( read_Pps_num_ref_idx_l1_active_minus1             ) --> read_Pps_weighted_pred_bipred;
@@ -3893,70 +3534,37 @@ actor Algo_Synp_AVC_CBP()
 		//read_Pps_not_High_Profile							( read_Pps_pic_scaling_matrix_present_flag		  	) --> read_Nal_unit_header; //not yet realized
 
 		// read Slice header
-		read_SliceH_slice_type								( read_SliceH_slice_type  	                        ) --> read_SliceH_pps_id;
-		read_SliceH_pps_id									( read_SliceH_pps_id						  		) --> read_SliceH_check_separate_colour_plane_flag;
-		read_SliceH_pps_id									( skip_read_SliceH_pps_id						  		) --> read_SliceH_check_separate_colour_plane_flag;
-		read_SliceH_check_separate_colour_plane_flag		( read_SliceH_check_separate_colour_plane_flag	 	) --> read_SliceH_check_separate_colour_plane_flag_done; 
-		read_SliceH_check_separate_colour_plane_flag_done	( read_SliceH_separate_colour_plane_flag_done		) --> read_SliceH_read_colour_plane_id;
-		read_SliceH_check_separate_colour_plane_flag_done	( read_SliceH_skip_separate_colour_plane_flag	  	) --> read_SliceH_frame_num;	
-		read_SliceH_read_colour_plane_id					( read_SliceH_read_colour_plane_id				  	) --> read_SliceH_frame_num;
+		read_SliceH_slice_type								( read_SliceH_slice_type  	                        ) --> read_SliceH_picSize;
+		read_SliceH_picSize									( read_SliceH_picSize						  		) --> read_SliceH_frame_num;
+		read_SliceH_picSize									( read_SliceH_skip_picSize						  	) --> read_SliceH_frame_num;
 		read_SliceH_frame_num								( read_SliceH_frame_num	  	                        ) --> read_SliceH_field_pic_flag;
-		read_SliceH_field_pic_flag							( read_SliceH_field_pic_flag						) --> read_SliceH_bottom_field_flag;
-		read_SliceH_field_pic_flag							( read_SliceH_skip_field_pic_flag					) --> read_SliceH_idr_pic_id;
-		read_SliceH_bottom_field_flag						( read_SliceH_bottom_field_flag						) --> read_SliceH_bottom_field_flag_done;
-		read_SliceH_bottom_field_flag						( read_SliceH_skip_bottom_field_flag				) --> read_SliceH_idr_pic_id;
-		read_SliceH_bottom_field_flag_done					( read_SliceH_bottom_field_flag_done				) --> read_SliceH_idr_pic_id;
+		read_SliceH_field_pic_flag							( read_SliceH_field_pic_flag						) --> read_SliceH_idr_pic_id;
 
-		read_SliceH_idr_pic_id								( read_SliceH_idr_pic_id  	                        ) --> read_SliceH_idr_pic_id_done;
-		read_SliceH_idr_pic_id								( read_SliceH_skip_idr_pic_id                       ) --> read_SliceH_pic_order_cnt_lsb;
-		read_SliceH_idr_pic_id_done							( read_SliceH_idr_pic_id_done		  				) --> read_SliceH_pic_order_cnt_lsb;	
+		read_SliceH_idr_pic_id								( read_SliceH_idr_pic_id  	                        ) --> read_SliceH_pic_order_cnt_lsb;
 		
-		read_SliceH_pic_order_cnt_lsb						( read_SliceH_pic_order_cnt_lsb  					) --> read_SliceH_pic_order_cnt_lsb_start;
-		read_SliceH_pic_order_cnt_lsb_start					( read_SliceH_pic_order_cnt_lsb_done  				) --> read_SliceH_pic_order_cnt_lsb_done;
-		read_SliceH_pic_order_cnt_lsb						( read_SliceH_skip_pic_order_cnt_lsb  				) --> read_SliceH_delta_pic_order_cnt_bottom_done;
+		read_SliceH_pic_order_cnt_lsb						( read_SliceH_pic_order_cnt_lsb  					) --> read_SliceH_delta_pic_order_cnt_bottom_done;
 
-		read_SliceH_pic_order_cnt_lsb_done					( read_SliceH_delta_pic_order_cnt_bottom			) --> read_SliceH_delta_pic_order_cnt_bottom_start;
-		read_SliceH_delta_pic_order_cnt_bottom_start		( read_SliceH_delta_pic_order_cnt_bottom_done		) --> CalcPOC;
-		read_SliceH_pic_order_cnt_lsb_done					( read_SliceH_skip_delta_pic_order_cnt_bottom		) --> CalcPOC;    
 
-		read_SliceH_delta_pic_order_cnt_bottom_done			( read_SliceH_delta_pic_order_cnt0					) --> read_SliceH_delta_pic_order_cnt0_start;
-		read_SliceH_delta_pic_order_cnt0_start				( read_SliceH_delta_pic_order_cnt0_done				) --> read_SliceH_delta_pic_order_cnt0_done;
-		read_SliceH_delta_pic_order_cnt_bottom_done			( read_SliceH_skip_delta_pic_order_cnt0				) --> CalcPOC;
-
-		read_SliceH_delta_pic_order_cnt0_done				( read_SliceH_delta_pic_order_cnt1		 	        ) --> read_SliceH_delta_pic_order_cnt1_start;	
-		read_SliceH_delta_pic_order_cnt1_start				( read_SliceH_delta_pic_order_cnt1_done 		    ) --> CalcPOC;	
-		read_SliceH_delta_pic_order_cnt0_done				( read_SliceH_skip_delta_pic_order_cnt1				) --> CalcPOC;
+		read_SliceH_delta_pic_order_cnt_bottom_done			( read_SliceH_delta_pic_order_cnt0					) --> CalcPOC;
 
 		CalcPOC												( CalcPOC	                                        ) --> read_SliceH_redundant_pic_cnt;
-		read_SliceH_redundant_pic_cnt						( read_SliceH_redundant_pic_cnt                     ) --> read_SliceH_redundant_pic_cnt_done;
-		read_SliceH_redundant_pic_cnt_done					( read_SliceH_redundant_pic_cnt_done  				) --> read_SliceH_direct_spatial_mv_pred_flag;
-		read_SliceH_redundant_pic_cnt						( read_SliceH_skip_redundant_pic_cnt                ) --> read_SliceH_direct_spatial_mv_pred_flag;
-
-		read_SliceH_direct_spatial_mv_pred_flag				( read_SliceH_direct_spatial_mv_pred_flag	        ) --> read_SliceH_direct_spatial_mv_pred_flag_done;
-		read_SliceH_direct_spatial_mv_pred_flag_done		( read_SliceH_direct_spatial_mv_pred_flag_done		) --> read_SliceH_num_ref_idx_active_override_flag;
-		read_SliceH_direct_spatial_mv_pred_flag				( read_SliceH_skip_direct_spatial_mv_pred_flag		) --> read_SliceH_num_ref_idx_active_override_flag;
-
-		read_SliceH_num_ref_idx_active_override_flag		( read_SliceH_num_ref_idx_active_override_flag		) --> read_SliceH_num_ref_idx_l0_active_minus1;
-		read_SliceH_num_ref_idx_l0_active_minus1			( read_SliceH_num_ref_idx_l0_active_minus1			) --> read_SliceH_num_ref_idx_l1_active_minus1;
-		read_SliceH_num_ref_idx_l1_active_minus1			( read_SliceH_num_ref_idx_l1_active_minus1			) --> read_SliceH_num_ref_idx_l1_active_minus1_done;
-		read_SliceH_num_ref_idx_l1_active_minus1_done		( read_SliceH_num_ref_idx_l1_active_minus1_done		) --> read_SliceH_ref_pic_list_reordering;
-		read_SliceH_num_ref_idx_l1_active_minus1			( read_SliceH_skip_num_ref_idx_l1_active_minus1		) --> read_SliceH_ref_pic_list_reordering;
-		read_SliceH_num_ref_idx_l0_active_minus1			( read_SliceH_skip_num_ref_idx_l0_active_minus1		) --> read_SliceH_ref_pic_list_reordering;
-		read_SliceH_num_ref_idx_active_override_flag		( read_SliceH_skip_num_ref_idx_active_override_flag	) --> read_SliceH_ref_pic_list_reordering;
+		read_SliceH_redundant_pic_cnt						( read_SliceH_redundant_pic_cnt                     ) --> read_SliceH_ref_pic_list_reordering;
 
 		//ref_pic_list_reordering
-		read_SliceH_ref_pic_list_reordering					( read_SliceH_ref_pic_list_reordering_flag_l0		) --> read_SliceH_ref_pic_list_reordering_flag_l0_done;
+		read_SliceH_ref_pic_list_reordering					( read_SliceH_ref_pic_list_reordering_flag_l0		) --> read_SliceH_reordering_of_pic_nums_idc;
 		read_SliceH_ref_pic_list_reordering					( read_SliceH_skip_ref_pic_list_reordering			) --> read_SliceH_pred_weight_table;
-		read_SliceH_ref_pic_list_reordering_flag_l0_done	( read_SliceH_ref_pic_list_reordering_flag_l0_done	) --> read_SliceH_reordering_of_pic_nums_idc;
-		read_SliceH_reordering_of_pic_nums_idc 				( read_SliceH_reordering_of_pic_nums_idc	        ) --> read_SliceH_reordering_of_pic_nums_idc_done;
+		
+		read_SliceH_reordering_of_pic_nums_idc 				( read_SliceH_ref_pic_list_reordering_flag.isl0	    ) --> read_SliceH_reordering_of_pic_nums_idc_done;
 		read_SliceH_reordering_of_pic_nums_idc				( read_SliceH_skip_reordering_of_pic_nums_idc		) --> read_SliceH_pred_weight_table;	
-		read_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc_done		) --> look_SliceH_reordering_of_pic_nums_idc;	
-		look_SliceH_reordering_of_pic_nums_idc				( read_SliceH_abs_diff_pic_num_minus1_done	        ) --> read_SliceH_reordering_of_pic_nums_idc;	
-		look_SliceH_reordering_of_pic_nums_idc				( read_SliceH_long_term_pic_num_done_idc2				) --> read_SliceH_reordering_of_pic_nums_idc;
-		look_SliceH_reordering_of_pic_nums_idc				( read_SliceH_skip_reordering_of_pic_nums_idc3		) --> read_SliceH_pred_weight_table;
+		read_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc     		) --> look_SliceH_reordering_of_pic_nums_idc_done;	
+		look_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc.idc1       ) --> read_SliceH_reordering_of_pic_nums_idc_done;	
+		look_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc.idc2		) --> read_SliceH_reordering_of_pic_nums_idc_done;
+		look_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc.idc3   	) --> read_SliceH_pred_weight_table;
+
 		//pred_weight_table
 		read_SliceH_pred_weight_table						( read_SliceH_pred_weight_table						) --> read_SliceH_dec_ref_pic_marking; //not yet realised
 		read_SliceH_pred_weight_table						( read_SliceH_skip_pred_weight_table				) --> read_SliceH_dec_ref_pic_marking;
+
 		//dec_ref_pic_marking
 		read_SliceH_dec_ref_pic_marking						( read_SliceH_dec_ref_pic_marking	                ) --> read_SliceH_check_IdrPicFlag;
 		read_SliceH_check_IdrPicFlag						( read_SliceH_no_output_of_prior_pics_flag_done		) --> read_SliceH_cabac_init_idc;
@@ -3973,27 +3581,15 @@ actor Algo_Synp_AVC_CBP()
 		read_SliceH_check_mmco_done							( read_SliceH_mmco_5								) --> read_SliceH_check_mmco;
 		read_SliceH_dec_ref_pic_marking						( read_SliceH_skip_dec_ref_pic_marking				) --> read_SliceH_cabac_init_idc;
 
-		read_SliceH_cabac_init_idc							( read_SliceH_cabac_init_idc						) --> read_SliceH_cabac_init_idc_done;
-		read_SliceH_cabac_init_idc_done						( read_SliceH_cabac_init_idc_done	                ) --> read_SliceH_slice_qp_delta_done;
-		read_SliceH_cabac_init_idc							( read_SliceH_skip_cabac_init_idc					) --> read_SliceH_slice_qp_delta_done;
+		read_SliceH_cabac_init_idc							( read_SliceH_cabac_init_idc						) --> read_SliceH_sp_for_switch_flag;
 
-		read_SliceH_slice_qp_delta_done						( read_SliceH_slice_qp_delta_done	                ) --> read_SliceH_sp_for_switch_flag;
+		read_SliceH_sp_for_switch_flag						( read_SliceH_sp_for_switch_flag	                ) --> read_SliceH_disable_deblocking_filter_idc;
 
-		read_SliceH_sp_for_switch_flag						( read_SliceH_sp_for_switch_flag	                ) --> read_SliceH_sp_for_switch_flag_done;
-		read_SliceH_sp_for_switch_flag_done					( read_SliceH_sp_for_switch_flag_done				) --> read_SliceH_slice_qs_delta_done;
-		read_SliceH_slice_qs_delta_done						( read_SliceH_slice_qs_delta_done	                ) --> read_SliceH_disable_deblocking_filter_idc;
-		read_SliceH_sp_for_switch_flag						( read_SliceH_skip_sp_for_switch_flag				) --> read_SliceH_disable_deblocking_filter_idc;
-
-		read_SliceH_disable_deblocking_filter_idc			( read_SliceH_disable_deblocking_filter_idc 		) --> read_SliceH_slice_alpha_c0_offset_div2;		
-		read_SliceH_slice_alpha_c0_offset_div2				( read_SliceH_slice_alpha_c0_offset_div2	        ) --> read_SliceH_slice_beta_offset_div2;
-		read_SliceH_slice_beta_offset_div2					( read_SliceH_slice_beta_offset_div2				) --> read_SliceH_slice_beta_offset_div2_done;
-		read_SliceH_slice_beta_offset_div2_done				( read_SliceH_slice_beta_offset_div2_done	        ) --> read_SliceH_slice_group_change_cycle;
-		read_SliceH_slice_alpha_c0_offset_div2				( read_SliceH_skip_slice_alpha_c0_offset_div2		) --> read_SliceH_slice_group_change_cycle;
+		read_SliceH_disable_deblocking_filter_idc			( read_SliceH_disable_deblocking_filter_idc 		) --> read_SliceH_slice_group_change_cycle;		
 		read_SliceH_disable_deblocking_filter_idc			( read_SliceH_skip_disable_deblocking_filter_idc 	) --> read_SliceH_slice_group_change_cycle;
 
-		read_SliceH_slice_group_change_cycle				( read_SliceH_slice_group_change_cycle				) --> read_SliceH_slice_group_change_cycle_done;
-		read_SliceH_slice_group_change_cycle_done			( read_SliceH_slice_group_change_cycle_done			) --> read_SliceD_CABAC_alignement;
-		read_SliceH_slice_group_change_cycle				( read_SliceH_skip_slice_group_change_cycle	) --> read_SliceD_CABAC_alignement;
+		read_SliceH_slice_group_change_cycle				( read_SliceH_slice_group_change_cycle				) --> read_SliceD_CABAC_alignement;
+		read_SliceH_slice_group_change_cycle				( read_SliceH_skip_slice_group_change_cycle	        ) --> read_SliceD_CABAC_alignement;
 
 		// read Slice Data     only decoding CAVLC process is implemented
 		read_SliceD_CABAC_alignement						( read_SliceD_CABAC_alignement						) --> read_SliceD_init;
@@ -4015,9 +3611,9 @@ actor Algo_Synp_AVC_CBP()
 		SliceD_moredata                                     ( SliceD_moredata_1                                 ) --> SliceD_moredata_1_done;
 		SliceD_moredata_1_done								( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
 		SliceD_moredata_1_done								( send_data_position_information	                ) --> syncSliceD_endwhile;
-		SliceD_moredata 									( SliceD_moredata_0									) --> SliceD_stop_byte_align_done;
-		SliceD_stop_byte_align_done							( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
-		SliceD_stop_byte_align_done							( send_data_position_information	                ) --> syncSliceD_endwhile;
+		SliceD_moredata 									( SliceD_moredata_0									) --> SliceD_stop_byte_align__done;
+		SliceD_stop_byte_align__done							( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
+		SliceD_stop_byte_align__done							( send_data_position_information	                ) --> syncSliceD_endwhile;
 		syncSliceD_endwhile									( syncSliceD_endwhile								) --> SliceD_while_moreDataFlag;
 		
 		SliceD_update										( SliceD_update_CABAC								) --> SliceD_while_moreDataFlag;
@@ -4026,8 +3622,7 @@ actor Algo_Synp_AVC_CBP()
 		read_SliceD_mb_field_decoding_flag					( SliceD_end										) --> search_start_code;
 		
 		// macrobloc_layer
-		read_MB_layer_mb_type								( read_MB_layer_mb_type								) --> read_MB_layer_mb_type_done;
-		read_MB_layer_mb_type_done							( read_MB_layer_mb_type_done						) --> read_MB_layer_check_I_PCM;
+		read_MB_layer_mb_type								( read_MB_layer_mb_type								) --> read_MB_layer_check_I_PCM;
 		read_MB_layer_check_I_PCM							( read_MB_layer_I_PCM_alignement					) --> read_MB_layer_pcm_sample_luma0;
 		read_MB_layer_pcm_sample_luma0					    ( read_MB_layer_pcm_sample_luma0	                ) --> read_MB_layer_pcm_sample_luma1;
 		read_MB_layer_pcm_sample_luma1						( read_MB_layer_pcm_sample_luma1	                ) --> read_MB_layer_pcm_sample_luma1;
@@ -4158,14 +3753,15 @@ actor Algo_Synp_AVC_CBP()
 		Residual_block_send_run								( Residual_block_send_done							) --> Residual_return;
 		Residual_block_read_suffixLength					( Residual_block_skip_read_suffixLength				) --> Residual_return;
 
+		// undefined
+		undefined	  					( undefined		    				) --> undefined;
+
 	end
 
 	priority
 		look_for > look_for_other_header;
-		read_SliceH_read_colour_plane_id > read_SliceH_frame_num ;
 		read_SliceH_pred_weight_table > read_SliceH_skip_pred_weight_table;
 		read_SliceH_difference_of_pic_nums_minus1_done > read_SliceH_long_term_frame_idx_done > read_SliceH_memory_management_control_operation_done;
-		read_SliceH_sp_for_switch_flag_done > read_SliceH_slice_qs_delta_done ;
 		read_SliceH_slice_group_change_cycle > read_SliceH_skip_slice_group_change_cycle;
 		read_MB_layer_transform_size_8x8_flag > read_MB_layer_skip_transform_size_8x8_flag;
 		read_sub_MB_pred_ref_idx_l0 > read_sub_MB_pred_skip_ref_idx_l0;
