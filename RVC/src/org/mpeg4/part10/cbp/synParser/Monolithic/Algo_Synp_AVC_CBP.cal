@@ -161,11 +161,8 @@ actor Algo_Synp_AVC_CBP()
 	uint val_nb_rbsp_bytes := 0;
 
 	// ********** Read VLD ********** //
-	bool NewVLD := false;
 	int VLD_Counter;
-	bool First_part := false;
 	int Codeword;
-	int CodeLen;
 
 	// ********** Read CAVLC ********** //
 	bool NewCoeff := false;
@@ -3132,44 +3129,50 @@ actor Algo_Synp_AVC_CBP()
 	end
 
 	//else
+	uint level_prefix_temp;
 	Residual_block_read_level_prefix: action ==>
 	guard
 		inc_nb_coeff < TotalCoeff(),
 		inc_nb_coeff >= TrailingOnes()
+	var
+		uint(size=32) res[1]
 	do
-		set_bits_to_read(1);
+		vld_u_name(1,  fifo, res, "level_prefix_temp                             ", bit_count);
+		level_prefix_temp := res[0];
 		level_prefix := 0;
 	end
 
 	Residual_block_read_level_prefix_done0: action ==>
 	guard
-		done_reading_bits(),
-		read_result() = 0
+		level_prefix_temp = 0
+	var
+		uint(size=32) res[1]
 	do
 		level_prefix := level_prefix +1;
-		set_bits_to_read(1);
+		vld_u_name(1,  fifo, res, "level_prefix_temp                             ", bit_count);
+		level_prefix_temp := res[0];
 	end
 
+	uint level_suffix;
 	Residual_block_read_level_prefix_done1: action ==>
 	guard
-		done_reading_bits(),
-		read_result() = 1
+		level_prefix_temp = 1
 	var
-		uint levelSuffixSize
+		uint levelSuffixSize,
+		uint(size=32) res[1]
 	do
 		levelCode := ( if level_prefix < 15 then level_prefix else 15 end << suffixLength );
 		if level_prefix = 14 and suffixLength = 0 then levelSuffixSize := 4;
 		else if level_prefix >=15 then levelSuffixSize := level_prefix - 3;
 		else levelSuffixSize := suffixLength; end end
-		if levelSuffixSize > 0 then set_bits_to_read(levelSuffixSize); end
-	end
-
-	Residual_block_read_level_suffix_done: action ==>
-	guard
-		done_reading_bits()
-	do
+		if levelSuffixSize > 0 then 
+			vld_u_name(levelSuffixSize,  fifo, res, "level_suffix                             ", bit_count);
+			level_suffix := res[0];
+		else
+			level_suffix:=0;
+		end
 		//if( suffixLength > 0 | | level_prefix >= 14 )
-		if suffixLength > 0 or level_prefix >= 14 then levelCode := levelCode + read_result(); end
+		if suffixLength > 0 or level_prefix >= 14 then levelCode := levelCode + level_suffix; end
 
 		// if( level_prefix > = 15 && suffixLength = = 0 )
 		if level_prefix >= 15 and  suffixLength = 0 then levelCode := levelCode +15; end
@@ -3311,7 +3314,7 @@ actor Algo_Synp_AVC_CBP()
 		done_reading_bits()
 	end
 
-	byte_align_: action ==>
+	byte_align: action ==>
 	do
 		byte_align(fifo, bit_count);
 	end
@@ -3339,7 +3342,7 @@ actor Algo_Synp_AVC_CBP()
 	    // FIXME: add minimal error resilience.
 	    // byte align, then look for a starting on any byte boundary.
 	    // is hex 00000100.
-	    stuck    ( byte_align_     ) --> stuck_1a;
+	    stuck    ( byte_align     ) --> stuck_1a;
 	
 	    stuck_1a ( request_byte   ) --> stuck_1b;
 	    stuck_1b ( test_zero_byte ) --> stuck_2a;
@@ -3608,8 +3611,8 @@ actor Algo_Synp_AVC_CBP()
 		Residual_block_read_trailing_ones_sign_flag_done	( Residual_block_read_trailing_ones_sign_flag_done  ) --> Residual_block_read_non_zero_coeff;
 		Residual_block_read_non_zero_coeff					( Residual_block_read_level_prefix					) --> Residual_block_read_level_prefix_done;
 		Residual_block_read_level_prefix_done				( Residual_block_read_level_prefix_done0			) --> Residual_block_read_level_prefix_done;
-		Residual_block_read_level_prefix_done				( Residual_block_read_level_prefix_done1			) --> Residual_block_read_level_suffix_done;
-		Residual_block_read_level_suffix_done				( Residual_block_read_level_suffix_done				) --> Residual_block_read_non_zero_coeff;
+		Residual_block_read_level_prefix_done				( Residual_block_read_level_prefix_done1			) --> Residual_block_read_non_zero_coeff;
+		
 		Residual_block_read_non_zero_coeff					( Residual_block_read_TotalCoeff_done				) --> Residual_block_read_total_zeros_done;
 		Residual_block_read_total_zeros_done				( Residual_block_read_total_zeros_done				) --> Residual_block_read_run_before;
 		Residual_block_read_run_before						( Residual_block_read_run_before					) --> Residual_block_read_run_before_done;
