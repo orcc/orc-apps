@@ -328,14 +328,6 @@ actor Algo_Synp_AVC_CBP()
 
 	// ********** Read VLD ********** //
 
-	procedure start_vld()
-	begin
-		NewVLD := true;
-		VLD_Counter := 0;
-		First_part := true;
-		Codeword := 0;
-		CodeLen := 0;
-	end
  
 	function IS_Intra_4x4() --> bool : mb_intra_flag = 1 and mb_type = 0 and transform_size_8x8_flag = 0 end
 	function IS_Intra_8x8() --> bool : mb_intra_flag = 1 and mb_type = 0 and transform_size_8x8_flag = 1 end
@@ -343,10 +335,6 @@ actor Algo_Synp_AVC_CBP()
 	function IS_I_PCM() --> bool : mb_intra_flag = 1 and mb_type = 25 end
 	function IS_P_8x8ref0() --> bool : slice_type = SLICE_TYPE_P and mb_type = 4 end
 	function IS_B_Direct_8x8() --> bool : slice_type = SLICE_TYPE_B and sub_mb_type[ mbPartIdx ] = 0 end
-
-	function vld_end() --> bool : not NewVLD end
-	function vld_ue_() --> int : (1 << CodeLen)+Codeword-1 end
-	function vld_se_() --> int : if (vld_ue_() mod 2) = 0 then - (vld_ue_() / 2) else (vld_ue_() / 2) + 1 end end
 
   	procedure set_bits_to_read( int count )
 	begin
@@ -384,36 +372,6 @@ actor Algo_Synp_AVC_CBP()
 		read_result_in_progress := ( (read_result_in_progress << 1) | if res[0] = 1 then 1 else 0 end );
 		bits_to_read_count := bits_to_read_count - 1;
 	end
-
-	action /*bits:[ b ]*/ ==>
-	guard
-		NewVLD,
-		First_part,
-		fifo[FIFO_CPT_BITS] > (FIFO_SIZE-1)<<3
-	var int res[1]
-	do
-		vld_u(  1, fifo, res, bit_count);
-		if res[0] = 1 then
-			First_part := false;
-			CodeLen := VLD_Counter;
-			if CodeLen = 0 then NewVLD := false; end
-		else
-			VLD_Counter := VLD_Counter + 1;
-		end
-	end
-  
-	action /*bits:[ b ]*/ ==>
-	guard
-		NewVLD,
-		not First_part,
-		fifo[FIFO_CPT_BITS] > (FIFO_SIZE-1)<<3
-	var int res[1]
-	do
-		vld_u(  1, fifo, res, bit_count);
-		VLD_Counter := VLD_Counter - 1;
-		Codeword := ( (Codeword << 1) | if res[0] = 1 then 1 else 0 end);
-		if   VLD_Counter = 0 then NewVLD := false; end
-	end  
 
 	// ********** Read CAVLC ********** //
 
@@ -2323,21 +2281,20 @@ actor Algo_Synp_AVC_CBP()
 	sub_MB_pred_init_sub_mb_type: action ==> 
 	do
 		mbPartIdx := 0;
-		start_vld();
 	end
 
 	//for( mbPartIdx = 0; mbPartIdx < 4; mbPartIdx++ )
 	read_sub_MB_pred_sub_mb_type: action ==> SubMbType :[subMbType]
 	guard
-		vld_end(),
 		mbPartIdx < 4
 	var
-		uint(size=4) subMbType
+		uint(size=4) subMbType,
+		uint(size=32) res[1]
 	do
-		sub_mb_type[mbPartIdx] := vld_ue_();
+		vld_ue_name(  fifo, res, "sub_mb_type[mbPartIdx]                             ", bit_count);
+		sub_mb_type[mbPartIdx] := res[0];
 		subMbType := sub_mb_type[mbPartIdx];
 		mbPartIdx := mbPartIdx +1;
-		if mbPartIdx < 4 then start_vld(); end
 	end
 	//end for
 
@@ -2355,15 +2312,19 @@ actor Algo_Synp_AVC_CBP()
 		mbPartIdx < 4,
 		(slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1),
 		not IS_B_Direct_8x8(), not IS_P_8x8ref0(), not IS_SubMBPred_L1(), not IS_SubMBNA()
-	do
-		if slice_num_ref_idx_l0_active_minus1 = 1 then set_bits_to_read(1); else start_vld(); end
 	end
 
 	read_sub_MB_pred_ref_idx_l0_done: action ==> 
-	guard
-		vld_end()
+	var
+		uint(size=32) res[1]
 	do
-		ref_idx_l0[mbPartIdx] := if slice_num_ref_idx_l0_active_minus1 = 1 then 1 - read_result() else vld_ue_() end;
+		if slice_num_ref_idx_l0_active_minus1 = 1 then 
+			vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			ref_idx_l0[mbPartIdx] := 1 - res[0];
+		else
+			vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			ref_idx_l0[mbPartIdx] := res[0];
+		end
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2392,14 +2353,18 @@ actor Algo_Synp_AVC_CBP()
 		mbPartIdx < 4,
 		(slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1),
 		not IS_B_Direct_8x8(), not IS_P_8x8ref0(), not IS_SubMBPred_L0(), not IS_SubMBNA()
-	do
-		if slice_num_ref_idx_l1_active_minus1 = 1 then set_bits_to_read(1); else start_vld(); end
 	end
 
 	read_sub_MB_pred_ref_idx_l1_done: action ==> 
-	guard
-		(slice_num_ref_idx_l1_active_minus1 = 1 and done_reading_bits()) or (slice_num_ref_idx_l1_active_minus1 > 1 and vld_end())
+	var
+		uint(size=32) res[1]
 	do
+		if slice_num_ref_idx_l1_active_minus1 = 1 then 
+			vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+		else
+			vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+		end
+		mbPartIdx := mbPartIdx +1;
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -3155,15 +3120,14 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		inc_nb_coeff < TotalCoeff(),
 		inc_nb_coeff < TrailingOnes()
-	do
-		set_bits_to_read(1);
 	end
 
 	Residual_block_read_trailing_ones_sign_flag_done: action ==>
-	guard
-		done_reading_bits()
+	var
+		uint(size=32) res[1]
 	do
-		level[ inc_nb_coeff ] := 1 - 2 * read_result();
+		vld_u_name(1,  fifo, res, "level[ inc_nb_coeff ]                             ", bit_count);
+		level[ inc_nb_coeff ] := 1 - 2 * res[0];
 		inc_nb_coeff := inc_nb_coeff +1 ;
 	end
 
