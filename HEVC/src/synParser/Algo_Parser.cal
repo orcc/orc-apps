@@ -26,11 +26,9 @@ actor Algo_Parser ()
 	guard 
 		fifo[FIFO_CPT_BITS] <= (FIFO_SIZE-1)<<3
 	var
-		uint(size=4) fifo_idx  =  fifo[FIFO_IDX],
-		uint(size=4) fifo_idx1 = (fifo[FIFO_IDX]-1) & (FIFO_SIZE-1),
-		uint(size=4) fifo_idx2 = (fifo[FIFO_IDX]-2) & (FIFO_SIZE-1)
+		uint(size=4) fifo_idx  =  fifo[FIFO_IDX]
 	do
-		if fifo[fifo_idx2] != 0 or fifo[fifo_idx1] != 0 or b != EPR_VALUE then
+		if b != EPR_VALUE or zeroByte != 3 then
 			if b = START_CODE_VALUE and zeroByte = 3 then
 				fifo[fifo_idx]      := b + START_CODE_FLAG;
 			else
@@ -54,11 +52,18 @@ actor Algo_Parser ()
 	 **************************************************************************
 	 *************************************************************************/
 	/**************************************************************************
+	 * byte_align_a
+	 *************************************************************************/	
+	byte_align_a : action ==>
+	do
+		byte_align(fifo);
+	end 	
+	/**************************************************************************
 	 * search_start_code
 	 *************************************************************************/
 	start_code.search: action ==>
 	guard
-		not IsStartCode(fifo)
+		not IsStartCode(fifo) and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
    	do
 		flushBits( 8, fifo );
 		if DEBUG_BITSTREAM then		
@@ -67,7 +72,7 @@ actor Algo_Parser ()
 	end
 	start_code.done: action ==>
 	guard
-		IsStartCode(fifo)
+		IsStartCode(fifo) and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	do
 		flushBits( 8, fifo);
 		if DEBUG_BITSTREAM then
@@ -166,6 +171,9 @@ actor Algo_Parser ()
 	uint(size= 3) sps_bit_depth_chroma_minus8;
 	uint(size= 4) sps_pcm_bit_depth_luma_minus1; 
 	uint(size= 4) sps_pcm_bit_depth_chroma_minus1;
+	uint(size=32) sps_log2_max_pic_order_cnt_lsb_minus4;
+	uint(size=32) sps_max_num_ref_pics;
+	uint(size=32) sps_max_num_reorder_pics;
 	uint(size= 1) sps_disableInter4x4;
 	uint(size= 8) sps_log2_min_coding_block_size_minus3;
 	uint(size= 8) sps_log2_diff_max_min_coding_block_size;	
@@ -183,17 +191,16 @@ actor Algo_Parser ()
 	uint(size= 1) sps_temporal_id_nesting_flag;
 	uint(size=32) sps_padX;
 	uint(size=32) sps_padY;
-	uint(size= 1) sps_useLDC;
 	uint(size= 1) sps_useMRG;
 	uint(size= 1) sps_amvpMode[MAX_TLAYER];
-	uint(size= 1) sps_useNewRefSetting;
-	uint(size=32) sps_maxNumRefFrames;
 	uint(size= 1) sps_uniform_spacing_idc;
 	uint(size= 1) sps_tile_boundary_independence_idc;
 	uint(size= 1) sps_num_tile_columns_minus1;
 	uint(size= 1) sps_num_tile_rows_minus1;	
 	uint(size=32) sps_column_width[32];
 	uint(size=32) sps_row_height[32];
+	uint(size= 1) sps_enable_nsqt;
+	uint(size= 1) sps_enable_amp;
 	/* */
 	uint(size=32) sps_maxCUWidth;
 	uint(size= 8) sps_maxCUDepth;
@@ -203,7 +210,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_SPS_Header.se_idx_1 : action ==>
 	guard
-		se_idx = 1
+		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
@@ -220,16 +227,20 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_SPS_Header.se_idx_2 : action ==>
 	guard
-		se_idx = 2
+		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              "); sps_pic_height_in_luma_samples := res[0];
-		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   "); sps_bit_depth_luma_minus8      := res[0]; // getBits(5) max
-		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 "); sps_bit_depth_chroma_minus8    := res[0]; // getBits(5) max
-		vld_u_name(  4, fifo, res, "pcm_bit_depth_luma_minus1               "); sps_pcm_bit_depth_luma_minus1  := res[0];
-		vld_u_name(  4, fifo, res, "pcm_bit_depth_chroma_minus1             "); sps_pcm_bit_depth_chroma_minus1:= res[0];		
-		vld_u_name(  1, fifo, res, "disableInter4x4                         "); sps_disableInter4x4            := res[0];		
+		vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              "); sps_pic_height_in_luma_samples        := res[0];
+		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   "); sps_bit_depth_luma_minus8             := res[0]; // getBits(5) max
+		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 "); sps_bit_depth_chroma_minus8           := res[0]; // getBits(5) max
+		vld_u_name(  4, fifo, res, "pcm_bit_depth_luma_minus1               "); sps_pcm_bit_depth_luma_minus1         := res[0];
+		vld_u_name(  4, fifo, res, "pcm_bit_depth_chroma_minus1             "); sps_pcm_bit_depth_chroma_minus1       := res[0];
+		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       "); sps_log2_max_pic_order_cnt_lsb_minus4 := res[0];
+		vld_ue_name(    fifo, res, "max_num_ref_pics                        "); sps_max_num_ref_pics                  := res[0];
+		vld_ue_name(    fifo, res, "max_num_reorder_pics                    "); sps_max_num_reorder_pics              := res[0];
+//		vld_u_name(  1, fifo, res, "disableInter4x4                         "); sps_disableInter4x4                   := res[0];		
+		vld_u(  1, fifo, res); sps_disableInter4x4                   := res[0];		
 		se_idx := se_idx + 1;
 	end
 	/**************************************************************************
@@ -237,7 +248,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_SPS_Header.se_idx_3 : action ==>
 	guard
-		se_idx = 3
+		se_idx = 3 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
@@ -252,7 +263,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SPS_Header.se_idx_4 : action ==>
 	guard
-		se_idx = 4
+		se_idx = 4 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
@@ -266,7 +277,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SPS_Header.se_idx_5 : action ==>
 	guard
-		se_idx = 5
+		se_idx = 5 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
    	do
@@ -285,7 +296,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_SPS_Header.se_idx_6 : action ==>
 	guard
-		se_idx = 6
+		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1],
 		uint(size= 8) uiAddCUDepth := 0
@@ -298,16 +309,15 @@ actor Algo_Parser ()
   		sps_maxCUDepth := sps_log2_diff_max_min_coding_block_size + uiAddCUDepth;
 
 
-		vld_ue_name(    fifo, res, "padX                                    "); sps_padX                := res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "padY                                    "); sps_padY                := res[0]; // getBits(32) max ?????
-		vld_u_name(  1, fifo, res, "useLDC                                  "); sps_useLDC              := res[0];
-		vld_u_name(  1, fifo, res, "useMRG                                  "); sps_useMRG              := res[0];
+		//vld_ue_name(    fifo, res, "padX                                    "); sps_padX                := res[0]; // getBits(32) max ?????
+		vld_ue(    fifo, res); sps_padX                := res[0]; // getBits(32) max ?????
+		//vld_ue_name(    fifo, res, "padY                                    "); sps_padY                := res[0]; // getBits(32) max ?????
+		vld_ue(    fifo, res); sps_padY                := res[0]; // getBits(32) max ?????
+		//vld_u_name(  1, fifo, res, "useMRG                                  "); sps_useMRG              := res[0];
+   		vld_u(  1, fifo, res); sps_useMRG              := res[0];
    		foreach uint(size=8) i in 0 .. sps_maxCUDepth - 1 do
-   			vld_u_name(  1, fifo, res, "amvpMode[ ]                             "); sps_amvpMode[i]     := res[0];
-		end
-		vld_u_name(  1, fifo, res, "useNewRefSetting                        "); sps_useNewRefSetting    := res[0];
-   		if sps_useNewRefSetting = 1 then
-			vld_ue_name(    fifo, res, "maxNumRefFrames                         "); sps_maxNumRefFrames := res[0]; // getBits(32) max ?????
+   			//vld_u_name(  1, fifo, res, "amvpMode[ ]                             "); sps_amvpMode[i]     := res[0];
+   			vld_u(  1, fifo, res); sps_amvpMode[i]     := res[0];
 		end
 		se_idx := se_idx + 1;
 	end 
@@ -316,7 +326,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SPS_Header.se_idx_7 : action ==>
 	guard
-		se_idx = 7
+		se_idx = 7 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
@@ -332,7 +342,8 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SPS_Header.se_idx_8.loop : action ==>
 	guard
-		se_idx = 8 and sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_columns_minus1
+		se_idx = 8  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
+		sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_columns_minus1
 	var
 		uint(size=32) res[1]
 	do
@@ -357,7 +368,8 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SPS_Header.se_idx_9.loop : action ==>
 	guard
-		se_idx = 9 and sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_rows_minus1
+		se_idx = 9  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_rows_minus1
 	var
 		uint(size=32) res[1]
 	do
@@ -376,8 +388,11 @@ actor Algo_Parser ()
 	read_SPS_Header_done : action ==>
 	guard
 		se_idx = 10
+	var
+		uint(size=32) res[1]
 	do
-		byte_align(fifo);
+		vld_u_name(  1, fifo, res, "enable_nsqt                             "); sps_enable_nsqt := res[0];
+		vld_u_name(  1, fifo, res, "enable_amp                              "); sps_enable_amp  := res[0];	
 	end 
 	/**************************************************************************
 	 **************************************************************************
@@ -386,6 +401,8 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	uint(size=32) pps_pps_id;
 	uint(size=32) pps_sps_id;
+	uint(size=32) pps_num_short_term_ref_pic_sets;
+	uint(size=32) pps_long_term_ref_pics_present_flag;
 	uint(size= 1) pps_entropy_coding_mode_flag;
 	uint(size=32) pps_entropy_coding_synchro;
 	uint(size= 1) pps_cabac_istate_reset;
@@ -409,16 +426,126 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_PPS_Header.se_idx_1 : action ==>
 	guard
-		se_idx = 1
+		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
    	do
-		vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); pps_pps_id                     := res[0];
-		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); pps_sps_id                     := res[0];
-		vld_u_name(  1, fifo, res, "entropy_coding_mode_flag                "); pps_entropy_coding_mode_flag   := res[0];
+		vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); pps_pps_id                      := res[0];
+		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); pps_sps_id                      := res[0];
+		vld_ue_name(    fifo, res, "num_short_term_ref_pic_sets             "); pps_num_short_term_ref_pic_sets := res[0];
+		se_idx := se_idx + 1;
+		cnt_i  := 0;
+ 	end
+	/**************************************************************************
+	 * read_PPS_Header.se_idx_2
+	 *************************************************************************/
+	uint(size= 1) pps_inter_RPS_flag[32];
+	uint(size=32) pps_num_negative_pics[32];
+	uint(size=32) pps_num_positive_pics[32];
+	uint(size=32) pps_num_pics[32];
+	 int(size=32) pps_deltaPOC[32][32];
+	uint(size= 1) pps_used[32][32];
+	uint(size=32) pps_delta_idx_minus1[32];
+	uint(size= 1) pps_delta_rps_sign[32];
+	uint(size=32) pps_abs_delta_rps_minus1[32];
+	uint(size=32) pps_num_ref_idc[32];
+	uint(size=32) pps_ref_idc[32][32];
+	
+
+	read_PPS_Header.se_idx_2.loop : action ==>
+	guard
+		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		cnt_i < pps_num_short_term_ref_pic_sets
+	var
+		uint(size=32) res[1],
+		uint(size= 8) rIdx,
+		 int(size=32) deltaRPS,
+		 int(size=32) deltaPOC,
+		 int(size=32) k    := 0,
+		 int(size=32) k0   := 0,
+		 int(size=32) k1   := 0,
+		uint(size=32) prev := 0
+   	do
+ 		vld_u_name(  1, fifo, res, "inter_RPS_flag                          "); pps_inter_RPS_flag[cnt_i]   := res[0];
+		if res[0] = 1 then 	
+  			vld_ue_name(    fifo, res, "delta_idx_minus1                        "); pps_delta_idx_minus1[cnt_i]     := res[0];
+    		rIdx := cnt_i - 1 - res[0];
+    		vld_u_name(  1, fifo, res, "delta_rps_sign                          "); pps_delta_rps_sign[cnt_i]       := res[0];
+    		vld_ue_name(    fifo, res, "abs_delta_rps_minus1                    "); pps_abs_delta_rps_minus1[cnt_i] := res[0];
+    		deltaRPS := (1 - (pps_delta_rps_sign[rIdx]<<1)) * (res[0] + 1);
+    		foreach uint(size=8) i in 0 ..  pps_num_pics[rIdx]-1 do
+    			vld_u_name(  1, fifo, res, "ref_idc0                                ");
+    			if res[0] = 0 then
+	    			vld_u_name(  1, fifo, res, "ref_idc1                                ");
+	    			res[0] := res[0] << 1;
+    			end
+    			if res[0] = 1 or res[0] = 2 then
+    				if i < pps_num_pics[rIdx] then
+    					deltaPOC := deltaRPS + pps_deltaPOC[rIdx][i];
+    				else
+    					deltaPOC := deltaRPS;
+					end
+			        if deltaPOC < 0 then
+          				k0 := k0 + 1;
+        			else 
+          				k1 := k1 + 1;
+        			end
+        			k := k + 1; 			
+    			end
+    			pps_ref_idc[cnt_i][i] := res[0];
+    		end
+    		pps_num_ref_idc[cnt_i]       := pps_num_ref_idc[rIdx]+1;  
+    		pps_num_pics[cnt_i]          := k;
+    		pps_num_negative_pics[cnt_i] := k0;
+			pps_num_positive_pics[cnt_i] := k1;
+			sortDeltaPOC(cnt_i, k, k0, pps_deltaPOC, pps_used);
+  		else
+    		vld_ue_name(    fifo, res, "num_negative_pics                       "); pps_num_negative_pics[cnt_i] := res[0];
+    		vld_ue_name(    fifo, res, "num_positive_pics                       "); pps_num_positive_pics[cnt_i] := res[0];
+    		pps_num_pics[cnt_i] := pps_num_positive_pics[cnt_i] + res[0];
+    		if pps_num_negative_pics[cnt_i] != 0 then
+    			foreach uint(size=8) i in 0 ..  pps_num_negative_pics[cnt_i]-1 do
+	    			vld_ue_name(    fifo, res, "delta_poc_s0_minus1                     ");
+					prev := prev-res[0]-1;
+					pps_deltaPOC[cnt_i][i] := prev;
+					vld_u_name(  1, fifo, res, "used_by_curr_pic_s0_flag                "); pps_used[cnt_i][i]       := res[0];
+				end
+			end
+			prev := 0;
+			if pps_num_positive_pics[cnt_i] != 0 then
+    			foreach uint(size=8) i in pps_num_negative_pics[cnt_i] .. pps_num_pics[cnt_i]-1 do
+	    			vld_ue_name(    fifo, res, "delta_poc_s1_minus1                     ");
+					prev := prev-res[0]-1;
+					pps_deltaPOC[cnt_i][i] := prev;
+					vld_u_name(  1, fifo, res, "used_by_curr_pic_s1_flag                "); pps_used[cnt_i][i]       := res[0];
+				end
+			end
+		end
+		printDeltaPOC(cnt_i, pps_num_pics[cnt_i], pps_deltaPOC, pps_used,
+					  pps_inter_RPS_flag[cnt_i], pps_num_ref_idc[cnt_i], pps_ref_idc);
+		cnt_i := cnt_i + 1;
+ 	end
+ 	read_PPS_Header.se_idx_2.loopEnd : action ==>
+	guard
+		se_idx = 2 and cnt_i = pps_num_short_term_ref_pic_sets
+   	do
+		se_idx := se_idx + 2;
+		cnt_i  := 0;
+	end 
+	/**************************************************************************
+	 * read_PPS_Header.se_idx_4
+	 *************************************************************************/	
+	read_PPS_Header.se_idx_4 : action ==>
+	guard
+		se_idx = 4 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+	var
+		uint(size=32) res[1]
+   	do
+		vld_u_name(  1, fifo, res, "long_term_ref_pics_present_flag         "); pps_long_term_ref_pics_present_flag := res[0];
+		vld_u_name(  1, fifo, res, "entropy_coding_mode_flag                "); pps_entropy_coding_mode_flag    := res[0];
 		if pps_entropy_coding_mode_flag = 1 then
-			vld_ue_name(    fifo, res, "entropy_coding_synchro                  "); pps_entropy_coding_synchro := res[0];
-			vld_u_name(  1, fifo, res, "cabac_istate_reset                      "); pps_cabac_istate_reset     := res[0];
+			vld_ue_name(    fifo, res, "entropy_coding_synchro                  "); pps_entropy_coding_synchro  := res[0];
+			vld_u_name(  1, fifo, res, "cabac_istate_reset                      "); pps_cabac_istate_reset      := res[0];
 			if pps_entropy_coding_synchro != 0 then
 				vld_ue_name(    fifo, res, "num_substreams_minus1                   "); pps_entropy_coding_synchro := res[0];
 			end
@@ -427,17 +554,6 @@ actor Algo_Parser ()
 		foreach uint(size=8) i in 0 .. pps_num_temporal_layer_switching_point_flags - 1 do
 			vld_u_name(  1, fifo, res, "temporal_layer_switching_point_flag[ ]  "); pps_temporal_layer_switching_point_flag[i]     := res[0];
 		end	
-		se_idx := se_idx + 1;
- 	end
-	/**************************************************************************
-	 * read_PPS_Header.se_idx_2
-	 *************************************************************************/	
-	read_PPS_Header.se_idx_2 : action ==>
-	guard
-		se_idx = 2
-	var
-		uint(size=32) res[1]
-   	do
 		vld_u_name(  1, fifo, res, "constrained_intra_pred_flag             "); pps_constrained_intra_pred_flag   := res[0];
 		vld_u_name(  2, fifo, res, "slice_granularity                       "); pps_slice_granularity             := res[0];
 		if sps_cu_qp_delta_enabled_flag = 1 then
@@ -457,45 +573,47 @@ actor Algo_Parser ()
 		cnt_i  := 0;
  	end
 	/**************************************************************************
-	 * read_PPS_Header.se_idx_3
+	 * read_PPS_Header.se_idx_5
 	 *************************************************************************/	
-  	read_PPS_Header.se_idx_3.loop : action ==>
+  	read_PPS_Header.se_idx_5.loop : action ==>
 	guard
-		se_idx = 3 and pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_columns_minus1
+		se_idx = 5  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_columns_minus1
 	var
 		uint(size=32) res[1]
    	do
 		vld_ue_name(    fifo, res, "column_width[ ]                         "); pps_column_width[cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
-	read_PPS_Header.se_idx_3.loopEnd : action ==>
+	read_PPS_Header.se_idx_5.loopEnd : action ==>
 	guard
-		se_idx = 3 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_columns_minus1
+		se_idx = 5 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_columns_minus1
    	do
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
-	read_PPS_Header.se_idx_3.noLoop : action ==>
+	read_PPS_Header.se_idx_5.noLoop : action ==>
 	guard
-		se_idx = 3 and pps_uniform_spacing_idc = 0
+		se_idx = 5 and pps_uniform_spacing_idc = 0
    	do
 		se_idx := se_idx + 2;
 	end 
 	/**************************************************************************
-	 * read_SPS_Header.se_idx_4
+	 * read_SPS_Header.se_idx_6
 	 *************************************************************************/	
-	read_SPS_Header.se_idx_4.loop : action ==>
+	read_SPS_Header.se_idx_6.loop : action ==>
 	guard
-		se_idx = 4 and pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_rows_minus1
+		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_rows_minus1
 	var
 		uint(size=32) res[1]
    	do
 		vld_ue_name(    fifo, res, "row_height[ ]                          "); pps_row_height[cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
-	read_SPS_Header.se_idx_4.loopEnd : action ==>
+	read_SPS_Header.se_idx_6.loopEnd : action ==>
 	guard
-		se_idx = 4 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_rows_minus1
+		se_idx = 6 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_rows_minus1
    	do
 		se_idx := se_idx + 1;
 	end 
@@ -504,9 +622,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_PPS_Header_done : action ==>
 	guard
-		se_idx = 5
-	do
-		byte_align(fifo);
+		se_idx = 7
 	end 	
 	/**************************************************************************
 	 **************************************************************************
@@ -530,13 +646,21 @@ actor Algo_Parser ()
 	uint(size= 1) slice_loop_filter_disable;
 	uint(size= 1) slice_collocated_from_l0_flag;
 	uint(size=32) wp[2][MAX_NUM_REF][3][WP_MAX_STRUCT];
+	uint(size= 1) slice_symbolMode; 
+	uint(size= 1) slice_drbFlag; 
+	uint(size= 2) slice_erbIndex; 
+	uint(size= 1) slice_tileMarkerFlag; 
+	uint(size=32) slice_puiSubstreamSizes[255];
+	uint(size= 5) slice_tileLocationCount_minus1;
+	uint(size= 5) slice_bitsUsedByDiff_minus1;
+	uint(size= 5) slice_tileLocation[32];
 
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_1
 	 *************************************************************************/	
 	read_SliceHeader.se_idx_1 : action ==>
 	guard
-		se_idx = 1
+		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
    	do	
@@ -567,7 +691,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SliceHeader.se_idx_2 : action ==>
 	guard
-		se_idx = 2
+		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
    	do	
@@ -593,7 +717,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SliceHeader.se_idx_3 : action ==>
 	guard
-		se_idx = 3
+		se_idx = 3 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1],
 		uint(size=32) iNumCUs = ( (sps_pic_width_in_luma_samples  + sps_maxCUWidth - 1) / sps_maxCUWidth ) * 
@@ -641,7 +765,7 @@ actor Algo_Parser ()
 	end
    	read_SliceHeader.se_idx_4.useWP : action ==>
 	guard
-		se_idx = 4 and 
+		se_idx = 4 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
 		(pps_weighted_pred_flag  = 1 and slice_slice_type = P_SLICE) or 
 		(pps_weighted_bipred_idc = 1 and slice_slice_type = B_SLICE)
 	var
@@ -709,14 +833,9 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_5
 	 *************************************************************************/	
-	uint(size= 1) slice_symbolMode; 
-	uint(size= 1) slice_drbFlag; 
-	uint(size= 2) slice_erbIndex; 
-	uint(size= 1) slice_tileMarkerFlag; 
-	uint(size=32) slice_puiSubstreamSizes[255];
 	read_SliceHeader.se_idx_5 : action ==>
 	guard
-		se_idx = 5
+		se_idx = 5 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
    	do	
@@ -733,11 +852,11 @@ actor Algo_Parser ()
  		end
  		if pps_entropy_coding_synchro = 1 then
  			foreach uint(size=8) ui in 0 .. pps_num_substreams_minus1 do
- 				vld_u(  2, fifo, res);
+ 				vld_u_name(  2, fifo, res, "substreamByteSizes");
  				if res[0] > 3 then
  					println("Error in parseSliceHeader");
  				else
- 					vld_u_name(  8<<res[0], fifo, res, "puiSubstreamSizes[ ]                    "); slice_puiSubstreamSizes[ui] := res[0]; 				
+ 					vld_u_name(  8<<res[0], fifo, res, "substreamSizes[ ]                    "); slice_puiSubstreamSizes[ui] := res[0]; 				
  				end
  				
  			end
@@ -747,22 +866,18 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_6
 	 *************************************************************************/
-	uint(size=5) slice_tileLocationCount_minus1;
-	uint(size=5) slice_bitsUsedByDiff_minus1;
-	uint(size=5) slice_tileLocation[32];
 	read_SliceHeader.se_idx_6 : action ==>
 	guard
-		se_idx = 6
+		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1],
-		uint(size= 5) iLastSize,
-         int(size= 5) iCurSize,
+		 int(size= 5) iLastSize,
          int(size= 5) iCurDiff,
         uint(size= 1) iSign
    	do	
    		if slice_lightweight_slice_flag = 0 then
-   			if sps_tile_boundary_independence_idc = 0 then
- 				vld_u(  1, fifo, res);
+   			if sps_tile_boundary_independence_idc = 1 then
+ 				vld_u_name(  1, fifo, res, "tileLocationInformationInSliceHeaderFlag");
  				if res[0] = 1 then
 	 				vld_u_name(  5, fifo, res, "tileLocationCount_minus1                "); slice_tileLocationCount_minus1 := res[0];
 	 				vld_u_name(  5, fifo, res, "bitsUsedByDiff_minus1                   "); slice_bitsUsedByDiff_minus1    := res[0];
@@ -792,8 +907,6 @@ actor Algo_Parser ()
 	read_SliceHeader_done : action ==>
 	guard
 		se_idx = 7
-	do
-		byte_align(fifo);
 	end 	
 	
 	/**************************************************************************
@@ -816,6 +929,8 @@ actor Algo_Parser ()
 	 **************************************************************************
 	 *************************************************************************/
   	schedule fsm start_code:
+		// byte align
+		byte_align          			( byte_align_a						) --> start_code;
 		// search start code
 		start_code          			( start_code.search					) --> start_code;
 		start_code			            ( start_code.done					) --> read_Nal_unit_header;
@@ -824,16 +939,16 @@ actor Algo_Parser ()
 		find_header	  					( look_for.SPS_header	  			) --> read_SPS_Header;
 		find_header	  					( look_for.PPS_header	  			) --> read_PPS_Header;
 		find_header	  					( look_for.Slice_header	  			) --> read_SliceHeader;
-		find_header	  					( look_for_other_header				) --> start_code;
+		find_header	  					( look_for_other_header				) --> byte_align;
 		// read SPS header
 		read_SPS_Header	  				( read_SPS_Header	    			) --> read_SPS_Header;
-		read_SPS_Header	  				( read_SPS_Header_done    			) --> start_code;
+		read_SPS_Header	  				( read_SPS_Header_done    			) --> byte_align;
 		// read PPS header
 		read_PPS_Header 				( read_PPS_Header   				) --> read_PPS_Header;
-		read_PPS_Header	  				( read_PPS_Header_done    			) --> start_code;
+		read_PPS_Header	  				( read_PPS_Header_done    			) --> byte_align;
 		// read_SliceHeader
 		read_SliceHeader				( read_SliceHeader					) --> read_SliceHeader;
-		read_SliceHeader				( read_SliceHeader_done				) --> undefined;
+		read_SliceHeader				( read_SliceHeader_done				) --> byte_align;
 		
 		
 		
