@@ -444,10 +444,6 @@ actor Algo_Synp_AVC_CBP()
 	look_for_Sequence_Header: action ==>
 	end
 
-	//FIXME this action is not used any more
-	search_start_code: action ==>
-	end
-
 	uint(size=2) nal_ref_idc :=0;
 	uint(size=5) nal_unit_type :=0;
 	
@@ -3388,30 +3384,31 @@ actor Algo_Synp_AVC_CBP()
 	/**************************************************************************
 	 * search_start_code
 	 *************************************************************************/
-	test_one_byte: action ==>
+	/**************************************************************************
+	 * search_start_code
+	 *************************************************************************/
+	start_code.search: action ==>
 	guard
-		byte[0] = 1
-    end
-
-	test_zero_byte: action ==>
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		not IsStartCode(fifo)
+   	do
+		flushBits( 8, fifo, bit_count );
+		if DEBUG_BITSTREAM then		
+  			println("start_code.search");
+   		end
+	end
+	start_code.done: action ==>
 	guard
-		byte[0] = 0
-    end
-
-	request_byte: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
-	var
-		uint(size=32) res[1]
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		IsStartCode(fifo)
 	do
-		vld_u_name(1,  fifo, res, "startcode                             ", bit_count);
-		byte[0] := res[0];
-	end
-	
-	generic_done: action ==>
+		flushBits( 8, fifo, bit_count);
+		if DEBUG_BITSTREAM then
+			println("start_code.done");
+		end
 	end
 
-	byte_align_: action ==>
+	byte_align_a: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	do
@@ -3435,33 +3432,23 @@ actor Algo_Synp_AVC_CBP()
 	
 //********************************************************************************************************************************** 
 	schedule fsm look_for_Sequence_Header :
-		look_for_Sequence_Header						( look_for_Sequence_Header							) --> search_start_code;
-		search_start_code ( search_start_code  ) --> stuck;
+		look_for_Sequence_Header						( look_for_Sequence_Header							) --> byte_align_a;
 
 	    // FIXME: add minimal error resilience.
 	    // byte align, then look for a starting on any byte boundary.
 	    // is hex 00000100.
-	    stuck    ( byte_align_     ) --> stuck_1a;
+	    byte_align_a    ( byte_align_a    ) --> search_start_code;
 	
-	    stuck_1a ( request_byte   ) --> stuck_1b;
-	    stuck_1b ( test_zero_byte ) --> stuck_2a;
-	    stuck_1b ( generic_done   ) --> stuck_1a;
-	
-	    stuck_2a ( request_byte   ) --> stuck_2b;
-	    stuck_2b ( test_zero_byte ) --> stuck_3a;
-	    stuck_2b ( generic_done   ) --> stuck_1a;
-	
-	    stuck_3a ( request_byte   ) --> stuck_3b;
-	    stuck_3b ( test_zero_byte ) --> stuck_3a;
-	    stuck_3b ( test_one_byte  ) --> read_Nal_unit_header;
-	    stuck_3b ( generic_done   ) --> stuck_1a;
+		// search start code
+		search_start_code          			( start_code.search					    ) --> search_start_code;
+		search_start_code			            ( start_code.done					) --> read_Nal_unit_header;
 	    
 
 		// read Nal Unit header
 		read_Nal_unit_header							( read_Nal_unit_header								) --> find_header;
 
 		//
-		find_header	  									( look_for_other_header								) --> search_start_code;
+		find_header	  									( look_for_other_header								) --> look_for_Sequence_Header;
 		find_header	  									( look_for.Sps_header	  							) --> read_Sps_id;
 		find_header	  									( look_for.Pps_header	  							) --> read_Pps_seq_parameter_set_id;
 		find_header	  									( look_for.Slice_header	  							) --> read_SliceH_slice_type;
@@ -3493,7 +3480,7 @@ actor Algo_Synp_AVC_CBP()
 		read_Sps_frame_crop_left_offset						( read_Sps_frame_crop_left_offset  	                ) --> undefined;
 		read_Sps_frame_crop_left_offset						( read_Sps_skip_frame_crop_left_offset	  	        ) --> read_Sps_vui_parameters_present_flag; 
 		read_Sps_vui_parameters_present_flag				( read_Sps_vui_parameters_present_flag	  	        ) --> read_Sps_vui_parameters_present_flag_done;
-		read_Sps_vui_parameters_present_flag_done			( read_Sps_done	                            		) --> search_start_code; //end of Sps
+		read_Sps_vui_parameters_present_flag_done			( read_Sps_done	                            		) --> look_for_Sequence_Header; //end of Sps
 		read_Sps_vui_parameters_present_flag_done			( read_Sps_vui_parameters                    		) --> undefined; //end of Sps
 
 		// read Pps header
@@ -3510,7 +3497,7 @@ actor Algo_Synp_AVC_CBP()
 		read_Pps_chroma_qp_index_offset						( read_Pps_chroma_qp_index_offset 	                ) --> read_Pps_flag_deblocking_constrained_redundant;
 		read_Pps_flag_deblocking_constrained_redundant		( read_Pps_flag_deblocking_constrained_redundant	) --> read_Pps_check_High_Profile;
 		read_Pps_check_High_Profile							( read_Pps_check_High_Profile					  	) --> read_Pps_not_High_Profile;
-		read_Pps_not_High_Profile							( read_Pps_not_High_Profile						  	) --> search_start_code;
+		read_Pps_not_High_Profile							( read_Pps_not_High_Profile						  	) --> look_for_Sequence_Header;
 		//read_Pps_not_High_Profile							( read_Pps_pic_scaling_matrix_present_flag		  	) --> read_Nal_unit_header; //not yet realized
 
 		// read Slice header
@@ -3597,8 +3584,8 @@ actor Algo_Synp_AVC_CBP()
 		
 		SliceD_update										( SliceD_update_CABAC								) --> undefined;
 		SliceD_while_moreDataFlag							( SliceD_while_moreDataFlag							) --> sync_do_mb_layer;
-		SliceD_while_moreDataFlag							( SliceD_end										) --> search_start_code;
-		read_SliceD_mb_field_decoding_flag					( SliceD_end										) --> search_start_code;
+		SliceD_while_moreDataFlag							( SliceD_end										) --> look_for_Sequence_Header;
+		read_SliceD_mb_field_decoding_flag					( SliceD_end										) --> look_for_Sequence_Header;
 		
 		// macrobloc_layer
 		read_MB_layer_mb_type								( read_MB_layer_mb_type								) --> read_MB_layer_check_I_PCM;
@@ -3736,8 +3723,6 @@ actor Algo_Synp_AVC_CBP()
 		MB_pred_init_mvd_l0 > read_MB_pred_ref_idx_l1 > read_MB_pred_skip_ref_idx_l1;
 		MB_pred_init_mvd_l1 >  read_MB_pred_mvd_l0 > read_MB_pred_skip_mvd_l0;
 		MB_pred_done  > read_MB_pred_mvd_l1 > read_MB_pred_skip_mvd_l1;
-		test_zero_byte > generic_done;
-		test_one_byte  > generic_done;
 		send_data_position_information_is_ipcm>send_data_position_information;
 	end
 
