@@ -65,8 +65,7 @@ import org.mpeg4.part10.cbp.synParser.Monolithic.ParserUtils.*;
 import org.mpeg4.part10.cbp.synParser.Monolithic.BitstreamReadUtils.*;
 
 actor Algo_Synp_AVC_CBP()
-		uint(size=8) BYTE, 
-		uint nb_rbsp_bytes 
+		uint(size=8) BYTE 
 		==> int(size=9) pix_I_PCM,
 			uint(size=4) IntraPredMode,
 			uint(size=4) IntraPredModeC, 
@@ -152,9 +151,6 @@ actor Algo_Synp_AVC_CBP()
 	
 	
 	uint(size=2) REFLIST0_PRED    = 0;
-	// ********** Read bits ********** //  
-	uint bit_count[1] := [0];
-	uint val_nb_rbsp_bytes := 0;
 
 	// ********** Read VLD ********** //
 	int VLD_Counter;
@@ -331,21 +327,15 @@ actor Algo_Synp_AVC_CBP()
 
  	procedure more_rbsp_data()   
   	var 
-  		uint(size=4) cptBits = fifo[FIFO_CPT_BITS],
-		int bit_shift=bit_count[0] & 7,
-		uint(size=32) res[1]
+  		uint(size=4) cptBits = (fifo[FIFO_CPT_BITS] - 1) & 7,
+		uint(size=32) res[1],
+ 		uint(size=4) idx     = getFifoIdx(fifo[FIFO_CPT_BITS], fifo)
 	begin
-		
-		if (bit_count[0] + 8)/ 8  < val_nb_rbsp_bytes 
-			then 
+		if ((fifo[(idx + 3) & 7] & 0x100) = 0 and (fifo[(idx + 4) & 7] & 0x100) = 0 ) then 
 				moreDataFlag:=1; 
 			else 
-				if ((cptBits & 7) = 0) then
-					showBits (8, fifo, res);
-				else
-					showBits (cptBits & 7, fifo, res);
-				end
-				moreDataFlag:=if(res[0] = 1<<((cptBits - 1) & 7)) then 0 else 1 end;
+				showBits ((cptBits + 1), fifo, res);
+				moreDataFlag:=if(res[0] = 1<< cptBits) then 0 else 1 end;
 			end
 	end
 	
@@ -378,7 +368,7 @@ actor Algo_Synp_AVC_CBP()
 	fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var int res[1]
 	do
-		vld_u(  1, fifo, res, bit_count);
+		vld_u(  1, fifo, res);
 		VLD_Counter := VLD_Counter + 1;
 		Codeword := ( (Codeword << 1) | if res[0] = 1 then 1 else 0 end);
 		if CAVLC_type =0 then // coeff_token
@@ -454,18 +444,16 @@ actor Algo_Synp_AVC_CBP()
 	uint(size=2) nal_ref_idc :=0;
 	uint(size=5) nal_unit_type :=0;
 	
-	read_Nal_unit_header: action nb_rbsp_bytes:[n] ==>
+	read_Nal_unit_header: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
-		val_nb_rbsp_bytes := n;
 		//println("=========== NAL_UNIT ===========");
-		flushBits_name( 1, fifo,   "reserved_zero_1bits                     ", bit_count);
-		vld_u_name(  2, fifo, res, "nal_ref_idc                             ", bit_count); nal_ref_idc  := res[0];
-		vld_u_name(  5, fifo, res, "nal_unit_type                           ", bit_count); nal_unit_type := res[0];
-		bit_count[0] := 0;
+		flushBits_name( 1, fifo,   "reserved_zero_1bits                     ");
+		vld_u_name(  2, fifo, res, "nal_ref_idc                             "); nal_ref_idc  := res[0];
+		vld_u_name(  5, fifo, res, "nal_unit_type                           "); nal_unit_type := res[0];
 	end 
  
 	look_for_other_header: action ==>
@@ -482,14 +470,14 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(  8, fifo, res, "profile_idc                             ", bit_count); sps_profile_idc                := res[0];
-		flushBits_name( 1, fifo,   "constraint_set0_flag                     ", bit_count);
-		flushBits_name( 1, fifo,   "constraint_set1_flag                     ", bit_count);
-		flushBits_name( 1, fifo,   "constraint_set2_flag                     ", bit_count);
-		flushBits_name( 1, fifo,   "constraint_set3_flag                     ", bit_count);
-		flushBits_name( 1, fifo,   "constraint_set4_flag                     ", bit_count);
-		flushBits_name( 3, fifo,   "reserved_zero_3bits                     ", bit_count);
-		vld_u_name(  8, fifo, res, "level_idc                               ", bit_count); sps_level_idc                  := res[0];
+		vld_u_name(  8, fifo, res, "profile_idc                             "); sps_profile_idc                := res[0];
+		flushBits_name( 1, fifo,   "constraint_set0_flag                     ");
+		flushBits_name( 1, fifo,   "constraint_set1_flag                     ");
+		flushBits_name( 1, fifo,   "constraint_set2_flag                     ");
+		flushBits_name( 1, fifo,   "constraint_set3_flag                     ");
+		flushBits_name( 1, fifo,   "constraint_set4_flag                     ");
+		flushBits_name( 3, fifo,   "reserved_zero_3bits                     ");
+		vld_u_name(  8, fifo, res, "level_idc                               "); sps_level_idc                  := res[0];
 	end
 
 	look_for.Pps_header: action ==>
@@ -545,7 +533,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "seq_parameter_set_id                    ", bit_count); sps_id[0]                     := res[0]; // getBits(10) max
+		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); sps_id[0]                     := res[0]; // getBits(10) max
 		level_idc[sps_id[0]] := sps_level_idc;
 	end
   
@@ -562,7 +550,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "log2_max_frame_num_minus4               ", bit_count);
+		vld_ue_name(    fifo, res, "log2_max_frame_num_minus4               ");
 		log2_max_frame_num_minus4[sps_id[0]] := res[0];
 	end
  
@@ -572,7 +560,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "pic_order_cnt_type                      ", bit_count);
+		vld_ue_name(    fifo, res, "pic_order_cnt_type                      ");
 		pic_order_cnt_type[sps_id[0]] := res[0];
 	end
 
@@ -584,7 +572,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       ", bit_count);
+		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       ");
 		log2_max_pic_order_cnt_lsb_minus4[sps_id[0]] := res[0];
 	end
  
@@ -596,7 +584,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name( 1, fifo, res,  "delta_pic_order_always_zero_flag        ", bit_count);
+		vld_u_name( 1, fifo, res,  "delta_pic_order_always_zero_flag        ");
 		delta_pic_order_always_zero_flag[sps_id[0]] := res[0];
 	end
 
@@ -606,7 +594,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(    fifo, res, "offset_for_non_ref_pic                  ", bit_count);
+		vld_se_name(    fifo, res, "offset_for_non_ref_pic                  ");
 		offset_for_non_ref_pic[sps_id[0]] := res[0];
 	end
 
@@ -616,7 +604,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(    fifo, res, "offset_for_top_to_bottom_field          ", bit_count);
+		vld_se_name(    fifo, res, "offset_for_top_to_bottom_field          ");
 		offset_for_top_to_bottom_field[sps_id[0]] := res[0];
 	end
 
@@ -626,7 +614,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "num_ref_frames_in_pic_order_cnt_cycle   ", bit_count);
+		vld_ue_name(    fifo, res, "num_ref_frames_in_pic_order_cnt_cycle   ");
 		num_ref_frames_in_pic_order_cnt_cycle[sps_id[0]] := res[0];
 	end
 
@@ -638,7 +626,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(    fifo, res, "offset_for_ref_frame                    ", bit_count);
+		vld_se_name(    fifo, res, "offset_for_ref_frame                    ");
 		offset_for_ref_frame[sps_id[0]][sps_i] := res[0];
 		sps_i := sps_i + 1;
 	end
@@ -664,7 +652,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res,   "num_ref_frames                          ", bit_count);
+		vld_ue_name(  fifo, res,   "num_ref_frames                          ");
 		num_ref_frames[sps_id[0]] := res[0];
 	end
 
@@ -672,7 +660,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	do
-		flushBits_name(1,  fifo,   "gaps_in_frame_num_value_allowed_flag    ", bit_count);
+		flushBits_name(1,  fifo,   "gaps_in_frame_num_value_allowed_flag    ");
 	end
 
 	read_Sps_pic_width_in_mbs_minus1: action ==>
@@ -681,7 +669,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "pic_width_in_mbs_minus1                 ", bit_count);
+		vld_ue_name(    fifo, res, "pic_width_in_mbs_minus1                 ");
 		pic_width_in_mbs_minus1[sps_id[0]] := res[0];
 	end
 
@@ -691,7 +679,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "pic_height_in_map_units_minus1          ", bit_count);
+		vld_ue_name(    fifo, res, "pic_height_in_map_units_minus1          ");
 		pic_height_in_map_units_minus1[sps_id[0]] := res[0];
 	end
 
@@ -701,7 +689,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1, fifo, res,   "frame_mbs_only_flag                     ", bit_count);
+		vld_u_name(1, fifo, res,   "frame_mbs_only_flag                     ");
 		frame_mbs_only_flag[sps_id[0]] := res[0];
 	end
 
@@ -805,7 +793,7 @@ actor Algo_Synp_AVC_CBP()
 		else
 			MaxDPBSz[sps_id[0]] := MaxDPBSize;
 		end
-		vld_u_name(1, fifo, res,   "mb_adaptive_frame_field_flag                             ", bit_count);
+		vld_u_name(1, fifo, res,   "mb_adaptive_frame_field_flag                             ");
 		mb_adaptive_frame_field_flag[sps_id[0]] := res[0];
 	end
 
@@ -918,7 +906,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1, fifo, res,   "direct_8x8_interference_flag                             ", bit_count);
+		vld_u_name(1, fifo, res,   "direct_8x8_interference_flag                             ");
 		direct_8x8_interference_flag[sps_id[0]] := res[0];
 	end
 
@@ -928,7 +916,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1, fifo, res,   "frame_cropping_flag                             ", bit_count);
+		vld_u_name(1, fifo, res,   "frame_cropping_flag                             ");
 		frame_cropping_flag := res[0];
 	end
 
@@ -952,7 +940,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1, fifo, res,   "vui_parameters_present_flag                             ", bit_count);
+		vld_u_name(1, fifo, res,   "vui_parameters_present_flag                             ");
 		vui_parameters_present_flag := res[0];
 	end
 
@@ -1006,7 +994,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res,   "pps_id                             ", bit_count);
+		vld_ue_name(  fifo, res,   "pps_id                             ");
 		pps_id := res[0];
 	end
 
@@ -1016,7 +1004,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res,   "sequence_parameter_set_id                             ", bit_count);
+		vld_ue_name(  fifo, res,   "sequence_parameter_set_id                             ");
 		sequence_parameter_set_id[pps_id] := res[0];
 	end
 
@@ -1026,11 +1014,11 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res,  "entropy_coding_mode_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res,  "entropy_coding_mode_flag                             ");
 		entropy_coding_mode_flag[pps_id] := res[0];
-		vld_u_name(1,  fifo, res,  "bottom_field_pic_order_in_frame_present_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res,  "bottom_field_pic_order_in_frame_present_flag                             ");
 		bottom_field_pic_order_in_frame_present_flag[pps_id] := res[0];
-		vld_ue_name(  fifo, res,   "num_slice_groups_minus1                             ", bit_count);
+		vld_ue_name(  fifo, res,   "num_slice_groups_minus1                             ");
 		num_slice_groups_minus1[pps_id] := res[0];
 	end
 
@@ -1055,7 +1043,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res,   "num_ref_idx_l0_active_minus1                             ", bit_count);
+		vld_ue_name(  fifo, res,   "num_ref_idx_l0_active_minus1                             ");
 		num_ref_idx_l0_active_minus1[pps_id] := res[0];
 	end
 
@@ -1065,7 +1053,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res,   "num_ref_idx_l1_active_minus1                             ", bit_count);
+		vld_ue_name(  fifo, res,   "num_ref_idx_l1_active_minus1                             ");
 		num_ref_idx_l1_active_minus1[pps_id] := res[0];
 	end
 
@@ -1075,9 +1063,9 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res,  "weighted_pred_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res,  "weighted_pred_flag                             ");
 		weighted_pred_flag[pps_id] := res[0];
-		vld_u_name(2,  fifo, res,  "weighted_bipred_idc                             ", bit_count);
+		vld_u_name(2,  fifo, res,  "weighted_bipred_idc                             ");
 		weighted_bipred_idc[pps_id] := res[0];
 	end
 
@@ -1087,7 +1075,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res,   "pic_init_qp_minus26                             ", bit_count);
+		vld_se_name(  fifo, res,   "pic_init_qp_minus26                             ");
 		pic_init_qp_minus26[pps_id] := res[0];
 	end
 
@@ -1097,7 +1085,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res,   "pic_init_qs_minus26                             ", bit_count);
+		vld_se_name(  fifo, res,   "pic_init_qs_minus26                             ");
 		pic_init_qs_minus26[pps_id] := res[0];
 	end
 
@@ -1107,7 +1095,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res,   "chroma_qp_index_offset                             ", bit_count);
+		vld_se_name(  fifo, res,   "chroma_qp_index_offset                             ");
 		chroma_qp_index_offset[pps_id] := res[0];
 		second_chroma_qp_index_offset[pps_id]:=res[0];
 	end
@@ -1118,11 +1106,11 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res,  "deblocking_filter_control_present_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res,  "deblocking_filter_control_present_flag                             ");
 		deblocking_filter_control_present_flag[pps_id] := res[0];
-		vld_u_name(1,  fifo, res,  "constrained_intra_pred_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res,  "constrained_intra_pred_flag                             ");
 		constrained_intra_pred_flag[pps_id] := if (res[0] = 1) then true else false end ;
-		vld_u_name(1,  fifo, res,  "redundant_pic_cnt_present_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res,  "redundant_pic_cnt_present_flag                             ");
 		redundant_pic_cnt_present_flag[pps_id] := res[0];
 	end
 
@@ -1130,7 +1118,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	do
-		byte_align(fifo, bit_count);
+		byte_align(fifo);
 	end 
 
 	//if (!more_rbsp_data)
@@ -1165,16 +1153,16 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=2) colour_plane_id
 	do
-		vld_ue_name(  fifo, res,   "first_mb_in_slice                             ", bit_count);
+		vld_ue_name(  fifo, res,   "first_mb_in_slice                             ");
 		first_mb_in_slice := res[0];
-		vld_ue_name(  fifo, res,   "slice_type                             ", bit_count);
+		vld_ue_name(  fifo, res,   "slice_type                             ");
 		slice_type := res[0];
 		slice_type := slice_type mod 5;
-		vld_ue_name(  fifo, res,   "pps_id                             ", bit_count);
+		vld_ue_name(  fifo, res,   "pps_id                             ");
 		pps_id := res[0];
 		sps_id[0] := sequence_parameter_set_id[pps_id];
 		if (separate_colour_plane_flag[sps_id[0]] = 1) then
-			vld_u_name(2,  fifo, res,   "colour_plane_id                             ", bit_count);
+			vld_u_name(2,  fifo, res,   "colour_plane_id                             ");
 			colour_plane_id := res[0];
 		end
 	end
@@ -1196,7 +1184,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		int(size=32) ValMaxFrameNum
 	do
-		vld_u_name(4+log2_max_frame_num_minus4[sps_id[0]],  fifo, res, "frame_num                             ", bit_count);
+		vld_u_name(4+log2_max_frame_num_minus4[sps_id[0]],  fifo, res, "frame_num                             ");
 		frame_num := res[0];
 		ValMaxFrameNum := 1 << (log2_max_frame_num_minus4[sps_id[0]] + 4);
 	end
@@ -1210,10 +1198,10 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=1) bottom_field_flag
 	do
 		if(frame_mbs_only_flag[sps_id[0]] = 0) then
-			vld_u_name(1,  fifo, res,   "field_pic_flag                             ", bit_count);
+			vld_u_name(1,  fifo, res,   "field_pic_flag                             ");
 			field_pic_flag := res[0];
 			if (field_pic_flag=1) then
-				vld_u_name(1,  fifo, res,  "bottom_field_flag                             ", bit_count);
+				vld_u_name(1,  fifo, res,  "bottom_field_flag                             ");
 				bottom_field_flag := res[0];
 			end
 		end
@@ -1228,7 +1216,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) idr_pic_id
 	do
 		if(nal_unit_type = 5) then
-			vld_ue_name(  fifo, res, "idr_pic_id                             ", bit_count);
+			vld_ue_name(  fifo, res, "idr_pic_id                             ");
 			idr_pic_id := res[0];
 		end
 	end
@@ -1241,10 +1229,10 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) delta_pic_order_cnt_bottom
 	do
 		if (pic_order_cnt_type[sps_id[0]] = 0) then
-			vld_u_name(log2_max_pic_order_cnt_lsb_minus4[sps_id[0]] +4,  fifo, res, "pic_order_cnt_lsb                             ", bit_count);
+			vld_u_name(log2_max_pic_order_cnt_lsb_minus4[sps_id[0]] +4,  fifo, res, "pic_order_cnt_lsb                             ");
 			pic_order_cnt_lsb := res[0];
 			if (bottom_field_pic_order_in_frame_present_flag[pps_id] = 1 and field_pic_flag = 0) then
-				vld_ue_name(  fifo, res, "delta_pic_order_cnt_bottom                             ", bit_count);
+				vld_ue_name(  fifo, res, "delta_pic_order_cnt_bottom                             ");
 				delta_pic_order_cnt_bottom := res[0];
 			end
 		end
@@ -1257,10 +1245,10 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1]
 	do
 		if (pic_order_cnt_type[sps_id[0]] = 1 and delta_pic_order_always_zero_flag[sps_id[0]] = 0) then
-			vld_se_name(  fifo, res, "idr_pic_id[0]                             ", bit_count);
+			vld_se_name(  fifo, res, "idr_pic_id[0]                             ");
 			delta_pic_order_cnt[0] := res[0];
 			if( bottom_field_pic_order_in_frame_present_flag[sps_id[0]] = 1 and field_pic_flag = 0 ) then
-				vld_se_name(  fifo, res, "delta_pic_order_cnt[1]                             ", bit_count);
+				vld_se_name(  fifo, res, "delta_pic_order_cnt[1]                             ");
 				delta_pic_order_cnt[1] := res[0];
 			end
 		end
@@ -1352,21 +1340,21 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=1) num_ref_idx_active_override_flag
 	do
 		if(redundant_pic_cnt_present_flag[pps_id] = 1) then
-			vld_ue_name(  fifo, res, "redundant_pic_cnt                             ", bit_count);
+			vld_ue_name(  fifo, res, "redundant_pic_cnt                             ");
 			redundant_pic_cnt := res[0];
 		end
 		if( slice_type = SLICE_TYPE_B ) then
-			vld_u_name(1,  fifo, res, "direct_spatial_mv_pred_flag                             ", bit_count);
+			vld_u_name(1,  fifo, res, "direct_spatial_mv_pred_flag                             ");
 			direct_spatial_mv_pred_flag := res[0];
 		end
 		if( slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_B ) then
-			vld_u_name(1,  fifo, res, "num_ref_idx_active_override_flag                             ", bit_count);
+			vld_u_name(1,  fifo, res, "num_ref_idx_active_override_flag                             ");
 			num_ref_idx_active_override_flag := res[0];
 			if( num_ref_idx_active_override_flag=1) then
-				vld_ue_name(  fifo, res, "num_ref_idx_l0_active_minus1                             ", bit_count);
+				vld_ue_name(  fifo, res, "num_ref_idx_l0_active_minus1                             ");
 				slice_num_ref_idx_l0_active_minus1 := res[0];
 				if( slice_type = SLICE_TYPE_B ) then
-					vld_ue_name(  fifo, res, "num_ref_idx_l1_active_minus1                             ", bit_count);
+					vld_ue_name(  fifo, res, "num_ref_idx_l1_active_minus1                             ");
 					slice_num_ref_idx_l1_active_minus1 := res[0];
 				end
 			else
@@ -1386,7 +1374,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "ref_pic_list_reordering_flag_l0                             ", bit_count);
+		vld_u_name(1,  fifo, res, "ref_pic_list_reordering_flag_l0                             ");
 		ref_pic_list_reordering_flag_l0 := res[0];
 		reordering_of_pic_nums_idc :=0;
 	end
@@ -1404,7 +1392,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "reordering_of_pic_nums_idc                             ", bit_count);
+		vld_ue_name(  fifo, res, "reordering_of_pic_nums_idc                             ");
 		reordering_of_pic_nums_idc := res[0];
 	end
 
@@ -1417,7 +1405,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=32) abs_diff_pic_num_minus1
 	do
-		vld_ue_name(  fifo, res, "abs_diff_pic_num_minus1                             ", bit_count);
+		vld_ue_name(  fifo, res, "abs_diff_pic_num_minus1                             ");
 		abs_diff_pic_num_minus1 := res[0];
 	end
 
@@ -1429,7 +1417,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "long_term_pic_num                             ", bit_count);
+		vld_ue_name(  fifo, res, "long_term_pic_num                             ");
 		long_term_pic_num := res[0];
 	end
 
@@ -1492,9 +1480,9 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=1) no_output_of_prior_pics_flag
 	do
-		vld_u_name(1,  fifo, res, "no_output_of_prior_pics_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res, "no_output_of_prior_pics_flag                             ");
 		no_output_of_prior_pics_flag := res[0];
-		vld_u_name(1,  fifo, res, "long_term_reference_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res, "long_term_reference_flag                             ");
 		long_term_reference_flag := res[0];
 	end
 
@@ -1506,7 +1494,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "adaptative_ref_pic_marking_mode_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res, "adaptative_ref_pic_marking_mode_flag                             ");
 		adaptative_ref_pic_marking_mode_flag := res[0];
 //		if adaptative_ref_pic_marking_mode_flag = 1 then start_vld(); end
 	end
@@ -1520,7 +1508,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "memory_management_control_operation                             ", bit_count);
+		vld_ue_name(  fifo, res, "memory_management_control_operation                             ");
 		memory_management_control_operation := res[0];
 	end
 
@@ -1532,7 +1520,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "difference_of_pic_nums_minus1                             ", bit_count);
+		vld_ue_name(  fifo, res, "difference_of_pic_nums_minus1                             ");
 		difference_of_pic_nums_minus1 := res[0];
 	end
 
@@ -1546,7 +1534,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "long_term_pic_num                             ", bit_count);
+		vld_ue_name(  fifo, res, "long_term_pic_num                             ");
 		long_term_pic_num := res[0];
 	end
 	// end if
@@ -1559,7 +1547,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "long_term_frame_idx                             ", bit_count);
+		vld_ue_name(  fifo, res, "long_term_frame_idx                             ");
 		long_term_frame_idx := res[0];
 	end
 
@@ -1578,7 +1566,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "max_long_term_frame_idx_plus1                             ", bit_count);
+		vld_ue_name(  fifo, res, "max_long_term_frame_idx_plus1                             ");
 		max_long_term_frame_idx_plus1 := res[0];
 	end
 
@@ -1630,10 +1618,10 @@ actor Algo_Synp_AVC_CBP()
 	do
 		if (entropy_coding_mode_flag[pps_id] = 1 and
 			slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI) then
-			vld_ue_name(  fifo, res, "cabac_init_idc                             ", bit_count);
+			vld_ue_name(  fifo, res, "cabac_init_idc                             ");
 			cabac_init_idc := res[0];
 		end
-		vld_se_name(  fifo, res, "slice_qp_delta                             ", bit_count);
+		vld_se_name(  fifo, res, "slice_qp_delta                             ");
 		slice_qp_delta := res[0];
 		val_QP := 26 + pic_init_qp_minus26[pps_id] + slice_qp_delta;
 		val_QP_Cb := qP_tab[val_QP + chroma_qp_index_offset[pps_id]];
@@ -1652,10 +1640,10 @@ actor Algo_Synp_AVC_CBP()
 	do
 		if (slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_SI) then
 			if slice_type = SLICE_TYPE_SP then 
-				vld_u_name(1,  fifo, res, "sp_for_switch_flag                             ", bit_count);
+				vld_u_name(1,  fifo, res, "sp_for_switch_flag                             ");
 				sp_for_switch_flag := res[0];
 			end
-			vld_se_name(  fifo, res, "slice_qs_delta                             ", bit_count);
+			vld_se_name(  fifo, res, "slice_qs_delta                             ");
 			slice_qs_delta := res[0];
 		end
 	end
@@ -1669,13 +1657,13 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "disable_deblocking_filter_idc                             ", bit_count);
+		vld_ue_name(  fifo, res, "disable_deblocking_filter_idc                             ");
 		disable_deblocking_filter_idc := res[0];
 		if (disable_deblocking_filter_idc!=1) then
-			vld_se_name(  fifo, res, "slice_alpha_c0_offset_div2                             ", bit_count);
+			vld_se_name(  fifo, res, "slice_alpha_c0_offset_div2                             ");
 			slice_alpha_c0_offset_div2 := res[0];
 			val_slice_alpha_c0_offset:=(slice_alpha_c0_offset_div2 << 1);
-			vld_se_name(  fifo, res, "slice_beta_offset_div2                             ", bit_count);
+			vld_se_name(  fifo, res, "slice_beta_offset_div2                             ");
 			slice_beta_offset_div2 := res[0];
 			val_slice_beta_offset:=(slice_beta_offset_div2 << 1);
 		else
@@ -1716,7 +1704,7 @@ actor Algo_Synp_AVC_CBP()
 			x := (x >> 1);
 			n := n+1;
 		end
-		vld_u_name(n,  fifo, res, "slice_group_change_cycle                             ", bit_count);
+		vld_u_name(n,  fifo, res, "slice_group_change_cycle                             ");
 		slice_group_change_cycle := res[0];
 	end
 
@@ -1747,7 +1735,7 @@ actor Algo_Synp_AVC_CBP()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 1
 	do
-		byte_align(fifo, bit_count);
+		byte_align(fifo);
 	end
 
 	read_SliceD_skip_CABAC_alignement: action ==>
@@ -1787,7 +1775,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "mb_skip_run                             ", bit_count);
+		vld_ue_name(  fifo, res, "mb_skip_run                             ");
 		mb_skip_run := res[0];
 	end
 
@@ -2109,7 +2097,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "mb_type                             ", bit_count);
+		vld_ue_name(  fifo, res, "mb_type                             ");
 		mb_type := res[0];
 		vld_mb_type[0] := mb_type;
 		if slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI then mb_intra_flag := 1; end
@@ -2155,7 +2143,7 @@ actor Algo_Synp_AVC_CBP()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		vld_mb_type[0] = BLOCK_TYPE_I_PCM
 	do
-		byte_align(fifo, bit_count);
+		byte_align(fifo);
 		MB_inc := 0;
 		foreach int i in 0 .. 15 do
 			NonZeroCount[val_CurrMbAddr][i] := 16;
@@ -2175,7 +2163,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=32) pcm_sample_luma
 	do
-		vld_u_name(bit_depth_luma_minus8[sps_id[0]]+8,  fifo, res, "pcm_sample_luma                             ", bit_count);
+		vld_u_name(bit_depth_luma_minus8[sps_id[0]]+8,  fifo, res, "pcm_sample_luma                             ");
 		pcm_sample_luma := res[0];
 		MB_inc := MB_inc + 1;
 	end
@@ -2196,7 +2184,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=32) pcm_sample_chroma
 	do
-		vld_u_name(bit_depth_chroma_minus8[sps_id[0]]+8,  fifo, res, "pcm_sample_chroma                             ", bit_count);
+		vld_u_name(bit_depth_chroma_minus8[sps_id[0]]+8,  fifo, res, "pcm_sample_chroma                             ");
 		pcm_sample_chroma := res[0];
 		MB_inc := MB_inc + 1;
 	end
@@ -2246,7 +2234,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
 		transform_size_8x8_flag := res[0];
 	end
 
@@ -2268,7 +2256,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=6) coded_block_pattern
 	do
-		vld_me_name(  fifo, res, chroma_format_idc, sps_id[0], vld_mb_type[0], "coded_block_pattern                             ", bit_count);
+		vld_me_name(  fifo, res, chroma_format_idc, sps_id[0], vld_mb_type[0], "coded_block_pattern                             ");
 		coded_block_pattern := res[0];
 		val_CodedBlockPatternLuma := coded_block_pattern mod 16;
 		CodedBlockPatternChroma := coded_block_pattern / 16;
@@ -2277,7 +2265,7 @@ actor Algo_Synp_AVC_CBP()
 			slice_type != SLICE_TYPE_I and
 			noSubMbPartSizeLessThan8x8Flag =1 and
 			(( slice_type = SLICE_TYPE_B and mb_type = 0) or direct_8x8_interference_flag[sps_id[0]]=1 ) )then 
-				vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ", bit_count);
+				vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
 				transform_size_8x8_flag := res[0];
 		end
 	end
@@ -2300,7 +2288,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mb_qp_delta                             ", bit_count);
+		vld_se_name(  fifo, res, "mb_qp_delta                             ");
 		mb_qp_delta := res[0];
 		val_QP := (val_QP + mb_qp_delta + 52) mod 52;
 		val_QP_Cb := qP_tab[val_QP + chroma_qp_index_offset[pps_id]];
@@ -2353,7 +2341,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=4) subMbType,
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "sub_mb_type[mbPartIdx]                             ", bit_count);
+		vld_ue_name(  fifo, res, "sub_mb_type[mbPartIdx]                             ");
 		sub_mb_type[mbPartIdx] := res[0];
 		subMbType := sub_mb_type[mbPartIdx];
 		mbPartIdx := mbPartIdx +1;
@@ -2383,10 +2371,10 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1]
 	do
 		if slice_num_ref_idx_l0_active_minus1 = 1 then 
-			vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
 			ref_idx_l0[mbPartIdx] := 1 - res[0];
 		else
-			vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
 			ref_idx_l0[mbPartIdx] := res[0];
 		end
 		mbPartIdx := mbPartIdx +1;
@@ -2426,9 +2414,9 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1]
 	do
 		if slice_num_ref_idx_l1_active_minus1 = 1 then 
-			vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+			vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
 		else
-			vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+			vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
 		end
 		mbPartIdx := mbPartIdx +1;
 		mbPartIdx := mbPartIdx +1;
@@ -2472,7 +2460,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mvd_l0[0]                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l0[0]                             ");
 		mvd_l0 := res[0];
 	end
 
@@ -2482,7 +2470,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mvd_l0[1]                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l0[1]                             ");
 		mvd_l0 := res[0];
 		subMbPartIdx := subMbPartIdx +1;
 	end
@@ -2536,7 +2524,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=32) mvd_l1
 	do
-		vld_se_name(  fifo, res, "mvd_l1[0]                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l1[0]                             ");
 		mvd_l1 := res[0];
 	end
 
@@ -2547,7 +2535,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=32) mvd_l1
 	do
-		vld_se_name(  fifo, res, "mvd_l1[1]                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l1[1]                             ");
 		mvd_l1 := res[0];
 		subMbPartIdx := subMbPartIdx +1;
 	end
@@ -2599,10 +2587,10 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
 		prev_intra4x4_pred_mode_flag := res[0];
 		if prev_intra4x4_pred_mode_flag = 0 then 
-			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ", bit_count);
+			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := res[0];
 		else
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := 15; // indicates that the mode is predicted using the neighbourhood 
@@ -2632,10 +2620,10 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ", bit_count);
+		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
 		prev_intra4x4_pred_mode_flag := res[0];
 		if prev_intra4x4_pred_mode_flag = 0 then 
-			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ", bit_count);
+			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := res[0];
 		else
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := 15; // indicates that the mode is predicted using the neighbourhood 
@@ -2666,7 +2654,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "intra_chroma_pred_mode                             ", bit_count);
+		vld_ue_name(  fifo, res, "intra_chroma_pred_mode                             ");
 		intra_chroma_pred_mode := res[0];
 	end
 
@@ -2699,10 +2687,10 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1]
 	do
 		if slice_num_ref_idx_l0_active_minus1 = 1 then 
-			vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
 			ref_idx_l0[mbPartIdx] := 1 - res[0];
 		else 
-			vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ", bit_count);
+			vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
 			ref_idx_l0[mbPartIdx] := res[0];
 		end
 		mbPartIdx := mbPartIdx +1;
@@ -2738,9 +2726,9 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1]
 	do
 		if slice_num_ref_idx_l1_active_minus1 = 1 then 
-			vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+			vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
 		else 
-			vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ", bit_count);
+			vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
 		end
 		mbPartIdx := mbPartIdx +1;
 	end
@@ -2776,7 +2764,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mvd_l0                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l0                             ");
 		mvd_l0 := res[0];
 	end
 
@@ -2786,7 +2774,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mvd_l0                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l0                             ");
 		mvd_l0 := res[0];
 		mbPartIdx := mbPartIdx +1;
 	end
@@ -2822,7 +2810,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mvd_l1                            ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l1                            ");
 	end
 
 	read_MB_pred_mvd_l1_done1: action ==> 
@@ -2831,7 +2819,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_se_name(  fifo, res, "mvd_l1                             ", bit_count);
+		vld_se_name(  fifo, res, "mvd_l1                             ");
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -3215,7 +3203,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "level[ inc_nb_coeff ]                             ", bit_count);
+		vld_u_name(1,  fifo, res, "level[ inc_nb_coeff ]                             ");
 		level[ inc_nb_coeff ] := 1 - 2 * res[0];
 		inc_nb_coeff := inc_nb_coeff +1 ;
 	end
@@ -3230,7 +3218,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "level_prefix_temp                             ", bit_count);
+		vld_u_name(1,  fifo, res, "level_prefix_temp                             ");
 		level_prefix_temp := res[0];
 		level_prefix := 0;
 	end
@@ -3243,7 +3231,7 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1]
 	do
 		level_prefix := level_prefix +1;
-		vld_u_name(1,  fifo, res, "level_prefix_temp                             ", bit_count);
+		vld_u_name(1,  fifo, res, "level_prefix_temp                             ");
 		level_prefix_temp := res[0];
 	end
 
@@ -3261,7 +3249,7 @@ actor Algo_Synp_AVC_CBP()
 		else if level_prefix >=15 then levelSuffixSize := level_prefix - 3;
 		else levelSuffixSize := suffixLength; end end
 		if levelSuffixSize > 0 then 
-			vld_u_name(levelSuffixSize,  fifo, res, "level_suffix                             ", bit_count);
+			vld_u_name(levelSuffixSize,  fifo, res, "level_suffix                             ");
 			level_suffix := res[0];
 		else
 			level_suffix:=0;
@@ -3396,7 +3384,7 @@ actor Algo_Synp_AVC_CBP()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		not IsStartCode(fifo)
    	do
-		flushBits( 8, fifo, bit_count );
+		flushBits( 8, fifo);
 		if DEBUG_BITSTREAM then		
   			println("start_code.search");
    		end
@@ -3406,7 +3394,7 @@ actor Algo_Synp_AVC_CBP()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		IsStartCode(fifo)
 	do
-		flushBits( 8, fifo, bit_count);
+		flushBits( 8, fifo);
 		if DEBUG_BITSTREAM then
 			println("start_code.done");
 		end
@@ -3416,7 +3404,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	do
-		byte_align(fifo, bit_count);
+		byte_align(fifo);
 	end
 	
 	/**************************************************************************
