@@ -1,6 +1,6 @@
 package synParser;
 
-import  common.BitstreamReadUtils.*;
+import  org.sc29.wg11.common.BitstreamReadUtils.*;
 import  synParser.Algo_ParserUtils.*;
 
 actor Algo_Parser () 
@@ -8,8 +8,18 @@ actor Algo_Parser ()
 				==>
 :
 	bool DEBUG_BITSTREAM = false;
+	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
+	uint(size= 2) zeroByte := 0;
 	uint(size= 8) se_idx;
 	uint(size=32) cnt_i;
+	uint(size= 5) nalUnit[NAL_UNIT_STRUCT_SIZE];
+	uint(size=32) sps[NB_MAX_SPS][SPS_STRUCT_SIZE];
+	uint(size=10) sps_id;
+	uint(size=32) pps[NB_MAX_PPS][PPS_STRUCT_SIZE];
+	uint(size=10) pps_id;
+	 int(size=32) slice[SLICE_STRUCT_SIZE];
+	uint(size=32) wp[2][MAX_NUM_REF][3][WP_MAX_STRUCT];
+	 
 	/**************************************************************************
 	 **************************************************************************
 	 ********        Bitstream Reader                     *********************
@@ -19,9 +29,6 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * search_start_code or getByte
 	 *************************************************************************/
-	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
-	uint(size= 2) zeroByte := 0;
-	/* */
  	action byte:[ b ] ==>
 	guard 
 		fifo[FIFO_CPT_BITS] <= (FIFO_SIZE-1)<<3
@@ -81,12 +88,7 @@ actor Algo_Parser ()
 	end
 	/**************************************************************************
 	 * read_nal_unit_header
-	 *************************************************************************/
-	uint(size=2) nal_ref_flag;
-	uint(size=5) nal_unit_type;
-	uint(size=3) temporal_id;
-	uint(size=1) output_flag;
-	
+	 *************************************************************************/	
 	read_nal_unit_header : action ==>
 	var
 		uint(size=32) res[1]
@@ -94,15 +96,15 @@ actor Algo_Parser ()
 		if DEBUG_BITSTREAM then
 			println("=========== NAL_UNIT ===========");
 			flushBits_name( 1, fifo,   "reserved_zero_1bits                     ");
-			vld_u_name(  2, fifo, res, "nal_ref_flag                            "); nal_ref_flag  := res[0];
-			vld_u_name(  5, fifo, res, "nal_unit_type                           "); nal_unit_type := res[0];
+			vld_u_name(  2, fifo, res, "nal_ref_flag                            "); nalUnit[NAL_REF_FLAG]  := res[0];
+			vld_u_name(  5, fifo, res, "nal_unit_type                           "); nalUnit[NAL_UNIT_TYPE] := res[0];
 		else
 			flushBits( 1 , fifo );
-			vld_u(  2, fifo, res); nal_ref_flag  := res[0];
-			vld_u(  5, fifo, res); nal_unit_type := res[0];
+			vld_u(  2, fifo, res); nalUnit[NAL_REF_FLAG]  := res[0];
+			vld_u(  5, fifo, res); nalUnit[NAL_UNIT_TYPE] := res[0];
 		end
-		temporal_id   := 0;
-		output_flag   := 1; 
+		nalUnit[TEMPORAL_ID] := 0;
+		nalUnit[OUTPUT_FLAG] := 1;
 		se_idx := 1;
 	end
 	/**************************************************************************
@@ -110,7 +112,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	look_for.SPS_header: action ==>
 	guard
-		nal_unit_type = NAL_UNIT_SPS
+		nalUnit[NAL_UNIT_TYPE] = NAL_UNIT_SPS
 	do
 		if DEBUG_PARSER then
 			println("=========== Sequence Parameter Set ID    ===========");
@@ -121,7 +123,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	look_for.PPS_header: action ==>
 	guard
-		nal_unit_type = NAL_UNIT_PPS
+		nalUnit[NAL_UNIT_TYPE] = NAL_UNIT_PPS
 	do
 		if DEBUG_PARSER then
 			println("=========== Picture Parameter Set ID    ===========");
@@ -132,24 +134,27 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	look_for.Slice_header: action ==>
 	guard
-		(nal_unit_type = NAL_UNIT_NON_IDR_AND_NON_CRA or
-		 nal_unit_type = NAL_UNIT_CRA                 or
-		 nal_unit_type = NAL_UNIT_IDR)
+		(nalUnit[NAL_UNIT_TYPE] = NAL_UNIT_NON_IDR_AND_NON_CRA or
+		 nalUnit[NAL_UNIT_TYPE] = NAL_UNIT_CRA                 or
+		 nalUnit[NAL_UNIT_TYPE] = NAL_UNIT_IDR)
 	var
 		uint(size=32) res[1]
 	do
 		if DEBUG_BITSTREAM then
-			vld_u_name(  3, fifo, res, "temporal_id                             "); temporal_id := res[0];
-			vld_u_name(  1, fifo, res, "output_flag                             "); output_flag := res[0];
+			vld_u_name(  3, fifo, res, "temporal_id                             "); nalUnit[TEMPORAL_ID]		:= res[0];
+			vld_u_name(  1, fifo, res, "output_flag                             "); nalUnit[OUTPUT_FLAG]		:= res[0];
 			flushBits_name( 4, fifo,   "reserved_zero_4bits                     ");
 		else
-			vld_u(  3, fifo, res); temporal_id := res[0];
-			vld_u(  1, fifo, res); output_flag := res[0];
+			vld_u(  3, fifo, res); nalUnit[TEMPORAL_ID] := res[0];
+			vld_u(  1, fifo, res); nalUnit[OUTPUT_FLAG] := res[0];
 			flushBits( 4, fifo  );
 		end
 		if DEBUG_PARSER then
 			println("=========== Slice ===========");
 		end
+		slice[NUM_REF_IDX_L0_ACTIVE] := 1;
+		slice[NUM_REF_IDX_L1_ACTIVE] := 1;
+		vld_u_name(  1, fifo, res, "lightweight_slice_flag                  "); slice[LIGHTWEIGHT_SLICE_FLAG]	:= res[0];
 	end
 	/**************************************************************************
 	 * look_for_other_header
@@ -161,50 +166,6 @@ actor Algo_Parser ()
 	 ********        Sequence Parameter Set HEADER        *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 8) sps_profile_idc;
-	uint(size= 8) sps_level_idc;
-	uint(size= 8) sps_sps_id;
-	uint(size= 8) sps_max_temporal_layers_minus1;
-	uint(size=16) sps_pic_width_in_luma_samples;
-	uint(size=16) sps_pic_height_in_luma_samples;
-	uint(size= 3) sps_bit_depth_luma_minus8;
-	uint(size= 3) sps_bit_depth_chroma_minus8;
-	uint(size= 4) sps_pcm_bit_depth_luma_minus1; 
-	uint(size= 4) sps_pcm_bit_depth_chroma_minus1;
-	uint(size=32) sps_log2_max_pic_order_cnt_lsb_minus4;
-	uint(size=32) sps_max_num_ref_pics;
-	uint(size=32) sps_max_num_reorder_pics;
-	uint(size= 1) sps_disableInter4x4;
-	uint(size= 8) sps_log2_min_coding_block_size_minus3;
-	uint(size= 8) sps_log2_diff_max_min_coding_block_size;	
-	uint(size=32) sps_log2_min_transform_block_size_minus2;
-	uint(size=32) sps_log2_diff_max_min_transform_block_size;
-	uint(size=32) sps_log2_min_pcm_coding_block_size_minus3;
-	uint(size=32) sps_max_transform_hierarchy_depth_inter;
-	uint(size=32) sps_max_transform_hierarchy_depth_intra;
-	uint(size= 1) sps_chroma_pred_from_luma_enabled_flag;
-	uint(size= 1) sps_loop_filter_across_slice_flag;
-	uint(size= 1) sps_sample_adaptive_offset_enabled_flag;
-	uint(size= 1) sps_adaptive_loop_filter_enabled_flag;
-	uint(size= 1) sps_pcm_loop_filter_disable_flag;
-	uint(size= 1) sps_cu_qp_delta_enabled_flag;
-	uint(size= 1) sps_temporal_id_nesting_flag;
-	uint(size=32) sps_padX;
-	uint(size=32) sps_padY;
-	uint(size= 1) sps_useMRG;
-	uint(size= 1) sps_amvpMode[MAX_TLAYER];
-	uint(size= 1) sps_uniform_spacing_idc;
-	uint(size= 1) sps_tile_boundary_independence_idc;
-	uint(size= 1) sps_num_tile_columns_minus1;
-	uint(size= 1) sps_num_tile_rows_minus1;	
-	uint(size=32) sps_column_width[32];
-	uint(size=32) sps_row_height[32];
-	uint(size= 1) sps_enable_nsqt;
-	uint(size= 1) sps_enable_amp;
-	/* */
-	uint(size=32) sps_maxCUWidth;
-	uint(size= 8) sps_maxCUDepth;
-
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_1
 	 *************************************************************************/
@@ -212,14 +173,18 @@ actor Algo_Parser ()
 	guard
 		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		uint(size= 8) profile_idc,
+		uint(size= 8) level_idc
 	do
-		vld_u_name(  8, fifo, res, "profile_idc                             "); sps_profile_idc                := res[0];
+		vld_u_name(  8, fifo, res, "profile_idc                             "); profile_idc								:= res[0];
 		flushBits_name( 8, fifo,   "reserved_zero_8bits                     ");
-		vld_u_name(  8, fifo, res, "level_idc                               "); sps_level_idc                  := res[0];
-		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); sps_sps_id                     := res[0]; // getBits(10) max
-		vld_u_name(  3, fifo, res, "max_temporal_layers_minus1              "); sps_max_temporal_layers_minus1 := res[0];
-		vld_u_name( 16, fifo, res, "pic_width_in_luma_samples               "); sps_pic_width_in_luma_samples  := res[0];
+		vld_u_name(  8, fifo, res, "level_idc                               "); level_idc								:= res[0];
+		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); sps_id									:= res[0]; // getBits(10) max
+		vld_u_name(  3, fifo, res, "max_temporal_layers_minus1              "); sps[sps_id][MAX_TEMPORAL_LAYERS]		:= res[0] + 1;
+		vld_u_name( 16, fifo, res, "pic_width_in_luma_samples               "); sps[sps_id][PIC_WIDTH_IN_LUMA_SAMPLES]	:= res[0];
+		sps[sps_id][PROFILE_IDC]	:= profile_idc;
+		sps[sps_id][LEVEL_IDC]		:= level_idc;
 		se_idx := se_idx + 1;
 	end
 	/**************************************************************************
@@ -231,16 +196,16 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              "); sps_pic_height_in_luma_samples        := res[0];
-		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   "); sps_bit_depth_luma_minus8             := res[0]; // getBits(5) max
-		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 "); sps_bit_depth_chroma_minus8           := res[0]; // getBits(5) max
-		vld_u_name(  4, fifo, res, "pcm_bit_depth_luma_minus1               "); sps_pcm_bit_depth_luma_minus1         := res[0];
-		vld_u_name(  4, fifo, res, "pcm_bit_depth_chroma_minus1             "); sps_pcm_bit_depth_chroma_minus1       := res[0];
-		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       "); sps_log2_max_pic_order_cnt_lsb_minus4 := res[0];
-		vld_ue_name(    fifo, res, "max_num_ref_pics                        "); sps_max_num_ref_pics                  := res[0];
-		vld_ue_name(    fifo, res, "max_num_reorder_pics                    "); sps_max_num_reorder_pics              := res[0];
-//		vld_u_name(  1, fifo, res, "disableInter4x4                         "); sps_disableInter4x4                   := res[0];		
-		vld_u(  1, fifo, res); sps_disableInter4x4                   := res[0];		
+		vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              "); sps[sps_id][PIC_HEIGHT_IN_LUMA_SAMPLES]			:= res[0];
+		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   "); sps[sps_id][BIT_DEPTH_LUMA]						:= res[0] + 8; // getBits(5) max
+		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 "); sps[sps_id][BIT_DEPTH_CHROMA]					:= res[0] + 8; // getBits(5) max
+		vld_u_name(  4, fifo, res, "pcm_bit_depth_luma_minus1               "); sps[sps_id][PCM_BIT_DEPTH_LUMA]					:= res[0] + 1;
+		vld_u_name(  4, fifo, res, "pcm_bit_depth_chroma_minus1             "); sps[sps_id][PCM_BIT_DEPTH_CHROMA]				:= res[0] + 1;
+		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       "); sps[sps_id][LOG2_MAX_PIC_ORDER_CNT_LSB]			:= res[0] + 4;
+		vld_ue_name(    fifo, res, "max_num_ref_pics                        "); sps[sps_id][MAX_NUM_REF_PICS]					:= res[0];
+		vld_ue_name(    fifo, res, "max_num_reorder_pics                    "); sps[sps_id][MAX_NUM_REORDER_PICS]				:= res[0];
+//		vld_u_name(  1, fifo, res, "disableInter4x4                         "); sps[sps_id][DISABLEINTER4X4]					:= res[0];		
+		vld_u(  1, fifo, res); sps[sps_id][DISABLEINTER4X4]                   := res[0];		
 		se_idx := se_idx + 1;
 	end
 	/**************************************************************************
@@ -252,10 +217,10 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "log2_min_coding_block_size_minus3       "); sps_log2_min_coding_block_size_minus3      := res[0]; // getBits(7) max
-		vld_ue_name(    fifo, res, "log2_diff_max_min_coding_block_size     "); sps_log2_diff_max_min_coding_block_size    := res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "log2_min_transform_block_size_minus2    "); sps_log2_min_transform_block_size_minus2   := res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "log2_diff_max_min_transform_block_size  "); sps_log2_diff_max_min_transform_block_size := res[0]; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "log2_min_coding_block_size_minus3       "); sps[sps_id][LOG2_MIN_CODING_BLOCK_SIZE]				:= res[0] + 3; // getBits(7) max
+		vld_ue_name(    fifo, res, "log2_diff_max_min_coding_block_size     "); sps[sps_id][LOG2_DIFF_MAX_MIN_CODING_BLOCK_SIZE]	:= res[0]; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "log2_min_transform_block_size_minus2    "); sps[sps_id][LOG2_MIN_TRANSFORM_BLOCK_SIZE]			:= res[0] + 2; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "log2_diff_max_min_transform_block_size  "); sps[sps_id][LOG2_DIFF_MAX_MIN_TRANSFORM_BLOCK_SIZE]	:= res[0]; // getBits(32) max ?????
 		se_idx := se_idx + 1;
 	end 
 	/**************************************************************************
@@ -267,9 +232,9 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "log2_min_pcm_coding_block_size_minus3   "); sps_log2_min_pcm_coding_block_size_minus3 := res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_inter     "); sps_max_transform_hierarchy_depth_inter   := res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_intra     "); sps_max_transform_hierarchy_depth_intra   := res[0]; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "log2_min_pcm_coding_block_size_minus3   "); sps[sps_id][LOG2_MIN_PCM_CODING_BLOCK_SIZE]			:= res[0] + 3; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_inter     "); sps[sps_id][MAX_TRANSFORM_HIERARCHY_DEPTH_INTER]	:= res[0]; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_intra     "); sps[sps_id][MAX_TRANSFORM_HIERARCHY_DEPTH_INTRA]	:= res[0]; // getBits(32) max ?????
 		se_idx := se_idx + 1;
 	end 
 	/**************************************************************************
@@ -281,13 +246,13 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
    	do
-		vld_u_name(  1, fifo, res, "chroma_pred_from_luma_enabled_flag      "); sps_chroma_pred_from_luma_enabled_flag  := res[0];
-		vld_u_name(  1, fifo, res, "loop_filter_across_slice_flag           "); sps_loop_filter_across_slice_flag       := res[0];
-		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag     "); sps_sample_adaptive_offset_enabled_flag := res[0];
-		vld_u_name(  1, fifo, res, "adaptive_loop_filter_enabled_flag       "); sps_adaptive_loop_filter_enabled_flag   := res[0];
-		vld_u_name(  1, fifo, res, "pcm_loop_filter_disable_flag            "); sps_pcm_loop_filter_disable_flag        := res[0];
-		vld_u_name(  1, fifo, res, "cu_qp_delta_enabled_flag                "); sps_cu_qp_delta_enabled_flag            := res[0];
-		vld_u_name(  1, fifo, res, "temporal_id_nesting_flag                "); sps_temporal_id_nesting_flag            := res[0];
+		vld_u_name(  1, fifo, res, "chroma_pred_from_luma_enabled_flag      "); sps[sps_id][CHROMA_PRED_FROM_LUMA_ENABLED_FLAG]		:= res[0];
+		vld_u_name(  1, fifo, res, "loop_filter_across_slice_flag           "); sps[sps_id][LOOP_FILTER_ACROSS_SLICE_FLAG]			:= res[0];
+		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag     "); sps[sps_id][SAMPLE_ADAPTIVE_OFFSET_ENABLED_FLAG]	:= res[0];
+		vld_u_name(  1, fifo, res, "adaptive_loop_filter_enabled_flag       "); sps[sps_id][ADAPTIVE_LOOP_FILTER_ENABLED_FLAG]		:= res[0];
+		vld_u_name(  1, fifo, res, "pcm_loop_filter_disable_flag            "); sps[sps_id][PCM_LOOP_FILTER_DISABLE_FLAG]			:= res[0];
+		vld_u_name(  1, fifo, res, "cu_qp_delta_enabled_flag                "); sps[sps_id][CU_QP_DELTA_ENABLED_FLAG]				:= res[0];
+		vld_u_name(  1, fifo, res, "temporal_id_nesting_flag                "); sps[sps_id][TEMPORAL_ID_NESTING_FLAG]				:= res[0];
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
@@ -301,23 +266,22 @@ actor Algo_Parser ()
 		uint(size=32) res[1],
 		uint(size= 8) uiAddCUDepth := 0
    	do
-		sps_maxCUWidth  := 1<<(sps_log2_min_coding_block_size_minus3 + 3 + sps_log2_diff_max_min_coding_block_size);
-  		while( ( sps_maxCUWidth >> sps_log2_diff_max_min_coding_block_size ) > ( 1 << ( sps_log2_min_transform_block_size_minus2 + 2 + uiAddCUDepth )  ) ) 
+		sps[sps_id][MAXCUWIDTH]  := 1<<(sps[sps_id][LOG2_MIN_CODING_BLOCK_SIZE] + sps[sps_id][LOG2_DIFF_MAX_MIN_CODING_BLOCK_SIZE]);
+  		while( ( sps[sps_id][MAXCUWIDTH] >> sps[sps_id][LOG2_DIFF_MAX_MIN_CODING_BLOCK_SIZE] ) > ( 1 << ( sps[sps_id][LOG2_MIN_TRANSFORM_BLOCK_SIZE] + uiAddCUDepth )  ) ) 
   		do
   			uiAddCUDepth := uiAddCUDepth + 1;
   		end    
-  		sps_maxCUDepth := sps_log2_diff_max_min_coding_block_size + uiAddCUDepth;
+  		sps[sps_id][MAXCUDEPTH] := sps[sps_id][LOG2_DIFF_MAX_MIN_CODING_BLOCK_SIZE] + uiAddCUDepth;
 
-
-		//vld_ue_name(    fifo, res, "padX                                    "); sps_padX                := res[0]; // getBits(32) max ?????
-		vld_ue(    fifo, res); sps_padX                := res[0]; // getBits(32) max ?????
-		//vld_ue_name(    fifo, res, "padY                                    "); sps_padY                := res[0]; // getBits(32) max ?????
-		vld_ue(    fifo, res); sps_padY                := res[0]; // getBits(32) max ?????
-		//vld_u_name(  1, fifo, res, "useMRG                                  "); sps_useMRG              := res[0];
-   		vld_u(  1, fifo, res); sps_useMRG              := res[0];
-   		foreach uint(size=8) i in 0 .. sps_maxCUDepth - 1 do
-   			//vld_u_name(  1, fifo, res, "amvpMode[ ]                             "); sps_amvpMode[i]     := res[0];
-   			vld_u(  1, fifo, res); sps_amvpMode[i]     := res[0];
+		//vld_ue_name(    fifo, res, "padX                                    "); sps[sps_id][PADX]                := res[0]; // getBits(32) max ?????
+		vld_ue(    fifo, res); sps[sps_id][PADX]                := res[0]; // getBits(32) max ?????
+		//vld_ue_name(    fifo, res, "padY                                    "); sps[sps_id][PADY]                := res[0]; // getBits(32) max ?????
+		vld_ue(    fifo, res); sps[sps_id][PADY]                := res[0]; // getBits(32) max ?????
+		//vld_u_name(  1, fifo, res, "useMRG                                  "); sps[sps_id][USEMRG]              := res[0];
+   		vld_u(  1, fifo, res); sps[sps_id][USEMRG]              := res[0];
+   		foreach uint(size=8) i in 0 .. sps[sps_id][MAXCUDEPTH] - 1 do
+   			//vld_u_name(  1, fifo, res, "amvpMode[ ]                             "); sps[sps_id][AMVPMODE+i]     := res[0];
+   			vld_u(  1, fifo, res); sps[sps_id][AMVPMODE+i]     := res[0];
 		end
 		se_idx := se_idx + 1;
 	end 
@@ -330,10 +294,10 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(  1, fifo, res, "uniform_spacing_idc                     "); sps_uniform_spacing_idc            := res[0];
-		vld_u_name(  1, fifo, res, "tile_boundary_independence_idc          "); sps_tile_boundary_independence_idc := res[0];
-		vld_ue_name(    fifo, res, "num_tile_columns_minus1                 "); sps_num_tile_columns_minus1        := res[0];
-		vld_ue_name(    fifo, res, "num_tile_rows_minus1                    "); sps_num_tile_rows_minus1           := res[0];
+		vld_u_name(  1, fifo, res, "uniform_spacing_idc                     "); sps[sps_id][UNIFORM_SPACING_IDC]			:= res[0];
+		vld_u_name(  1, fifo, res, "tile_boundary_independence_idc          "); sps[sps_id][TILE_BOUNDARY_INDEPENDENCE_IDC]	:= res[0];
+		vld_ue_name(    fifo, res, "num_tile_columns_minus1                 "); sps[sps_id][NUM_TILE_COLUMNS]				:= res[0] + 1;
+		vld_ue_name(    fifo, res, "num_tile_rows_minus1                    "); sps[sps_id][NUM_TILE_ROWS]					:= res[0] + 1;
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
@@ -343,23 +307,23 @@ actor Algo_Parser ()
 	read_SPS_Header.se_idx_8.loop : action ==>
 	guard
 		se_idx = 8  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
-		sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_columns_minus1
+		sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i <= sps[sps_id][NUM_TILE_COLUMNS]-1
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "column_width[ ]                         "); sps_column_width[cnt_i] := res[0];
+		vld_ue_name(    fifo, res, "column_width[ ]                         "); sps[sps_id][COLUMN_WIDTH+cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
 	read_SPS_Header.se_idx_8.loopEnd : action ==>
 	guard
-		se_idx = 8 and sps_uniform_spacing_idc = 1 and cnt_i > sps_num_tile_columns_minus1
+		se_idx = 8 and sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > sps[sps_id][NUM_TILE_COLUMNS] - 1
    	do
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
 	read_SPS_Header.se_idx_8.noLoop : action ==>
 	guard
-		se_idx = 8 and sps_uniform_spacing_idc = 0
+		se_idx = 8 and sps[sps_id][UNIFORM_SPACING_IDC] = 0
    	do
 		se_idx := se_idx + 2;
 	end 
@@ -369,16 +333,16 @@ actor Algo_Parser ()
 	read_SPS_Header.se_idx_9.loop : action ==>
 	guard
 		se_idx = 9  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
-		sps_uniform_spacing_idc = 1 and cnt_i <= sps_num_tile_rows_minus1
+		sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i <= sps[sps_id][NUM_TILE_ROWS] - 1
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "row_height[ ]                           "); sps_row_height[cnt_i] := res[0];
+		vld_ue_name(    fifo, res, "row_height[ ]                           "); sps[sps_id][ROW_HEIGHT+cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
 	read_SPS_Header.se_idx_9.loopEnd : action ==>
 	guard
-		se_idx = 9 and sps_uniform_spacing_idc = 1 and cnt_i > sps_num_tile_rows_minus1
+		se_idx = 9 and sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > sps[sps_id][NUM_TILE_ROWS] - 1
    	do
 		se_idx := se_idx + 1;
 	end 
@@ -391,36 +355,14 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(  1, fifo, res, "enable_nsqt                             "); sps_enable_nsqt := res[0];
-		vld_u_name(  1, fifo, res, "enable_amp                              "); sps_enable_amp  := res[0];	
+		vld_u_name(  1, fifo, res, "enable_nsqt                             "); sps[sps_id][ENABLE_NSQT] := res[0];
+		vld_u_name(  1, fifo, res, "enable_amp                              "); sps[sps_id][ENABLE_AMP]  := res[0];	
 	end 
 	/**************************************************************************
 	 **************************************************************************
-	 ********        Picture Parameter Set HEADER        *********************
+	 ********        Picture Parameter Set HEADER         *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size=32) pps_pps_id;
-	uint(size=32) pps_sps_id;
-	uint(size=32) pps_num_short_term_ref_pic_sets;
-	uint(size=32) pps_long_term_ref_pics_present_flag;
-	uint(size= 1) pps_entropy_coding_mode_flag;
-	uint(size=32) pps_entropy_coding_synchro;
-	uint(size= 1) pps_cabac_istate_reset;
-	uint(size=32) pps_num_substreams_minus1;
-	uint(size= 8) pps_num_temporal_layer_switching_point_flags;
-	uint(size= 1) pps_temporal_layer_switching_point_flag[MAX_TLAYER];
-	uint(size= 1) pps_constrained_intra_pred_flag;
-	uint(size= 2) pps_slice_granularity;
-	uint(size=32) pps_max_cu_qp_delta_depth;
-	uint(size= 1) pps_weighted_pred_flag;
-	uint(size= 2) pps_weighted_bipred_idc;
-	uint(size= 1) pps_tile_info_present_flag;
-	uint(size= 1) pps_uniform_spacing_idc;
-	uint(size= 1) pps_tile_boundary_independence_idc;
-	uint(size=32) pps_num_tile_columns_minus1;
-	uint(size=32) pps_num_tile_rows_minus1;
-	uint(size=32) pps_column_width[32];
-	uint(size=32) pps_row_height[32];
 	/**************************************************************************
 	 * read_PPS_Header.se_idx_1
 	 *************************************************************************/	
@@ -430,104 +372,28 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
    	do
-		vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); pps_pps_id                      := res[0];
-		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); pps_sps_id                      := res[0];
-		vld_ue_name(    fifo, res, "num_short_term_ref_pic_sets             "); pps_num_short_term_ref_pic_sets := res[0];
+		vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); pps_id										:= res[0];
+		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); sps_id										:= res[0];
+		vld_ue_name(    fifo, res, "num_short_term_ref_pic_sets             "); pps[pps_id][NUM_SHORT_TERM_REF_PIC_SETS]	:= res[0];
+		pps[pps_id][SPS_ID] := sps_id;
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
  	end
 	/**************************************************************************
 	 * read_PPS_Header.se_idx_2
 	 *************************************************************************/
-	uint(size= 1) pps_inter_RPS_flag[32];
-	uint(size=32) pps_num_negative_pics[32];
-	uint(size=32) pps_num_positive_pics[32];
-	uint(size=32) pps_num_pics[32];
-	 int(size=32) pps_deltaPOC[32][32];
-	uint(size= 1) pps_used[32][32];
-	uint(size=32) pps_delta_idx_minus1[32];
-	uint(size= 1) pps_delta_rps_sign[32];
-	uint(size=32) pps_abs_delta_rps_minus1[32];
-	uint(size=32) pps_num_ref_idc[32];
-	uint(size=32) pps_ref_idc[32][32];
-	
-
+	uint(size=32) pcRPS[NB_MAX_PPS][PC_RPS_STRUCT_SIZE];	
 	read_PPS_Header.se_idx_2.loop : action ==>
 	guard
 		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
-		cnt_i < pps_num_short_term_ref_pic_sets
-	var
-		uint(size=32) res[1],
-		uint(size= 8) rIdx,
-		 int(size=32) deltaRPS,
-		 int(size=32) deltaPOC,
-		 int(size=32) k    := 0,
-		 int(size=32) k0   := 0,
-		 int(size=32) k1   := 0,
-		uint(size=32) prev := 0
+		cnt_i < pps[pps_id][NUM_SHORT_TERM_REF_PIC_SETS]
    	do
- 		vld_u_name(  1, fifo, res, "inter_RPS_flag                          "); pps_inter_RPS_flag[cnt_i]   := res[0];
-		if res[0] = 1 then 	
-  			vld_ue_name(    fifo, res, "delta_idx_minus1                        "); pps_delta_idx_minus1[cnt_i]     := res[0];
-    		rIdx := cnt_i - 1 - res[0];
-    		vld_u_name(  1, fifo, res, "delta_rps_sign                          "); pps_delta_rps_sign[cnt_i]       := res[0];
-    		vld_ue_name(    fifo, res, "abs_delta_rps_minus1                    "); pps_abs_delta_rps_minus1[cnt_i] := res[0];
-    		deltaRPS := (1 - (pps_delta_rps_sign[rIdx]<<1)) * (res[0] + 1);
-    		foreach uint(size=8) i in 0 ..  pps_num_pics[rIdx]-1 do
-    			vld_u_name(  1, fifo, res, "ref_idc0                                ");
-    			if res[0] = 0 then
-	    			vld_u_name(  1, fifo, res, "ref_idc1                                ");
-	    			res[0] := res[0] << 1;
-    			end
-    			if res[0] = 1 or res[0] = 2 then
-    				if i < pps_num_pics[rIdx] then
-    					deltaPOC := deltaRPS + pps_deltaPOC[rIdx][i];
-    				else
-    					deltaPOC := deltaRPS;
-					end
-			        if deltaPOC < 0 then
-          				k0 := k0 + 1;
-        			else 
-          				k1 := k1 + 1;
-        			end
-        			k := k + 1; 			
-    			end
-    			pps_ref_idc[cnt_i][i] := res[0];
-    		end
-    		pps_num_ref_idc[cnt_i]       := pps_num_ref_idc[rIdx]+1;  
-    		pps_num_pics[cnt_i]          := k;
-    		pps_num_negative_pics[cnt_i] := k0;
-			pps_num_positive_pics[cnt_i] := k1;
-			sortDeltaPOC(cnt_i, k, k0, pps_deltaPOC, pps_used);
-  		else
-    		vld_ue_name(    fifo, res, "num_negative_pics                       "); pps_num_negative_pics[cnt_i] := res[0];
-    		vld_ue_name(    fifo, res, "num_positive_pics                       "); pps_num_positive_pics[cnt_i] := res[0];
-    		pps_num_pics[cnt_i] := pps_num_positive_pics[cnt_i] + res[0];
-    		if pps_num_negative_pics[cnt_i] != 0 then
-    			foreach uint(size=8) i in 0 ..  pps_num_negative_pics[cnt_i]-1 do
-	    			vld_ue_name(    fifo, res, "delta_poc_s0_minus1                     ");
-					prev := prev-res[0]-1;
-					pps_deltaPOC[cnt_i][i] := prev;
-					vld_u_name(  1, fifo, res, "used_by_curr_pic_s0_flag                "); pps_used[cnt_i][i]       := res[0];
-				end
-			end
-			prev := 0;
-			if pps_num_positive_pics[cnt_i] != 0 then
-    			foreach uint(size=8) i in pps_num_negative_pics[cnt_i] .. pps_num_pics[cnt_i]-1 do
-	    			vld_ue_name(    fifo, res, "delta_poc_s1_minus1                     ");
-					prev := prev-res[0]-1;
-					pps_deltaPOC[cnt_i][i] := prev;
-					vld_u_name(  1, fifo, res, "used_by_curr_pic_s1_flag                "); pps_used[cnt_i][i]       := res[0];
-				end
-			end
-		end
-		printDeltaPOC(cnt_i, pps_num_pics[cnt_i], pps_deltaPOC, pps_used,
-					  pps_inter_RPS_flag[cnt_i], pps_num_ref_idc[cnt_i], pps_ref_idc);
+   		parseShortTermRefPicSet(cnt_i, fifo, pcRPS);
 		cnt_i := cnt_i + 1;
  	end
  	read_PPS_Header.se_idx_2.loopEnd : action ==>
 	guard
-		se_idx = 2 and cnt_i = pps_num_short_term_ref_pic_sets
+		se_idx = 2 and cnt_i = pps[pps_id][NUM_SHORT_TERM_REF_PIC_SETS]
    	do
 		se_idx := se_idx + 2;
 		cnt_i  := 0;
@@ -541,33 +407,35 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
    	do
-		vld_u_name(  1, fifo, res, "long_term_ref_pics_present_flag         "); pps_long_term_ref_pics_present_flag := res[0];
-		vld_u_name(  1, fifo, res, "entropy_coding_mode_flag                "); pps_entropy_coding_mode_flag    := res[0];
-		if pps_entropy_coding_mode_flag = 1 then
-			vld_ue_name(    fifo, res, "entropy_coding_synchro                  "); pps_entropy_coding_synchro  := res[0];
-			vld_u_name(  1, fifo, res, "cabac_istate_reset                      "); pps_cabac_istate_reset      := res[0];
-			if pps_entropy_coding_synchro != 0 then
-				vld_ue_name(    fifo, res, "num_substreams_minus1                   "); pps_entropy_coding_synchro := res[0];
+		vld_u_name(  1, fifo, res, "long_term_ref_pics_present_flag         "); pps[pps_id][LONG_TERM_REF_PICS_PRESENT_FLAG]	:= res[0];
+		vld_u_name(  1, fifo, res, "entropy_coding_mode_flag                "); pps[pps_id][ENTROPY_CODING_MODE_FLAG]			:= res[0];
+		if pps[pps_id][ENTROPY_CODING_MODE_FLAG] = 1 then
+			vld_ue_name(    fifo, res, "entropy_coding_synchro                  "); pps[pps_id][ENTROPY_CODING_SYNCHRO]			:= res[0];
+			vld_u_name(  1, fifo, res, "cabac_istate_reset                      "); pps[pps_id][CABAC_ISTATE_RESET]      		:= res[0];
+			if pps[pps_id][ENTROPY_CODING_SYNCHRO] != 0 then
+				vld_ue_name(    fifo, res, "num_substreams_minus1                   "); pps[pps_id][ENTROPY_CODING_SYNCHRO]		:= res[0];
 			end
 		end
-		vld_ue_name(    fifo, res, "num_temporal_layer_switching_point_flags"); pps_num_temporal_layer_switching_point_flags := res[0];
-		foreach uint(size=8) i in 0 .. pps_num_temporal_layer_switching_point_flags - 1 do
-			vld_u_name(  1, fifo, res, "temporal_layer_switching_point_flag[ ]  "); pps_temporal_layer_switching_point_flag[i]     := res[0];
+		vld_ue_name(    fifo, res, "num_temporal_layer_switching_point_flags"); pps[pps_id][NUM_TEMPORAL_LAYER_SWITCHING_POINT_FLAGS]	:= res[0];
+		if res[0] != 0 then
+			foreach uint(size=8) i in 0 .. pps[pps_id][NUM_TEMPORAL_LAYER_SWITCHING_POINT_FLAGS] - 1 do
+				vld_u_name(  1, fifo, res, "temporal_layer_switching_point_flag[ ]  "); pps[pps_id][TEMPORAL_LAYER_SWITCHING_POINT_FLAG+i]	:= res[0];
+			end
 		end	
-		vld_u_name(  1, fifo, res, "constrained_intra_pred_flag             "); pps_constrained_intra_pred_flag   := res[0];
-		vld_u_name(  2, fifo, res, "slice_granularity                       "); pps_slice_granularity             := res[0];
-		if sps_cu_qp_delta_enabled_flag = 1 then
-			vld_ue_name(    fifo, res, "max_cu_qp_delta_depth                   "); pps_max_cu_qp_delta_depth := res[0];
+		vld_u_name(  1, fifo, res, "constrained_intra_pred_flag             "); pps[pps_id][CONSTRAINED_INTRA_PRED_FLAG]				:= res[0];
+		vld_u_name(  2, fifo, res, "slice_granularity                       "); pps[pps_id][SLICE_GRANULARITY]							:= res[0];
+		if sps[sps_id][CU_QP_DELTA_ENABLED_FLAG] = 1 then
+			vld_ue_name(    fifo, res, "max_cu_qp_delta_depth                   "); pps[pps_id][MAX_CU_QP_DELTA_DEPTH]			:= res[0];
 		end
-		vld_u_name(  1, fifo, res, "weighted_pred_flag                      "); pps_weighted_pred_flag     := res[0];
-		vld_u_name(  2, fifo, res, "weighted_bipred_idc                     "); pps_weighted_bipred_idc    := res[0];
-		vld_u_name(  1, fifo, res, "tile_info_present_flag                  "); pps_tile_info_present_flag := res[0];
-		pps_uniform_spacing_idc := 0;
-		if pps_tile_info_present_flag = 1 then
-			vld_u_name(  1, fifo, res, "uniform_spacing_idc                     "); pps_uniform_spacing_idc            := res[0];
-			vld_u_name(  1, fifo, res, "tile_boundary_independence_idc          "); pps_tile_boundary_independence_idc := res[0];
-			vld_ue_name(    fifo, res, "num_tile_columns_minus1                 "); pps_num_tile_columns_minus1        := res[0];
-			vld_ue_name(    fifo, res, "num_tile_rows_minus1                    "); pps_num_tile_rows_minus1           := res[0];
+		vld_u_name(  1, fifo, res, "weighted_pred_flag                      "); pps[pps_id][WEIGHTED_PRED_FLAG]					:= res[0];
+		vld_u_name(  2, fifo, res, "weighted_bipred_idc                     "); pps[pps_id][WEIGHTED_BIPRED_IDC]				:= res[0];
+		vld_u_name(  1, fifo, res, "tile_info_present_flag                  "); pps[pps_id][TILE_INFO_PRESENT_FLAG]				:= res[0];
+		pps[pps_id][UNIFORM_SPACING_IDC] := 0;
+		if pps[pps_id][TILE_INFO_PRESENT_FLAG] = 1 then
+			vld_u_name(  1, fifo, res, "uniform_spacing_idc                     "); pps[pps_id][UNIFORM_SPACING_IDC]			:= res[0];
+			vld_u_name(  1, fifo, res, "tile_boundary_independence_idc          "); pps[pps_id][TILE_BOUNDARY_INDEPENDENCE_IDC]	:= res[0];
+			vld_ue_name(    fifo, res, "num_tile_columns_minus1                 "); pps[pps_id][NUM_TILE_COLUMNS]				:= res[0] + 1;
+			vld_ue_name(    fifo, res, "num_tile_rows_minus1                    "); pps[pps_id][NUM_TILE_ROWS]					:= res[0] + 1;
 		end
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
@@ -578,23 +446,23 @@ actor Algo_Parser ()
   	read_PPS_Header.se_idx_5.loop : action ==>
 	guard
 		se_idx = 5  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
-		pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_columns_minus1
+		pps[pps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i <= pps[pps_id][NUM_TILE_COLUMNS] - 1
 	var
 		uint(size=32) res[1]
    	do
-		vld_ue_name(    fifo, res, "column_width[ ]                         "); pps_column_width[cnt_i] := res[0];
+		vld_ue_name(    fifo, res, "column_width[ ]                         "); pps[pps_id][COLUMN_WIDTH+cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
 	read_PPS_Header.se_idx_5.loopEnd : action ==>
 	guard
-		se_idx = 5 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_columns_minus1
+		se_idx = 5 and pps[pps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > pps[pps_id][NUM_TILE_COLUMNS] - 1
    	do
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
 	read_PPS_Header.se_idx_5.noLoop : action ==>
 	guard
-		se_idx = 5 and pps_uniform_spacing_idc = 0
+		se_idx = 5 and pps[pps_id][UNIFORM_SPACING_IDC] = 0
    	do
 		se_idx := se_idx + 2;
 	end 
@@ -604,16 +472,16 @@ actor Algo_Parser ()
 	read_SPS_Header.se_idx_6.loop : action ==>
 	guard
 		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
-		pps_uniform_spacing_idc = 1 and cnt_i <= pps_num_tile_rows_minus1
+		pps[pps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i <= pps[pps_id][NUM_TILE_ROWS] - 1
 	var
 		uint(size=32) res[1]
    	do
-		vld_ue_name(    fifo, res, "row_height[ ]                          "); pps_row_height[cnt_i] := res[0];
+		vld_ue_name(    fifo, res, "row_height[ ]                          "); pps[pps_id][ROW_HEIGHT+cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
 	read_SPS_Header.se_idx_6.loopEnd : action ==>
 	guard
-		se_idx = 6 and pps_uniform_spacing_idc = 1 and cnt_i > pps_num_tile_rows_minus1
+		se_idx = 6 and pps[pps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > pps[pps_id][NUM_TILE_ROWS] - 1
    	do
 		se_idx := se_idx + 1;
 	end 
@@ -629,88 +497,118 @@ actor Algo_Parser ()
 	 ********        Picture Parameter Set HEADER        *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 1) slice_lightweight_slice_flag;
-	uint(size= 2) slice_slice_type;
-	uint(size= 8) slice_pps_id;
-	uint(size=32) slice_aps_id;
-	uint(size=10) slice_pic_order_cnt_lsb;
-	uint(size= 3) slice_num_ref_idx_l0_active_minus1;
-	uint(size= 3) slice_num_ref_idx_l1_active_minus1;
-	uint(size= 1) slice_ref_pic_list_combination_flag;
-	uint(size=32) slice_num_ref_idx_lc_active_minus1;
-	uint(size= 1) slice_ref_pic_list_modification_flag_lc;
-	uint(size= 1) slice_pic_from_list_0_flag[MAX_NUM_REF_LC];
-	uint(size= 1) slice_ref_idx_list_curr[MAX_NUM_REF_LC];
-	uint(size=32) slice_slice_address;
-	 int(size=32) slice_slice_qp;
-	uint(size= 1) slice_loop_filter_disable;
-	uint(size= 1) slice_collocated_from_l0_flag;
-	uint(size=32) wp[2][MAX_NUM_REF][3][WP_MAX_STRUCT];
-	uint(size= 1) slice_symbolMode; 
-	uint(size= 1) slice_drbFlag; 
-	uint(size= 2) slice_erbIndex; 
-	uint(size= 1) slice_tileMarkerFlag; 
-	uint(size=32) slice_puiSubstreamSizes[255];
-	uint(size= 5) slice_tileLocationCount_minus1;
-	uint(size= 5) slice_bitsUsedByDiff_minus1;
-	uint(size= 5) slice_tileLocation[32];
-
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_1
 	 *************************************************************************/	
-	read_SliceHeader.se_idx_1 : action ==>
+	read_SliceHeader.se_idx_1.read : action ==>
 	guard
-		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		slice[LIGHTWEIGHT_SLICE_FLAG] = 0
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		uint(size=32) prev := 0,
+		uint(size=32) j
    	do	
-		slice_num_ref_idx_l0_active_minus1 := 0;
-		slice_num_ref_idx_l1_active_minus1 := 0;
-		vld_u_name(  1, fifo, res, "lightweight_slice_flag                  "); slice_lightweight_slice_flag       := res[0];
-		if slice_lightweight_slice_flag = 0 then
-			vld_ue_name(    fifo, res, "slice_type                              "); slice_slice_type               := res[0]; // getBits(3) max
-			vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); slice_pps_id                   := res[0];
-			if sps_sample_adaptive_offset_enabled_flag = 1 or sps_adaptive_loop_filter_enabled_flag = 1 then
-				vld_ue_name(    fifo, res, "aps_id                                  "); slice_aps_id               := res[0];
+		vld_ue_name(    fifo, res, "slice_type                              "); slice[SLICE_TYPE]							:= res[0]; // getBits(3) max
+		vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); pps_id										:= res[0];
+		sps_id := pps[pps_id][SPS_ID];
+		if nalUnit[NAL_UNIT_TYPE] = NAL_UNIT_IDR then
+		    vld_ue_name(    fifo, res, "idr_pic_id                              ");
+   			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
+		else
+			vld_u_name( sps[sps_id][LOG2_MAX_PIC_ORDER_CNT_LSB], fifo, res, "pic_order_cnt_lsb                       "); slice[PIC_ORDER_CNT_LSB]	:= res[0];
+			vld_u_name(  1, fifo, res, "short_term_ref_pic_set_pps_flag         ");
+			if res[0] = 0 then
+		   		parseShortTermRefPicSet(pps_id, fifo, pcRPS);
 			end
-			vld_u_name( 10, fifo, res, "pic_order_cnt_lsb                       "); slice_pic_order_cnt_lsb            := res[0];
-			if slice_slice_type = I_SLICE then
-				vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");
-				if res[0] = 1 then
-					vld_u_name(  3, fifo, res, "num_ref_idx_l0_active_minus1            "); slice_num_ref_idx_l0_active_minus1 := res[0];
-					if slice_slice_type = B_SLICE then
-						vld_u_name(  3, fifo, res, "num_ref_idx_l1_active_minus1            "); slice_num_ref_idx_l1_active_minus1 := res[0];
+			if pps[pps_id][LONG_TERM_REF_PICS_PRESENT_FLAG] = 1 then
+				vld_ue_name(    fifo, res, "num_long_term_pics                      "); pcRPS[pps_id][NUM_LONG_TERM_PICS]	:= res[0];
+			   	j := res[0] + pcRPS[pps_id][NUM_PICS]-1;
+			  	if res[0] > 2 then
+			   		foreach uint(size=8) i in 0 .. res[0]-2 do
+			    		vld_ue_name(    fifo, res, "delta_poc_lsb_lt_minus1                 "); prev := prev + res[0] + 1;
+						pcRPS[j][POC] := pcRPS[pps_id][POC] - prev;
+						vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_flag                "); pcRPS[pps_id][USED+i]		:= res[0];
 					end
 				end
+				pcRPS[pps_id][NUM_PICS] := pcRPS[pps_id][NUM_PICS] + pcRPS[pps_id][NUM_LONG_TERM_PICS];
 			end
-		end	
+		end
+		if sps[sps_id][SAMPLE_ADAPTIVE_OFFSET_ENABLED_FLAG] = 1 or sps[sps_id][ADAPTIVE_LOOP_FILTER_ENABLED_FLAG] = 1 then
+			vld_ue_name(    fifo, res, "aps_id                                  "); slice[APS_ID]							:= res[0];
+		end
+		if slice[SLICE_TYPE] != I_SLICE then
+			vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");
+			if res[0] = 1 then
+				vld_u_name(  3, fifo, res, "num_ref_idx_l0_active_minus1            "); slice[NUM_REF_IDX_L0_ACTIVE]		:= res[0] + 1;
+				if slice[SLICE_TYPE] = B_SLICE then
+					vld_u_name(  3, fifo, res, "num_ref_idx_l1_active_minus1            "); slice[NUM_REF_IDX_L1_ACTIVE] 	:= res[0] + 1;
+				end
+			end
+		end
 	    se_idx := se_idx + 1;
+	end
+	read_SliceHeader.se_idx_1.bypass : action ==>
+	guard
+		se_idx = 1 and slice[LIGHTWEIGHT_SLICE_FLAG] = 1
+   	do
+   		se_idx := se_idx + 1;
 	end
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_2
 	 *************************************************************************/	
-	read_SliceHeader.se_idx_2 : action ==>
+	read_SliceHeader.se_idx_2.read : action ==>
 	guard
-		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		slice[LIGHTWEIGHT_SLICE_FLAG] = 0
 	var
-		uint(size=32) res[1]
-   	do	
-   		slice_ref_pic_list_combination_flag     := 0;
-   		slice_ref_pic_list_modification_flag_lc := 0;
-		if slice_slice_type = B_SLICE then
-			vld_u_name(  1, fifo, res, "ref_pic_list_combination_flag           "); slice_ref_pic_list_combination_flag         := res[0];
-			if slice_ref_pic_list_combination_flag = 1 then
-				vld_ue_name(    fifo, res, "num_ref_idx_lc_active_minus1            "); slice_num_ref_idx_lc_active_minus1      := res[0];
-				vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_lc       "); slice_ref_pic_list_modification_flag_lc := res[0];
-				if slice_ref_pic_list_modification_flag_lc = 1 then
-		   			foreach uint(size=8) i in 0 .. slice_num_ref_idx_lc_active_minus1 do
-						vld_u_name(  1, fifo, res, "pic_from_list_0_flag                    "); slice_pic_from_list_0_flag[i]   := res[0];
-						vld_ue_name(    fifo, res, "ref_idx_list_curr                       "); slice_ref_idx_list_curr[i]      := res[0];
-		   			end
-		   		end
-			end
-		end
-	    se_idx := se_idx + 1;
+		uint(size=32) res[1],
+		uint(size=32) i := 0,
+		uint(size=32) list_modification_idc := 0
+   	do
+		slice[REF_PIC_LIST_MODIFICATION_FLAG_L0] 		:= 0;
+		slice[NUM_REF_PIC_LIST_MODIFICATION_FLAG_L0] 	:= 0;
+		if slice[SLICE_TYPE] != I_SLICE then
+			vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_l0       "); slice[REF_PIC_LIST_MODIFICATION_FLAG_L0] 	:= res[0];		
+      		if res[0] = 1 then
+        		i := 0;
+        		list_modification_idc := 0;
+        		while list_modification_idc != 3 do 
+       				vld_ue_name(    fifo, res, "list_modification_idc[ ]                "); slice[LIST_MODIFICATION_IDC_L0+i]	:= res[0];
+          			list_modification_idc := res[0];
+          			if res[0] != 3 then
+            			vld_ue_name(    fifo, res, "ref_pic_set_idx[ ]                      "); slice[REF_PIC_SET_IDX_L0+i]		:= res[0];
+          			end
+          			i := i + 1;
+        		end
+        		slice[NUM_REF_PIC_LIST_MODIFICATION_FLAG_L0] 	:= i-1;
+        	end
+   		end
+  		slice[REF_PIC_LIST_MODIFICATION_FLAG_L1] 		:= 0;
+		slice[NUM_REF_PIC_LIST_MODIFICATION_FLAG_L1] 	:= 0;
+   		if slice[SLICE_TYPE] = B_SLICE then
+			vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_l1       "); slice[REF_PIC_LIST_MODIFICATION_FLAG_L1] 	:= res[0];		
+      		if res[0] = 1 then
+        		i := 0;
+        		list_modification_idc := 0;
+        		while list_modification_idc != 3 do 
+       				vld_ue_name(    fifo, res, "list_modification_idc[ ]                "); slice[LIST_MODIFICATION_IDC_L1+i]	:= res[0];
+          			list_modification_idc := res[0];
+          			if res[0] != 3 then
+            			vld_ue_name(    fifo, res, "ref_pic_set_idx[ ]                      "); slice[REF_PIC_SET_IDX_L1+i]		:= res[0];
+          			end
+          			i := i + 1;
+        		end
+        		slice[NUM_REF_PIC_LIST_MODIFICATION_FLAG_L1] 	:= i-1;
+        	end
+        end
+		se_idx := se_idx + 1;
+	end
+	read_SliceHeader.se_idx_2.bypass : action ==>
+	guard
+		se_idx = 2 and slice[LIGHTWEIGHT_SLICE_FLAG] = 1
+   	do
+   		se_idx := se_idx + 1;
 	end
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_3
@@ -719,10 +617,36 @@ actor Algo_Parser ()
 	guard
 		se_idx = 3 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
+		uint(size=32) res[1]
+   	do	
+   		slice[REF_PIC_LIST_COMBINATION_FLAG]     := 0;
+   		slice[REF_PIC_LIST_MODIFICATION_FLAG_LC] := 0;
+		if slice[SLICE_TYPE] = B_SLICE then
+			vld_u_name(  1, fifo, res, "ref_pic_list_combination_flag           "); slice[REF_PIC_LIST_COMBINATION_FLAG]			:= res[0];
+			if slice[REF_PIC_LIST_COMBINATION_FLAG] = 1 then
+				vld_ue_name(    fifo, res, "num_ref_idx_lc_active_minus1            "); slice[NUM_REF_IDX_LC_ACTIVE]				:= res[0] + 1;
+				vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_lc       "); slice[REF_PIC_LIST_MODIFICATION_FLAG_LC]	:= res[0];
+				if res[0] = 1 then
+		   			foreach uint(size=8) i in 0 .. slice[NUM_REF_IDX_LC_ACTIVE] - 1 do
+						vld_u_name(  1, fifo, res, "pic_from_list_0_flag[ ]                 "); slice[PIC_FROM_LIST_0_FLAG+i]		:= res[0];
+						vld_ue_name(    fifo, res, "ref_idx_list_curr[ ]                    "); slice[REF_IDX_LIST_CURR+i]			:= res[0];
+		   			end
+		   		end
+			end
+		end
+	    se_idx := se_idx + 1;
+	end
+	/**************************************************************************
+	 * read_SliceHeader.se_idx_4
+	 *************************************************************************/	
+	read_SliceHeader.se_idx_4 : action ==>
+	guard
+		se_idx = 4 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+	var
 		uint(size=32) res[1],
-		uint(size=32) iNumCUs = ( (sps_pic_width_in_luma_samples  + sps_maxCUWidth - 1) / sps_maxCUWidth ) * 
-	 							( (sps_pic_height_in_luma_samples + sps_maxCUDepth - 1) / sps_maxCUDepth),
-	 	uint(size=32) iNumParts = (1<<(pps_slice_granularity<<1)),
+		uint(size=32) iNumCUs = ( (sps[sps_id][PIC_WIDTH_IN_LUMA_SAMPLES]  + sps[sps_id][MAXCUWIDTH] - 1) / sps[sps_id][MAXCUWIDTH] ) * 
+	 							( (sps[sps_id][PIC_HEIGHT_IN_LUMA_SAMPLES] + sps[sps_id][MAXCUDEPTH] - 1) / sps[sps_id][MAXCUDEPTH]),
+	 	uint(size=32) iNumParts = (1<<(pps[pps_id][SLICE_GRANULARITY]<<1)),
 	 	uint(size=32) iReqBitsOuter := 0,
 	 	uint(size=32) iReqBitsInner := 0
    	do	
@@ -730,17 +654,17 @@ actor Algo_Parser ()
   		while iNumParts > (1 << iReqBitsInner) do iReqBitsInner := iReqBitsInner + 1; end
 		vld_u_name(  1, fifo, res, "first_slice_in_pic_flag                 ");
 		if res[0] = 0 then
-			vld_u_name( iReqBitsOuter+iReqBitsInner , fifo, res, "slice_address                           "); slice_slice_address := res[0];
+			vld_u_name( iReqBitsOuter+iReqBitsInner , fifo, res, "slice_address                           "); slice[SLICE_ADDRESS]	:= res[0];
 		end
-		vld_se_name(    fifo, res, "slice_qp                                "); slice_slice_qp                    := res[0];
-		vld_u_name(  1, fifo, res, "loop_filter_disable                     "); slice_loop_filter_disable         := res[0];
-		if slice_slice_type = B_SLICE then
-			vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 "); slice_collocated_from_l0_flag := res[0];
+		vld_se_name(    fifo, res, "slice_qp                                "); slice[SLICE_QP]										:= res[0];
+		vld_u_name(  1, fifo, res, "loop_filter_disable                     "); slice[LOOP_FILTER_DISABLE]							:= res[0];
+		if slice[SLICE_TYPE] = B_SLICE then
+			vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 "); slice[COLLOCATED_FROM_L0_FLAG]					:= res[0];
 		end
 	    se_idx := se_idx + 1;
 	end
 	/**************************************************************************
-	 * read_SliceHeader.se_idx_4
+	 * read_SliceHeader.se_idx_5
 	 *************************************************************************/	
 	 procedure initWpScaling()
 	 begin
@@ -763,11 +687,11 @@ actor Algo_Parser ()
 			end
 		end
 	end
-   	read_SliceHeader.se_idx_4.useWP : action ==>
+   	read_SliceHeader.se_idx_5.useWP : action ==>
 	guard
-		se_idx = 4 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
-		(pps_weighted_pred_flag  = 1 and slice_slice_type = P_SLICE) or 
-		(pps_weighted_bipred_idc = 1 and slice_slice_type = B_SLICE)
+		se_idx = 5 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
+		(pps[pps_id][WEIGHTED_PRED_FLAG]  = 1 and slice[SLICE_TYPE] = P_SLICE) or 
+		(pps[pps_id][WEIGHTED_BIPRED_IDC] = 1 and slice[SLICE_TYPE] = B_SLICE)
 	var
 		 int(size=32) res[1],
 		uint(size=32) uiLog2WeightDenomLuma[1],
@@ -776,10 +700,10 @@ actor Algo_Parser ()
    	do	
 		vld_ue_name(    fifo, uiLog2WeightDenomLuma,   "luma_log2_weight_denom                  ");
 		vld_ue_name(    fifo, uiLog2WeightDenomChroma, "chroma_log2_weight_denom                ");
-		foreach uint(size=8) iNumRef in 0 .. slice_slice_type do
-			iRefIdxMax := slice_num_ref_idx_l0_active_minus1;
+		foreach uint(size=8) iNumRef in 0 .. slice[SLICE_TYPE] do
+			iRefIdxMax := slice[NUM_REF_IDX_L0_ACTIVE] - 1;
 			if iNumRef = REF_PIC_LIST_1 then
-				iRefIdxMax := slice_num_ref_idx_l1_active_minus1;
+				iRefIdxMax := slice[NUM_REF_IDX_L1_ACTIVE] - 1;
 			end
 			foreach uint(size=8) iRefIdx in 0 .. iRefIdxMax do
 				wp[iNumRef][iRefIdx][0][WP_LOG2_WEIGHT_DENOM] := uiLog2WeightDenomLuma[0];
@@ -822,84 +746,33 @@ actor Algo_Parser ()
 		initWpScaling();
 	    se_idx := se_idx + 1;
 	end
-	read_SliceHeader.se_idx_4.noUseWP : action ==>
+	read_SliceHeader.se_idx_5.noUseWP : action ==>
 	guard
-		se_idx = 4 and 
-		(pps_weighted_pred_flag  != 1 or slice_slice_type != P_SLICE) and 
-		(pps_weighted_bipred_idc != 1 or slice_slice_type != B_SLICE)
+		se_idx = 5 and 
+		(pps[pps_id][WEIGHTED_PRED_FLAG]  != 1 or slice[SLICE_TYPE] != P_SLICE) and 
+		(pps[pps_id][WEIGHTED_BIPRED_IDC] != 1 or slice[SLICE_TYPE] != B_SLICE)
    	do	
-	    se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_SliceHeader.se_idx_5
-	 *************************************************************************/	
-	read_SliceHeader.se_idx_5 : action ==>
-	guard
-		se_idx = 5 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
-	var
-		uint(size=32) res[1]
-   	do	
- 		slice_tileMarkerFlag := 0;
-   		if slice_lightweight_slice_flag = 0 then
- 			vld_u_name(  1, fifo, res, "symbolMode                              "); slice_symbolMode     := res[0];
- 			vld_u_name(  1, fifo, res, "drbFlag                                 "); slice_drbFlag        := res[0];
- 			if res[0] = 0 then
-	 			vld_u_name(  2, fifo, res, "erbIndex                                "); slice_erbIndex   := res[0];
- 			end
- 			if sps_tile_boundary_independence_idc = 1 then
- 				vld_u_name(  1, fifo, res, "tileMarkerFlag                          "); slice_tileMarkerFlag := res[0];
- 			end
- 		end
- 		if pps_entropy_coding_synchro = 1 then
- 			foreach uint(size=8) ui in 0 .. pps_num_substreams_minus1 do
- 				vld_u_name(  2, fifo, res, "substreamByteSizes");
- 				if res[0] > 3 then
- 					println("Error in parseSliceHeader");
- 				else
- 					vld_u_name(  8<<res[0], fifo, res, "substreamSizes[ ]                    "); slice_puiSubstreamSizes[ui] := res[0]; 				
- 				end
- 				
- 			end
- 		end
 	    se_idx := se_idx + 1;
 	end
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_6
-	 *************************************************************************/
+	 *************************************************************************/	
 	read_SliceHeader.se_idx_6 : action ==>
 	guard
 		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1],
-		 int(size= 5) iLastSize,
-         int(size= 5) iCurDiff,
-        uint(size= 1) iSign
+		uint(size=32) res[1]
    	do	
-   		if slice_lightweight_slice_flag = 0 then
-   			if sps_tile_boundary_independence_idc = 1 then
- 				vld_u_name(  1, fifo, res, "tileLocationInformationInSliceHeaderFlag");
- 				if res[0] = 1 then
-	 				vld_u_name(  5, fifo, res, "tileLocationCount_minus1                "); slice_tileLocationCount_minus1 := res[0];
-	 				vld_u_name(  5, fifo, res, "bitsUsedByDiff_minus1                   "); slice_bitsUsedByDiff_minus1    := res[0];
-	 				iLastSize := 0;
-	 				foreach uint(size=8) uiIdx in 0 .. slice_tileLocationCount_minus1 do
-	 					if uiIdx = 0 then
-			 				vld_u_name(  slice_bitsUsedByDiff_minus1, fifo, res, "tileLocation                            ");
-			 				slice_tileLocation[uiIdx] := res[0];
-			 				iCurDiff  := res[0];
-            				iLastSize := res[0];
-	 					else
-	 						vld_u_name(  1, fifo, res, "sign                                    "); iSign := res[0];	 					
-	 						vld_u_name(  slice_bitsUsedByDiff_minus1, fifo, res, "tileLocation                            ");
-	 						if iSign = 1 then iCurDiff  := -res[0]; else iCurDiff := res[0]; end 
-            				iLastSize := iLastSize + iCurDiff;
-			 				slice_tileLocation[uiIdx] := slice_tileLocation[uiIdx-1] + iLastSize;
-	 					end
-	 				end
- 				end
+   		if slice[LIGHTWEIGHT_SLICE_FLAG] = 0 then
+ 			//vld_u_name(  1, fifo, res, "drbFlag                                 "); slice[DRBFLAG]				:= res[0];
+ 			vld_u(  1, fifo, res); slice[DRBFLAG]				:= res[0];
+ 			if res[0] = 0 then
+	 			//vld_u_name(  2, fifo, res, "erbIndex                                "); slice[ERBINDEX]			:= res[0];
+	 			vld_u(  2, fifo, res); slice[ERBINDEX]			:= res[0];
  			end
  		end
- 		se_idx := se_idx + 1;
+ 		vld_ue_name(    fifo, res, "MaxNumMergeCand                         "); slice[MAXNUMMERGECAND]			:= MRG_MAX_NUM_CANDS - res[0];
+	    se_idx := se_idx + 1;
 	end
 	/**************************************************************************
 	 * read_SliceHeader_done
