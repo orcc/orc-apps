@@ -150,8 +150,6 @@ actor Algo_Synp_AVC_CBP()
 	end
 	
 	
-	uint(size=2) REFLIST0_PRED    = 0;
-
 	// ********** Read VLD ********** //
 	int VLD_Counter;
 	int Codeword;
@@ -176,7 +174,6 @@ actor Algo_Synp_AVC_CBP()
 	List (type:int,size=2)delta_pic_order_cnt  := [ 0 : for int i in 0 .. 1];
 	uint(size=5) slice_num_ref_idx_l0_active_minus1 := 0;
 	uint(size=5) slice_num_ref_idx_l1_active_minus1 := 0;
-	int slice_qp_delta;
 	uint(size=2) disable_deblocking_filter_idc := 0;
 	int(size=5) slice_alpha_c0_offset_div2 := 0;
 	int(size=5) slice_beta_offset_div2 := 0;
@@ -193,16 +190,6 @@ actor Algo_Synp_AVC_CBP()
 	uint(size=3) SLICE_TYPE_SP = 3;
 	uint(size=3) SLICE_TYPE_SI = 4;
 
-	// MMO
-	int prevPicOrderCntMsb := 0;
-	int prevPicOrderCntLsb := 0;
-	uint prev_frame_num := 0;
-	uint prev_frame_num_offset := 0;
-	//*****************************************************************
-
-	//*******  ref_pic_list_reordering  ********/
-	uint(size=1) ref_pic_list_reordering_flag_l0;
-	uint(size=2) reordering_of_pic_nums_idc;
 
 	/*************************************************************
 	*************************************************************
@@ -226,13 +213,11 @@ actor Algo_Synp_AVC_CBP()
 	*************************************************************
 	*************************************************************/
 	uint(size=6) mb_type;
-	uint(size=6) vld_mb_type;
 	uint MB_inc;
 	uint(size=1) noSubMbPartSizeLessThan8x8Flag;
 	uint(size=1) transform_size_8x8_flag := 0;
 	uint(size=6) val_CodedBlockPatternLuma := 0;
 	uint(size=6) CodedBlockPatternChroma := 0;
-	int mb_qp_delta;
 
 	/*************************************************************
 	*************************************************************
@@ -292,7 +277,7 @@ actor Algo_Synp_AVC_CBP()
 
 	// ********** Read VLD ********** //
  
-	function IS_B_Direct_8x8() --> bool : (vld_mb_type >= BLOCK_TYPE_B_MIN and vld_mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
+	function IS_B_Direct_8x8() --> bool : (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
 
  	procedure more_rbsp_data()   
   	var 
@@ -1073,6 +1058,12 @@ actor Algo_Synp_AVC_CBP()
 		end
 	end
 
+	// MMO
+	int prevPicOrderCntMsb := 0;
+	int prevPicOrderCntLsb := 0;
+	uint prev_frame_num := 0;
+	uint prev_frame_num_offset := 0;
+
 	CalcPOC: action ==> IsPicOrSlice:[first_mb_in_slice=0], 
 		POC :[POC_val], 
 		SizeDPBMax :[MaxDPBSz[sps_id]],IsMbSliceOrPic:[if first_mb_in_slice=0 then NEW_PIC else NEW_SLICE end]
@@ -1178,9 +1169,11 @@ actor Algo_Synp_AVC_CBP()
 	end
 
 	//*******  ref_pic_list_reordering  ********/
+	uint(size=1) ref_pic_list_reordering_flag_l0;
+	uint(size=2) reordering_of_pic_nums_idc;
 
 	//if (slice_type % 5 != 2 && slice_type % 5 != 4)
-	read_SliceH_ref_pic_list_reordering_flag_l0: action ==> RefList0Type:[REFLIST0_PRED], RefReordering:[ref_pic_list_reordering_flag_l0], Nb_RefFrame_l0:[slice_num_ref_idx_l0_active_minus1 + 1]
+	read_SliceH_ref_pic_list_reordering_flag_l0: action ==> RefList0Type:[0], RefReordering:[ref_pic_list_reordering_flag_l0], Nb_RefFrame_l0:[slice_num_ref_idx_l0_active_minus1 + 1]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI
@@ -1439,7 +1432,8 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		int slice_qp_delta
 	do
 		if (entropy_coding_mode_flag[pps_id] = 1 and
 			slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI) then
@@ -1737,7 +1731,7 @@ actor Algo_Synp_AVC_CBP()
 			MbLocation:[mb_x, mb_y]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		vld_mb_type = BLOCK_TYPE_I_PCM
+		mb_type = BLOCK_TYPE_I_PCM
 	var 
 		int mb_addr,
 		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y,
@@ -1773,11 +1767,11 @@ actor Algo_Synp_AVC_CBP()
 			QP_Cb:[val_QP_Cb], 
 			QP_Cr:[val_QP_Cr], 
 			ScalingList:[[16: for int s in 0 .. 15 ]] repeat 16,
-			MbType:[vld_mb_type],
+			MbType:[mb_type],
 			MbLocation:[mb_x, mb_y]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		Mb_IsIntra(vld_mb_type)
+		Mb_IsIntra(mb_type)
 	var 
 		int mb_addr,
 		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y,
@@ -1813,12 +1807,12 @@ actor Algo_Synp_AVC_CBP()
 			QP_Cb:[val_QP_Cb], 
 			QP_Cr:[val_QP_Cr], 
 			ScalingList:[[16: for int s in 0 .. 15 ]] repeat 16,
-			MbType:[vld_mb_type],
-			MbType4Pred:[vld_mb_type],
+			MbType:[mb_type],
+			MbType4Pred:[mb_type],
 			MbLocation:[mb_x, mb_y]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		not Mb_IsIntra(vld_mb_type)
+		not Mb_IsIntra(mb_type)
 	var 
 		int mb_addr,
 		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y,
@@ -1891,38 +1885,35 @@ actor Algo_Synp_AVC_CBP()
 	do
 		vld_ue_name(  fifo, res, "mb_type                             ");
 		mb_type := res[0];
-		vld_mb_type := mb_type;
-		if slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP then if mb_type >= 5 then mb_type:= mb_type - 5; end end
-		if slice_type = SLICE_TYPE_B then if mb_type >= 23 then mb_type:= mb_type -23; end end
 		
-		vld_mb_type :=
+		mb_type :=
 			if((slice_type = SLICE_TYPE_SI) or (slice_type = SLICE_TYPE_I))then
-				vld_mb_type
+				mb_type
 			else
 				if((slice_type = SLICE_TYPE_SP) or (slice_type = SLICE_TYPE_P))then
-					if(vld_mb_type >= 5) then
-						if(vld_mb_type < 32)then
-							vld_mb_type - 5
+					if(mb_type >= 5) then
+						if(mb_type < 32)then
+							mb_type - 5
 						else
 							0
 						end
 					else
-						vld_mb_type + BLOCK_TYPE_P_MIN - BLOCK_TYPE_I_8x8
+						mb_type + BLOCK_TYPE_P_MIN - BLOCK_TYPE_I_8x8
 					end
 				else
-					if(vld_mb_type < 23) then
-						vld_mb_type + BLOCK_TYPE_B_MIN - BLOCK_TYPE_I_8x8
+					if(mb_type < 23) then
+						mb_type + BLOCK_TYPE_B_MIN - BLOCK_TYPE_I_8x8
 					else
-						if(vld_mb_type < 49) then
-							vld_mb_type - 23
+						if(mb_type < 49) then
+							mb_type - 23
 						else
 							0
 						end
 					end
 				end
 			end;
-		if vld_mb_type != BLOCK_TYPE_I_4x4 then
-			vld_mb_type := vld_mb_type + BLOCK_TYPE_I_8x8;
+		if mb_type != BLOCK_TYPE_I_4x4 then
+			mb_type := mb_type + BLOCK_TYPE_I_8x8;
 		end
 		
 	end
@@ -1931,7 +1922,7 @@ actor Algo_Synp_AVC_CBP()
 	// while( !byte_aligned( ) )
 	read_MB_layer_I_PCM_alignement: action  ==>  IntraPredMode : [ 4 ]
 	guard
-		vld_mb_type = BLOCK_TYPE_I_PCM
+		mb_type = BLOCK_TYPE_I_PCM
 	do
 		byte_align(fifo);
 		MB_inc := 0;
@@ -1988,7 +1979,7 @@ actor Algo_Synp_AVC_CBP()
 	//} else {
 	read_MB_layer_not_I_PCM: action ==>
 	guard
-		not (vld_mb_type = BLOCK_TYPE_I_PCM)
+		not (mb_type = BLOCK_TYPE_I_PCM)
 	do
 		noSubMbPartSizeLessThan8x8Flag := 1;
 	end
@@ -1997,9 +1988,9 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_layer_sub_mb_pred: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		not Is_Intra_NxN(vld_mb_type),
-		not Is_Intra_16x16(vld_mb_type),
-		(numMbPart(vld_mb_type) = 4) // numMbPart(vld_mb_type) tests the slice_type and return 0 if slice_type is I or SI
+		not Is_Intra_NxN(mb_type),
+		not Is_Intra_16x16(mb_type),
+		(numMbPart(mb_type) = 4) // numMbPart(mb_type) tests the slice_type and return 0 if slice_type is I or SI
 	do
 		mbPartIdx := 0;
 	end
@@ -2015,7 +2006,7 @@ actor Algo_Synp_AVC_CBP()
 			//  if( sub_mb_type[ mbPartIdx ] != B_Direct_8x8 )
 			if not IS_B_Direct_8x8() then
 				//    if( NumSubMbPart( sub_mb_type[ mbPartIdx ] ) > 1 )
-				if numSubMbPart(vld_mb_type, sub_mb_type[mbPartIdx]) >1 then noSubMbPartSizeLessThan8x8Flag := 0; end
+				if numSubMbPart(mb_type, sub_mb_type[mbPartIdx]) >1 then noSubMbPartSizeLessThan8x8Flag := 0; end
 			else 
 				if direct_8x8_interference_flag[sps_id] = 0 then noSubMbPartSizeLessThan8x8Flag := 0; end
 			end
@@ -2027,8 +2018,8 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_layer_transform_size_8x8_flag: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		numMbPart(vld_mb_type) != 4, // numMbPart(vld_mb_type) tests the slice_type and return 0 if slice_type is I or SI
-		transform_8x8_mode_flag[pps_id] = 1 and Is_Intra_NxN(vld_mb_type)
+		numMbPart(mb_type) != 4, // numMbPart(mb_type) tests the slice_type and return 0 if slice_type is I or SI
+		transform_8x8_mode_flag[pps_id] = 1 and Is_Intra_NxN(mb_type)
 	var
 		uint(size=32) res[1]
 	do
@@ -2040,7 +2031,7 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_layer_skip_transform_size_8x8_flag: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		numMbPart(vld_mb_type) != 4
+		numMbPart(mb_type) != 4
 	end
 	// end if 
 	// --> mb_pred( mb_type )
@@ -2054,22 +2045,22 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=32) res[1],
 		uint(size=6) coded_block_pattern
 	do
-		if (not Is_Intra_16x16(vld_mb_type)) then
-			vld_me_name(  fifo, res, chroma_format_idc[sps_id], Is_Intra_NxN(vld_mb_type), "coded_block_pattern                             ");
+		if (not Is_Intra_16x16(mb_type)) then
+			vld_me_name(  fifo, res, chroma_format_idc[sps_id], Is_Intra_NxN(mb_type), "coded_block_pattern                             ");
 			coded_block_pattern := res[0];
 			val_CodedBlockPatternLuma := coded_block_pattern mod 16;
 			CodedBlockPatternChroma := coded_block_pattern / 16;
 			if( val_CodedBlockPatternLuma > 0 and 
 				transform_8x8_mode_flag[pps_id] = 1 and 
-				Is_Intra_NxN(vld_mb_type) and
+				Is_Intra_NxN(mb_type) and
 				noSubMbPartSizeLessThan8x8Flag = 1 and
-				(vld_mb_type != BLOCK_TYPE_B_DIRECT_16x16 or direct_8x8_interference_flag[sps_id] = 1 ) )then 
+				(mb_type != BLOCK_TYPE_B_DIRECT_16x16 or direct_8x8_interference_flag[sps_id] = 1 ) )then 
 					vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
 					transform_size_8x8_flag := res[0];
 			end
 		else
-			val_CodedBlockPatternLuma := Intra_16x16_tab[mb_type][2];
-			CodedBlockPatternChroma := Intra_16x16_tab[mb_type][1];
+			val_CodedBlockPatternLuma := Intra_16x16_tab[mb_type - BLOCK_TYPE_I_8x8][2];
+			CodedBlockPatternChroma := Intra_16x16_tab[mb_type - BLOCK_TYPE_I_8x8][1];
 		end
 	end
 
@@ -2077,9 +2068,10 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_layer_mb_qp_delta: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		val_CodedBlockPatternLuma > 0 or CodedBlockPatternChroma > 0 or Is_Intra_16x16(vld_mb_type)
+		val_CodedBlockPatternLuma > 0 or CodedBlockPatternChroma > 0 or Is_Intra_16x16(mb_type)
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		int mb_qp_delta		
 	do
 		vld_se_name(  fifo, res, "mb_qp_delta                             ");
 		mb_qp_delta := res[0];
@@ -2093,7 +2085,7 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_layer_skip_mb_qp_delta: action ==>  LAST:[[true: for int t in 0 .. 25 ]] repeat 26
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		( val_CodedBlockPatternLuma = 0 and CodedBlockPatternChroma = 0 and not Is_Intra_16x16(vld_mb_type) )
+		( val_CodedBlockPatternLuma = 0 and CodedBlockPatternChroma = 0 and not Is_Intra_16x16(mb_type) )
 	end
 	//end if
 
@@ -2144,8 +2136,8 @@ actor Algo_Synp_AVC_CBP()
 	do
 		if ((slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1) and
 			not IS_B_Direct_8x8() and 
-			not (vld_mb_type = BLOCK_TYPE_P_8x8ref0) and 
-			(subMbPredMode(vld_mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)) then
+			not (mb_type = BLOCK_TYPE_P_8x8ref0) and 
+			(subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)) then
 			if slice_num_ref_idx_l0_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
 				ref_idx_l0[mbPartIdx] := 1 - res[0];
@@ -2179,8 +2171,8 @@ actor Algo_Synp_AVC_CBP()
 	do
 		if ((slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1) 
 			and not IS_B_Direct_8x8() 
-			and not (vld_mb_type = BLOCK_TYPE_P_8x8ref0)
-			and (subMbPredMode(vld_mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)) then
+			and not (mb_type = BLOCK_TYPE_P_8x8ref0)
+			and (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)) then
 			if slice_num_ref_idx_l1_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
 			else
@@ -2204,7 +2196,7 @@ actor Algo_Synp_AVC_CBP()
 	read_sub_MB_pred_mvd_l0.loop: action ==> 
 	guard
 		mbPartIdx < 4,
-		not IS_B_Direct_8x8(), (subMbPredMode(vld_mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)
+		not IS_B_Direct_8x8(), (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)
 	do
 		subMbPartIdx := 0;
 	end
@@ -2215,7 +2207,7 @@ actor Algo_Synp_AVC_CBP()
 		SubMbPredResMvL0:[mvd_l0[0], mvd_l0[1]]		
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		subMbPartIdx < numSubMbPart(vld_mb_type, sub_mb_type[mbPartIdx])
+		subMbPartIdx < numSubMbPart(mb_type, sub_mb_type[mbPartIdx])
 	var
 		uint(size=32) res[1],
 		int mvd_l0[2]
@@ -2231,7 +2223,7 @@ actor Algo_Synp_AVC_CBP()
 	read_sub_MB_pred_mvd_l0.inner.done: action ==> 
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		subMbPartIdx = numSubMbPart(vld_mb_type, sub_mb_type[mbPartIdx])
+		subMbPartIdx = numSubMbPart(mb_type, sub_mb_type[mbPartIdx])
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2240,7 +2232,7 @@ actor Algo_Synp_AVC_CBP()
 	read_sub_MB_pred_mvd_l0.skip: action ==> 
 	guard
 		mbPartIdx < 4,
-		IS_B_Direct_8x8() or (subMbPredMode(vld_mb_type, sub_mb_type[ mbPartIdx ] ) = PRED_L1)
+		IS_B_Direct_8x8() or (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) = PRED_L1)
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2259,7 +2251,7 @@ actor Algo_Synp_AVC_CBP()
 	read_sub_MB_pred_mvd_l1.loop: action ==> 
 	guard
 		mbPartIdx < 4,
-		not IS_B_Direct_8x8(), (subMbPredMode(vld_mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)
+		not IS_B_Direct_8x8(), (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)
 	do
 		subMbPartIdx := 0;
 	end
@@ -2267,7 +2259,7 @@ actor Algo_Synp_AVC_CBP()
 	//     for( compIdx = 0; compIdx < 2; compIdx++ )
 	read_sub_MB_pred_mvd_l1.inner.loop: action ==> 
 	guard
-		subMbPartIdx < numSubMbPart(vld_mb_type, sub_mb_type[mbPartIdx]),
+		subMbPartIdx < numSubMbPart(mb_type, sub_mb_type[mbPartIdx]),
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
@@ -2280,7 +2272,7 @@ actor Algo_Synp_AVC_CBP()
 
 	read_sub_MB_pred_mvd_l1.inner.done: action ==> 
 	guard
-		subMbPartIdx = numSubMbPart(vld_mb_type, sub_mb_type[mbPartIdx])
+		subMbPartIdx = numSubMbPart(mb_type, sub_mb_type[mbPartIdx])
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2289,7 +2281,7 @@ actor Algo_Synp_AVC_CBP()
 	read_sub_MB_pred_mvd_l1.skip: action ==> 
 	guard
 		mbPartIdx < 4,
-		IS_B_Direct_8x8() or (subMbPredMode(vld_mb_type, sub_mb_type[ mbPartIdx ] ) = PRED_L0)
+		IS_B_Direct_8x8() or (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) = PRED_L0)
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2311,7 +2303,7 @@ actor Algo_Synp_AVC_CBP()
 	//if( MbPartPredMode( mb_type, 0 ) = = Intra_4x4 )
 	MB_pred_init_Intra_4x4: action ==> IntraPredMode: [ 1 ]
 	guard
-		vld_mb_type = BLOCK_TYPE_I_4x4
+		mb_type = BLOCK_TYPE_I_4x4
 	do
 		luma4x4BlkIdx := 0;
 	end
@@ -2344,7 +2336,7 @@ actor Algo_Synp_AVC_CBP()
 	//else if( MbPartPredMode( mb_type, 0 ) = = Intra_8x8 )
 	MB_pred_init_Intra_8x8: action ==> IntraPredMode :[ 2 ]
 	guard
-		vld_mb_type = BLOCK_TYPE_I_8x8
+		mb_type = BLOCK_TYPE_I_8x8
 	do
 		luma4x4BlkIdx := 0;
 	end
@@ -2376,10 +2368,10 @@ actor Algo_Synp_AVC_CBP()
 	//end for
 
 	//else
-	MB_pred_init_Intra_16x16: action ==> IntraPredMode: [ 3, Intra_16x16_tab[mb_type][0] ]
+	MB_pred_init_Intra_16x16: action ==> IntraPredMode: [ 3, Intra_16x16_tab[mb_type - BLOCK_TYPE_I_8x8][0] ]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		Is_Intra_16x16(vld_mb_type)
+		Is_Intra_16x16(mb_type)
 	end
 	//end if
 
@@ -2406,8 +2398,8 @@ actor Algo_Synp_AVC_CBP()
 	// if( MbPartPredMode( mb_type, 0 ) != Direct ) {
 	MB_pred_Inter_not_direct: action ==>
 	guard
-		mbIsPred(vld_mb_type)
-		or mbIsBiPred(vld_mb_type) and vld_mb_type != BLOCK_TYPE_B_DIRECT_16x16
+		mbIsPred(mb_type)
+		or mbIsBiPred(mb_type) and mb_type != BLOCK_TYPE_B_DIRECT_16x16
 	do
 		mbPartIdx := 0;
 	end
@@ -2417,12 +2409,12 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_pred_ref_idx_l0.loop: action ==> MbPredRefIdxL0:[ref_idx_l0[mbPartIdx-1]]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mbPartIdx < numMbPart(vld_mb_type)
+		mbPartIdx < numMbPart(mb_type)
 	var
 		uint(size=32) res[1]
 	do
 		if ( (slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1)
-			and not Mb_Is_PredL1(vld_mb_type, mbPartIdx)) then
+			and not Mb_Is_PredL1(mb_type, mbPartIdx)) then
 			if slice_num_ref_idx_l0_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                            ");
 				ref_idx_l0[mbPartIdx] := 1 - res[0];
@@ -2439,7 +2431,7 @@ actor Algo_Synp_AVC_CBP()
 
 	read_MB_pred_ref_idx_l0.done: action ==> 
 	guard
-		mbPartIdx = numMbPart(vld_mb_type)
+		mbPartIdx = numMbPart(mb_type)
 	do
 		mbPartIdx := 0;
 	end
@@ -2449,12 +2441,12 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_pred_ref_idx_l1.loop: action ==> 
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mbPartIdx < numMbPart(vld_mb_type)
+		mbPartIdx < numMbPart(mb_type)
 	var
 		uint(size=32) res[1]
 	do
 		if ((slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1)
-			and not Mb_Is_PredL0(vld_mb_type, mbPartIdx)) then
+			and not Mb_Is_PredL0(mb_type, mbPartIdx)) then
 			if slice_num_ref_idx_l1_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
 			else 
@@ -2467,7 +2459,7 @@ actor Algo_Synp_AVC_CBP()
 
 	read_MB_pred_ref_idx_l1.done: action ==> 
 	guard
-		mbPartIdx = numMbPart(vld_mb_type)
+		mbPartIdx = numMbPart(mb_type)
 	do
 		mbPartIdx := 0;
 	end
@@ -2477,8 +2469,8 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_pred_mvd_l0.loop: action ==> MbPredResMvL0:[mvd_l0[0], mvd_l0[1]]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mbPartIdx < numMbPart(vld_mb_type),
-		not Mb_Is_PredL1(vld_mb_type, mbPartIdx)
+		mbPartIdx < numMbPart(mb_type),
+		not Mb_Is_PredL1(mb_type, mbPartIdx)
 	var
 		uint(size=32) res[1],
 		int mvd_l0[2]
@@ -2494,7 +2486,7 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_pred_mvd_l0.skip: action ==> 
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mbPartIdx < numMbPart(vld_mb_type)
+		mbPartIdx < numMbPart(mb_type)
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2503,7 +2495,7 @@ actor Algo_Synp_AVC_CBP()
 
 	read_MB_pred_mvd_l0.done: action ==> 
 	guard
-		mbPartIdx = numMbPart(vld_mb_type)
+		mbPartIdx = numMbPart(mb_type)
 	do
 		mbPartIdx := 0;
 	end
@@ -2513,8 +2505,8 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_pred_mvd_l1.loop: action ==> 
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mbPartIdx < numMbPart(vld_mb_type),
-		not Mb_Is_PredL0(vld_mb_type, mbPartIdx)
+		mbPartIdx < numMbPart(mb_type),
+		not Mb_Is_PredL0(mb_type, mbPartIdx)
 	var
 		uint(size=32) res[1]
 	do
@@ -2527,7 +2519,7 @@ actor Algo_Synp_AVC_CBP()
 	read_MB_pred_mvd_l1.skip: action ==> 
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mbPartIdx < numMbPart(vld_mb_type)
+		mbPartIdx < numMbPart(mb_type)
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2536,13 +2528,13 @@ actor Algo_Synp_AVC_CBP()
 
 	MB_pred_done: action ==> 
 	guard
-		mbPartIdx = numMbPart(vld_mb_type)
+		mbPartIdx = numMbPart(mb_type)
 	end
 
 	//else (INTER pred, MbPartPredMode( mb_type, 0 ) == Direct ) )
 	MB_pred_Inter_direct: action ==>
 	guard
-		(vld_mb_type = BLOCK_TYPE_B_DIRECT_16x16)
+		(mb_type = BLOCK_TYPE_B_DIRECT_16x16)
 	end 
 	//******* End of Mb pred  ********/
 
@@ -2567,7 +2559,7 @@ actor Algo_Synp_AVC_CBP()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		bmFlag = 0,
 		startIdx = 0,
-		Is_Intra_16x16(vld_mb_type)
+		Is_Intra_16x16(mb_type)
 	do
 		block_startIdx := 0;
 		block_endIdx := 15;
@@ -2586,7 +2578,7 @@ actor Algo_Synp_AVC_CBP()
 	Residual_luma_skip_DC_init.Block_4x4: action ==> //LAST:[true]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		( bmFlag != 0 or startIdx != 0 or not Is_Intra_16x16(vld_mb_type) )
+		( bmFlag != 0 or startIdx != 0 or not Is_Intra_16x16(mb_type) )
 	end
 	//end if
 
@@ -2616,7 +2608,7 @@ actor Algo_Synp_AVC_CBP()
 	do
 		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
 		//if( !bmFlag && endIdx > 0 &&  MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
-		if bmFlag = 0 and endIdx > 0 and  Is_Intra_16x16(vld_mb_type) then 
+		if bmFlag = 0 and endIdx > 0 and  Is_Intra_16x16(mb_type) then 
 			block_startIdx := if startIdx - 1 > 0 then startIdx - 1 else 0 end ;
 			block_endIdx := endIdx -1;
 			maxNumCoeff := 15;
@@ -3064,7 +3056,7 @@ actor Algo_Synp_AVC_CBP()
 		inc_nb_coeff = TotalCoeff()-1
 	do
 		run[TotalCoeff()-1] := zerosLeft;
-		if (Is_Intra_16x16(vld_mb_type) and leveltype = 1) or leveltype = 3 then run[TotalCoeff()-1] := run[TotalCoeff()-1] +1; end//the first coeffAC will be replaced by coeffDC
+		if (Is_Intra_16x16(mb_type) and leveltype = 1) or leveltype = 3 then run[TotalCoeff()-1] := run[TotalCoeff()-1] +1; end//the first coeffAC will be replaced by coeffDC
 		coeff_sent := -1;
 	end
 	// --> residual_return
