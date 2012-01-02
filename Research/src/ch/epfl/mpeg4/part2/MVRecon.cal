@@ -12,6 +12,7 @@
 
 package ch.epfl.mpeg4.part2;
 
+import std.util.Math.*;
 import org.mpeg4.part2.Constants.FOURMV;
 import org.mpeg4.part2.Constants.BTYPE_SZ;
 import org.mpeg4.part2.Constants.CLOSEST_POW2_MAXW_IN_MB;
@@ -115,43 +116,6 @@ actor MVRecon ()
 		end
 	end
 
-	// Return the middle of three values
-	function middle(int a, int b, int c) --> int :
-		if a < b then
-			if a > c then
-				a
-			else
-				if b < c then
-					b
-				else
-					c
-				end
-			end
-		else
-			if b > c then
-				b
-			else
-				if a < c then
-					a
-				else
-					c
-				end
-			end
-		end
-	end
-
-	int(size=MB_COORD_SZ + 3) aptr;
-
-	int(size=MB_COORD_SZ + 3) bptr;
-
-	int(size=MB_COORD_SZ + 3) cptr;
-
-	int(size=MV_SZ) apred;
-
-	int(size=MV_SZ) bpred;
-
-	int(size=MV_SZ) cpred;
-
 	// No need to compute any more MVs for chroma or for luma blocks > 1 if not fourmv
 	compute.done: action ==>
 	guard
@@ -159,40 +123,24 @@ actor MVRecon ()
 	end
 
 	// Compute MVs for all Y components in FOURMV mode, otherwise just one
-	// Invoke 3 times to get all the prediction pointers
-	compute.start: action A:[ a, b, c ], MVIN:[ mv0, mv1, mv2, mv3 ]==>
+	compute.start: action A:[ a, b, c ], MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
+	var	
+		int(size=MV_SZ) apred_x, int(size=MV_SZ) apred_y, int(size=MV_SZ) shift
 	do
-		aptr := a;
-		bptr := b;
-		cptr := c;
-		predict(mv0, mv1);
-		predict(mv2, mv3);
-	end
-
-	procedure predict(int(size=9) mag, int(size=9)s)
-	var
-    	int(size=MV_SZ) shift,
-    	int(size=MV_SZ) mv1,
-    	int(size=MV_SZ) mv,
-    	int(size=MV_SZ+2) sum
-    begin
-    	apred := buf[aptr];
-		bpred := buf[bptr];
-		cpred := buf[cptr];
-		aptr := (aptr | Y_SELECT);
-		bptr := (bptr | Y_SELECT);
-		cptr := (cptr | Y_SELECT);
+		apred_x := buf[a];
+		apred_y := buf[a + 4];
 		if comp >= 2 or not top_edge then
-			apred := middle(apred, bpred, cpred);
+			apred_x := median(apred_x, buf[b], buf[c]);
+			apred_y := median(apred_y, buf[b + 4], buf[c + 4]);
 		end
-		shift := ( if mag < 0 then ~(mag) else mag - 1 end << mv_rsize) + s + 1;
-  		mv1 := mvcalc( apred, mag, shift );
-  		mv :=  mvclip( mv1 );
-  		sum := sum_x + mv;
-   	 	mv_x := mv_y;
-    	mv_y := mv;
-    	sum_x := sum_y;
-   	 	sum_y := sum;
+
+		shift := ( if mag_x < 0 then ~(mag_x) else mag_x - 1 end << mv_rsize) + res_x + 1;
+  		mv_x := mvclip( mvcalc( apred_x, mag_x, shift ) );
+  		sum_x := sum_x + mv_x;
+
+		shift := ( if mag_y < 0 then ~(mag_y) else mag_y - 1 end << mv_rsize) + res_y + 1;
+  		mv_y := mvclip( mvcalc( apred_y, mag_y, shift ) );
+  		sum_y := sum_y + mv_y;
 	end
 
 
@@ -234,16 +182,14 @@ actor MVRecon ()
 	guard
 		comp < 4
 	var
-		int(size=MB_COORD_SZ + 3) p = (ptr | comp)
+		int(size=MB_COORD_SZ + 3) p = ptr + comp
 	do
 		buf[p] := mv_x;
-		buf[p | Y_SELECT] := mv_y;
+		buf[p + Y_SELECT] := mv_y;
 	end
 
-	function uvclip_1(int v) --> int
-	var
-		int vv = (v >> 1) :
-		vv | if (v & 3) = 0 then 0 else 1 end
+	function uvclip_1(int v) --> int :
+		(v >> 1) | if (v & 3) = 0 then 0 else 1 end
 	end
 
 	function uvclip_4(int v) --> int
@@ -254,17 +200,10 @@ actor MVRecon ()
 		else
 			v
 		end,
-		int resv = (absv - ((absv >> 4) << 4)),
+//		int resv = (absv - ((absv >> 4) << 4)),
+		int resv = (absv & 15),
 		// resv := |v|%16
-		int delta = if resv < 3 then
-			0
-		else
-			if resv > 13 then
-				2
-			else
-				1
-			end
-		end,
+		int delta = if resv < 3 then 0 else if resv > 13 then 2 else 1 end end,
 		int vv = ((absv >> 4) << 1) + delta :
 		if sign then
 			-vv
