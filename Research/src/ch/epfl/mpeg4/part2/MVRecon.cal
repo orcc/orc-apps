@@ -25,8 +25,7 @@ import org.mpeg4.part2.Constants.NEWVOP;
 import org.mpeg4.part2.Constants.MOTION;
 
 actor MVRecon ()
-	int(size=BTYPE_SZ) BTYPE, int(size=MV_SZ) MVIN, int(size=MB_COORD_SZ + 3) A
-		==>
+	int(size=BTYPE_SZ) BTYPE, int(size=MV_SZ) MVIN ==>
 	int(size=MV_SZ) MV :
 
 	// Motion vector line buffers - pointer behavior must be implemented exactly as in MVSequence.cal
@@ -34,7 +33,7 @@ actor MVRecon ()
 
 	// Current macroblock x position
 	bool top_edge := true;
-
+	bool right_edge := false;
 	// Top edge macroblock flag
 	int(size=4) comp := 0;
 
@@ -51,6 +50,9 @@ actor MVRecon ()
 	int(size=4) Y_SELECT = 4;
 
 	int(size=MB_COORD_SZ + 3) ptr;
+	int(size=MB_COORD_SZ + 3) ptr_left;
+	int(size=MB_COORD_SZ + 3) ptr_above;
+	int(size=MB_COORD_SZ + 3) ptr_above_right;
 
 	List(type: int(size=MV_SZ), size=BUF_SIZE) buf;
 
@@ -71,6 +73,7 @@ actor MVRecon ()
 	do
 		mbx := 0;
 		top_edge := true;
+		right_edge := false;
 		comp := 0;
 		ptr := 8;
 		if fcode > 0 then
@@ -85,6 +88,9 @@ actor MVRecon ()
 	get_w_h: action BTYPE:[w, h] ==>
 	do
 		mbwidth := w;
+		ptr_left := 16;
+		ptr_above := 8*w + 8;
+		ptr_above_right := 8*w;
 	end
 
 	// No motion vector
@@ -122,8 +128,60 @@ actor MVRecon ()
 		comp > 3 or (comp != 0 and not fourmv)
 	end
 
+	int a;
+	int b;
+	int c;
+	
+	compute.predict.y0: action ==>
+	guard
+		comp = 0
+	var
+		int(size=16) pl = if mbx = 0 then 0 else ptr_left end,
+		int(size=16) pa = if top_edge then 0 else ptr_above end,
+		int(size=16) par = if top_edge or right_edge then 0 else ptr_above_right end
+	do
+		a := pl + 1;
+		b := pa + 2;
+		c := par + 2;
+	end
+
+	// block 1    0      above->3    above_right->2
+	compute.predict.y1: action ==>
+	guard
+		comp = 1
+	var
+		int(size=16) pa = if top_edge then 0 else ptr_above end, 
+		int(size=16) par = if top_edge or right_edge then 0 else ptr_above_right end
+	do
+		a := ptr;
+		b := pa + 3;
+		c := par + 2;
+	end
+
+	// block 2 left->3       0            1
+	compute.predict.y2: action ==>
+	guard
+		comp = 2
+	var
+		int(size=16) pl = if mbx = 0 then 0 else ptr_left end
+	do
+		a := pl + 3;
+		b := ptr;
+		c := ptr + 1;
+	end
+
+	// block 3    2          0            1
+	compute.predict.y3: action ==>
+	guard
+		comp = 3
+	do
+		a := ptr + 2;
+		b := ptr;
+		c := ptr + 1;
+	end
+	
 	// Compute MVs for all Y components in FOURMV mode, otherwise just one
-	compute.start: action A:[ a, b, c ], MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
+	compute.start: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
 	var	
 		int(size=MV_SZ) apred_x, int(size=MV_SZ) apred_y, int(size=MV_SZ) shift
 	do
@@ -225,14 +283,19 @@ actor MVRecon ()
 		if comp = 6 then
 			comp := 0;
 			mbx := mbx + 1;
-			if mbx = mbwidth then
+			if right_edge then
+				mbx := 0;
+				right_edge := false;
 				top_edge := false;
-			end
-			ptr := if ptr = 8 then
-				BUF_SIZE - 8
 			else
-				ptr - 8
-			end;
+				if mbx = (mbwidth - 1) then
+					right_edge := true;
+				end
+			end
+			ptr := if ptr = 8 then BUF_SIZE - 8 else ptr - 8 end;
+			ptr_left := if ptr_left = 8 then BUF_SIZE - 8 else ptr_left - 8 end;
+			ptr_above := if ptr_above = 8 then BUF_SIZE - 8 else ptr_above - 8 end;
+			ptr_above_right := if ptr_above_right = 8 then BUF_SIZE - 8 else ptr_above_right - 8 end;
 		end
 	end
 
@@ -242,7 +305,8 @@ actor MVRecon ()
 		read ( read.motion ) --> compute;
 		read ( read.noMotion ) --> advance;
 		compute ( compute.done ) --> write;
-		compute ( compute.start ) --> write;
+		compute ( compute.predict ) --> predict;
+		predict ( compute.start ) --> write;
 		write ( write ) --> advance;
 		advance ( advance ) --> read;
 	end
