@@ -21,12 +21,10 @@ import org.mpeg4.part10.Imp_PictureInfo.*;
 
 actor Algo_DemuxParserInfoForBlocks_Luma()
 	uint(size=6)  MBType,
-//	bool          TransformSize8x8,
 	int (size=9)  Coef_ACR,
 	bool          ConstrainedIFlag,
 	uint(size=4)  PredMode,
-	uint(size=7)  MbLocation,
-	bool          NeighbourAvail
+	uint(size=7)  MbLocation
 		==>
 	int (size=9)  Coef_ACR_Intra_4x4,
 	uint(size=4)  PredMode_4x4,
@@ -40,10 +38,10 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 		:
 
 
-	List( type:bool, size = MAX_PICWIDTH_BLK) is_intra := [false : for int i in 0 .. MAX_PICWIDTH_BLK-1];
-	bool          intra_top_left := false;	
+	List( type:bool, size=(MAX_PICWIDTH_BLK + 2) * 2) isIntra;
+	int STRIDE = MAX_PICWIDTH_BLK + 2;
+
 	uint(size=13) curr_pos       := 0;
-	bool          CurrValIsIntra := false;
 /*
 *
 * Actions
@@ -53,9 +51,11 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 	CheckSlices: action
 			MBType           :[ValMBType]
 				==>
-		guard
-			ValMBType >= NEW_FRAME
-		end
+	guard
+		ValMBType >= NEW_FRAME
+	do
+		isIntra := [false : for int i in 1 .. (STRIDE * 2)];
+	end
 
 	bool constrainedIFlag;
 	
@@ -66,22 +66,30 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 
 
 	MBTypeIsPCM: action
+			MbLocation     :[MbLocxInPic , MbLocyInPic],
 			MBType           :[ValMBType]
 				==>
 		guard
 			ValMBType = BLOCK_TYPE_I_PCM
 		do
-			CurrValIsIntra := true;
+			curr_pos    := MbLocxInPic + 1;
+			isIntra[curr_pos] := isIntra[STRIDE + curr_pos];
+			isIntra[curr_pos + 1] := isIntra[STRIDE + 1 + curr_pos];
+			isIntra[STRIDE + curr_pos] := true;
 		end
 
 
 	MBTypeIsIntra4x4: action
+			MbLocation     :[MbLocxInPic , MbLocyInPic],
 			MBType           :[ValMBType]
 				==>
 		guard
 			Is_Intra_NxN(ValMBType)
 		do
-			CurrValIsIntra := true;	
+			curr_pos    := MbLocxInPic + 1;
+			isIntra[curr_pos] := isIntra[STRIDE + curr_pos];
+			isIntra[curr_pos + 1] := isIntra[STRIDE + 1 + curr_pos];
+			isIntra[STRIDE + curr_pos] := true;
 		end
 
 	SendAcr4x4: action
@@ -97,8 +105,6 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 		end
 
 	SendNeighbourg4x4: action
-			MbLocation   :[MbLocxInPic , MbLocyInPic],
-			NeighbourAvail :[NeighbourA_Avail , NeighbourB_Avail , NeighbourC_Avail , NeighbourD_Avail]
 				==>
 			NeighbourAvail4x4 :[NeighA, NeighB, NeighC, NeighD]
 		var
@@ -107,22 +113,25 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 			bool NeighC, 
 			bool NeighD
 		do
-			curr_pos    := MbLocxInPic;
-			NeighA := NeighbourA_Avail && (is_intra[(curr_pos-1) & 0x3F] or not (constrainedIFlag));
-			NeighB := NeighbourB_Avail && (is_intra[curr_pos & 0x3F] or not (constrainedIFlag));
-			NeighC := NeighbourC_Avail && (is_intra[(curr_pos+1) & 0x3F] or not (constrainedIFlag)) && NeighB;
-			NeighD := NeighbourD_Avail && (intra_top_left or not (constrainedIFlag));
+			NeighA := (isIntra[curr_pos + STRIDE - 1] );
+			NeighB := (isIntra[curr_pos] );
+			NeighC := (isIntra[curr_pos + 1]) && NeighB;
+			NeighD := (isIntra[curr_pos - 1]);
 		end
 
 
 	MBTypeIsIntra16x16: action
+			MbLocation     :[MbLocxInPic , MbLocyInPic],
 			MBType           :[ValMBType]
 				==>
 		guard
 			ValMBType >= BLOCK_TYPE_INTRA_16x16_MIN,
 			ValMBType <= BLOCK_TYPE_INTRA_16x16_MAX
 		do
-			CurrValIsIntra := true;
+			curr_pos    := MbLocxInPic + 1;
+			isIntra[curr_pos] := isIntra[STRIDE + curr_pos];
+			isIntra[curr_pos + 1] := isIntra[STRIDE + 1 + curr_pos];
+			isIntra[STRIDE + curr_pos] := true;
 		end
 
 	SendAcr16x16: action
@@ -138,8 +147,6 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 		end
 
 	SendNeighbourg16x16: action
-			MbLocation   :[MbLocxInPic , MbLocyInPic],
-			NeighbourAvail :[NeighbourA_Avail , NeighbourB_Avail , NeighbourC_Avail , NeighbourD_Avail]
 				==>
 			NeighbourAvail16x16 :[NeighA, NeighB, NeighC, NeighD]
 		var
@@ -148,31 +155,38 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 			bool NeighC, 
 			bool NeighD
 		do
-			curr_pos    := MbLocxInPic;
-			NeighA := NeighbourA_Avail && (is_intra[(curr_pos-1) & 0x3F] or not (constrainedIFlag));
-			NeighB := NeighbourB_Avail && (is_intra[curr_pos & 0x3F] or not (constrainedIFlag));
-			NeighC := NeighbourC_Avail && (is_intra[(curr_pos+1) & 0x3F] or not (constrainedIFlag)) && NeighB;
-			NeighD := NeighbourD_Avail && (intra_top_left or not (constrainedIFlag));
+			NeighA := (isIntra[curr_pos + STRIDE - 1] );
+			NeighB := (isIntra[curr_pos] );
+			NeighC := (isIntra[curr_pos + 1]) && NeighB;
+			NeighD := (isIntra[curr_pos - 1]);
 		end
 
 
 	MBTypeIsInter: action
+			MbLocation     :[MbLocxInPic , MbLocyInPic],
 			MBType      :[ValMBType]
 				==>
 		guard
 			ValMBType > BLOCK_TYPE_INTRA_MAX
 		do
-			CurrValIsIntra := false;
+			curr_pos    := MbLocxInPic + 1;
+			isIntra[curr_pos] := isIntra[STRIDE + curr_pos];
+			isIntra[curr_pos + 1] := isIntra[STRIDE + 1 + curr_pos];
+			isIntra[STRIDE + curr_pos] := not constrainedIFlag;
 		end
 
 	MBTypeIsInterPSkip: action
+			MbLocation     :[MbLocxInPic , MbLocyInPic],
 			MBType      :[ValMBType]
 				==>
 			Coef_ACR_Inter :[[0:  for int i in 0 .. 255]] repeat 256
 		guard
 			ValMBType = BLOCK_TYPE_P_SKIP or ValMBType = BLOCK_TYPE_B_SKIP
 		do
-			CurrValIsIntra := false;
+			curr_pos    := MbLocxInPic + 1;
+			isIntra[curr_pos] := isIntra[STRIDE + curr_pos];
+			isIntra[curr_pos + 1] := isIntra[STRIDE + 1 + curr_pos];
+			isIntra[STRIDE + curr_pos] := not constrainedIFlag;
 		end
 
 	SendAcrInter: action
@@ -186,17 +200,12 @@ actor Algo_DemuxParserInfoForBlocks_Luma()
 		end
 
 	UpdateIsIntra: action
-			MbLocation     :[MbLocxInPic , MbLocyInPic],
-			NeighbourAvail :[NeighbourA_Avail , NeighbourB_Avail , NeighbourC_Avail , NeighbourD_Avail]
 				==>
 		do
-			curr_pos        := MbLocxInPic;
 		end	
 
 	SendInfosDone: action ==>
 		do
-			intra_top_left     := is_intra[curr_pos];
-			is_intra[curr_pos] := CurrValIsIntra;
 		end
 
 	schedule fsm CheckMbType:
