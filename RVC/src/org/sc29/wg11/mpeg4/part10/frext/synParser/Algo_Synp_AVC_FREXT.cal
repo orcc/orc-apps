@@ -1491,12 +1491,15 @@ actor Algo_Synp_AVC_FREXT()
 	procedure NextMbAddress()
 	begin
 		val_CurrMbAddr := val_CurrMbAddr + 1;
-		Mb_x := val_CurrMbAddr mod PicWidthInMbs;
-		Mb_y := val_CurrMbAddr / PicWidthInMbs;
+		if Mb_x < PicWidthInMbs-1 then
+			Mb_x := Mb_x + 1;
+		else
+			Mb_x := 0;
+			Mb_y := Mb_y + 1;
+		end
 		top  := if val_CurrMbAddr < first_mb_in_slice + PicWidthInMbs then false else true end;
 		left := if val_CurrMbAddr = first_mb_in_slice then false else false end;
 	end
-
 
 	//if (entropy_coding_mode_flag) : CABAC
 	//while( !byte_aligned())
@@ -1508,7 +1511,6 @@ actor Algo_Synp_AVC_FREXT()
 		contextInit(val_QP_Y, cabac_init_idc, ctxTable);
 		decodeInit(codIRange, codIOffset, fifo);
 		skipFlagTab := [false : for int i in 0 .. PICWIDTH];
-		
 	end
 
 	read_SliceD_CABAC_alignement.skip: action ==>
@@ -1528,11 +1530,6 @@ actor Algo_Synp_AVC_FREXT()
 	end
 
 	//do
-	sync_do_mb_layer: action
-		==> 
-	end
-
-
 	//if (slice_type != I && slice_type != SI)
 	//  if (!entropy_coding_mode_flag) : CAVLC
 	read_SliceD_mb_skip.cavlc: action ==>
@@ -1561,10 +1558,30 @@ actor Algo_Synp_AVC_FREXT()
  		moreDataFlag := 1 - res[0];
 	end
 	
+	read_SliceD_mb_skip_flag.isMBSkip: action ==>
+			PicWidthInMb:[PicWidthInMbs],
+			MB_TYPE:[if slice_type = SLICE_TYPE_P then BLOCK_TYPE_P_SKIP else BLOCK_TYPE_B_SKIP end],
+			MbLocation:[mb_x, mb_y]
+	guard
+		skipFlagTab[Mb_x+1] = true
+	var 
+		int mb_x, int mb_y
+	do
+		mb_x:=Mb_x;
+		mb_y:=Mb_y;
+		NextMbAddress();
+	end
+	
+	read_SliceD_mb_skip_flag.isNotMBSkip: action ==>
+	guard
+		skipFlagTab[Mb_x+1] = false
+	end
+	
 	read_SliceD_mb_skip.skip: action ==>
 	guard
 		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
 	end
+	
 	// for(i=0; i < mb_skip_run; i++) CurrMbAddr = NextMbAddress(CurrMbAddr)
 	read_SliceD_mb_skip_run.loop: action 
 		==> 
@@ -1593,37 +1610,21 @@ actor Algo_Synp_AVC_FREXT()
 		more_rbsp_data();
 	end
 
-
-	read_SliceD_mb_skip_run_done2_moredata_1: action ==>
+	read_SliceD_mb_skip_end.moredata_1: action ==>
 	guard
 		moreDataFlag = 1
 	end
 
-	read_SliceD_mb_skip_run_done2_moredata_0: action ==>
+	read_SliceD_mb_skip_end.moredata_0: action ==>
 	guard
 		moreDataFlag = 0
 	end
 
-	//else (slice_type = I || slice_type = SI)
-	read_SliceD_skip_mb_skip: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
-	end
-	//end if
-
-
-	// else
-	read_SliceD_skip_mb_field_decoding_flag: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		moreDataFlag = 1
-	end
 	//end if
 	// --> macrobloc_layer()
 	//end if
 	//if( !entropy_coding_mode_flag ) : CAVLC
-	SliceD_update_CAVLC: action ==>
+	SliceD_update.cavlc: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 0
@@ -1631,100 +1632,53 @@ actor Algo_Synp_AVC_FREXT()
 		more_rbsp_data();
 	end
 
-	send_data_position_information_is_ipcm: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			MB_TYPE:[BLOCK_TYPE_I_PCM],
-			MbLocation:[mb_x, mb_y]
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mb_type = BLOCK_TYPE_I_PCM
-	var 
-		int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
-		val_cbp_blk:=0;
-	end
-
-	send_data_position_information.intraPred: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			cbp_blk:[cbp_blk_tmp],
-			QP:[val_QP_Y], 
-			QP_Cb:[val_QP_Cb], 
-			QP_Cr:[val_QP_Cr], 
-			MB_TYPE:[mb_type],
-			MbLocation:[mb_x, mb_y]
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		Mb_IsIntra(mb_type)
-	var 
-		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
-		val_cbp_blk:=0;
-	end
-
-	send_data_position_information.interPred: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			cbp_blk:[cbp_blk_tmp],
-			QP:[val_QP_Y], 
-			QP_Cb:[val_QP_Cb], 
-			QP_Cr:[val_QP_Cr], 
-			MB_TYPE:[mb_type],
-			MbLocation:[mb_x, mb_y]
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		not Mb_IsIntra(mb_type)
-	var 
-		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
-		val_cbp_blk:=0;
-	end
-	
-	syncSliceD_endwhile: action ==>
-	end
-
-	SliceD_moredata_1: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		moreDataFlag = 1
-	end
-
-	SliceD_moredata_0: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		moreDataFlag = 0
-	end
-
-	//else (CABAC)
-	SliceD_update_CABAC: action ==>
+	SliceD_update.cabac: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 1
+	var
+		uint(size=32) res[1]
 	do
-		println("SliceD_update_CABAC : CABAC not yet implemented");
+		getEndOfSliceFlag(codIRange, codIOffset, ctxTable, fifo, res);
+		moreDataFlag := 1 - res[0];
+	end
+
+	send_data_position_information.is_ipcm: action 
+		==> 
+			PicWidthInMb:[PicWidthInMbs],
+			MB_TYPE:[BLOCK_TYPE_I_PCM],
+			MbLocation:[Mb_x, Mb_y]
+	guard
+		mb_type = BLOCK_TYPE_I_PCM
+	end
+
+	send_data_position_information : action 
+		==> 
+			PicWidthInMb:[PicWidthInMbs],
+			cbp_blk:[val_cbp_blk],
+			QP:[val_QP_Y], 
+			QP_Cb:[val_QP_Cb], 
+			QP_Cr:[val_QP_Cr], 
+			MB_TYPE:[mb_type],
+			MbLocation:[Mb_x, Mb_y]
+	guard
+		mb_type != BLOCK_TYPE_I_PCM
 	end
 
 	//while( moreDataFlag )
 	SliceD_while_moreDataFlag: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		moreDataFlag = 1
+	do
+		NextMbAddress();
+		val_cbp_blk := 0;
 	end
 
 	SliceD_end: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		moreDataFlag = 0
+	do
+		val_cbp_blk := 0;
 	end
 	//******* End of Slice DATA  ********/
  
@@ -3093,32 +3047,22 @@ actor Algo_Synp_AVC_FREXT()
 
 		// read Slice Data     only decoding CAVLC process is implemented
 		read_SliceD_CABAC_alignement						( read_SliceD_CABAC_alignement						) --> read_SliceD_init;
-		read_SliceD_init									( SliceD_init										) --> sync_do_mb_layer;
-		sync_do_mb_layer 									( sync_do_mb_layer									) --> read_SliceD_mb_skip;
-		read_SliceD_mb_skip									( read_SliceD_mb_skip.cavlc							) --> read_SliceD_mb_skip_run_flag;
-		read_SliceD_mb_skip									( read_SliceD_mb_skip.cabac							) --> read_SliceD_mb_skip_end_moredata;
-		read_SliceD_mb_skip									( read_SliceD_mb_skip.skip							) --> read_SliceD_mb_skip_end_moredata;
-		read_SliceD_mb_skip_run_flag						( read_SliceD_mb_skip_run.loop						) --> read_SliceD_mb_skip_run_flag;
-		read_SliceD_mb_skip_run_flag						( read_SliceD_mb_skip_run.endLoop					) --> read_SliceD_mb_skip_end_moredata;
-		read_SliceD_mb_skip_end_moredata 		            ( read_SliceD_mb_skip_run_done2_moredata_1          ) --> read_SliceD_mb_field_decoding_flag;
-		read_SliceD_mb_skip_end_moredata 					( read_SliceD_mb_skip_run_done2_moredata_0			) --> syncSliceD_endwhile;
-		read_SliceD_mb_skip									( read_SliceD_skip_mb_skip 							) --> read_SliceD_mb_field_decoding_flag;
-		read_SliceD_mb_field_decoding_flag					( read_SliceD_skip_mb_field_decoding_flag			) --> read_MB_layer_mb_type;
+		read_SliceD_init									( SliceD_init										) --> read_SliceD_mb_skip;
+		read_SliceD_mb_skip									( read_SliceD_mb_skip.cavlc							) --> read_SliceD_mb_skip_run;
+		read_SliceD_mb_skip									( read_SliceD_mb_skip.cabac							) --> read_SliceD_mb_skip_flag;
+		read_SliceD_mb_skip									( read_SliceD_mb_skip.skip							) --> read_MB_layer_mb_type;
+		read_SliceD_mb_skip_flag 							( read_SliceD_mb_skip_flag							) --> read_SliceD_mb_skip_end;
+		read_SliceD_mb_skip_run								( read_SliceD_mb_skip_run.loop						) --> read_SliceD_mb_skip_run;
+		read_SliceD_mb_skip_run								( read_SliceD_mb_skip_run.endLoop					) --> read_SliceD_mb_skip_end;
+		read_SliceD_mb_skip_end			 		            ( read_SliceD_mb_skip_end.moredata_1   		    	) --> read_MB_layer_mb_type;
+		read_SliceD_mb_skip_end			 					( read_SliceD_mb_skip_end.moredata_0				) --> SliceD_update2;
 
 		// --> macrobloc_layer()
-		SliceD_update										( SliceD_update_CAVLC								) --> SliceD_moredata;
-		SliceD_moredata                                     ( SliceD_moredata_1                                 ) --> SliceD_moredata_1_done;
-		SliceD_moredata_1_done								( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
-		SliceD_moredata_1_done								( send_data_position_information	                ) --> syncSliceD_endwhile;
-		SliceD_moredata 									( SliceD_moredata_0									) --> SliceD_stop_byte_align__done;
-		SliceD_stop_byte_align__done							( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
-		SliceD_stop_byte_align__done							( send_data_position_information	                ) --> syncSliceD_endwhile;
-		syncSliceD_endwhile									( syncSliceD_endwhile								) --> SliceD_while_moreDataFlag;
-		
-		SliceD_update										( SliceD_update_CABAC								) --> undefined;
-		SliceD_while_moreDataFlag							( SliceD_while_moreDataFlag							) --> sync_do_mb_layer;
+		SliceD_update										( SliceD_update										) --> SliceD_send_data_position_information;
+		SliceD_update2										( SliceD_update										) --> SliceD_while_moreDataFlag;
+		SliceD_send_data_position_information				( send_data_position_information	                ) --> SliceD_while_moreDataFlag;		
+		SliceD_while_moreDataFlag							( SliceD_while_moreDataFlag							) --> read_SliceD_mb_skip;
 		SliceD_while_moreDataFlag							( SliceD_end										) --> look_for_Sequence_Header;
-		read_SliceD_mb_field_decoding_flag					( SliceD_end										) --> look_for_Sequence_Header;
 		
 		// macrobloc_layer
 		read_MB_layer_mb_type								( read_MB_layer_mb_type								) --> read_MB_layer_check_I_PCM;
@@ -3231,7 +3175,6 @@ actor Algo_Synp_AVC_FREXT()
 		read_MB_layer_transform_size_8x8_flag > read_MB_layer_skip_transform_size_8x8_flag;
 		read_MB_pred_mvd_l0.loop >  read_MB_pred_mvd_l0.skip > read_MB_pred_mvd_l0.done;
 		read_MB_pred_mvd_l1.loop >  read_MB_pred_mvd_l1.skip > MB_pred_done;
-		send_data_position_information_is_ipcm>send_data_position_information;
 	end
 
 end
