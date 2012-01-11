@@ -1,0 +1,936 @@
+/********************************************************************************
+
+This software module was originally developed by 
+Florian Decologne (IETR/INSA of Rennes), 
+in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-4.
+
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+license to copy, distribute, and make derivative works of this software 
+module or modifications thereof for use in implementations of the 
+ISO/IEC 23002-4 in products that satisfy conformance criteria (if any). 
+
+Those intending to use this software module in products are advised that 
+its use may infringe existing patents. ISO/IEC have no liability for use 
+of this software module or modifications thereof.
+
+Copyright is not released for products that do not conform to audiovisual 
+and image-coding related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+Assurance that the originally developed software module can be used 
+(1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and 
+(2) to develop the ISO/IEC 23002-4: 
+
+IETR/INSA of Rennes grants ISO/IEC all rights necessary to 
+include the originally developed software module or modifications thereof 
+in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, 
+worldwide, non-exclusive, copyright license to copy, distribute, and make 
+derivative works for use in implementations of the ISO/IEC 23002-4 in 
+products that satisfy conformance criteria (if any), and to the extent 
+that such originally developed software module or portions of it are 
+included in the ISO/IEC 23002-4.  To the extent that IETR/INSA of Rennes
+owns patent rights that would be required to make, use, or 
+sell the originally developed software module or portions thereof 
+included in the ISO/IEC 23002-4 in a conforming product, IETR/INSA of
+Rennes will assure the ISO/IEC that it is willing to 
+negotiate licenses under reasonable and non-discriminatory terms and 
+conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications 
+thereof for the sole  purpose of developing theISO/IEC 23002-4
+
+IETR/INSA of Rennes retains full right to modify and use the 
+code for its own purpose, assign or donate the code to a third party and 
+to inhibit third parties from using the code for products that do not 
+conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+This copyright notice must be included in all copies or derivative works. 
+Copyright (c) ISO/IEC 2008.
+ 
+FU realizing Syntax Parsing for AVC
+*****************************************************************************/
+
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+
+// This FU has been modified by Gildas Cocherel (INSA of Rennes) Jan 2012
+
+
+/******************************************************************************
+ * Definition of CabacContextFunction
+ *****************************************************************************/
+package org.sc29.wg11.common;
+
+import  org.sc29.wg11.common.BitstreamReadUtils.*;
+import  org.sc29.wg11.common.CabacContextConstantAVC.*;
+import  org.sc29.wg11.common.CabacContextFunctionAVC.*;
+import  org.sc29.wg11.common.CabacDecodeBinFunction.*;
+import  org.sc29.wg11.common.CabacDebinarizationFunction.*;
+
+unit CabacParserFunctionAVC :
+	/*************************************************************************
+	 * decodeBinTop
+	 *************************************************************************/
+	procedure decodeBinTop(
+		uint(size= 9) ctxIdx,
+		bool 		  bypassFlag,
+		uint(size=32) binString[1],
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=7) state[1],
+		uint(size=1) mps[1],
+		uint(size=1) binVal[1]
+	begin
+	
+		if bypassFlag = true then
+			decodeBypass(codIRange, codIOffset, binVal, fifo);
+		else
+			if ctxIdx = 276 then
+				decodeTerminate(codIRange, codIOffset, binVal, fifo);
+			else
+				state[0]  := ctxTable[ctxIdx] >> 1;
+				mps[0]    := ctxTable[ctxIdx]  & 1;
+				decodeDecision(codIRange, codIOffset, state, mps, binVal, fifo);
+				ctxTable[ctxIdx] := (state[0] << 1) + mps[0];				
+			end
+		end
+		binString[0] := (binString[0] << 1) + binVal[0];
+	end
+
+	/*************************************************************************
+	 * getMbSkipFlag
+	 *************************************************************************/
+	procedure getMbSkipFlag(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		uint(size= 4) sliceType,
+		bool		  availableA,
+		bool		  skipA,
+		bool		  availableB,
+		bool		  skipB
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1],
+		uint(size= 1) debinCompleted[1]
+	begin
+		ctxIdx	  := getCtxIdxMbSkipFlag(sliceType, availableA, skipA, availableB, skipB);
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          mb_skip_flag                             ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxMbSkipFlag( 
+		 int(size= 4) sliceType,
+		bool		  availableA,
+		bool		  skipA,
+		bool		  availableB,
+		bool		  skipB
+	) --> uint(size=9) :
+		if sliceType = SLICE_TYPE_P then
+			OFFSET_MB_SKIP_FLAG_P + getCtxIdxIncMbSkipFlag(availableA, skipA, availableB, skipB) 
+		else
+			OFFSET_MB_SKIP_FLAG_B + getCtxIdxIncMbSkipFlag(availableA, skipA, availableB, skipB)
+		end
+	end
+	/*************************************************************************
+	 * getMbType
+	 *************************************************************************/
+	procedure getMbType(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		 int(size= 4) sliceType,
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		bool		  availableB,
+		uint(size= 6) mbTypeB
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		while debinCompleted[0] = 0 do
+			ctxIdx := getCtxIdxMbType(binIdx, sliceType, binString[0],
+									  availableA, mbTypeA,
+									  availableB, mbTypeB);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinMbType(binString[0], binIdx, sliceType, debinCompleted, debinValue);
+			binIdx := binIdx + 1;
+		end	
+		if DEBUG_CABAC then
+			println("          mb_type                                  ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxMbType(
+		uint(size= 8) binIdx, 
+		 int(size= 4) sliceType,
+		uint(size=32) binString,
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		bool		  availableB,
+		uint(size= 6) mbTypeB
+	) --> uint(size=9) :
+		if sliceType = SLICE_TYPE_I then
+			if binIdx = 0 then
+				OFFSET_MB_TYPE_I + getCtxIdxIncMbType(OFFSET_MB_TYPE_I,
+												  availableA, mbTypeA,
+												  availableB, mbTypeB)
+			elsif binIdx = 1 then
+				276
+			elsif binIdx = 2 or binIdx = 3 then
+				OFFSET_MB_TYPE_I + binIdx + 1
+			elsif binIdx = 4 or binIdx = 5 then
+				OFFSET_MB_TYPE_I + getCtxIdxIncPriorDec(OFFSET_MB_TYPE_I, binIdx, binString)
+			else
+				OFFSET_MB_TYPE_I + 7
+			end 
+		elsif sliceType = SLICE_TYPE_P then
+			if (binString & (1<<binIdx) ) = 0 then
+				if binIdx = 2 then
+					OFFSET_MB_TYPE_P_PREFIX + getCtxIdxIncPriorDec(OFFSET_MB_TYPE_I, binIdx, binString)
+				else
+					OFFSET_MB_TYPE_P_PREFIX + binIdx
+				end
+			else
+				if binIdx = 1 then
+					OFFSET_MB_TYPE_P_SUFFIX
+				elsif binIdx = 2 then
+					276
+				elsif binIdx = 3 or binIdx = 4 then
+					OFFSET_MB_TYPE_P_SUFFIX + binIdx - 1
+				elsif binIdx = 5 then
+					OFFSET_MB_TYPE_P_SUFFIX + getCtxIdxIncPriorDec(OFFSET_MB_TYPE_P_SUFFIX, binIdx-1, binString)
+				else
+					3
+				end
+			end 
+		else
+			if binIdx > 5 and (( binString >> (binIdx-5) ) & 0x3F) = 0x3D then
+				if binIdx = 0 then
+					OFFSET_MB_TYPE_B_PREFIX + getCtxIdxIncMbType(OFFSET_MB_TYPE_I,
+												  availableA, mbTypeA,
+												  availableB, mbTypeB)
+				elsif binIdx = 1 then
+					OFFSET_MB_TYPE_B_PREFIX + 3
+				elsif binIdx = 2 then
+					OFFSET_MB_TYPE_B_PREFIX + getCtxIdxIncPriorDec(OFFSET_MB_TYPE_B_PREFIX, binIdx, binString)
+				else
+					5
+				end
+			else
+				if binIdx = 6 then
+					OFFSET_MB_TYPE_B_SUFFIX
+				elsif binIdx = 7 then
+					276
+				elsif binIdx = 8 or binIdx = 9 then
+					OFFSET_MB_TYPE_B_SUFFIX + binIdx - 7
+				elsif binIdx = 10 then
+					OFFSET_MB_TYPE_B_SUFFIX + getCtxIdxIncPriorDec(OFFSET_MB_TYPE_B_SUFFIX, binIdx-6, binString)
+				else
+					3
+				end
+			end
+		end
+	end
+	/*************************************************************************
+	 * getSubMbType
+	 *************************************************************************/
+	procedure getSubMbType(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		 int(size= 4) sliceType
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		while debinCompleted[0] = 0 do
+			ctxIdx := getCtxIdxSubMbType(binIdx, sliceType, binString[0]);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinSubMbType(binString[0], binIdx, sliceType, debinCompleted, debinValue);
+			binIdx := binIdx + 1;
+		end	
+		if DEBUG_CABAC then
+			println("          sub_mb_type                              ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxSubMbType(
+		uint(size= 8) binIdx, 
+		 int(size= 4) sliceType,
+		uint(size=32) binString
+	) --> uint(size=9) :
+		if sliceType = SLICE_TYPE_P then
+			OFFSET_SUB_MB_TYPE_P + binIdx 
+		else
+			if binIdx = 0 or binIdx = 1 then
+				OFFSET_SUB_MB_TYPE_P + binIdx
+			elsif binIdx = 2 then
+				OFFSET_SUB_MB_TYPE_P + getCtxIdxIncPriorDec(OFFSET_SUB_MB_TYPE_P, binIdx, binString)
+			else
+				3
+			end
+		end
+	end
+	/*************************************************************************
+	 * getMvd
+	 *************************************************************************/
+	procedure getMvd(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) subMbTypeA,
+		uint(size= 4) mbPartIdxA,
+		 int(size=16) mvdLxA[2],
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) subMbTypeB,
+		uint(size= 4) mbPartIdxB,
+		 int(size=16) mvdLxB[2],
+		//
+		bool 		  isL0,
+		bool 		  isLx_0
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0],
+		uint(size= 1) discard_suffix[1] := [0],
+		uint(size=16) prefix
+		
+	begin
+		while debinCompleted[0] = 0 and discard_suffix[0] = 0 do
+			ctxIdx := getCtxIdxMvd( binIdx,
+									availableA, mbTypeA, subMbTypeA, mbPartIdxA, mvdLxA,
+									availableB, mbTypeB, subMbTypeB, mbPartIdxB, mvdLxB,
+									isL0, isLx_0);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinTU(binString[0], binIdx, DEBIN_TU9, debinCompleted, debinValue, discard_suffix);
+			binIdx := binIdx + 1;
+		end
+		if debinCompleted[0] = 0 then
+			prefix    	 := debinValue[0];
+			binString[0] := 0;
+			binIdx	  	 := 0;
+			while debinCompleted[0] = 0 do
+				decodeBinTop(0, true, binString, codIRange, codIOffset, ctxTable, fifo);
+				debinEG3(binString[0], binIdx, prefix, debinCompleted, debinValue);
+				binIdx := binIdx + 1;
+			end
+		end
+		if DEBUG_CABAC then
+			println("          mvd                                      ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxMvd(
+		uint(size= 8) binIdx, 
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) subMbTypeA,
+		uint(size= 4) mbPartIdxA,
+		 int(size=16) mvdLxA[2],
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) subMbTypeB,
+		uint(size= 4) mbPartIdxB,
+		 int(size=16) mvdLxB[2],
+		//
+		bool 		  isL0,
+		bool		  isLx_0
+	) --> uint(size=9) :
+		uint(size= 9) ctxIdxOffset = if isLx_0 then
+										OFFSET_MVD_LX_0_PREFIX
+									else
+										OFFSET_MVD_LX_1_PREFIX
+									end;  		
+		ctxIdxOffset + 
+			if binIdx = 0 then
+				getCtxIdxIncMvdLX(ctxIdxOffset,
+					availableA, mbTypeA, subMbTypeA, mbPartIdxA, mvdLxA,
+					availableB, mbTypeB, subMbTypeB, mbPartIdxB, mvdLxB,
+					isL0)
+			elsif binIdx > 3 then
+				6
+			else
+				binIdx + 2
+			end
+	end
+	/*************************************************************************
+	 * getRefIdx
+	 *************************************************************************/
+	procedure getRefIdx(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) subMbTypeA,
+		uint(size= 4) refIdxLXA,		
+		uint(size= 4) mbPartIdxA,
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) subMbTypeB,
+		uint(size= 4) refIdxLXB,		
+		uint(size= 4) mbPartIdxB,
+		//
+		bool 		  isL0
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		while debinCompleted[0] = 0  do
+			ctxIdx := getCtxIdxRefIdx( binIdx,
+									availableA, mbTypeA, subMbTypeA, refIdxLXA, mbPartIdxA,
+									availableB, mbTypeB, subMbTypeB, refIdxLXB, mbPartIdxB,
+									isL0);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinU(binString[0], binIdx, debinCompleted, debinValue);
+			binIdx := binIdx + 1;
+		end
+		if DEBUG_CABAC then
+			println("          ref_idx                                  ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxRefIdx(
+		uint(size= 8) binIdx, 
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) subMbTypeA,
+		uint(size= 4) refIdxLXA,		
+		uint(size= 4) mbPartIdxA,
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) subMbTypeB,
+		uint(size= 4) refIdxLXB,		
+		uint(size= 4) mbPartIdxB,
+		//
+		bool 		 isL0
+	) --> uint(size=9) :
+		OFFSET_REF_IDX_LX + 
+			if binIdx = 0 then
+				getCtxIdxIncRefIdxLX(
+					availableA, mbTypeA, subMbTypeA, refIdxLXA, mbPartIdxA,
+					availableB, mbTypeB, subMbTypeB, refIdxLXB, mbPartIdxB,
+					isL0)
+			elsif binIdx = 1 then
+				4
+			else
+				5
+			end
+	end
+	/*************************************************************************
+	 * getMbQpDelta
+	 *************************************************************************/
+	procedure getMbQpDelta(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool 		 prevMbAvail,
+		uint(size=6) prevMbType,
+		uint(size=8) prevCbp,
+		 int(size=8) prevMbQpDelta
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		while debinCompleted[0] = 0  do
+			ctxIdx := getCtxIdxMbQpDelta( binIdx, prevMbAvail, prevMbType, prevCbp, prevMbQpDelta);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinMbDeltaQP(binString[0], binIdx, debinCompleted, debinValue);
+			binIdx := binIdx + 1;
+		end
+		if DEBUG_CABAC then
+			println("          mb_qp_delta                              ae() : "+debinValue[0]);
+		end		
+	end
+	function getCtxIdxMbQpDelta(
+		uint(size= 8) binIdx, 
+		//
+		bool 		 prevMbAvail,
+		uint(size=6) prevMbType,
+		uint(size=8) prevCbp,
+		 int(size=8) prevMbQpDelta
+
+	) --> uint(size=9) :
+		OFFSET_MB_QP_DELTA + 
+			if binIdx = 0 then
+				getCtxIdxIncMbQpDelta(prevMbAvail, prevMbType, prevCbp, prevMbQpDelta)
+			elsif binIdx = 1 then
+				2
+			else
+				3
+			end
+	end
+	/*************************************************************************
+	 * getIntraChromaPredMode
+	 *************************************************************************/
+	procedure getIntraChromaPredMode(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) intraPredCA,
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) intraPredCB
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) discard_suffix[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		while debinCompleted[0] = 0  do
+			ctxIdx := getCtxIdxIntraChromaPredMode( binIdx, 
+													availableA, mbTypeA, intraPredCA,
+													availableB, mbTypeB, intraPredCB);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinTU(binString[0], binIdx, DEBIN_TU3, debinCompleted, debinValue, discard_suffix);
+			binIdx := binIdx + 1;
+		end
+		if DEBUG_CABAC then
+			println("          intra_chroma_pred_mode                   ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxIntraChromaPredMode(
+		uint(size= 8) binIdx, 
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) intraPredCA,
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) intraPredCB
+
+	) --> uint(size=9) :
+		OFFSET_INTRA_CHROMA_PRED_MODE + 
+			if binIdx = 0 then
+				getCtxIdxIncIntraChromPred(	availableA, mbTypeA, intraPredCA,
+											availableB, mbTypeB, intraPredCB)
+			else
+				3
+			end
+	end
+	/*************************************************************************
+	 * getPrevIntraPredModeFlag
+	 *************************************************************************/
+	procedure getPrevIntraPredModeFlag(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := OFFSET_PREV_INTRA_NxN_PRED_MODE_FLAG;
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          prev_intra_pred_mode_flag                ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getRemIntraPredMode
+	 *************************************************************************/
+	procedure getRemIntraPredMode(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		while debinCompleted[0] = 0  do
+			ctxIdx := OFFSET_REM_INTRA_NxN_PRED_MODE_FLAG;
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinFL(binString[0], binIdx, DEBIN_FL3, debinCompleted, debinValue);
+			binIdx := binIdx + 1;
+		end
+		if DEBUG_CABAC then
+			println("          rem_intra_pred_mode                      ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getMbFieldDecodingFlag
+	 *************************************************************************/
+	procedure getMbFieldDecodingFlag(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool		  availableA,
+		bool		  availableB
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := OFFSET_MB_FIELD_DECODING_FLAG + getCtxIdxIncMbFieldDec(availableA, availableB);
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          mb_field_decoding_flag                   ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getCodedBlockPattern
+	 *************************************************************************/
+	procedure getCodedBlockPattern(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 4) cbpLumaA,
+		uint(size= 2) cbpChromaA,
+		
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 4) cbpLumaB,
+		uint(size= 2) cbpChromaB
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) discard_suffix[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0],
+		uint(size=32) prefix
+	begin
+		while debinCompleted[0] = 0  do
+			ctxIdx := OFFSET_CODED_BLOCK_PATTERN_PREFIX + 
+					  getCtxIdxIncCodBlkPatternPrefix(binIdx, binString[0],
+													availableA, mbTypeA, cbpLumaA,
+													availableB, mbTypeB, cbpLumaB);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinFL(binString[0], binIdx, DEBIN_FL4, debinCompleted, debinValue);
+			binIdx := binIdx + 1;
+		end
+		prefix    	 := debinValue[0];
+		binString[0] := 0;
+		binIdx	  	 := 0;
+		while debinCompleted[0] = 0 do
+			ctxIdx := OFFSET_CODED_BLOCK_PATTERN_SUFFIX + 
+					  getCtxIdxIncCodBlkPatternSuffix(binIdx,
+													availableA, mbTypeA, cbpChromaA,
+													availableB, mbTypeB, cbpChromaB);
+			decodeBinTop(ctxIdx, true, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinTU(binString[0], binIdx, DEBIN_TU2, debinCompleted, debinValue, discard_suffix);
+			binIdx := binIdx + 1;
+		end
+		debinValue[0] := prefix + (debinValue[0]<<4); 
+		if DEBUG_CABAC then
+			println("          code_block_pattern                       ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getEndOfSliceFlag
+	 *************************************************************************/
+	procedure getEndOfSliceFlag(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := OFFSET_END_OF_SLICE_FLAG;
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          end_of_slice_flag                        ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getTrsfSz8x8
+	 *************************************************************************/
+	procedure getTrsfSz8x8(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		bool		  availableA,
+		bool		  trsfSz8x8A,
+		//
+		bool		  availableB,
+		bool		  trsfSz8x8B
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := OFFSET_TRANSFORM_SIZE_8X8_FLAG +
+					getCtxIdxIncTrsfSz8x8(availableA, trsfSz8x8A,
+										  availableB, trsfSz8x8B);
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          transform_size_8x8_flag                  ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getCodedBlockFlag
+	 *************************************************************************/
+	procedure getCodedBlockFlag(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		uint(size=6) currMbType,
+		uint(size=4) ctxBlockCat,
+		//
+		bool		  availableA,
+		uint(size= 6) mbTypeA,
+		uint(size= 1) cbfA,
+		//
+		bool		  availableB,
+		uint(size= 6) mbTypeB,
+		uint(size= 1) cbfB
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := OFFSET_CODED_BLOCK_FLAG + ctxIdxBlockCatOffset[0][ctxBlockCat] +
+					getCtxIdxIncCodedBlockFlag(currMbType,
+											   availableA, mbTypeA, cbfA,
+											   availableB, mbTypeB, cbfB);
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          coded_block_flag                         ae() : "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * getSig
+	 *************************************************************************/
+	procedure getSig(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		uint(size=4) ctxBlockCat,
+		uint(size=4) levelListIdx
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := getCtxIdxSig(ctxBlockCat, levelListIdx);
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          significant_coeff_flag                   ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxSig(
+		uint(size=4) ctxBlockCat,
+		uint(size=4) levelListIdx
+
+	) --> uint(size=9) :
+		getCtxIdxIncSignCoeff(ctxBlockCat, levelListIdx) + ctxIdxBlockCatOffset[1][ctxBlockCat] +
+			if ctxBlockCat < 5 then 
+				OFFSET_SIGNIFICANT_COEFF_FLAG_FRAME_INF5
+			else
+				OFFSET_SIGNIFICANT_COEFF_FLAG_FRAME_EQ5
+			end
+	end
+	/*************************************************************************
+	 * getLast
+	 *************************************************************************/
+	procedure getLast(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		uint(size=4) ctxBlockCat,
+		uint(size=4) levelListIdx
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		ctxIdx := getCtxIdxLast(ctxBlockCat, levelListIdx);
+		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          last_significant_coeff_flag              ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxLast(
+		uint(size=4) ctxBlockCat,
+		uint(size=4) levelListIdx
+
+	) --> uint(size=9) :
+		getCtxIdxIncSignCoeff(ctxBlockCat, levelListIdx) + ctxIdxBlockCatOffset[1][ctxBlockCat] +
+			if ctxBlockCat < 5 then 
+				OFFSET_LAST_SIGNIFICANT_COEFF_FLAG_FRAME_INF5
+			else
+				OFFSET_LAST_SIGNIFICANT_COEFF_FLAG_FRAME_EQ5
+			end
+	end
+	/*************************************************************************
+	 * getCoeffAbsLevelMinus1
+	 *************************************************************************/
+	procedure getCoeffAbsLevelMinus1(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		//
+		uint(size=4) ctxBlockCat,
+		uint(size=4) numDecodAbsLvlGt1,
+		uint(size=4) numDecodAbsLvlEq1
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) discard_suffix[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0],
+		uint(size=32) prefix
+	begin
+		while debinCompleted[0] = 0 and discard_suffix[0] = 0 do
+			ctxIdx := getCtxIdxCoeffAbsLevelMinus1(ctxBlockCat, binIdx, numDecodAbsLvlGt1,
+													numDecodAbsLvlEq1);
+			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, fifo);
+			debinTU(binString[0], binIdx, DEBIN_TU14, debinCompleted, debinValue, discard_suffix);
+			binIdx := binIdx + 1;
+		end
+		if debinCompleted[0] = 0 then
+			prefix    	 := debinValue[0];
+			binString[0] := 0;
+			binIdx	  	 := 0;
+			while debinCompleted[0] = 0 do
+				decodeBinTop(0, true, binString, codIRange, codIOffset, ctxTable, fifo);
+				debinEG0(binString[0], binIdx, prefix, debinCompleted, debinValue);
+				binIdx := binIdx + 1;
+			end
+		end
+		if DEBUG_CABAC then
+			println("          coeff_abs_level_minus1                   ae() : "+debinValue[0]);
+		end
+	end
+	function getCtxIdxCoeffAbsLevelMinus1(
+		uint(size=4) ctxBlockCat,
+		uint(size=4) binIdx,
+		uint(size=4) numDecodAbsLvlGt1,
+		uint(size=4) numDecodAbsLvlEq1
+	) --> uint(size=9) :
+		getCtxIdxIncCoeffAbsLvlMin1(ctxBlockCat, binIdx, numDecodAbsLvlGt1,
+									numDecodAbsLvlEq1) +
+		ctxIdxBlockCatOffset[2][ctxBlockCat] +
+			if ctxBlockCat < 5 then 
+				OFFSET_COEFF_ABS_LEVEL_MINUS1_PREFIX_INF5
+			else
+				OFFSET_COEFF_ABS_LEVEL_MINUS1_PREFIX_EQ5
+			end
+	end
+	/*************************************************************************
+	 * getCoeffSignFlag
+	 *************************************************************************/
+	procedure getCoeffSignFlag(
+		uint(size= 9) codIRange[1],
+		uint(size= 9) codIOffset[1],
+		uint(size= 9) ctxTable[MAX_NUM_CTX_MOD],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	var
+		uint(size=32) binString[1] := [0],
+		uint(size= 1) debinCompleted[1] := [0]
+	begin
+		decodeBinTop(0, true, binString, codIRange, codIOffset, ctxTable, fifo);
+		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
+		if DEBUG_CABAC then
+			println("          coeff_sign_flag                          ae() : "+debinValue[0]);
+		end
+	end
+end
