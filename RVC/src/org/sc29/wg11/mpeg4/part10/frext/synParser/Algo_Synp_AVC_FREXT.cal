@@ -1491,6 +1491,7 @@ actor Algo_Synp_AVC_FREXT()
 	bool		 trsfSz8x8Tab[PICWIDTH+1];
 	uint(size=6) cbpTab[PICWIDTH+1];
 	uint(size=2) intraChromaPredModeTab[PICWIDTH+1];
+	uint(size=1) cbfTab[PICWIDTH+1];
 	
 	procedure NextMbAddress()
 	begin
@@ -1519,6 +1520,7 @@ actor Algo_Synp_AVC_FREXT()
 		trsfSz8x8Tab := [false : for int i in 0 .. PICWIDTH];
 		cbpTab		 := [0 : for int i in 0 .. PICWIDTH];
 		intraChromaPredModeTab := [0 : for int i in 0 .. PICWIDTH];
+		cbfTab		 := [0 : for int i in 0 .. PICWIDTH];
 	end
 
 	read_SliceD_CABAC_alignement.skip: action ==>
@@ -2426,7 +2428,7 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=4) block_startIdx;
 	uint(size=6) block_endIdx;
 	uint(size=7) maxNumCoeff;
-
+	
 	uint(size=3) i8x8;
 	uint(size=3) i4x4;
 	uint(size=3) NumC8x8;
@@ -2700,9 +2702,10 @@ actor Algo_Synp_AVC_FREXT()
 	List (type:uint(size=4),size=16) run := [ 0 : for int i in 1 .. 16];
 	List ( type: uint(size=4), size=16) InverseScan4x4Tab = [ 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ];
 
-	Residual_block_init_coeff_token: action ==>
+	residual_block_init.cavlc : action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		entropy_coding_mode_flag[pps_id] = 0
 	var 
 		uint(size=1) top, uint(size=1) left,//= 1 if MB not available
 		uint(size=5) nA, 
@@ -2940,6 +2943,111 @@ actor Algo_Synp_AVC_FREXT()
 	// --> residual return
 
 	//******* End of Residual Block CAVLC ********  
+
+	/*************************************************************
+	*************************************************************
+	********       		Residual Block CABAC   	    *********
+	*************************************************************
+	*************************************************************/
+	uint(size=4) ctxBlockCat;
+	uint(size=4) levelListIdx;
+	int(size=32) coeffLevel[64];
+	bool         sigTab[64];
+	uint(size=2) coded_block_flag;
+	uint(size=5) numCoeff;
+	uint(size=5) numCoeff_i;
+	uint(size=4) numDecodAbsLvlGt1;
+	uint(size=4) numDecodAbsLvlEq1;
+	
+	
+	residual_block_init.cabac :  action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		entropy_coding_mode_flag[pps_id] = 1
+	var
+		uint(size=32) res[1] := [0]
+	do
+		if maxNumCoeff = 64 or chroma_format_idc[sps_id] = 3 then
+			getCodedBlockFlag(codIRange, codIOffset, ctxTable, fifo, res,
+							  mb_type, ctxBlockCat,
+							  availableA, mbTypeTab[Mb_x]  , cbfTab[Mb_x],
+							  availableA, mbTypeTab[Mb_x+1], cbfTab[Mb_x+1]);
+		end
+		cbfTab[Mb_x+1]   := res[0];
+		coded_block_flag := res[0];
+		coeffLevel 		 := [0: for int i in 0 ..63];
+		sigTab 			 := [false: for int i in 0 ..63];
+		numCoeff   		 := 0;
+		numCoeff_i 		 := 0;
+		if coded_block_flag != 0 then
+			numCoeff   := endIdx + 1;
+			numCoeff_i := startIdx;
+		end
+	end
+	
+	residual_block_cabac.SigLast_loop :  action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		numCoeff_i < numCoeff
+	var
+		uint(size=32) res[1] := [0]
+	do
+		getSig(codIRange, codIOffset, ctxTable, fifo, res,
+			   ctxBlockCat, levelListIdx);
+		sigTab[numCoeff_i] := res[0] = 1;
+		if res[0] = 1 then
+			getLast(codIRange, codIOffset, ctxTable, fifo, res,
+					ctxBlockCat, levelListIdx);
+			if res[0] = 1 then
+				numCoeff := numCoeff + 1;
+			end
+		end
+		numCoeff_i := numCoeff_i + 1;
+	end
+	residual_block_cabac.SigLast_endLoop :  action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		numCoeff_i = numCoeff
+	var
+		uint(size=32) coeff_abs_level_minus1[1],
+		uint(size=32) coeff_sig_flag[1]
+	do
+		numCoeff_i := numCoeff_i - 1;
+		getCoeffAbsLevelMinus1(codIRange, codIOffset, ctxTable, fifo, coeff_abs_level_minus1,
+			   				  ctxBlockCat,  numDecodAbsLvlGt1, numDecodAbsLvlEq1);
+		getCoeffSignFlag(codIRange, codIOffset, ctxTable, fifo, coeff_sig_flag);
+		if coeff_sig_flag[0] = 1 then
+			coeffLevel[numCoeff_i] := - coeff_abs_level_minus1[0];
+		else
+			coeffLevel[numCoeff_i] :=   coeff_abs_level_minus1[0];
+		end
+	end
+	residual_block_cabac.Coeff_loop :  action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		numCoeff_i != 0
+	var
+		uint(size=32) coeff_abs_level_minus1[1],
+		uint(size=32) coeff_sig_flag[1]
+	do
+		numCoeff_i := numCoeff_i - 1;
+		if sigTab[numCoeff_i] then
+			getCoeffAbsLevelMinus1(codIRange, codIOffset, ctxTable, fifo, coeff_abs_level_minus1,
+				   				  ctxBlockCat,  numDecodAbsLvlGt1, numDecodAbsLvlEq1);
+			getCoeffSignFlag(codIRange, codIOffset, ctxTable, fifo, coeff_sig_flag);
+			if coeff_sig_flag[0] = 1 then
+				coeffLevel[numCoeff_i] := - coeff_abs_level_minus1[0];
+			else
+				coeffLevel[numCoeff_i] :=   coeff_abs_level_minus1[0];
+			end
+		end
+	end
+	residual_block_cabac.Coeff_endLoop :  action ==>
+	guard
+		numCoeff_i = 0
+	end
+	//******* End of Residual Block CABAC ********  
+
 
 	/**************************************************************************
 	 * search_start_code
@@ -3195,7 +3303,8 @@ actor Algo_Synp_AVC_FREXT()
 		// --> macrobloc_layer / --> Slice_data
 
 		// residual_block
-		Residual_block										( Residual_block_init_coeff_token					) --> Residual_block_read_suffixLength;
+		Residual_block										( residual_block_init.cavlc							) --> Residual_block_read_suffixLength;
+		Residual_block										( residual_block_init.cabac							) --> residual_block_cabac_sigLast_loop;
 		Residual_block_read_suffixLength					( Residual_block_read_suffixLength					) --> Residual_block_read_non_zero_coeff;
 		Residual_block_read_non_zero_coeff					( Residual_block_read_trailing_ones_sign_flag		) --> Residual_block_read_non_zero_coeff;
 		
@@ -3209,6 +3318,11 @@ actor Algo_Synp_AVC_FREXT()
 		Residual_block_send_run								( Residual_block_send_done							) --> Residual_return;
 		Residual_block_read_suffixLength					( Residual_block_skip_read_suffixLength				) --> Residual_return;
 
+		// residual_block_cabac
+		residual_block_cabac_sigLast_loop					( residual_block_cabac.SigLast_loop					) --> residual_block_cabac_sigLast_loop;
+		residual_block_cabac_sigLast_loop					( residual_block_cabac.SigLast_endLoop				) --> residual_block_cabac_coeff_loop;
+		residual_block_cabac_coeff_loop						( residual_block_cabac.Coeff_loop					) --> residual_block_cabac_coeff_loop;
+		residual_block_cabac_coeff_loop						( residual_block_cabac.Coeff_endLoop				) --> Residual_return;
 		// undefined
 		undefined	  					( undefined		    				) --> undefined;
 
