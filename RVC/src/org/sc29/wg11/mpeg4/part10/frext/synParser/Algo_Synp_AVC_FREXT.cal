@@ -1490,6 +1490,7 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=6) mbTypeTab[PICWIDTH+1];
 	bool		 trsfSz8x8Tab[PICWIDTH+1];
 	uint(size=6) cbpTab[PICWIDTH+1];
+	uint(size=2) intraChromaPredModeTab[PICWIDTH+1];
 	
 	procedure NextMbAddress()
 	begin
@@ -1517,8 +1518,7 @@ actor Algo_Synp_AVC_FREXT()
 		mbTypeTab    := [0 : for int i in 0 .. PICWIDTH];
 		trsfSz8x8Tab := [false : for int i in 0 .. PICWIDTH];
 		cbpTab		 := [0 : for int i in 0 .. PICWIDTH];
-		availableB   := false;
-		availableA   := false;
+		intraChromaPredModeTab := [0 : for int i in 0 .. PICWIDTH];
 	end
 
 	read_SliceD_CABAC_alignement.skip: action ==>
@@ -1528,13 +1528,15 @@ actor Algo_Synp_AVC_FREXT()
 
 	SliceD_init: action ==>
 	do
-		val_CurrMbAddr := first_mb_in_slice;
-		PicWidthInMbs := (pic_width_in_mbs_minus1[sps_id] +1);
-
-		Mb_x := val_CurrMbAddr mod PicWidthInMbs;
-		Mb_y := val_CurrMbAddr / PicWidthInMbs;
-
-		moreDataFlag := 1;
+		val_CurrMbAddr 	:= first_mb_in_slice;
+		PicWidthInMbs 	:= (pic_width_in_mbs_minus1[sps_id] +1);
+		
+		Mb_x 			:= val_CurrMbAddr mod PicWidthInMbs;
+		Mb_y 		 	:= val_CurrMbAddr / PicWidthInMbs;
+		
+		availableB   	:= false;
+		availableA   	:= false;
+		moreDataFlag 	:= 1;
 	end
 
 	//do
@@ -1644,7 +1646,6 @@ actor Algo_Synp_AVC_FREXT()
 		getEndOfSliceFlag(codIRange, codIOffset, ctxTable, fifo, res);
 		moreDataFlag := 1 - res[0];
 		mbTypeTab[Mb_x+1] := mb_type;
-		trsfSz8x8Tab[Mb_x+1] := transform_size_8x8_flag = 1;	
 	end
 
 	//while( moreDataFlag )
@@ -1721,6 +1722,7 @@ actor Algo_Synp_AVC_FREXT()
 			mb_type := mb_type + BLOCK_TYPE_I_8x8;
 		end
 		transform_size_8x8_flag := 0;
+		trsfSz8x8Tab[Mb_x+1]    := false;
 	end
 
 	//if( mb_type = = I_PCM )
@@ -1830,6 +1832,7 @@ actor Algo_Synp_AVC_FREXT()
 		else
 			getTrsfSz8x8(codIRange, codIOffset, ctxTable, fifo, res,
 						 availableA, trsfSz8x8Tab[Mb_x], availableB, trsfSz8x8Tab[Mb_x+1]);
+			trsfSz8x8Tab[Mb_x+1] := res[0] = 1;	
 		end
 		transform_size_8x8_flag := res[0];
 		if transform_size_8x8_flag = 1 then
@@ -2167,10 +2170,18 @@ actor Algo_Synp_AVC_FREXT()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
+		else
+			getPrevIntraPredModeFlag(codIRange, codIOffset, ctxTable, fifo, res);
+		end
 		prev_intra4x4_pred_mode_flag := res[0];
 		if prev_intra4x4_pred_mode_flag = 0 then 
-			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				vld_u_name(3,  fifo, res, "rem_intra4x4_pred_mode                                   ");
+			else
+				getRemIntraPredMode(codIRange, codIOffset, ctxTable, fifo, res);
+			end
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := res[0];
 		else
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := 15; // indicates that the mode is predicted using the neighbourhood 
@@ -2187,6 +2198,7 @@ actor Algo_Synp_AVC_FREXT()
 	//else if( MbPartPredMode( mb_type, 0 ) = = Intra_8x8 )
 	MB_pred_init_Intra_8x8: action ==> 
 	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mb_type = BLOCK_TYPE_I_8x8
 	do
 		luma4x4BlkIdx := 0;
@@ -2195,15 +2207,22 @@ actor Algo_Synp_AVC_FREXT()
 	//for( luma8x8BlkIdx=0; luma8x8BlkIdx<4; luma8x8BlkIdx++ )
 	read_MB_pred_rem_intra8x8_pred_mode.loop: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		luma4x4BlkIdx < 4
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_u_name(1,  fifo, res, "prev_intra8x8_pred_mode_flag                             ");
+		else
+			getPrevIntraPredModeFlag(codIRange, codIOffset, ctxTable, fifo, res);
+		end
 		prev_intra4x4_pred_mode_flag := res[0];
 		if prev_intra4x4_pred_mode_flag = 0 then 
-			vld_u_name(3,  fifo, res, "prev_intra4x4_pred_mode_flag                             ");
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				vld_u_name(3,  fifo, res, "rem_intra8x8_pred_mode                                   ");
+			else
+				getRemIntraPredMode(codIRange, codIOffset, ctxTable, fifo, res);
+			end
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := res[0];
 		else
 			rem_intra4x4_pred_mode[ luma4x4BlkIdx ] := 15; // indicates that the mode is predicted using the neighbourhood 
@@ -2221,7 +2240,6 @@ actor Algo_Synp_AVC_FREXT()
 	//else
 	MB_pred_init_Intra_16x16: action ==> IntraPredMode: [ Intra_16x16_tab[mb_type - BLOCK_TYPE_I_8x8][0] ]
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		Is_Intra_16x16(mb_type)
 	end
 	//end if
@@ -2234,7 +2252,14 @@ actor Algo_Synp_AVC_FREXT()
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "intra_chroma_pred_mode                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_ue_name(  fifo, res, "intra_chroma_pred_mode                             ");
+		else
+			getIntraChromaPredMode(codIRange, codIOffset, ctxTable, fifo, res,
+								   availableA, mbTypeTab[Mb_x]  , intraChromaPredModeTab[Mb_x],
+								   availableB, mbTypeTab[Mb_x+1], intraChromaPredModeTab[Mb_x+1]);
+			intraChromaPredModeTab[Mb_x+1] :=  res[0];
+		end
 		intra_chroma_pred_mode := res[0];
 	end
 
