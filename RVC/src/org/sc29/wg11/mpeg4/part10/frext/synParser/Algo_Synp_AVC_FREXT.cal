@@ -158,8 +158,7 @@ actor Algo_Synp_AVC_FREXT()
 	uint val_CurrMbAddr;
 	uint(size=1) moreDataFlag;
 	uint mb_skip_run;
-	uint(size=1) mb_field_decoding_flag := 0;
-
+	
 	uint Mb_x;
 	uint Mb_y;
 	uint PicWidthInMbs;
@@ -1404,6 +1403,7 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size=32) res[1],
 		int slice_qp_delta
 	do
+		cabac_init_idc := -1;
 		if (entropy_coding_mode_flag[pps_id] = 1 and
 			slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI) then
 			vld_ue_name(  fifo, res, "cabac_init_idc                             ");
@@ -1484,21 +1484,24 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=9) codIRange[1];
 	uint(size=9) codIOffset[1];
 	uint(size=9) ctxTable[MAX_NUM_CTX_MOD];
-	bool		 top;
-	bool		 left;
+	bool		 availableA;
+	bool		 availableB;
 	bool         skipFlagTab[PICWIDTH+1];
+	uint(size=6) mbTypeTab[PICWIDTH+1];
+	bool		 trsfSz8x8Tab[PICWIDTH+1];
+	uint(size=6) cbpTab[PICWIDTH+1];
 	
 	procedure NextMbAddress()
 	begin
-		val_CurrMbAddr := val_CurrMbAddr + 1;
-		if Mb_x < PicWidthInMbs-1 then
-			Mb_x := Mb_x + 1;
-		else
-			Mb_x := 0;
-			Mb_y := Mb_y + 1;
+		val_CurrMbAddr	:= val_CurrMbAddr + 1;
+		Mb_x			:= Mb_x + 1;
+		availableA 		:= true;
+		if Mb_x > PicWidthInMbs-1 then
+			Mb_x 		:= 0;
+			Mb_y 		:= Mb_y + 1;
+			availableA 	:= false;
 		end
-		top  := if val_CurrMbAddr < first_mb_in_slice + PicWidthInMbs then false else true end;
-		left := if val_CurrMbAddr = first_mb_in_slice then false else false end;
+		availableB := if val_CurrMbAddr < first_mb_in_slice + PicWidthInMbs then false else true end;
 	end
 
 	//if (entropy_coding_mode_flag) : CABAC
@@ -1510,7 +1513,12 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		contextInit(val_QP_Y, cabac_init_idc, ctxTable);
 		decodeInit(codIRange, codIOffset, fifo);
-		skipFlagTab := [false : for int i in 0 .. PICWIDTH];
+		skipFlagTab  := [false : for int i in 0 .. PICWIDTH];
+		mbTypeTab    := [0 : for int i in 0 .. PICWIDTH];
+		trsfSz8x8Tab := [false : for int i in 0 .. PICWIDTH];
+		cbpTab		 := [0 : for int i in 0 .. PICWIDTH];
+		availableB   := false;
+		availableA   := false;
 	end
 
 	read_SliceD_CABAC_alignement.skip: action ==>
@@ -1553,7 +1561,7 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size=32) res[1]
 	do
 		getMbSkipFlag(codIRange, codIOffset, ctxTable, fifo, res,
- 					  slice_type, left, skipFlagTab[Mb_x], top, skipFlagTab[Mb_x+1]);
+ 					  slice_type, availableA, skipFlagTab[Mb_x], availableB, skipFlagTab[Mb_x+1]);
  		skipFlagTab[Mb_x+1] := res[0] = 1;
  		moreDataFlag := 1 - res[0];
 	end
@@ -1561,15 +1569,9 @@ actor Algo_Synp_AVC_FREXT()
 	read_SliceD_mb_skip_flag.isMBSkip: action ==>
 			PicWidthInMb:[PicWidthInMbs],
 			MB_TYPE:[if slice_type = SLICE_TYPE_P then BLOCK_TYPE_P_SKIP else BLOCK_TYPE_B_SKIP end],
-			MbLocation:[mb_x, mb_y]
+			MbLocation:[Mb_x, Mb_y]
 	guard
 		skipFlagTab[Mb_x+1] = true
-	var 
-		int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
 	end
 	
 	read_SliceD_mb_skip_flag.isNotMBSkip: action ==>
@@ -1577,7 +1579,7 @@ actor Algo_Synp_AVC_FREXT()
 		skipFlagTab[Mb_x+1] = false
 	end
 	
-	read_SliceD_mb_skip.skip: action ==>
+	read_SliceD_mb_skip.skip: action ==> MbLocation:[Mb_x, Mb_y]
 	guard
 		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
 	end
@@ -1610,7 +1612,7 @@ actor Algo_Synp_AVC_FREXT()
 		more_rbsp_data();
 	end
 
-	read_SliceD_mb_skip_end.moredata_1: action ==>
+	read_SliceD_mb_skip_end.moredata_1: action ==> MbLocation:[Mb_x, Mb_y]
 	guard
 		moreDataFlag = 1
 	end
@@ -1641,28 +1643,8 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		getEndOfSliceFlag(codIRange, codIOffset, ctxTable, fifo, res);
 		moreDataFlag := 1 - res[0];
-	end
-
-	send_data_position_information.is_ipcm: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			MB_TYPE:[BLOCK_TYPE_I_PCM],
-			MbLocation:[Mb_x, Mb_y]
-	guard
-		mb_type = BLOCK_TYPE_I_PCM
-	end
-
-	send_data_position_information : action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			cbp_blk:[val_cbp_blk],
-			QP:[val_QP_Y], 
-			QP_Cb:[val_QP_Cb], 
-			QP_Cr:[val_QP_Cr], 
-			MB_TYPE:[mb_type],
-			MbLocation:[Mb_x, Mb_y]
-	guard
-		mb_type != BLOCK_TYPE_I_PCM
+		mbTypeTab[Mb_x+1] := mb_type;
+		trsfSz8x8Tab[Mb_x+1] := transform_size_8x8_flag = 1;	
 	end
 
 	//while( moreDataFlag )
@@ -1693,14 +1675,20 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=1) transform_size_8x8_flag := 0;
 	uint(size=6) val_CodedBlockPatternLuma := 0;
 	uint(size=6) CodedBlockPatternChroma := 0;
-
+	 int(size=8) prevMbQpDelta;
+	
 	read_MB_layer_mb_type: action ==> 
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "mb_type                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_ue_name(  fifo, res, "mb_type                             ");
+		else
+			getMbType(codIRange, codIOffset, ctxTable, fifo, res,
+					  slice_type, availableA, mbTypeTab[Mb_x], availableB, mbTypeTab[Mb_x+1]);
+		end
 		mb_type := res[0];
 		
 		mb_type :=
@@ -1732,12 +1720,12 @@ actor Algo_Synp_AVC_FREXT()
 		if mb_type != BLOCK_TYPE_I_4x4 then
 			mb_type := mb_type + BLOCK_TYPE_I_8x8;
 		end
-		
+		transform_size_8x8_flag := 0;
 	end
 
 	//if( mb_type = = I_PCM )
 	// while( !byte_aligned( ) )
-	read_MB_layer_I_PCM_alignement: action  ==> 
+	read_MB_layer_I_PCM_alignement: action  ==> PicWidthInMb:[PicWidthInMbs], MB_TYPE:[mb_type]
 	guard
 		mb_type = BLOCK_TYPE_I_PCM
 	do
@@ -1789,7 +1777,6 @@ actor Algo_Synp_AVC_FREXT()
 
 	read_MB_layer_pcm_sample_chroma.done: action  ==> 
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		MB_inc = 2*64
 	end
 
@@ -1804,7 +1791,6 @@ actor Algo_Synp_AVC_FREXT()
 	//if( mb_type != I_NxN && MbPartPredMode( mb_type, 0 ) != Intra_16x16 && NumMbPart( mb_type ) = = 4 )
 	read_MB_layer_sub_mb_pred: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		not Is_Intra_NxN(mb_type),
 		not Is_Intra_16x16(mb_type),
 		(numMbPart(mb_type) = 4) // numMbPart(mb_type) tests the slice_type and return 0 if slice_type is I or SI
@@ -1832,30 +1818,36 @@ actor Algo_Synp_AVC_FREXT()
 
 	// else (! ( mb_type != I_NxN && MbPartPredMode( mb_type, 0 ) != Intra_16x16 && NumMbPart( mb_type ) = = 4 ) )
 	// if( transform_8x8_mode_flag && mb_type = = I_NxN )
-	read_MB_layer_transform_size_8x8_flag: action ==>
+	read_MB_layer_transform_size_8x8_flag.read: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		numMbPart(mb_type) != 4, // numMbPart(mb_type) tests the slice_type and return 0 if slice_type is I or SI
 		transform_8x8_mode_flag[pps_id] = 1 and Is_Intra_NxN(mb_type)
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
+		else
+			getTrsfSz8x8(codIRange, codIOffset, ctxTable, fifo, res,
+						 availableA, trsfSz8x8Tab[Mb_x], availableB, trsfSz8x8Tab[Mb_x+1]);
+		end
 		transform_size_8x8_flag := res[0];
+		if transform_size_8x8_flag = 1 then
+			mb_type := BLOCK_TYPE_I_8x8;
+		end
 	end
 
 	// else
-	read_MB_layer_skip_transform_size_8x8_flag: action ==>
+	read_MB_layer_transform_size_8x8_flag.skip: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		numMbPart(mb_type) != 4
+		transform_8x8_mode_flag[pps_id] = 0 or not Is_Intra_NxN(mb_type)
 	end
 	// end if 
 	// --> mb_pred( mb_type )
 	// end if
 
 	// if( MbPartPredMode( mb_type, 0 ) != Intra_16x16 )
-	read_MB_layer_coded_block_pattern: action ==>
+	read_MB_layer_coded_block_pattern: action ==> PicWidthInMb:[PicWidthInMbs], MB_TYPE:[mb_type]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
@@ -1863,16 +1855,28 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size=6) coded_block_pattern
 	do
 		if (not Is_Intra_16x16(mb_type)) then
-			vld_me_name(  fifo, res, chroma_format_idc[sps_id], Is_Intra_NxN(mb_type), "coded_block_pattern                             ");
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				vld_me_name(  fifo, res, chroma_format_idc[sps_id], Is_Intra_NxN(mb_type), "coded_block_pattern                             ");
+			else
+				getCodedBlockPattern(codIRange, codIOffset, ctxTable, fifo, res,
+									  availableA, mbTypeTab[Mb_x], cbpTab[Mb_x],
+									  availableB, mbTypeTab[Mb_x+1], cbpTab[Mb_x+1]);
+				cbpTab[Mb_x+1] := res[0];
+			end
 			coded_block_pattern := res[0];
-			val_CodedBlockPatternLuma := coded_block_pattern mod 16;
-			CodedBlockPatternChroma := coded_block_pattern / 16;
+			val_CodedBlockPatternLuma := coded_block_pattern & 15;
+			CodedBlockPatternChroma := coded_block_pattern >> 4;
 			if( val_CodedBlockPatternLuma > 0 and 
 				transform_8x8_mode_flag[pps_id] = 1 and 
 				Is_Intra_NxN(mb_type) and
 				noSubMbPartSizeLessThan8x8Flag = 1 and
 				(mb_type != BLOCK_TYPE_B_DIRECT_16x16 or direct_8x8_interference_flag[sps_id] = 1 ) )then 
-					vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
+					if entropy_coding_mode_flag[pps_id] = 0 then
+						vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
+					else
+						getTrsfSz8x8(codIRange, codIOffset, ctxTable, fifo, res,
+									 availableA, trsfSz8x8Tab[Mb_x], availableB, trsfSz8x8Tab[Mb_x+1]);
+					end
 					transform_size_8x8_flag := res[0];
 			end
 		else
@@ -1883,23 +1887,39 @@ actor Algo_Synp_AVC_FREXT()
 
 	//if( val_CodedBlockPatternLuma > 0 || CodedBlockPatternChroma > 0 | | MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
 	read_MB_layer_mb_qp_delta: action ==>
+			QP:[val_QP_Y], 
+			QP_Cb:[val_QP_Cb], 
+			QP_Cr:[val_QP_Cr]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		val_CodedBlockPatternLuma > 0 or CodedBlockPatternChroma > 0 or Is_Intra_16x16(mb_type)
 	var
-		uint(size=32) res[1],
+		 int(size=32) res[1],
+		uint(size=32) mb_prev := if Mb_x = 0 then PicWidthInMbs-1 else Mb_x end,
 		int mb_qp_delta		
 	do
-		vld_se_name(  fifo, res, "mb_qp_delta                             ");
-		mb_qp_delta := res[0];
-		val_QP_Y  := (val_QP_Y + mb_qp_delta + 52) mod 52;
-		val_QP_Cb := qP_tab[val_QP_Y + chroma_qp_index_offset[pps_id]];
-		val_QP_Cr := qP_tab[val_QP_Y + second_chroma_qp_index_offset[pps_id]];
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_se_name(  fifo, res, "mb_qp_delta                             ");
+		else
+			getMbQpDelta(codIRange, codIOffset, ctxTable, fifo, res,
+						 val_CurrMbAddr != first_mb_in_slice, mbTypeTab[mb_prev],
+						 cbpTab[mb_prev], prevMbQpDelta);
+			prevMbQpDelta	:= res[0];
+		end
+		mb_qp_delta 	:= res[0];
+		val_QP_Y  		:= (val_QP_Y + mb_qp_delta + 52) mod 52;
+		val_QP_Cb 		:= qP_tab[val_QP_Y + chroma_qp_index_offset[pps_id]];
+		val_QP_Cr 		:= qP_tab[val_QP_Y + second_chroma_qp_index_offset[pps_id]];
 	end
 	// --> residual( )
 
 	//else	
-	read_MB_layer_skip_mb_qp_delta: action ==>  LAST:[[true: for int t in 0 .. 25 ]] repeat 26
+	read_MB_layer_skip_mb_qp_delta: action ==> 
+			cbp_blk:[val_cbp_blk],
+			QP:[val_QP_Y], 
+			QP_Cb:[val_QP_Cb], 
+			QP_Cr:[val_QP_Cr],
+			LAST:[[true: for int t in 0 .. 25 ]] repeat 26
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		( val_CodedBlockPatternLuma = 0 and CodedBlockPatternChroma = 0 and not Is_Intra_16x16(mb_type) )
@@ -1920,7 +1940,7 @@ actor Algo_Synp_AVC_FREXT()
 	*************************************************************/
 	uint(size=3) mbPartIdx;
 	uint(size=3) subMbPartIdx;
-	List (type:uint,size=5) sub_mb_type := [ 0 : for int i in 0 .. 4];
+	List (type:uint(size=4),size=5) sub_mb_type := [ 0 : for int i in 0 .. 4];
 	List (type:int,size=4) ref_idx_l0 := [ 0 : for int i in 0 .. 3];
  	function IS_B_Direct_8x8() --> bool : (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
 
@@ -1933,7 +1953,11 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size=4) subMbType,
 		uint(size=32) res[1]
 	do
-		vld_ue_name(  fifo, res, "sub_mb_type[mbPartIdx]                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then
+			vld_ue_name(  fifo, res, "sub_mb_type[mbPartIdx]                             ");
+		else
+			getSubMbType(codIRange, codIOffset, ctxTable, fifo, res, slice_type);
+		end
 		sub_mb_type[mbPartIdx] := res[0];
 		subMbType := sub_mb_type[mbPartIdx];
 		mbPartIdx := mbPartIdx +1;
@@ -1956,7 +1980,7 @@ actor Algo_Synp_AVC_FREXT()
 	var
 		uint(size=32) res[1]
 	do
-		if ((slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1) and
+		if ((slice_num_ref_idx_l0_active_minus1 > 0) and
 			not IS_B_Direct_8x8() and 
 			not (mb_type = BLOCK_TYPE_P_8x8ref0) and 
 			(subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)) then
@@ -1991,7 +2015,7 @@ actor Algo_Synp_AVC_FREXT()
 	var
 		uint(size=32) res[1]
 	do
-		if ((slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1) 
+		if ((slice_num_ref_idx_l1_active_minus1 > 0) 
 			and not IS_B_Direct_8x8() 
 			and not (mb_type = BLOCK_TYPE_P_8x8ref0)
 			and (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)) then
@@ -2240,7 +2264,7 @@ actor Algo_Synp_AVC_FREXT()
 	var
 		uint(size=32) res[1]
 	do
-		if ( (slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1)
+		if ( (slice_num_ref_idx_l0_active_minus1 > 0)
 			and not Mb_Is_PredL1(mb_type, mbPartIdx)) then
 			if slice_num_ref_idx_l0_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                            ");
@@ -2272,7 +2296,7 @@ actor Algo_Synp_AVC_FREXT()
 	var
 		uint(size=32) res[1]
 	do
-		if ((slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1)
+		if ((slice_num_ref_idx_l1_active_minus1 > 0)
 			and not Mb_Is_PredL0(mb_type, mbPartIdx)) then
 			if slice_num_ref_idx_l1_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
@@ -2617,7 +2641,7 @@ actor Algo_Synp_AVC_FREXT()
 	end
 	//end if
 
-	Residual_skip_chroma_AC: action ==> 
+	Residual_skip_chroma_AC: action ==> cbp_blk:[val_cbp_blk]
 	guard
 		iCbCr = 2
 	end
@@ -3055,12 +3079,10 @@ actor Algo_Synp_AVC_FREXT()
 		read_SliceD_mb_skip_run								( read_SliceD_mb_skip_run.loop						) --> read_SliceD_mb_skip_run;
 		read_SliceD_mb_skip_run								( read_SliceD_mb_skip_run.endLoop					) --> read_SliceD_mb_skip_end;
 		read_SliceD_mb_skip_end			 		            ( read_SliceD_mb_skip_end.moredata_1   		    	) --> read_MB_layer_mb_type;
-		read_SliceD_mb_skip_end			 					( read_SliceD_mb_skip_end.moredata_0				) --> SliceD_update2;
+		read_SliceD_mb_skip_end			 					( read_SliceD_mb_skip_end.moredata_0				) --> SliceD_update;
 
 		// --> macrobloc_layer()
-		SliceD_update										( SliceD_update										) --> SliceD_send_data_position_information;
-		SliceD_update2										( SliceD_update										) --> SliceD_while_moreDataFlag;
-		SliceD_send_data_position_information				( send_data_position_information	                ) --> SliceD_while_moreDataFlag;		
+		SliceD_update										( SliceD_update										) --> SliceD_while_moreDataFlag;
 		SliceD_while_moreDataFlag							( SliceD_while_moreDataFlag							) --> read_SliceD_mb_skip;
 		SliceD_while_moreDataFlag							( SliceD_end										) --> look_for_Sequence_Header;
 		
@@ -3075,7 +3097,6 @@ actor Algo_Synp_AVC_FREXT()
 		read_MB_layer_check_pred							( read_MB_layer_sub_mb_pred							) --> Sub_mb_pred; //--> sub_mb_pred
 		read_MB_layer_sub_mb_pred_done				        ( read_MB_layer_sub_mb_pred_done	                ) --> read_MB_layer_coded_block_pattern;
 		read_MB_layer_check_pred							( read_MB_layer_transform_size_8x8_flag				) --> MB_pred;
-		read_MB_layer_check_pred							( read_MB_layer_skip_transform_size_8x8_flag		) --> MB_pred; 
 		// --> mb_pred()	
 
 		read_MB_layer_coded_block_pattern					( read_MB_layer_coded_block_pattern					) --> read_MB_layer_mb_qp_delta;
@@ -3172,7 +3193,6 @@ actor Algo_Synp_AVC_FREXT()
 		look_for > look_for_other_header;
 		read_SliceH_pred_weight_table > read_SliceH_skip_pred_weight_table;
 		read_SliceH_difference_of_pic_nums_minus1_done > read_SliceH_long_term_frame_idx_done > read_SliceH_memory_management_control_operation_done;
-		read_MB_layer_transform_size_8x8_flag > read_MB_layer_skip_transform_size_8x8_flag;
 		read_MB_pred_mvd_l0.loop >  read_MB_pred_mvd_l0.skip > read_MB_pred_mvd_l0.done;
 		read_MB_pred_mvd_l1.loop >  read_MB_pred_mvd_l1.skip > MB_pred_done;
 	end
