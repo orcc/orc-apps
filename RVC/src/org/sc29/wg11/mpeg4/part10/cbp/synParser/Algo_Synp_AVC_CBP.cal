@@ -153,10 +153,8 @@ actor Algo_Synp_AVC_CBP()
 	*************************************************************/
 	uint val_CurrMbAddr;
 	uint(size=1) moreDataFlag;
-	uint prevMbSkipped;
 	uint mb_skip_run;
-	uint(size=1) mb_field_decoding_flag := 0;
-
+	
 	uint Mb_x;
 	uint Mb_y;
 	uint PicWidthInMbs;
@@ -929,7 +927,7 @@ actor Algo_Synp_AVC_CBP()
 	int(size=6) val_slice_alpha_c0_offset := 0;
 	int(size=6) val_slice_beta_offset := 0;
 
-	uint(size=6) val_QP;
+	uint(size=6) val_QP_Y;
 	uint(size=6) val_QP_Cb;
 	uint(size=6) val_QP_Cr;
 
@@ -1393,7 +1391,7 @@ actor Algo_Synp_AVC_CBP()
 	//******* End of dec_ref_pic_marking  ********/
 
 	//if (entropy_coding_mode_flag && slice_type != I && slice_type != SI)
-	read_SliceH_cabac_init_idc: action ==> SLICE_DBF_PARAM:[val_QP, val_QP_Cb, val_QP_Cr]
+	read_SliceH_cabac_init_idc: action ==> SLICE_DBF_PARAM:[val_QP_Y, val_QP_Cb, val_QP_Cr]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
@@ -1406,9 +1404,9 @@ actor Algo_Synp_AVC_CBP()
 		end
 		vld_se_name(  fifo, res, "slice_qp_delta                             ");
 		slice_qp_delta := res[0];
-		val_QP := 26 + pic_init_qp_minus26[pps_id] + slice_qp_delta;
-		val_QP_Cb := qP_tab[val_QP + chroma_qp_index_offset[pps_id]];
-		val_QP_Cr := qP_tab[val_QP + second_chroma_qp_index_offset[pps_id]];
+		val_QP_Y  := 26 + pic_init_qp_minus26[pps_id] + slice_qp_delta;
+		val_QP_Cb := qP_tab[val_QP_Y + chroma_qp_index_offset[pps_id]];
+		val_QP_Cr := qP_tab[val_QP_Y + second_chroma_qp_index_offset[pps_id]];
 		if (slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_SI) then
 			if slice_type = SLICE_TYPE_SP then 
 				vld_u_name(1,  fifo, res, "sp_for_switch_flag                             ");
@@ -1476,28 +1474,35 @@ actor Algo_Synp_AVC_CBP()
 	********       Slice DATA 	  	      *********
 	*************************************************************
 	*************************************************************/
+	bool		 availableA;
+	bool		 availableB;
  
 	procedure NextMbAddress()
 	begin
-		val_CurrMbAddr := val_CurrMbAddr + 1;
-		Mb_x := val_CurrMbAddr mod PicWidthInMbs;
-		Mb_y := val_CurrMbAddr / PicWidthInMbs;
+		val_CurrMbAddr	:= val_CurrMbAddr + 1;
+		Mb_x			:= Mb_x + 1;
+		availableA 		:= true;
+		if Mb_x > PicWidthInMbs-1 then
+			Mb_x 		:= 0;
+			Mb_y 		:= Mb_y + 1;
+			availableA 	:= false;
+		end
+		availableB := if val_CurrMbAddr < first_mb_in_slice + PicWidthInMbs then false else true end;
 	end
-
 
 	//if (entropy_coding_mode_flag) : CABAC
 	//while( !byte_aligned())
-	read_SliceD_CABAC_alignement: action ==>
+	read_SliceD_CABAC_alignement.default: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 1
 	do
 		byte_align(fifo);
+		println("SliceD_update_CABAC : CABAC not yet implemented");
 	end
 
-	read_SliceD_skip_CABAC_alignement: action ==>
+	read_SliceD_CABAC_alignement.skip: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 0
 	end
 
@@ -1510,20 +1515,14 @@ actor Algo_Synp_AVC_CBP()
 		Mb_y := val_CurrMbAddr / PicWidthInMbs;
 
 		moreDataFlag := 1;
-		prevMbSkipped := 0;
+		availableB   := false;
+		availableA   := false;
 	end
 
 	//do
-	sync_do_mb_layer: action
-		==> 
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
-	end
-
-
 	//if (slice_type != I && slice_type != SI)
 	//  if (!entropy_coding_mode_flag) : CAVLC
-	read_SliceD_mb_skip_run: action ==>
+	read_SliceD_mb_skip.cavlc: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		slice_type != SLICE_TYPE_I and slice_type != SLICE_TYPE_SI,
@@ -1535,26 +1534,19 @@ actor Algo_Synp_AVC_CBP()
 		mb_skip_run := res[0];
 	end
 
-	read_SliceD_mb_skip_run_done0: action ==>
+	read_SliceD_mb_skip.skip: action ==> MbLocation:[Mb_x, Mb_y]
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
-	do
-		if mb_skip_run >0 then 
-			prevMbSkipped := 1; 
-		else 
-			prevMbSkipped := 0; 
-		end
+		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
 	end
-
-	read_SliceD_mb_skip_run_done1.I_BLOCK: action 
+	
+	// for(i=0; i < mb_skip_run; i++) CurrMbAddr = NextMbAddress(CurrMbAddr)
+	read_SliceD_mb_skip_run.loop: action 
 		==> 
 			PicWidthInMb:[PicWidthInMbs],
-			MB_TYPE:[BLOCK_TYPE_P_SKIP],
+			MB_TYPE:[if slice_type = SLICE_TYPE_P then BLOCK_TYPE_P_SKIP else BLOCK_TYPE_B_SKIP end],
 			MbLocation:[mb_x, mb_y]
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		prevMbSkipped = 1,
-		slice_type != SLICE_TYPE_P
+		mb_skip_run != 0
 	var 
 		int mb_x, int mb_y
 	do
@@ -1565,75 +1557,31 @@ actor Algo_Synp_AVC_CBP()
 		NonZeroCountCr[Mb_x + 1]:= [ 0 : for int j in 0 .. 4-1];
 		NextMbAddress();
 		mb_skip_run := mb_skip_run -1;
-		if mb_skip_run = 0 then 
-			prevMbSkipped := 0; 
-			more_rbsp_data();
-		end
 	end
-
-	read_SliceD_mb_skip_run_done1.P_BLOCK: action 
+	read_SliceD_mb_skip_run.endLoop: action 
 		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			MB_TYPE:[BLOCK_TYPE_P_SKIP],
-			MbLocation:[mb_x, mb_y]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		prevMbSkipped = 1,
-		slice_type = SLICE_TYPE_P
-	var 
-		int mb_x, int mb_y
+		mb_skip_run = 0
 	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NonZeroCount[Mb_x + 1] := [ 0 : for int j in 0 .. 16-1];
-		NonZeroCountCb[Mb_x + 1]:= [ 0 : for int j in 0 .. 4-1];
-		NonZeroCountCr[Mb_x + 1]:= [ 0 : for int j in 0 .. 4-1];
-		NextMbAddress();
-		mb_skip_run := mb_skip_run -1;
-		if mb_skip_run = 0 then 
-			prevMbSkipped := 0; 
-			more_rbsp_data();
-		end
+		more_rbsp_data();
 	end
 
-	read_SliceD_mb_skip_run_done2: action ==>
+	read_SliceD_mb_skip_end.moredata_1: action ==> MbLocation:[Mb_x, Mb_y]
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		prevMbSkipped = 0
-	end
-
-	read_SliceD_mb_skip_run_done2_moredata_1: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		moreDataFlag = 1
 	end
 
-	read_SliceD_mb_skip_run_done2_moredata_0: action ==>
+	read_SliceD_mb_skip_end.moredata_0: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		moreDataFlag = 0
 	end
 
-	//else (slice_type = I || slice_type = SI)
-	read_SliceD_skip_mb_skip: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
-	end
-	//end if
-
-
-	// else
-	read_SliceD_skip_mb_field_decoding_flag: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		moreDataFlag = 1
-	end
 	//end if
 	// --> macrobloc_layer()
 	//end if
 	//if( !entropy_coding_mode_flag ) : CAVLC
-	SliceD_update_CAVLC: action ==>
+	SliceD_update.cavlc: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 0
@@ -1641,100 +1589,21 @@ actor Algo_Synp_AVC_CBP()
 		more_rbsp_data();
 	end
 
-	send_data_position_information_is_ipcm: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			MB_TYPE:[BLOCK_TYPE_I_PCM],
-			MbLocation:[mb_x, mb_y]
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		mb_type = BLOCK_TYPE_I_PCM
-	var 
-		int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
-		val_cbp_blk:=0;
-	end
-
-	send_data_position_information.intraPred: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			cbp_blk:[cbp_blk_tmp],
-			QP:[val_QP], 
-			QP_Cb:[val_QP_Cb], 
-			QP_Cr:[val_QP_Cr], 
-			MB_TYPE:[mb_type],
-			MbLocation:[mb_x, mb_y]
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		Mb_IsIntra(mb_type)
-	var 
-		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
-		val_cbp_blk:=0;
-	end
-
-	send_data_position_information.interPred: action 
-		==> 
-			PicWidthInMb:[PicWidthInMbs],
-			cbp_blk:[cbp_blk_tmp],
-			QP:[val_QP], 
-			QP_Cb:[val_QP_Cb], 
-			QP_Cr:[val_QP_Cr], 
-			MB_TYPE:[mb_type],
-			MbLocation:[mb_x, mb_y]
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		not Mb_IsIntra(mb_type)
-	var 
-		int cbp_blk_tmp=val_cbp_blk, int mb_x, int mb_y
-	do
-		mb_x:=Mb_x;
-		mb_y:=Mb_y;
-		NextMbAddress();
-		val_cbp_blk:=0;
-	end
-	
-	syncSliceD_endwhile: action ==>
-	end
-
-	SliceD_moredata_1: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		moreDataFlag = 1
-	end
-
-	SliceD_moredata_0: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		moreDataFlag = 0
-	end
-
-	//else (CABAC)
-	SliceD_update_CABAC: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		entropy_coding_mode_flag[pps_id] = 1
-	do
-		println("SliceD_update_CABAC : CABAC not yet implemented");
-	end
 
 	//while( moreDataFlag )
 	SliceD_while_moreDataFlag: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		moreDataFlag = 1
+	do
+		NextMbAddress();
+		val_cbp_blk := 0;
 	end
 
 	SliceD_end: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		moreDataFlag = 0
+	do
+		val_cbp_blk := 0;
 	end
 	//******* End of Slice DATA  ********/
  
@@ -1788,12 +1657,12 @@ actor Algo_Synp_AVC_CBP()
 		if mb_type != BLOCK_TYPE_I_4x4 then
 			mb_type := mb_type + BLOCK_TYPE_I_8x8;
 		end
-		
+		transform_size_8x8_flag := 0;
 	end
 
 	//if( mb_type = = I_PCM )
 	// while( !byte_aligned( ) )
-	read_MB_layer_I_PCM_alignement: action  ==> 
+	read_MB_layer_I_PCM_alignement: action  ==> PicWidthInMb:[PicWidthInMbs], MB_TYPE:[mb_type]
 	guard
 		mb_type = BLOCK_TYPE_I_PCM
 	do
@@ -1845,7 +1714,6 @@ actor Algo_Synp_AVC_CBP()
 
 	read_MB_layer_pcm_sample_chroma.done: action  ==> 
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		MB_inc = 2*64
 	end
 
@@ -1860,7 +1728,6 @@ actor Algo_Synp_AVC_CBP()
 	//if( mb_type != I_NxN && MbPartPredMode( mb_type, 0 ) != Intra_16x16 && NumMbPart( mb_type ) = = 4 )
 	read_MB_layer_sub_mb_pred: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		not Is_Intra_NxN(mb_type),
 		not Is_Intra_16x16(mb_type),
 		(numMbPart(mb_type) = 4) // numMbPart(mb_type) tests the slice_type and return 0 if slice_type is I or SI
@@ -1888,30 +1755,31 @@ actor Algo_Synp_AVC_CBP()
 
 	// else (! ( mb_type != I_NxN && MbPartPredMode( mb_type, 0 ) != Intra_16x16 && NumMbPart( mb_type ) = = 4 ) )
 	// if( transform_8x8_mode_flag && mb_type = = I_NxN )
-	read_MB_layer_transform_size_8x8_flag: action ==>
+	read_MB_layer_transform_size_8x8_flag.read: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		numMbPart(mb_type) != 4, // numMbPart(mb_type) tests the slice_type and return 0 if slice_type is I or SI
 		transform_8x8_mode_flag[pps_id] = 1 and Is_Intra_NxN(mb_type)
 	var
 		uint(size=32) res[1]
 	do
 		vld_u_name(1,  fifo, res, "transform_size_8x8_flag                             ");
 		transform_size_8x8_flag := res[0];
+		if transform_size_8x8_flag = 1 then
+			mb_type := BLOCK_TYPE_I_8x8;
+		end
 	end
 
 	// else
-	read_MB_layer_skip_transform_size_8x8_flag: action ==>
+	read_MB_layer_transform_size_8x8_flag.skip: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		numMbPart(mb_type) != 4
+		transform_8x8_mode_flag[pps_id] = 0 or not Is_Intra_NxN(mb_type)
 	end
 	// end if 
 	// --> mb_pred( mb_type )
 	// end if
 
 	// if( MbPartPredMode( mb_type, 0 ) != Intra_16x16 )
-	read_MB_layer_coded_block_pattern: action ==>
+	read_MB_layer_coded_block_pattern: action ==> PicWidthInMb:[PicWidthInMbs], MB_TYPE:[mb_type]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
@@ -1921,8 +1789,8 @@ actor Algo_Synp_AVC_CBP()
 		if (not Is_Intra_16x16(mb_type)) then
 			vld_me_name(  fifo, res, chroma_format_idc[sps_id], Is_Intra_NxN(mb_type), "coded_block_pattern                             ");
 			coded_block_pattern := res[0];
-			val_CodedBlockPatternLuma := coded_block_pattern mod 16;
-			CodedBlockPatternChroma := coded_block_pattern / 16;
+			val_CodedBlockPatternLuma := coded_block_pattern & 15;
+			CodedBlockPatternChroma := coded_block_pattern >> 4;
 			if( val_CodedBlockPatternLuma > 0 and 
 				transform_8x8_mode_flag[pps_id] = 1 and 
 				Is_Intra_NxN(mb_type) and
@@ -1939,23 +1807,31 @@ actor Algo_Synp_AVC_CBP()
 
 	//if( val_CodedBlockPatternLuma > 0 || CodedBlockPatternChroma > 0 | | MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
 	read_MB_layer_mb_qp_delta: action ==>
+			QP:[val_QP_Y], 
+			QP_Cb:[val_QP_Cb], 
+			QP_Cr:[val_QP_Cr]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		val_CodedBlockPatternLuma > 0 or CodedBlockPatternChroma > 0 or Is_Intra_16x16(mb_type)
 	var
-		uint(size=32) res[1],
+		int(size=32) res[1],
 		int mb_qp_delta		
 	do
 		vld_se_name(  fifo, res, "mb_qp_delta                             ");
-		mb_qp_delta := res[0];
-		val_QP := (val_QP + mb_qp_delta + 52) mod 52;
-		val_QP_Cb := qP_tab[val_QP + chroma_qp_index_offset[pps_id]];
-		val_QP_Cr := qP_tab[val_QP + second_chroma_qp_index_offset[pps_id]];
+		mb_qp_delta 	:= res[0];
+		val_QP_Y  		:= (val_QP_Y + mb_qp_delta + 52) mod 52;
+		val_QP_Cb 		:= qP_tab[val_QP_Y + chroma_qp_index_offset[pps_id]];
+		val_QP_Cr 		:= qP_tab[val_QP_Y + second_chroma_qp_index_offset[pps_id]];
 	end
 	// --> residual( )
 
 	//else	
-	read_MB_layer_skip_mb_qp_delta: action ==>  LAST:[[true: for int t in 0 .. 25 ]] repeat 26
+	read_MB_layer_skip_mb_qp_delta: action ==> 
+			cbp_blk:[val_cbp_blk],
+			QP:[val_QP_Y], 
+			QP_Cb:[val_QP_Cb], 
+			QP_Cr:[val_QP_Cr],
+			LAST:[[true: for int t in 0 .. 25 ]] repeat 26
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		( val_CodedBlockPatternLuma = 0 and CodedBlockPatternChroma = 0 and not Is_Intra_16x16(mb_type) )
@@ -1976,7 +1852,7 @@ actor Algo_Synp_AVC_CBP()
 	*************************************************************/
 	uint(size=3) mbPartIdx;
 	uint(size=3) subMbPartIdx;
-	List (type:uint,size=5) sub_mb_type := [ 0 : for int i in 0 .. 4];
+	List (type:uint(size=4),size=5) sub_mb_type := [ 0 : for int i in 0 .. 4];
 	List (type:int,size=4) ref_idx_l0 := [ 0 : for int i in 0 .. 3];
  	function IS_B_Direct_8x8() --> bool : (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
 
@@ -2012,7 +1888,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		if ((slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1) and
+		if ((slice_num_ref_idx_l0_active_minus1 > 0) and
 			not IS_B_Direct_8x8() and 
 			not (mb_type = BLOCK_TYPE_P_8x8ref0) and 
 			(subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)) then
@@ -2047,7 +1923,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		if ((slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1) 
+		if ((slice_num_ref_idx_l1_active_minus1 > 0) 
 			and not IS_B_Direct_8x8() 
 			and not (mb_type = BLOCK_TYPE_P_8x8ref0)
 			and (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)) then
@@ -2296,7 +2172,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		if ( (slice_num_ref_idx_l0_active_minus1 > 0 or mb_field_decoding_flag = 1)
+		if ( (slice_num_ref_idx_l0_active_minus1 > 0)
 			and not Mb_Is_PredL1(mb_type, mbPartIdx)) then
 			if slice_num_ref_idx_l0_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                            ");
@@ -2328,7 +2204,7 @@ actor Algo_Synp_AVC_CBP()
 	var
 		uint(size=32) res[1]
 	do
-		if ((slice_num_ref_idx_l1_active_minus1 > 0 or mb_field_decoding_flag = 1)
+		if ((slice_num_ref_idx_l1_active_minus1 > 0)
 			and not Mb_Is_PredL0(mb_type, mbPartIdx)) then
 			if slice_num_ref_idx_l1_active_minus1 = 1 then 
 				vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
@@ -2673,7 +2549,7 @@ actor Algo_Synp_AVC_CBP()
 	end
 	//end if
 
-	Residual_skip_chroma_AC: action ==> 
+	Residual_skip_chroma_AC: action ==> cbp_blk:[val_cbp_blk]
 	guard
 		iCbCr = 2
 	end
@@ -2721,12 +2597,12 @@ actor Algo_Synp_AVC_CBP()
 			top :=1; left :=1;
 			if leveltype = 0 then luma4x4BlkIdx := 0; end
 			if leveltype < 2 then //luma
-				if (val_CurrMbAddr<first_mb_in_slice + PicWidthInMbs and InverseScan4x4Tab[luma4x4BlkIdx]<4) then // MB 4x4 current situated on the first line of MBs 4x4, so there is no MB 4x4 above  
+				if (not availableB and InverseScan4x4Tab[luma4x4BlkIdx]<4) then // MB 4x4 current situated on the first line of MBs 4x4, so there is no MB 4x4 above  
 					nB :=0; top:=0;
 				else
 					nB := NonZeroCount[Mb_x + 1][(12+InverseScan4x4Tab[luma4x4BlkIdx]) & 15]; 
 				end
-				if ((val_CurrMbAddr = first_mb_in_slice and InverseScan4x4Tab[luma4x4BlkIdx] mod 4 = 0) or (Mb_x = 0 and InverseScan4x4Tab[luma4x4BlkIdx] mod 4 = 0))  then // MB 4x4 current situated on the first column of MBs 4x4, so there is no MB 4x4 at left  
+				if (not availableA and InverseScan4x4Tab[luma4x4BlkIdx] mod 4 = 0) then // MB 4x4 current situated on the first column of MBs 4x4, so there is no MB 4x4 at left  
 					nA :=0; left:=0;
 				else
 					if(InverseScan4x4Tab[luma4x4BlkIdx] mod 4 = 0) then
@@ -2736,7 +2612,7 @@ actor Algo_Synp_AVC_CBP()
 					end
 				end
 			else //chroma
-				if (val_CurrMbAddr<first_mb_in_slice + PicWidthInMbs and luma4x4BlkIdx<2) then // MB 4x4 current situated on the first line of MBs 4x4, so there is no MB 4x4 above  
+				if (not availableB and luma4x4BlkIdx<2) then // MB 4x4 current situated on the first line of MBs 4x4, so there is no MB 4x4 above  
 					nB :=0; top:=0;
 				else
 					nB := if iCbCr = 0 then 
@@ -2753,7 +2629,7 @@ actor Algo_Synp_AVC_CBP()
 						end			
 					end;
 						end					
-				if ((val_CurrMbAddr = first_mb_in_slice and luma4x4BlkIdx mod 2 = 0) or (Mb_x = 0 and luma4x4BlkIdx mod 2 = 0)) then // MB 4x4 current situated on the first column of MBs 4x4, so there is no MB 4x4 at left  
+				if (not availableA and luma4x4BlkIdx mod 2 = 0) then // MB 4x4 current situated on the first column of MBs 4x4, so there is no MB 4x4 at left  
 					nA :=0; left:=0;
 				else
 					nA := if iCbCr = 0 then 
@@ -3103,32 +2979,18 @@ actor Algo_Synp_AVC_CBP()
 
 		// read Slice Data     only decoding CAVLC process is implemented
 		read_SliceD_CABAC_alignement						( read_SliceD_CABAC_alignement						) --> read_SliceD_init;
-		read_SliceD_CABAC_alignement						( read_SliceD_skip_CABAC_alignement	                ) --> read_SliceD_init;
-		read_SliceD_init									( SliceD_init										) --> sync_do_mb_layer;
-		sync_do_mb_layer 									( sync_do_mb_layer									) --> read_SliceD_mb_skip;
-		read_SliceD_mb_skip									( read_SliceD_mb_skip_run							) --> read_SliceD_mb_skip_run_done0;
-		read_SliceD_mb_skip_run_done0						( read_SliceD_mb_skip_run_done0						) --> read_SliceD_mb_skip_run_done1;
-		read_SliceD_mb_skip_run_done1						( read_SliceD_mb_skip_run_done1						) --> read_SliceD_mb_skip_run_done1;
-		read_SliceD_mb_skip_run_done1						( read_SliceD_mb_skip_run_done2						) --> read_SliceD_mb_skip_run_done2_moredata;
-		read_SliceD_mb_skip_run_done2_moredata              ( read_SliceD_mb_skip_run_done2_moredata_1          ) --> read_SliceD_mb_field_decoding_flag;
-		read_SliceD_mb_skip_run_done2_moredata 				( read_SliceD_mb_skip_run_done2_moredata_0			) --> syncSliceD_endwhile;
-		read_SliceD_mb_skip									( read_SliceD_skip_mb_skip 							) --> read_SliceD_mb_field_decoding_flag;
-		read_SliceD_mb_field_decoding_flag					( read_SliceD_skip_mb_field_decoding_flag			) --> read_MB_layer_mb_type;
+		read_SliceD_init									( SliceD_init										) --> read_SliceD_mb_skip;
+		read_SliceD_mb_skip									( read_SliceD_mb_skip.cavlc							) --> read_SliceD_mb_skip_run;
+		read_SliceD_mb_skip									( read_SliceD_mb_skip.skip							) --> read_MB_layer_mb_type;
+		read_SliceD_mb_skip_run								( read_SliceD_mb_skip_run.loop						) --> read_SliceD_mb_skip_run;
+		read_SliceD_mb_skip_run								( read_SliceD_mb_skip_run.endLoop					) --> read_SliceD_mb_skip_end;
+		read_SliceD_mb_skip_end			 		            ( read_SliceD_mb_skip_end.moredata_1   		    	) --> read_MB_layer_mb_type;
+		read_SliceD_mb_skip_end			 					( read_SliceD_mb_skip_end.moredata_0				) --> SliceD_update;
 
 		// --> macrobloc_layer()
-		SliceD_update										( SliceD_update_CAVLC								) --> SliceD_moredata;
-		SliceD_moredata                                     ( SliceD_moredata_1                                 ) --> SliceD_moredata_1_done;
-		SliceD_moredata_1_done								( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
-		SliceD_moredata_1_done								( send_data_position_information	                ) --> syncSliceD_endwhile;
-		SliceD_moredata 									( SliceD_moredata_0									) --> SliceD_stop_byte_align__done;
-		SliceD_stop_byte_align__done							( send_data_position_information_is_ipcm            ) --> syncSliceD_endwhile;
-		SliceD_stop_byte_align__done							( send_data_position_information	                ) --> syncSliceD_endwhile;
-		syncSliceD_endwhile									( syncSliceD_endwhile								) --> SliceD_while_moreDataFlag;
-		
-		SliceD_update										( SliceD_update_CABAC								) --> undefined;
-		SliceD_while_moreDataFlag							( SliceD_while_moreDataFlag							) --> sync_do_mb_layer;
+		SliceD_update										( SliceD_update										) --> SliceD_while_moreDataFlag;
+		SliceD_while_moreDataFlag							( SliceD_while_moreDataFlag							) --> read_SliceD_mb_skip;
 		SliceD_while_moreDataFlag							( SliceD_end										) --> look_for_Sequence_Header;
-		read_SliceD_mb_field_decoding_flag					( SliceD_end										) --> look_for_Sequence_Header;
 		
 		// macrobloc_layer
 		read_MB_layer_mb_type								( read_MB_layer_mb_type								) --> read_MB_layer_check_I_PCM;
@@ -3141,7 +3003,6 @@ actor Algo_Synp_AVC_CBP()
 		read_MB_layer_check_pred							( read_MB_layer_sub_mb_pred							) --> Sub_mb_pred; //--> sub_mb_pred
 		read_MB_layer_sub_mb_pred_done				        ( read_MB_layer_sub_mb_pred_done	                ) --> read_MB_layer_coded_block_pattern;
 		read_MB_layer_check_pred							( read_MB_layer_transform_size_8x8_flag				) --> MB_pred;
-		read_MB_layer_check_pred							( read_MB_layer_skip_transform_size_8x8_flag		) --> MB_pred; 
 		// --> mb_pred()	
 
 		read_MB_layer_coded_block_pattern					( read_MB_layer_coded_block_pattern					) --> read_MB_layer_mb_qp_delta;
@@ -3238,10 +3099,8 @@ actor Algo_Synp_AVC_CBP()
 		look_for > look_for_other_header;
 		read_SliceH_pred_weight_table > read_SliceH_skip_pred_weight_table;
 		read_SliceH_difference_of_pic_nums_minus1_done > read_SliceH_long_term_frame_idx_done > read_SliceH_memory_management_control_operation_done;
-		read_MB_layer_transform_size_8x8_flag > read_MB_layer_skip_transform_size_8x8_flag;
 		read_MB_pred_mvd_l0.loop >  read_MB_pred_mvd_l0.skip > read_MB_pred_mvd_l0.done;
 		read_MB_pred_mvd_l1.loop >  read_MB_pred_mvd_l1.skip > MB_pred_done;
-		send_data_position_information_is_ipcm>send_data_position_information;
 	end
 
 end
