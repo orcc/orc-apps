@@ -1473,6 +1473,22 @@ actor Algo_Synp_AVC_CBP()
 	********       Slice DATA 	  	      *********
 	*************************************************************
 	*************************************************************/
+	uint(size=4) locXYToBlkIdx[16] = [
+		0,1,4,5,
+		2,3,6,7,
+		8,9,12,13,
+		10,11,14,15
+	];
+	int STRIDE = (MAX_PICWIDTH_BLK * 4) + 2;
+	int OFFSET = STRIDE + 1;
+	int locXYToTabIdx[16] =
+	[
+		0 * STRIDE + 0 + OFFSET, 0 * STRIDE + 1 + OFFSET, 1 * STRIDE + 0 + OFFSET, 1 * STRIDE + 1 + OFFSET,
+		0 * STRIDE + 2 + OFFSET, 0 * STRIDE + 3 + OFFSET, 1 * STRIDE + 2 + OFFSET, 1 * STRIDE + 3 + OFFSET,
+		2 * STRIDE + 0 + OFFSET, 2 * STRIDE + 1 + OFFSET, 3 * STRIDE + 0 + OFFSET, 3 * STRIDE + 1 + OFFSET,
+		2 * STRIDE + 2 + OFFSET, 2 * STRIDE + 3 + OFFSET, 3 * STRIDE + 2 + OFFSET, 3 * STRIDE + 3 + OFFSET
+	];
+
 	bool		 availableA;
 	bool		 availableB;
  
@@ -1508,14 +1524,14 @@ actor Algo_Synp_AVC_CBP()
 	SliceD_init: action ==>
 	do
 		val_CurrMbAddr := first_mb_in_slice;
-		PicWidthInMbs := (pic_width_in_mbs_minus1[sps_id] +1);
+		PicWidthInMbs  := (pic_width_in_mbs_minus1[sps_id] +1);
 
-		Mb_x := val_CurrMbAddr mod PicWidthInMbs;
-		Mb_y := val_CurrMbAddr / PicWidthInMbs;
+		Mb_x 		   := val_CurrMbAddr mod PicWidthInMbs;
+		Mb_y 		   := val_CurrMbAddr / PicWidthInMbs;
 
-		moreDataFlag := 1;
-		availableB   := false;
-		availableA   := false;
+		availableB     := false;
+		availableA     := false;
+		moreDataFlag   := 1;
 	end
 
 	//do
@@ -1812,7 +1828,7 @@ actor Algo_Synp_AVC_CBP()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		val_CodedBlockPatternLuma > 0 or CodedBlockPatternChroma > 0 or Is_Intra_16x16(mb_type)
 	var
-		int(size=32) res[1],
+		 int(size=32) res[1],
 		int mb_qp_delta		
 	do
 		vld_se_name(  fifo, res, "mb_qp_delta                             ");
@@ -2093,6 +2109,7 @@ actor Algo_Synp_AVC_CBP()
 	//else if( MbPartPredMode( mb_type, 0 ) = = Intra_8x8 )
 	MB_pred_init_Intra_8x8: action ==> 
 	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mb_type = BLOCK_TYPE_I_8x8
 	do
 		luma4x4BlkIdx := 0;
@@ -2101,7 +2118,6 @@ actor Algo_Synp_AVC_CBP()
 	//for( luma8x8BlkIdx=0; luma8x8BlkIdx<4; luma8x8BlkIdx++ )
 	read_MB_pred_rem_intra8x8_pred_mode.loop: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		luma4x4BlkIdx < 4
 	var
 		uint(size=32) res[1]
@@ -2127,7 +2143,6 @@ actor Algo_Synp_AVC_CBP()
 	//else
 	MB_pred_init_Intra_16x16: action ==> IntraPredMode: [ Intra_16x16_tab[mb_type - BLOCK_TYPE_I_8x8][0] ]
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		Is_Intra_16x16(mb_type)
 	end
 	//end if
@@ -2306,56 +2321,52 @@ actor Algo_Synp_AVC_CBP()
 	uint(size=4) block_startIdx;
 	uint(size=6) block_endIdx;
 	uint(size=7) maxNumCoeff;
-
+	
 	uint(size=3) i8x8;
 	uint(size=3) i4x4;
 	uint(size=3) NumC8x8;
 	uint(size=2) iCbCr;
-	uint(size=2) leveltype := 0; // Intra16x16DCLevel 0, Intra16x16ACLevel / LumaLevel 1, ChromaDCLevel 2, ChromaACLevel 3
+	uint(size=3) leveltype; // Intra16x16DCLevel 0, Intra16x16ACLevel 1, LumaLevel 2, ChromaDCLevel 3, ChromaACLevel 4
 
-	//*************************************************************/
-	// Only CAVLC decoding process is implemented
-	Residual_init: action ==>
-	do
-		startIdx := 0;
-		endIdx := 15;
-	end
-
-	//if( !bmFlag && startIdx = = 0 && MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
-	Residual_luma_DC_init: action ==>
+	//if( startIdx = = 0 && MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
+	Residual_luma_DC.run : action ==>
 	guard
-		startIdx = 0,
 		Is_Intra_16x16(mb_type)
 	do
-		block_startIdx := 0;
-		block_endIdx := 15;
-		maxNumCoeff := 16;
-		leveltype := 0; 
+		startIdx 		:= 0;
+		endIdx 			:= 15;
+		block_startIdx 	:= startIdx;
+		block_endIdx 	:= endIdx;
+		maxNumCoeff 	:= 16;
+		leveltype 		:= 0;
+		luma4x4BlkIdx	:= 0;
 	end
 	// --> residual_block( i16x16DClevel, 0, 15, 16 )
 
-	Residual_return_luma_DC: action ==> LAST:[true]
+	Residual_luma_DC.return : action ==> LAST:[true]
 	guard
 		leveltype=0
+	do
+		i8x8 		:= 0;
+		i4x4 		:= 0; 
 	end
 
 	//else
-	Residual_luma_skip_DC_init.Block_4x4: action ==> //LAST:[true]
+	Residual_luma_DC.skip : action ==> //LAST:[true]
 	guard
-		( startIdx != 0 or not Is_Intra_16x16(mb_type) )
+		not Is_Intra_16x16(mb_type)
+	do
+		startIdx 	:= 0;
+		endIdx 		:= 15;
+		//
+		i8x8 		:= 0;
+		i4x4 		:= 0;
 	end
 	//end if
 
-	Residual_luma_AC_init: action ==>
-	do
-		leveltype := 1;
-		i8x8 := 0;
-		i4x4 := 0; 
-	end
-
 	// for( i8x8 = 0; i8x8 < 4; i8x8++ )
 	// if( !transform_size_8x8_flag || !entropy_coding_mode_flag )
-	Residual_luma_AC_CAVLC: action ==>
+	Residual_luma_AC.loop8x8.start : action ==>
 	guard
 		i8x8 < 4,
 		transform_size_8x8_flag = 0 or entropy_coding_mode_flag[pps_id] = 0 // bloc4x4 or CAVLC
@@ -2363,49 +2374,53 @@ actor Algo_Synp_AVC_CBP()
 
 	// for( i4x4 = 0; i4x4 < 4; i4x4++ ) {
 	// if( val_CodedBlockPatternLuma & ( 1 << i8x8 ) )
-	Residual_luma_AC_CodedBlock8x8: action ==>
+	Residual_luma_AC.loop4x4.run : action ==>
 	guard
 		i4x4 < 4,
-		((val_CodedBlockPatternLuma & (1 << i8x8) ) >> i8x8) = 1 // MB sub part 8x8 != 0
+		(val_CodedBlockPatternLuma & (1 << i8x8) ) != 0 // MB sub part 8x8 != 0
 	do
 		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
+		i4x4 		  := i4x4 +1;
+		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8+1; end
 		//if( !bmFlag && endIdx > 0 &&  MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
-		if endIdx > 0 and  Is_Intra_16x16(mb_type) then 
-			block_startIdx := if startIdx - 1 > 0 then startIdx - 1 else 0 end ;
-			block_endIdx := endIdx -1;
-			maxNumCoeff := 15;
+		if Is_Intra_16x16(mb_type) then 
+			block_startIdx 	:= if startIdx - 1 > 0 then startIdx - 1 else 0 end ;
+			block_endIdx 	:= endIdx -1;
+			maxNumCoeff 	:= 15;
+			leveltype 		:= 1;
 			// --> residual_block( i16x16AClevel[i8x8*4+ i4x4],max( 0, startIdx1 ), endIdx1, 15)
 		else
-			block_startIdx := startIdx;
-			block_endIdx := endIdx;
-			maxNumCoeff := 16;
+			block_startIdx 	:= startIdx;
+			block_endIdx 	:= endIdx;
+			maxNumCoeff 	:= 16;
+			leveltype 		:= 2;
 			// --> residual_block( level[ i8x8 * 4 + i4x4 ], startIdx, endIdx, 16)
 		end
 		//end if
 	end
 
-	Residual_return_luma_AC: action ==> LAST: [true]
+	Residual_luma_AC.loop4x4.return: action ==> LAST: [true]
 	guard
-		leveltype = 1
+		leveltype = 1 or leveltype = 2
 	end
 
 	// else 
-	Residual_luma_skip_AC_CodedBlock8x8: action ==>  LAST: [true]
+	Residual_luma_AC.loop4x4.skip : action ==>  LAST: [true]
 	guard
 		i4x4 < 4,
-		((val_CodedBlockPatternLuma & (1 << i8x8) ) >> i8x8) = 0 // MB sub part 8x8 == 0
+		(val_CodedBlockPatternLuma & (1 << i8x8) ) = 0 // MB sub part 8x8 == 0
 	do
 		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
-		/*
-		// if( !bmFlag && MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
-		for( i = 0; i < 15; i++ )
-		i16x16AClevel[ i8x8 * 4 + i4x4 ][ i ] = 0
-		// else
-		for( i = 0; i < 16; i++ )
-		level[ i8x8 * 4 + i4x4 ][ i ] = 0
-		// end if
-		*/
+		/* 	if( MbPartPredMode( mb_type, 0 ) = = Intra_16x16 )
+				for( i = 0; i < 15; i++ )
+				i16x16AClevel[ i8x8 * 4 + i4x4 ][ i ] = 0 */
+		/* 	else
+				for( i = 0; i < 16; i++ )
+				level[ i8x8 * 4 + i4x4 ][ i ] = 0
+			end if*/
 		NonZeroCount[Mb_x + 1][InverseScan4x4Tab[luma4x4BlkIdx]] := 0;
+		i4x4 := i4x4 +1;
+		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8+1; end
 	end
 	// end if
 
@@ -2414,11 +2429,6 @@ actor Algo_Synp_AVC_CBP()
 	for( i = 0; i < 16; i++ )
 	level8x8[ i8x8 ][ 4 * i + i4x4 ] = level[ i8x8 * 4 + i4x4 ][ i ]
 	*/
-	Residual_luma_inc_AC_4x4: action ==>
-	do
-		i4x4 := i4x4 +1;
-		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8+1; end
-	end
 	//end for
 
 	// else ( transform_size_8x8_flag = 1 && entropy_coding_mode_flag = 1 ) <==> CABAC && 8x8
@@ -2430,49 +2440,49 @@ actor Algo_Synp_AVC_CBP()
 	//end if
 	*/
 
-	Residual_luma_skip_AC_CAVLC: action ==>
+	Residual_luma_AC.end8x8 : action ==>
 	guard
 		i8x8 = 4
 	end
 	//end for
 
 	//if( ChromaArrayType = = 1 | | ChromaArrayType = = 2 )
-	Residual_ChromaArrayType_1_2_init: action ==>
+	Residual_Chroma.init : action ==>
 	guard
-		(chroma_format_idc[sps_id] = 1 or chroma_format_idc[sps_id] = 2) and separate_colour_plane_flag[sps_id] = 0 
+		chroma_format_idc[sps_id] = 1 or chroma_format_idc[sps_id] = 2 
 	do
 		if chroma_format_idc[sps_id] = 1 then 
 			NumC8x8 := 1;
 		else 
 			NumC8x8 := 2;
 		end
-		iCbCr := 0;
-		leveltype := 2;
-		luma4x4BlkIdx := 0;
+		iCbCr 			:= 0;
+		leveltype 		:= 3;
+		luma4x4BlkIdx 	:= 0;
 	end
 
 	// for( iCbCr = 0; iCbCr < 2; iCbCr++ )
 	//if( ( CodedBlockPatternChroma & 3 ) && startIdx = = 0 ) // chroma DC residual present
-	Residual_chroma_DC_init: action ==>
+	Residual_chroma_DC.run : action ==>
 	guard
 		iCbCr < 2,
-		(CodedBlockPatternChroma & 3) != 0 and startIdx = 0
+		(CodedBlockPatternChroma & 3) != 0
 	do
-		block_startIdx := 0;
-		block_endIdx := 4 * NumC8x8 - 1;
-		maxNumCoeff := 4 * NumC8x8;
+		block_startIdx 	:= 0;
+		block_endIdx 	:= 4 * NumC8x8 - 1;
+		maxNumCoeff 	:= 4 * NumC8x8;
 	end 
 	//--> residual_block( ChromaDCLevel[ iCbCr ], 0, 4 * NumC8x8 - 1, 4 * NumC8x8 )
 
-	Residual_return_chroma_DC: action ==> LAST: [true]
+	Residual_chroma_DC.return : action ==> LAST: [true]
 	guard
-		leveltype = 2
+		leveltype = 3
 	do
 		iCbCr := iCbCr +1; 
 	end
 
 	// else
-	Residual_skip_chroma_DC_init: action ==> LAST: [true]
+	Residual_chroma_DC.next : action ==> LAST: [true]
 	guard
 		iCbCr < 2,
 		(CodedBlockPatternChroma & 3) =0 or startIdx != 0
@@ -2483,40 +2493,36 @@ actor Algo_Synp_AVC_CBP()
 	end   
 	//end if
 
-	Residual_skip_chroma_DC: action ==>
+	Residual_chroma_DC.endLoop : action ==>
 	guard
 		iCbCr = 2
+	do
+		leveltype 		:= 4;
+		iCbCr 			:= 0;
+		i8x8 			:= 0;
+		i4x4 			:= 0;
 	end
 	//end for  
-
-	Residual_chroma_AC_init: action ==>
-	do
-		leveltype := 3;
-		iCbCr := 0;
-		i8x8 := 0;
-		i4x4 := 0;
-		luma4x4BlkIdx := 0;
-	end
 
 	//for( iCbCr = 0; iCbCr < 2; iCbCr++ )
 	//  for( i8x8 = 0; i8x8 < NumC8x8; i8x8++ )
 	//    for( i4x4 = 0; i4x4 < 4; i4x4++ )
 	//      if( ( CodedBlockPatternChroma & 2 ) && endIdx > 0 ) // chroma AC residual present
-	Residual_chroma_AC_CodedBlock4x4: action ==>
+	Residual_chroma_AC.loop4x4 : action ==>
 	guard
 		iCbCr < 2,
-		(CodedBlockPatternChroma & 2) = 2 and endIdx > 0
+		(CodedBlockPatternChroma & 2) = 2
 	do
-		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
-		block_startIdx := if startIdx - 1 > 0 then startIdx - 1 else 0 end ;
-		block_endIdx := endIdx - 1;
-		maxNumCoeff := 15;
+		luma4x4BlkIdx 	:= i4x4 + (i8x8 << 2);
+		block_startIdx 	:= if startIdx - 1 > 0 then startIdx - 1 else 0 end ;
+		block_endIdx 	:= endIdx - 1;
+		maxNumCoeff 	:= 15;
 	end
 	// --> residual_block( ChromaACLevel[ iCbCr ][ i8x8*4+i4x4 ], max( 0, startIdx1 ), endIdx1, 15)
 
-	Residual_return_chroma_AC: action ==> LAST:[true]
+	Residual_chroma_AC.return : action ==> LAST:[true]
 	guard
-		leveltype = 3
+		leveltype = 4
 	do
 		i4x4 := i4x4 +1;
 		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8 +1; end
@@ -2524,27 +2530,27 @@ actor Algo_Synp_AVC_CBP()
 	end
 
 	// else
-	Residual_chroma_AC_skip_CodedBlock4x4: action ==> LAST: [true]
+	Residual_chroma_AC.loop4x4_skip : action ==> LAST: [true]
 	guard
 		iCbCr < 2,
 		(CodedBlockPatternChroma & 2) != 2 or endIdx <= 0
 	do
+		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
 		/* for( i = 0; i < 15; i++ )
 		ChromaACLevel[ iCbCr ][ i8x8*4+i4x4 ][ i ] = 0
 		*/
-		i4x4 := i4x4 +1;
-		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8 +1; end
-		if i8x8 = NumC8x8 then i8x8:=0; iCbCr := iCbCr +1; end
-		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
 		if (iCbCr = 0) then
 			NonZeroCountCb[Mb_x + 1][luma4x4BlkIdx] := 0;
 		else
 			NonZeroCountCr[Mb_x + 1][luma4x4BlkIdx] := 0;
 		end
+		i4x4 := i4x4 +1;
+		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8 +1; end
+		if i8x8 = NumC8x8 then i8x8:=0; iCbCr := iCbCr +1; end
 	end
 	//end if
 
-	Residual_skip_chroma_AC: action ==> cbp_blk:[val_cbp_blk]
+	Residual_chroma_AC.skip : action ==> cbp_blk:[val_cbp_blk]
 	guard
 		iCbCr = 2
 	end
@@ -2578,7 +2584,7 @@ actor Algo_Synp_AVC_CBP()
 	List (type:uint(size=4),size=16) run := [ 0 : for int i in 1 .. 16];
 	List ( type: uint(size=4), size=16) InverseScan4x4Tab = [ 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 ];
 
-	Residual_block_init_coeff_token: action ==>
+	residual_block_init.cavlc : action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var 
@@ -2586,12 +2592,12 @@ actor Algo_Synp_AVC_CBP()
 		uint(size=5) nA, 
 		uint(size=5) nB
 	do
-		if leveltype = 2 then //chromaDC
+		if leveltype = 3 then //chromaDC
 			nc := -1;
 		else
 			top :=1; left :=1;
 			if leveltype = 0 then luma4x4BlkIdx := 0; end
-			if leveltype < 2 then //luma
+			if leveltype < 3 then //luma
 				if (not availableB and InverseScan4x4Tab[luma4x4BlkIdx]<4) then // MB 4x4 current situated on the first line of MBs 4x4, so there is no MB 4x4 above  
 					nB :=0; top:=0;
 				else
@@ -2653,7 +2659,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		TotalCoeff() >0
 	do
-		if leveltype = 1 then //luma
+		if leveltype = 1 or leveltype = 2 then //luma
     		val_cbp_blk:=(1<<InverseScan4x4Tab[luma4x4BlkIdx])+val_cbp_blk;
 			NonZeroCount[Mb_x + 1][InverseScan4x4Tab[luma4x4BlkIdx]] := TotalCoeff();
 		else //chroma
@@ -2779,7 +2785,7 @@ actor Algo_Synp_AVC_CBP()
 		inc_nb_coeff = TotalCoeff()-1
 	do
 		run[TotalCoeff()-1] := zerosLeft;
-		if (Is_Intra_16x16(mb_type) and leveltype = 1) or leveltype = 3 then run[TotalCoeff()-1] := run[TotalCoeff()-1] +1; end//the first coeffAC will be replaced by coeffDC
+		if (Is_Intra_16x16(mb_type) and (leveltype = 1 or leveltype = 2)) or leveltype = 4 then run[TotalCoeff()-1] := run[TotalCoeff()-1] +1; end//the first coeffAC will be replaced by coeffDC
 		coeff_sent := -1;
 	end
 	// --> residual_return
@@ -2805,7 +2811,7 @@ actor Algo_Synp_AVC_CBP()
 	guard
 		TotalCoeff() = 0
 	do
-		if leveltype < 2 then //luma
+		if leveltype < 3 then //luma
 			NonZeroCount[Mb_x + 1][InverseScan4x4Tab[luma4x4BlkIdx]] := 0;
 		else //chroma
 			if iCbCr = 0 then
@@ -3001,7 +3007,7 @@ actor Algo_Synp_AVC_CBP()
 		// --> mb_pred()	
 
 		read_MB_layer_coded_block_pattern					( read_MB_layer_coded_block_pattern					) --> read_MB_layer_mb_qp_delta;
-		read_MB_layer_mb_qp_delta							( read_MB_layer_mb_qp_delta							) --> Residual_init;
+		read_MB_layer_mb_qp_delta							( read_MB_layer_mb_qp_delta							) --> Residual_luma_DC;
 		// --> residual ()
 		read_MB_layer_mb_qp_delta							( read_MB_layer_skip_mb_qp_delta					) --> SliceD_update;
 
@@ -3047,31 +3053,27 @@ actor Algo_Synp_AVC_CBP()
 		MB_pred												( MB_pred_Inter_direct								) --> read_MB_layer_coded_block_pattern; // --> macrobloc_layer()
 
 		// residual
-		Residual_init										( Residual_init										) --> Residual_luma_DC_init;
-		Residual_luma_DC_init								( Residual_luma_DC_init								) --> Residual_block; // --> residual_block()
-		Residual_return										( Residual_return_luma_DC							) --> Residual_luma_AC_init;
-		Residual_luma_DC_init								( Residual_luma_skip_DC_init						) --> Residual_luma_AC_init;
-		Residual_luma_AC_init								( Residual_luma_AC_init								) --> Residual_luma_AC_CAVLC;
-		Residual_luma_AC_CAVLC								( Residual_luma_AC_CAVLC							) --> Residual_luma_AC_CodedBlock8x8;
-		Residual_luma_AC_CodedBlock8x8						( Residual_luma_AC_CodedBlock8x8					) --> Residual_block; // --> residual_block()
-		Residual_return										( Residual_return_luma_AC							) --> Residual_luma_inc_AC_4x4;
-		Residual_luma_AC_CodedBlock8x8						( Residual_luma_skip_AC_CodedBlock8x8				) --> Residual_luma_inc_AC_4x4;
-		Residual_luma_inc_AC_4x4							( Residual_luma_inc_AC_4x4							) --> Residual_luma_AC_CAVLC; 
-		Residual_luma_AC_CAVLC								( Residual_luma_skip_AC_CAVLC						) --> Residual_chroma; 
-		Residual_chroma										( Residual_ChromaArrayType_1_2_init					) --> Residual_chroma_DC_init;
-		Residual_chroma_DC_init								( Residual_chroma_DC_init							) --> Residual_block; // --> residual_block()
-		Residual_return										( Residual_return_chroma_DC							) --> Residual_chroma_DC_init;
-		Residual_chroma_DC_init								( Residual_skip_chroma_DC_init						) --> Residual_chroma_DC_init;
-		Residual_chroma_DC_init								( Residual_skip_chroma_DC							) --> Residual_chroma_AC_init;
-		Residual_chroma_AC_init								( Residual_chroma_AC_init							) --> Residual_chroma_AC_CodedBlock4x4;
-		Residual_chroma_AC_CodedBlock4x4					( Residual_chroma_AC_CodedBlock4x4 					) --> Residual_block; // --> residual_block()
-		Residual_return										( Residual_return_chroma_AC							) --> Residual_chroma_AC_CodedBlock4x4;
-		Residual_chroma_AC_CodedBlock4x4					( Residual_chroma_AC_skip_CodedBlock4x4 			) --> Residual_chroma_AC_CodedBlock4x4;
-		Residual_chroma_AC_CodedBlock4x4					( Residual_skip_chroma_AC							) --> SliceD_update; 
+		Residual_luma_DC									( Residual_luma_DC.run								) --> Residual_block; // --> residual_block()
+		Residual_return										( Residual_luma_DC.return							) --> Residual_luma_AC_loop8x8;
+		Residual_luma_DC									( Residual_luma_DC.skip								) --> Residual_luma_AC_loop8x8;
+		Residual_luma_AC_loop8x8							( Residual_luma_AC.loop8x8.start					) --> Residual_luma_AC_loop4x4;
+		Residual_luma_AC_loop4x4							( Residual_luma_AC.loop4x4.run						) --> Residual_block; // --> residual_block()
+		Residual_return										( Residual_luma_AC.loop4x4.return					) --> Residual_luma_AC_loop8x8;
+		Residual_luma_AC_loop4x4							( Residual_luma_AC.loop4x4.skip						) --> Residual_luma_AC_loop8x8;
+		Residual_luma_AC_loop8x8							( Residual_luma_AC.end8x8							) --> Residual_chroma; 
+		Residual_chroma										( Residual_Chroma.init								) --> Residual_chroma_DC;
+		Residual_chroma_DC									( Residual_chroma_DC.run							) --> Residual_block; // --> residual_block()
+		Residual_return										( Residual_chroma_DC.return							) --> Residual_chroma_DC;
+		Residual_chroma_DC									( Residual_chroma_DC.next							) --> Residual_chroma_DC;
+		Residual_chroma_DC									( Residual_chroma_DC.endLoop						) --> Residual_chroma_AC_loop4x4;
+		Residual_chroma_AC_loop4x4							( Residual_chroma_AC.loop4x4	 					) --> Residual_block; // --> residual_block()
+		Residual_return										( Residual_chroma_AC.return							) --> Residual_chroma_AC_loop4x4;
+		Residual_chroma_AC_loop4x4							( Residual_chroma_AC.loop4x4_skip		 			) --> Residual_chroma_AC_loop4x4;
+		Residual_chroma_AC_loop4x4							( Residual_chroma_AC.skip							) --> SliceD_update; 
 		// --> macrobloc_layer / --> Slice_data
 
 		// residual_block
-		Residual_block										( Residual_block_init_coeff_token					) --> Residual_block_read_suffixLength;
+		Residual_block										( residual_block_init.cavlc							) --> Residual_block_read_suffixLength;
 		Residual_block_read_suffixLength					( Residual_block_read_suffixLength					) --> Residual_block_read_non_zero_coeff;
 		Residual_block_read_non_zero_coeff					( Residual_block_read_trailing_ones_sign_flag		) --> Residual_block_read_non_zero_coeff;
 		
