@@ -31,13 +31,30 @@ actor MVRecon ()
 	// Motion vector line buffers - pointer behavior must be implemented exactly as in MVSequence.cal
 	int(size=MB_COORD_SZ) mbx := 0;
 
-	int(size=MB_COORD_SZ) mby := 0;
-
-	int(size=MV_SZ) buf2[CLOSEST_POW2_MAXW_IN_MB][2][4][2];
-	
+	// Current macroblock x position
+	bool top_edge := true;
+	bool right_edge := false;
+	// Top edge macroblock flag
 	int(size=4) comp := 0;
 
 	int(size=MB_COORD_SZ) mbwidth := 0;
+
+	// Macroblock width of current vop
+	// A0, A1 used for component index.
+	// A2 used to select y vs x.
+	// Also, locations 0-7 are reserved for all blocks without motion vectors. This protocol
+	// must be identical to the buffer addressing in MVSequence.cal which generates pointers.
+	// MAXW_IN_MB MUST BE A POWER OF 2, and no more than 2**(MB_COORD_SZ-4).
+	int BUF_SIZE = CLOSEST_POW2_MAXW_IN_MB * 8;
+
+	int(size=4) Y_SELECT = 4;
+
+	int(size=MB_COORD_SZ + 3) ptr;
+	int(size=MB_COORD_SZ + 3) ptr_left;
+	int(size=MB_COORD_SZ + 3) ptr_above;
+	int(size=MB_COORD_SZ + 3) ptr_above_right;
+
+	List(type: int(size=MV_SZ), size=BUF_SIZE) buf;
 
 	int(size=MV_SZ) mv_rsize;
 
@@ -47,6 +64,7 @@ actor MVRecon ()
 
 	int(size=MV_SZ) mv_high;
 	
+		// Compute the MVs - written so that same actions used for both x,y
 	int(size=MV_SZ) mv_x;
 
 	int(size=MV_SZ) mv_y;
@@ -66,8 +84,10 @@ actor MVRecon ()
 		int(size=4) fcode = (cmd & FCODE_MASK) >> FCODE_SHIFT
 	do
 		mbx := 0;
-		mby := 0;
+		top_edge := true;
+		right_edge := false;
 		comp := 0;
+		ptr := 8;
 		if fcode > 0 then
 			mv_rsize := fcode - 1;
 			mv_range := 1 << (mv_rsize + 5);
@@ -80,16 +100,21 @@ actor MVRecon ()
 	get_w_h: action BTYPE:[w, h] ==>
 	do
 		mbwidth := w;
+		ptr_left := 16;
+		ptr_above := 8*w + 8;
+		ptr_above_right := 8*w;
 	end
 
 	// No motion vector
 	read.noMotion: action BTYPE:[ cmd ] ==>
 	guard
 		(cmd & INTER) = 0 or (cmd & MOTION) = 0, (cmd & NEWVOP) = 0
+	var
+		int(size=MB_COORD_SZ + 3) p = (ptr | comp)
 	do
 		if comp < 4 then
-			buf2[mbx][mby & 1][comp][0] := 0;
-			buf2[mbx][mby & 1][comp][1] := 0;
+			buf[p] := 0;
+			buf[(p | Y_SELECT)] := 0;
 		end
 	end
 
@@ -115,113 +140,77 @@ actor MVRecon ()
 		comp > 3 or (comp != 0 and not fourmv)
 	end
 
-	function predict(int a, int b, int c, int(size=9) mag, int(size=9) res) --> int(size=9)
+	int a;
+	int b;
+	int c;
+	
+	compute.predict.y0: action ==>
+	guard
+		comp = 0
 	var
-		int pred := if comp >= 2 or mby != 0 then median(a, b, c) else a end, 
+		int(size=16) pl = if mbx = 0 then 0 else ptr_left end,
+		int(size=16) pa = if top_edge then 0 else ptr_above end,
+		int(size=16) par = if top_edge or right_edge then 0 else ptr_above_right end
+	do
+		a := pl + 1;
+		b := pa + 2;
+		c := par + 2;
+	end
+
+	// block 1    0      above->3    above_right->2
+	compute.predict.y1: action ==>
+	guard
+		comp = 1
+	var
+		int(size=16) pa = if top_edge then 0 else ptr_above end, 
+		int(size=16) par = if top_edge or right_edge then 0 else ptr_above_right end
+	do
+		a := ptr;
+		b := pa + 3;
+		c := par + 2;
+	end
+
+	// block 2 left->3       0            1
+	compute.predict.y2: action ==>
+	guard
+		comp = 2
+	var
+		int(size=16) pl = if mbx = 0 then 0 else ptr_left end
+	do
+		a := pl + 3;
+		b := ptr;
+		c := ptr + 1;
+	end
+
+	// block 3    2          0            1
+	compute.predict.y3: action ==>
+	do
+		a := ptr + 2;
+		b := ptr;
+		c := ptr + 1;
+	end
+	
+	
+	function predict(int(size=9) mag, int(size=9) res, int(size=8) offset) --> int(size=9)
+	var
+		int apred := buf[a + offset],
+		int bpred := buf[b + offset],
+		int cpred := buf[c + offset],
+		int pred := if comp >= 2 or not top_edge then median(apred, bpred, cpred) else apred end, 
 		int shift := ( if mag < 0 then ~(mag) else mag - 1 end << mv_rsize) + res + 1	
 	:
   		mvclip( mvcalc( pred, mag, shift ) )
 	end
 	
-	compute.predict.y0: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
-	guard
-		comp = 0
-	var
-		int a_x := 0, int b_x := 0, int c_x := 0,
-		int a_y := 0, int b_y := 0, int c_y := 0
+	// Compute MVs for all Y components in FOURMV mode, otherwise just one
+	compute.start: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
 	do
-		if mbx != 0 then
-			a_x := buf2[mbx - 1][mby & 1][1][0];
-			a_y := buf2[mbx - 1][mby & 1][1][1];
-		end
-		
-		if mby != 0  then  
-			b_x := buf2[mbx][(mby - 1) & 1][2][0];
-			b_y := buf2[mbx][(mby - 1) & 1][2][1];
-			if mbx != (mbwidth - 1) then
-				c_x := buf2[mbx + 1][(mby - 1) & 1][2][0];
-				c_y := buf2[mbx + 1][(mby - 1) & 1][2][1];
-			end
-		end
-
-		mv_x := predict(a_x, b_x, c_x, mag_x, res_x);
+		mv_x := predict(mag_x, res_x, 0);
 		sum_x := sum_x + mv_x;
-
-		mv_y := predict(a_y, b_y, c_y, mag_y, res_y);
+		mv_y := predict(mag_y, res_y, 4);
 		sum_y := sum_y + mv_y;
 	end
 
-	// block 1    0      above->3    above_right->2
-	compute.predict.y1: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
-	guard
-		comp = 1
-	var
-		int a_x := 0, int b_x := 0, int c_x := 0,
-		int a_y := 0, int b_y := 0, int c_y := 0
-	do
-		a_x := buf2[mbx - 1][mby & 1][0][0];
-		a_y := buf2[mbx - 1][mby & 1][0][1];
-	
-		if mby != 0  then
-			b_x := buf2[mbx][(mby - 1) & 1][3][0];
-			b_y := buf2[mbx][(mby - 1) & 1][3][1];
-			if mbx != (mbwidth - 1) then 
-				c_x := buf2[mbx + 1][(mby - 1) & 1][2][0];
-				c_y := buf2[mbx + 1][(mby - 1) & 1][2][1];
-			end
-		end
-		
-		mv_x := predict(a_x, b_x, c_x, mag_x, res_x);
-		sum_x := sum_x + mv_x;
-		mv_y := predict(a_y, b_y, c_y, mag_y, res_y);
-		sum_y := sum_y + mv_y;
-		
-	end
-
-	// block 2 left->3       0            1
-	compute.predict.y2: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
-	guard
-		comp = 2
-var
-		int a_x := 0, int b_x := 0, int c_x := 0,
-		int a_y := 0, int b_y := 0, int c_y := 0
-	do
-		if mbx != 0 then
-			a_x := buf2[mbx - 1][mby & 1][3][0];
-			a_y := buf2[mbx - 1][mby & 1][3][1];
-		end
-		
-		b_x := buf2[mbx][(mby - 1) & 1][0][0];
-		c_x := buf2[mbx + 1][(mby - 1) & 1][1][0];
-		b_y := buf2[mbx][(mby - 1) & 1][0][1];
-		c_y := buf2[mbx + 1][(mby - 1) & 1][1][1];
-		
-		mv_x := predict(a_x, b_x, c_x, mag_x, res_x);
-		sum_x := sum_x + mv_x;
-		mv_y := predict(a_y, b_y, c_y, mag_y, res_y);
-		sum_y := sum_y + mv_y;
-		
-	end
-
-	// block 3    2          0            1
-	compute.predict.y3: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
-	var
-		int a_x := 0, int b_x := 0, int c_x := 0,
-		int a_y := 0, int b_y := 0, int c_y := 0
-	do
-		a_x := buf2[mbx - 1][mby & 1][2][0];
-		b_x := buf2[mbx][(mby - 1) & 1][0][0];
-		c_x := buf2[mbx + 1][(mby - 1) & 1][1][0];
-		
-		a_y := buf2[mbx - 1][mby & 1][2][1];
-		b_y := buf2[mbx][(mby - 1) & 1][0][1];
-		c_y := buf2[mbx + 1][(mby - 1) & 1][1][1];
-
-		mv_x := predict(a_x, b_x, c_x, mag_x, res_x);
-		sum_x := sum_x + mv_x;
-		mv_y := predict(a_y, b_y, c_y, mag_y, res_y);
-		sum_y := sum_y + mv_y;
-	end
 
 	function mvcalc(int pred, int mv_mag, int mag_shift) --> int :
 		if mv_rsize = 0 or mv_mag = 0 then
@@ -250,9 +239,11 @@ var
 	write.luma: action ==> MV:[ mv_x, mv_y ]
 	guard
 		comp < 4
+	var
+		int(size=MB_COORD_SZ + 3) p = ptr + comp
 	do
-		buf2[mbx][mby & 1][comp][0] := mv_x;
-		buf2[mbx][mby & 1][comp][1] := mv_y;
+		buf[p] := mv_x;
+		buf[p + Y_SELECT] := mv_y;
 	end
 
 	function uvclip_1(int v) --> int :
@@ -292,10 +283,19 @@ var
 		if comp = 6 then
 			comp := 0;
 			mbx := mbx + 1;
-			if mbx = mbwidth then
+			if right_edge then
 				mbx := 0;
-				mby := mby + 1;
+				right_edge := false;
+				top_edge := false;
+			else
+				if mbx = (mbwidth - 1) then
+					right_edge := true;
+				end
 			end
+			ptr := if ptr = 8 then BUF_SIZE - 8 else ptr - 8 end;
+			ptr_left := if ptr_left = 8 then BUF_SIZE - 8 else ptr_left - 8 end;
+			ptr_above := if ptr_above = 8 then BUF_SIZE - 8 else ptr_above - 8 end;
+			ptr_above_right := if ptr_above_right = 8 then BUF_SIZE - 8 else ptr_above_right - 8 end;
 		end
 	end
 
@@ -305,7 +305,8 @@ var
 		read ( read.motion ) --> compute;
 		read ( read.noMotion ) --> advance;
 		compute ( compute.done ) --> write;
-		compute ( compute.predict ) --> write;
+		compute ( compute.predict ) --> predict;
+		predict ( compute.start ) --> write;
 		write ( write ) --> advance;
 		advance ( advance ) --> read;
 	end
