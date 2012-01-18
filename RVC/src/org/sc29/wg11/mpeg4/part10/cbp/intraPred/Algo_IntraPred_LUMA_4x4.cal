@@ -58,7 +58,7 @@ actor Algo_IntraPred_LUMA_4x4 ()
   int(size=16) Y_LEFT,     // List
   int(size=16) Y_UP,       // List
   int(size=16) Y_UP_LEFT,  // point
-  uint(size=1) AVAIL,              // up, left, up_left, up_right availability List
+  bool AVAIL,              // up, left, up_left, up_right availability List
   uint(size=4) PredMode
 
   ==> int(size=9) MPR:
@@ -68,14 +68,13 @@ actor Algo_IntraPred_LUMA_4x4 ()
   /*sum_temp variable used for summing different sum procedures */
   int sum_temp;
   
-  int(size=2) left_avail;
-  int(size=2) up_avail;
-  int(size=2) up_left_avail;
-  int(size=16)       y_up_left;
+  bool left_avail;
+  bool up_avail;
+  bool up_left_avail;
+  int(size=16) y_up_left;
 
-  List(type:int(size=16), size=4) y_left := [ 0 : for int i in 0 .. 3 ];
-  List(type:int(size=16), size=8) y_up := [ 0 : for int i in 0 .. 7 ];
-  List(type:int(size=16), size=4*4 ) mpr := [ 0 : for int i in 0 .. 15 ];
+  int(size=16) y_left[4] := [ 0 : for int i in 0 .. 3 ];
+  int(size=16) y_up[8] := [ 0 : for int i in 0 .. 7 ];
   
   
   procedure Summ(List(type:int(size=16), size=16) list, int n)
@@ -96,7 +95,7 @@ actor Algo_IntraPred_LUMA_4x4 ()
   end
 
   readpix.l.av: action Y_LEFT:[x] repeat 4 ==>
-  guard left_avail = 1
+  guard left_avail
   do
     y_left := [ x[i] :  for int i in 0 .. 3 ];
   end
@@ -104,79 +103,76 @@ actor Algo_IntraPred_LUMA_4x4 ()
   
   // Supposing y_up[4..7] equal to y_up[3] when these are not available.
   readpix.u.av: action Y_UP:[x] repeat 8 ==>
-  guard up_avail = 1
+  guard up_avail
   do
     y_up := [ x[i] :  for int i in 0 .. 7 ];
   end
   
   
   readpix.ul.av: action Y_UP_LEFT:[x] ==>
-  guard up_left_avail = 1
+  guard up_left_avail
   do
     y_up_left:=x;
   end
 
   readpix.l.no: action ==>
-  guard left_avail = 0
+  guard not left_avail
   end
 
   readpix.u.no: action ==>
-  guard up_avail = 0
+  guard not up_avail
   end
 
   readpix.ul.no: action ==>
-  guard up_left_avail = 0
+  guard not up_left_avail
   end
 
   write.mode0: action PredMode:[mode] ==>
-    MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
+    MPR:[[y_up[i]  : for int j in  0 .. 3, for int i in 0 .. 3]] repeat 4*4
   guard 
   	mode = 0 
-  do
-    mpr := [y_up[i]  : for int i in  0 .. 3, for int j in 0 .. 3];
   end
   
   
   
   write.mode1: action PredMode:[mode] ==>
-    MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
+    MPR:[[y_left[j]: for int j in  0 .. 3, for int i in 0 .. 3]] repeat 4*4
   guard 
   	mode = 1 
-   do
-    mpr := [y_left[j]: for int i in  0 .. 3, for int j in 0 .. 3];
   end
   
   write.mode2: action PredMode:[mode] ==>
-   	 MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
+   	 MPR:[[mean     : for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
    guard 
   		mode = 2 
    var
     	int mean
    do
-     if left_avail = 1 and up_avail = 1 then 
+     if left_avail and up_avail then 
   			Summ(y_left, 4);
   			sum_temp := res;
   			Summ(y_up, 4);
   			sum_temp := res + sum_temp + 4;
   			mean := (sum_temp >> 3);
-      else if left_avail = 1   then 
+      else if left_avail   then 
       		Summ(y_left,4);
   			sum_temp := res + 2;
       		mean := (sum_temp >> 2);
-      else if up_avail   = 1             then 
+      else if up_avail then 
   			Summ(y_up, 4);
   			sum_temp := res + 2;
       		mean := (sum_temp >> 2);
       else mean := 128;
       end end end
       
-      mpr := [mean     : for int i in  0 .. 3, for int j in 0 .. 3];
    end
 	
    write.mode3: action PredMode:[mode] ==>
-    MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
-  guard 
+    MPR:[[mpr[4*j+i]: for int j in  0 .. 3, for int i in 0 .. 3]] repeat 4*4
+   guard 
   	mode = 3 
+   var
+     int(size=16) mpr[4*4]
    do
      // y_uur is a List that is like
      // abcd efgh h, when the part efgh exists
@@ -193,57 +189,51 @@ actor Algo_IntraPred_LUMA_4x4 ()
 	end
 	
    write.mode4: action PredMode:[mode] ==>
-    	MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
+      // i - j  = n lines
+    	MPR:[
+    		[
+	        if      i - j = 0  then (y_left[0]   + 2*y_up_left   + y_up  [0] +2) >> 2
+	
+	        else if i - j = 1  then (y_up_left   + 2*y_up  [0]   + y_up  [1] +2) >> 2
+	        else if i - j = 2  then (y_up  [0]   + 2*y_up  [1]   + y_up  [2] +2) >> 2
+	        else if i - j = 3  then (y_up  [1]   + 2*y_up  [2]   + y_up  [3] +2) >> 2
+	
+	        else if i - j = -1 then (y_up_left   + 2*y_left[0]   + y_left[1] +2) >> 2
+	        else if i - j = -2 then (y_left[0]   + 2*y_left[1]   + y_left[2] +2) >> 2
+	        else /* i - j = -3 */   (y_left[1]   + 2*y_left[2]   + y_left[3] +2) >> 2
+	        end end end end end end : for int j in  0 .. 3, for int i in 0 .. 3
+      ]] repeat 4*4
    guard 
   		mode = 4 
-   do
-      // i - j  = n lines
-     mpr := [
-        if      i - j = 0  then (y_left[0]   + 2*y_up_left   + y_up  [0] +2) >> 2
-
-        else if i - j = 1  then (y_up_left   + 2*y_up  [0]   + y_up  [1] +2) >> 2
-        else if i - j = 2  then (y_up  [0]   + 2*y_up  [1]   + y_up  [2] +2) >> 2
-        else if i - j = 3  then (y_up  [1]   + 2*y_up  [2]   + y_up  [3] +2) >> 2
-
-        else if i - j = -1 then (y_up_left   + 2*y_left[0]   + y_left[1] +2) >> 2
-        else if i - j = -2 then (y_left[0]   + 2*y_left[1]   + y_left[2] +2) >> 2
-        else /* i - j = -3 */   (y_left[1]   + 2*y_left[2]   + y_left[3] +2) >> 2
-        end end end end end end : for int i in  0 .. 3, for int j in 0 .. 3
-      ];
    end
 	
    write.mode5: action PredMode:[mode] ==>
-    	MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
+    	MPR:[
+     // 2*i - j = n lines
+      	[
+	        if      2*i - j= 0  then (y_up_left + y_up[0]   +1) >> 1
+	        else if 2*i - j= 2  then (y_up[0]   + y_up[1]   +1) >> 1
+	        else if 2*i - j= 4  then (y_up[1]   + y_up[2]   +1) >> 1
+	        else if 2*i - j= 6  then (y_up[2]   + y_up[3]   +1) >> 1
+	
+	        else if 2*i - j= -3   then (y_left[2] + 2*y_left[1] + y_left[0] +2) >> 2
+	        else if 2*i - j= -2   then (y_left[1] + 2*y_left[0] + y_up_left +2) >> 2
+	        else if 2*i - j= -1   then (y_left[0] + 2*y_up_left + y_up[0]   +2) >> 2
+	
+	        else if 2*i - j= 1  then (y_up_left + 2*y_up[0] + y_up[1] +2) >> 2
+	        else if 2*i - j= 3  then (y_up[0]   + 2*y_up[1] + y_up[2] +2) >> 2
+	        else /* 2*i - j= 5  */   (y_up[1]    + 2*y_up[2] + y_up[3] +2) >> 2
+	        end end end end end end end end end :
+	        for int j in  0 .. 3, for int i in 0 .. 3
+      ]] repeat 4*4
    guard 
   		mode = 5 
-   do
-      // 2*i - j = n lines
-      mpr := [
-        if      2*i - j= 0  then (y_up_left + y_up[0]   +1) >> 1
-        else if 2*i - j= 2  then (y_up[0]   + y_up[1]   +1) >> 1
-        else if 2*i - j= 4  then (y_up[1]   + y_up[2]   +1) >> 1
-        else if 2*i - j= 6  then (y_up[2]   + y_up[3]   +1) >> 1
-
-        else if 2*i - j= -3   then (y_left[2] + 2*y_left[1] + y_left[0] +2) >> 2
-        else if 2*i - j= -2   then (y_left[1] + 2*y_left[0] + y_up_left +2) >> 2
-        else if 2*i - j= -1   then (y_left[0] + 2*y_up_left + y_up[0]   +2) >> 2
-
-        else if 2*i - j= 1  then (y_up_left + 2*y_up[0] + y_up[1] +2) >> 2
-        else if 2*i - j= 3  then (y_up[0]   + 2*y_up[1] + y_up[2] +2) >> 2
-        else /* 2*i - j= 5  */   (y_up[1]    + 2*y_up[2] + y_up[3] +2) >> 2
-        end end end end end end end end end :
-        for int i in  0 .. 3, for int j in 0 .. 3
-      ];
-
    end
 	
    write.mode6: action PredMode:[mode] ==>
-    	MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
-   guard 
-  		mode = 6 
-   do
+    	MPR:[
       // i - 2*j = n lines
-      mpr := [
+      [
         if      i - 2*j= 0   then (y_up_left   + y_left[0]      +1) >> 1
         else if i - 2*j= -2  then (y_left[0]   + y_left[1]      +1) >> 1
         else if i - 2*j= -4  then (y_left[1]   + y_left[2]      +1) >> 1
@@ -257,18 +247,16 @@ actor Algo_IntraPred_LUMA_4x4 ()
         else if i - 2*j= -3  then (y_left[0]   + 2*y_left[1] + y_left[2] +2) >> 2
         else /* i - 2*j= -5  */  (y_left[1]   + 2*y_left[2] + y_left[3] +2) >> 2
         end end end end end end end end end :
-        for int i in  0 .. 3, for int j in 0 .. 3
-      ];
-
-    end
+        for int j in  0 .. 3, for int i in 0 .. 3
+      ]] repeat 4*4
+   guard 
+  		mode = 6 
+   end
 	
    write.mode7: action PredMode:[mode] ==>
-    	MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
-   guard 
-  		mode = 7 
-   do
+    	MPR:[
       // 2*i + j = n lines
-      mpr := [
+      [
         if      2*i + j= 0  then (y_up[0]   + y_up[1]      +1) >> 1
         else if 2*i + j= 2  then (y_up[1]   + y_up[2]      +1) >> 1
         else if 2*i + j= 4  then (y_up[2]   + y_up[3]      +1) >> 1
@@ -281,27 +269,28 @@ actor Algo_IntraPred_LUMA_4x4 ()
         else if 2*i + j= 7  then (y_up[3] + 2*y_up[4] + y_up[5] +2) >> 2
         else /* 2*i + j= 9 */   (y_up[4] + 2*y_up[5] + y_up[6] +2) >> 2
         end end end end end end end end end:
-        for int i in  0 .. 3, for int j in 0 .. 3
-      ];
+        for int j in  0 .. 3, for int i in 0 .. 3
+      ]] repeat 4*4
+   guard 
+  		mode = 7 
     end
 	
    write.mode8: action PredMode:[mode] ==>
-    	MPR:[[mpr[4*j+i]: for int i in  0 .. 3, for int j in 0 .. 3]] repeat 4*4
+    	MPR:[      
+    	// i + 2*j = n lines
+	      [
+	        if      i + 2*j= 0  then (y_left[0]   + y_left[1]      +1) >> 1
+	        else if i + 2*j= 2  then (y_left[1]   + y_left[2]      +1) >> 1
+	        else if i + 2*j= 4  then (y_left[2]   + y_left[3]      +1) >> 1
+	
+	        else if i + 2*j= 1  then (y_left[0] + 2*y_left[1] + y_left[2] +2) >> 2
+	        else if i + 2*j= 3  then (y_left[1] + 2*y_left[2] + y_left[3] +2) >> 2
+	        else if i + 2*j= 5  then (y_left[2] + 3*y_left[3]             +2) >> 2
+	        else /* otherwise */     y_left[3]
+	        end end end end end end: for int j in  0 .. 3, for int i in 0 .. 3
+	      ]] repeat 4*4
    guard 
   		mode = 8 
-   do
-      // i + 2*j = n lines
-      mpr := [
-        if      i + 2*j= 0  then (y_left[0]   + y_left[1]      +1) >> 1
-        else if i + 2*j= 2  then (y_left[1]   + y_left[2]      +1) >> 1
-        else if i + 2*j= 4  then (y_left[2]   + y_left[3]      +1) >> 1
-
-        else if i + 2*j= 1  then (y_left[0] + 2*y_left[1] + y_left[2] +2) >> 2
-        else if i + 2*j= 3  then (y_left[1] + 2*y_left[2] + y_left[3] +2) >> 2
-        else if i + 2*j= 5  then (y_left[2] + 3*y_left[3]             +2) >> 2
-        else /* otherwise */     y_left[3]
-        end end end end end end: for int i in  0 .. 3, for int j in 0 .. 3
-      ];
    end
 
   schedule fsm start:
