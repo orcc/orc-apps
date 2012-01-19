@@ -1,4 +1,4 @@
-/******************************************************
+/********************************************************************************
 
 This software module was originally developed by Damien de Saint Jorre IETR/INSA of Rennes (France), in the course of development of the <standard> for reference purposes and its performance may not have been optimized. This software module is an implementation of one or more tools as specified by the MPEG-C part 4.
 ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works of this software module or modifications thereof for use in implementations of the <standard>  in products that satisfy conformance criteria (if any).
@@ -14,19 +14,18 @@ IETR/INSA of Rennes (France) retains full right to modify and use the code for i
 This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
 
 *****************************************************************************/
-package org.sc29.wg11.mpeg4.part10.cbp.interPred;
+package org.mpeg4.part10.cbp.interPred;
 
 import org.mpeg4.part10.Imp_PictureInfo.*;
 import std.util.Math.*;
-import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 
 actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
-	uint(size=6)  MB_TYPE,
 	uint(size=32) FrameToRead,
 	int(size=32)  DelList,
 	uint(size=8)  WD,
 	bool          EnableRead,
 	int (size=12) ReadAddress,
+	bool          IsIDR,
 	uint(size=31) FrameNum,
 	uint(size=32) currPicInfo
 		==> 
@@ -51,14 +50,11 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	uint(size=32) readIdx;
 	uint(size=32) readIdxMax;
 
-	bool isIDR;
-
-	getIsNewPic: action EnableRead :[enabled_read], MB_TYPE:[mbType] ==>
+	getIsNewPic: action EnableRead :[enabled_read] ==>
 	do
 		if(DEBUG) then
 			println("EnableRead : "+enabled_read);
 		end
-		isIDR := (mbType = NEW_FRAME_IDR);
 	end
 
 	getReadAddr: action
@@ -141,29 +137,30 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	guard
 		readIdx = readIdxMax
 	end
-	
+
 	readRefParameters: action
-		FrameNum :[frame_num]
+		FrameNum :[frame_num],
+		IsIDR    :[IsIDRPic]
 			==>
 	do
 		bool idxSelected := false;
 		int(size=32) i := 0;
 
-		if(isIDR)then
+		if(IsIDRPic)then
 			foreach int j in 0 .. NB_PIC - 1 do
 				listFrameNum[j] := -1;
 			end
 		end
 		if(DEBUG) then
 			println("FrameNum : "+frame_num);
-			println("IsIDR : "+isIDR);
+			println("IsIDR : "+IsIDRPic);
 		end
 		picCurrIdx := -1;
 		while((not idxSelected) and (i < NB_PIC)) do
 			if(listFrameNum[i] < 0) then
 				idxSelected := true;
 				picCurrIdx  := i;
-				if(not isIDR) then
+				if(not IsIDRPic) then
 					listFrameNum[i] := frame_num;
 				else
 					listFrameNum[i] := 0;
@@ -174,10 +171,10 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	end
 
 	writeData.launch.Chroma: action
-		MB_TYPE:[mbType], WD :[Wd] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+		WD :[Wd] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
 			==>
 	guard
-		mbType < NEW_SLICE,
+		nbMacroBlocksWritten < picSizeInMacroB,
 		MB_WIDTH = MB_WIDTH_CHROMA
 	do
 		if(picCurrIdx != -1) then
@@ -198,10 +195,10 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	end
 
 	writeData.launch.Luma: action
-		MB_TYPE:[mbType], WD :[Wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
+		WD :[Wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
 			==>
 	guard
-		mbType < NEW_SLICE,
+		nbMacroBlocksWritten < picSizeInMacroB,
 		MB_WIDTH = MB_WIDTH_LUMA
 	do
 		if(picCurrIdx != -1) then
@@ -221,16 +218,10 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		nbMacroBlocksWritten := nbMacroBlocksWritten + 1;
 	end
 
-	writeData.slice: action MB_TYPE:[mbType], FrameNum :[frame_num] ==>
+	writeData.done: action ==>
 	guard
-		mbType = NEW_SLICE
-	end
-
-	writeData.done: action MB_TYPE:[mbType]==>
-	guard
-		mbType >= NEW_FRAME_NON_IDR
+		nbMacroBlocksWritten = picSizeInMacroB
 	do
-		isIDR := (mbType = NEW_FRAME_IDR);
 		if(picCurrIdx != -1) then
 			foreach int y in 2*MB_WIDTH .. (picHeightInMacroB + 2) * MB_WIDTH - 1 do
 				foreach int x in 0 .. 2*MB_WIDTH - 1 do
@@ -285,12 +276,11 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 
 		Write             (writeData.launch   )--> Write;
 		Write             (writeData.done     )--> Checkread;
-		Write             (writeData.slice    )--> Write;
 	end
 	priority
 		getReadAddr        > readDone;
 		readData.launch    > readData.done;
-		writeData.launch   > writeData.done > writeData.slice;
+		writeData.launch   > writeData.done;
 		readDelList.launch > readDelList.done;
 	end
 end

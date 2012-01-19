@@ -16,13 +16,15 @@ This copyright notice must be included in all copies or derivative works. Copyri
 *****************************************************************************/
 package org.sc29.wg11.mpeg4.part10.cbp.display;
 
+import org.mpeg4.part10.cbp.MacroBlockInfo.*;
+
 actor Mgnt_Display ()
+	uint(size=6)  MB_TYPE,
 	int (size=32) POC,
 	uint(size=8)  DBP_MAX_SZ,
 	bool          EMPTY_DBP
 		==>
-  	int(size=32) POCtoDisplay,
-  	bool         GetNewPic
+  	int(size=32) POCtoDisplay
 		:
 
 	bool DEBUG_INPUT = false;
@@ -37,6 +39,10 @@ actor Mgnt_Display ()
 	int (size=32) NextPOC         := INT_MIN;
 	uint(size=5)  NbPic           := 0;
 	uint(size=5)  SizeDPBMax      := 16;
+	
+	GetSlicePOC: action POC:[ValPOC], DBP_MAX_SZ:[ValMaxDPBSize],
+		EMPTY_DBP:[IsIDR_Picture] ==>
+	end
 
 
 	GetPOC: action POC:[ValPOC], DBP_MAX_SZ:[ValMaxDPBSize],
@@ -128,8 +134,7 @@ actor Mgnt_Display ()
 		end
 	end
 
-	SendNextPOC.launch: action ==> POCtoDisplay:[ListPOC[IdxNextPOC]],
-		GetNewPic:[false]
+	SendNextPOC.launch: action ==> POCtoDisplay:[0, ListPOC[IdxNextPOC]]
 	guard
 		IdxNextPOC >= 0
 	do
@@ -138,15 +143,34 @@ actor Mgnt_Display ()
 	end
 
 
-	SendNextPOC.skip: action ==> GetNewPic:[true]
+	SendNextPOC.skip: action ==> POCtoDisplay:[1]
 	end
 
 
-	schedule fsm GetPOC:
-		GetPOC           (GetPOC                )-->SearchForNextPOC;
-		SearchForNextPOC (SearchForNextPOC      )-->SendNextPOC;
-		SendNextPOC      (SendNextPOC.launch    )-->SearchForNextPOC;
-		SendNextPOC      (SendNextPOC.skip      )-->GetPOC;
+	picInformation.isFrame: action MB_TYPE:[isNewFrame] ==>
+	guard
+		isNewFrame >= NEW_FRAME_NON_IDR 
+	end
+
+	picInformation.isSlice: action MB_TYPE:[isNewSlice] ==>
+	guard
+		isNewSlice = NEW_SLICE 
+	end
+
+	picInformation.isMb: action MB_TYPE:[isNewMb] ==>
+	guard
+		isNewMb < NEW_SLICE 
+	end
+
+	schedule fsm picInformation:
+		picInformation	 (picInformation.isFrame		)-->GetPOC;
+		picInformation	 (picInformation.isSlice		)-->GetSlicePOC;
+		GetSlicePOC      (GetSlicePOC                   )-->picInformation;
+		picInformation	 (picInformation.isMb    		)-->picInformation;
+		GetPOC           (GetPOC                		)-->SearchForNextPOC;
+		SearchForNextPOC (SearchForNextPOC      		)-->SendNextPOC;
+		SendNextPOC      (SendNextPOC.launch    		)-->SearchForNextPOC;
+		SendNextPOC      (SendNextPOC.skip      		)-->picInformation;
 	end
 	priority
 		SearchForNextPOC.BufferNotFull > SearchForNextPOC.BufferFull;
