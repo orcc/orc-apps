@@ -18,8 +18,10 @@ This copyright notice must be included in all copies or derivative works. Copyri
 package org.sc29.wg11.mpeg4.part10.cbp.display;
 
 import org.mpeg4.part10.Imp_PictureInfo.*;
+import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 
 actor DisplayBuffer ( int MB_WIDTH )
+	uint(size=6)  MB_TYPE,
 	bool          GetNewPic,
 	int (size=32) POC,
 	int (size=32) POCtoDisplay,
@@ -44,8 +46,6 @@ actor DisplayBuffer ( int MB_WIDTH )
 	int (size=32) listPOC[NB_PIC];
 	bool          picDisplayed[NB_PIC] := [true  :for int s in 0 .. NB_PIC-1];
 	int           nbBlkWritten[NB_PIC];
-	uint(size=13) picSizeInMacroB   := 0;
-//	uint(size=14) cropping[NB_PIC][4];
 
 	int (size=32) picCurrIdx      := 0;
 
@@ -54,6 +54,9 @@ actor DisplayBuffer ( int MB_WIDTH )
 	int(size=32)         nextPOCtoDisplay    := -1;
 	int(size=SZ_NBPIC+1) idxNextPOCtoDisplay := -1;
 
+	ckeckNewPic: action MB_TYPE:[mbType] ==>
+	end
+	
 	readPicParameters: action POC:[Valpoc], IsIDR:[isIdr],
 		currPicInfo:[PicSzInMb , PicWidthInMb] ==>
 	var
@@ -81,20 +84,15 @@ actor DisplayBuffer ( int MB_WIDTH )
 			listPOC[0]      := Valpoc;
 			picDisplayed[0] := false;
 		end
-/*		foreach int j in 0 .. 3
-		do
-			cropping[picCurrIdx][j] := picSize[j];
-		end*/
-		picSizeInMacroB   := PicSzInMb;
 		nbBlkWritten[picCurrIdx] := 0;
 	end
 
 
 	write_data.Luma : action
-		WD :[wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
+		MB_TYPE:[mbType], WD :[wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
 			==>
 	guard
-		nbBlkWritten[picCurrIdx] < picSizeInMacroB,
+		mbType < NEW_SLICE,
 		MB_WIDTH = MB_WIDTH_LUMA
 	do
 		foreach int i in 0 .. MB_WIDTH_LUMA * MB_WIDTH_LUMA - 1
@@ -105,10 +103,10 @@ actor DisplayBuffer ( int MB_WIDTH )
 	end
 
 	write_data.Chroma : action
-		WD :[wd] repeat  MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+		MB_TYPE:[mbType], WD :[wd] repeat  MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
 			==>
 	guard
-		nbBlkWritten[picCurrIdx] < picSizeInMacroB,
+		mbType < NEW_SLICE,
 		MB_WIDTH = MB_WIDTH_CHROMA
 	do
 		foreach int i in 0 .. MB_WIDTH_CHROMA * MB_WIDTH_CHROMA - 1
@@ -118,9 +116,16 @@ actor DisplayBuffer ( int MB_WIDTH )
 		nbBlkWritten[picCurrIdx] := nbBlkWritten[picCurrIdx] + 1;
 	end
 
-	write_picture_done: action ==>
-	guard 
-		nbBlkWritten[picCurrIdx] = picSizeInMacroB
+	write_picture.slice: action MB_TYPE:[mbType] ==>
+	guard
+		mbType = NEW_SLICE
+	do
+		nbBlkDisplayed := 0;
+	end
+
+	write_picture.done: action MB_TYPE:[mbType] ==>
+	guard
+		mbType >= NEW_FRAME_NON_IDR
 	do
 		nbBlkDisplayed := 0;
 	end
@@ -190,11 +195,13 @@ actor DisplayBuffer ( int MB_WIDTH )
 		nbBlkDisplayed := 0;
 	end
   
-	schedule fsm  ReadPicParameters:
+	schedule fsm  NewPic:
+		NewPic  			(ckeckNewPic          			)--> ReadPicParameters;
 		ReadPicParameters   (readPicParameters          )--> WriteData;
 
 		WriteData           (write_data                 )--> WriteData;
-		WriteData           (write_picture_done         )--> getNextPOCtoDisplay;
+		WriteData           (write_picture.done         )--> getNextPOCtoDisplay;
+		WriteData           (write_picture.slice        )--> WriteData;
 
 		getNextPOCtoDisplay (getNextPOCtoDisplay.launch )--> getidxdisplay;
 		getNextPOCtoDisplay (getNextPOCtoDisplay.skip   )--> ReadPicParameters;
@@ -206,7 +213,7 @@ actor DisplayBuffer ( int MB_WIDTH )
 		Display             (Display.done               )--> getNextPOCtoDisplay;
 	end
 	priority
-		write_data                 > write_picture_done;
+		write_data                 > write_picture;
 		Display.done               > Display.chroma      > Display.luma;
 	end
 end
