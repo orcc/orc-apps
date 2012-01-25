@@ -67,6 +67,7 @@ import org.sc29.wg11.common.CabacDecodeBinFunction.*;
 import org.sc29.wg11.common.CabacContextConstantAVC.*;
 import org.sc29.wg11.common.CabacContextFunctionAVC.*;
 import org.sc29.wg11.common.CabacParserFunctionAVC.*;
+import org.sc29.wg11.common.neighbourFunction.*;
 
 actor Algo_Synp_AVC_FREXT()
 		uint(size=8) BYTE 
@@ -386,7 +387,6 @@ actor Algo_Synp_AVC_FREXT()
 
 	// High Profile
 	uint(size=2) chroma_format_idc[32] := [ 1 : for int i in 0 .. 31 ];
-	uint(size=1) separate_colour_plane_flag[32] := [ 0 : for int i in 0 .. 31 ];
 	uint(size=3) bit_depth_luma_minus8[32] := [ 0 : for int i in 0 .. 31 ];
 	uint(size=3) bit_depth_chroma_minus8[32] := [ 0 : for int i in 0 .. 31 ];
 
@@ -1469,46 +1469,24 @@ actor Algo_Synp_AVC_FREXT()
 	********       Slice DATA 	  	      *********
 	*************************************************************
 	*************************************************************/
-	uint(size=4) locXYToBlkIdx[16] = [
-		0,1,4,5,
-		2,3,6,7,
-		8,9,12,13,
-		10,11,14,15
-	];
-	int STRIDE = (MAX_PICWIDTH_BLK * 4) + 2;
-	int OFFSET = STRIDE + 1;
-	int locXYToTabIdx[16] =
-	[
-		0 * STRIDE + 0 + OFFSET, 0 * STRIDE + 1 + OFFSET, 1 * STRIDE + 0 + OFFSET, 1 * STRIDE + 1 + OFFSET,
-		0 * STRIDE + 2 + OFFSET, 0 * STRIDE + 3 + OFFSET, 1 * STRIDE + 2 + OFFSET, 1 * STRIDE + 3 + OFFSET,
-		2 * STRIDE + 0 + OFFSET, 2 * STRIDE + 1 + OFFSET, 3 * STRIDE + 0 + OFFSET, 3 * STRIDE + 1 + OFFSET,
-		2 * STRIDE + 2 + OFFSET, 2 * STRIDE + 3 + OFFSET, 3 * STRIDE + 2 + OFFSET, 3 * STRIDE + 3 + OFFSET
-	];
-	uint(size=4) locXYToBlkIdx_4[16] = [
-		0,1,
-		2,3
-	];
-	int STRIDE_4 = (MAX_PICWIDTH_BLK * 2) + 2;
-	int OFFSET_4 = STRIDE_4 + 1;
-	int locXYToTabIdx_4[4] =
-	[
-		0 * STRIDE_4 + 0 + OFFSET_4, 0 * STRIDE_4 + 1 + OFFSET_4,
-		1 * STRIDE_4 + 0 + OFFSET_4, 1 * STRIDE_4 + 1 + OFFSET_4
-	];
 
-	int(size= 5) refIdxTab[STRIDE * 5];
-	int(size=16) mvTab[STRIDE * 5][2];
-	
 	uint(size=9) codIRange[1];
 	uint(size=9) codIOffset[1];
 	uint(size=9) ctxTable[MAX_NUM_CTX_MOD];
 	bool		 availableA;
 	bool		 availableB;
+	//
 	bool         skipFlagTab[MAX_PICWIDTH_BLK+2];
 	uint(size=6) mbTypeTab[MAX_PICWIDTH_BLK+2];
+	uint(size=4) subMbTypeTab[MAX_PICWIDTH_BLK+2][4];
 	bool		 trsfSz8x8Tab[MAX_PICWIDTH_BLK+2];
+	// mb_pred I
 	uint(size=6) cbpTab[MAX_PICWIDTH_BLK+2];
 	uint(size=2) intraChromaPredModeTab[MAX_PICWIDTH_BLK+2];
+	// mb_pred P or B
+	int(size= 5) refIdxTab[STRIDE_4 * 3];
+	int(size=16) mvdTab[STRIDE * 5][2];
+	// residual
 	uint(size=1) cbfLumaDCTab[MAX_PICWIDTH_BLK+2];
 	uint(size=1) cbfLumaACTab[STRIDE*5];
 	uint(size=1) cbfChromaDCTab[MAX_PICWIDTH_BLK+2][2];
@@ -1544,15 +1522,22 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		contextInit(val_QP_Y, cabac_init_idc, ctxTable);
 		decodeInit(codIRange, codIOffset, fifo);
+		//
 		skipFlagTab				:= [false	: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		mbTypeTab				:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
+		subMbTypeTab			:= [[0,0,0,0]: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		trsfSz8x8Tab			:= [false	: for int i in 0 .. MAX_PICWIDTH_BLK+1];
+		// mb_pred I
 		cbpTab		 			:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		intraChromaPredModeTab	:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
+		// mb_pred P or B
+		refIdxTab				:= [0		: for int i in 0 .. 3*STRIDE_4-1];
+		mvdTab					:= [[0,0]	: for int i in 0 .. 5*STRIDE-1];
+		// residual
 		cbfLumaDCTab			:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		cbfLumaACTab			:= [0		: for int i in 0 .. 5*STRIDE-1];
 		cbfChromaDCTab			:= [[0,0]	: for int i in 0 .. MAX_PICWIDTH_BLK+1];
-		cbfChromaACTab			:= [[0,0]	: for int i in 0 .. 3*STRIDE_4-1];
+		cbfChromaACTab			:= [[0,0]	: for int i in 0 .. 3*STRIDE_4-1];	
 	end
 
 	read_SliceD_CABAC_alignement.skip: action ==>
@@ -1600,14 +1585,28 @@ actor Algo_Synp_AVC_FREXT()
  					  slice_type, availableA, skipFlagTab[Mb_x], availableB, skipFlagTab[Mb_x+1]);
  		skipFlagTab[Mb_x+1] := res[0] = 1;
  		moreDataFlag := 1 - res[0];
+ 		
+ 						
+	 	foreach int i in 0 .. 3 do
+	 		cbfChromaACTab[(Mb_x << 1) + locXYToTabIdx_4[i]][0] := 0;
+	 		cbfChromaACTab[(Mb_x << 1) + locXYToTabIdx_4[i]][1] := 0;
+	 	end
+	 	foreach int i in 0 .. 15 do
+	 		cbfLumaACTab[(Mb_x << 2) + locXYToTabIdx[i]] := 0;
+	 	end
+	 	
 	end
 	
 	read_SliceD_mb_skip_flag.isMBSkip: action ==>
-			PIC_WIDTH_IN_MB:[PicWidthInMbs],
-			MB_TYPE:[if slice_type = SLICE_TYPE_P then BLOCK_TYPE_P_SKIP else BLOCK_TYPE_B_SKIP end],
+			MB_TYPE:[mb_type],
 			MB_LOCATION:[Mb_x, Mb_y]
 	guard
 		skipFlagTab[Mb_x+1] = true
+	do
+		mb_type := if slice_type = SLICE_TYPE_P then BLOCK_TYPE_P_SKIP else BLOCK_TYPE_B_SKIP end;
+		cbfLumaDCTab[Mb_x+1] 	  := 0;
+	 	cbfChromaDCTab[Mb_x+1][0] := 0;
+	 	cbfChromaDCTab[Mb_x+1][1] := 0;
 	end
 	
 	read_SliceD_mb_skip_flag.isNotMBSkip: action ==>
@@ -1682,6 +1681,17 @@ actor Algo_Synp_AVC_FREXT()
 		getEndOfSliceFlag(codIRange, codIOffset, ctxTable, fifo, res);
 		moreDataFlag := 1 - res[0];
 		mbTypeTab[Mb_x+1] := mb_type;
+		foreach int i in 0 .. STRIDE-1 do
+			cbfLumaACTab[i] := cbfLumaACTab[4*STRIDE+i];
+			mvdTab[i][0] 	:= mvdTab[4*STRIDE+i][0];
+			mvdTab[i][1] 	:= mvdTab[4*STRIDE+i][1];
+		end
+		foreach int i in 0 .. STRIDE_4-1 do
+			cbfChromaACTab[i][0] := cbfChromaACTab[2*STRIDE_4+i][0];
+			cbfChromaACTab[i][1] := cbfChromaACTab[2*STRIDE_4+i][1];
+			refIdxTab[i] 		 := refIdxTab[2*STRIDE_4+i];
+		end
+		setNeigbourSubMbType(subMbTypeTab, Mb_x+1 , mb_type, sub_mb_type);
 	end
 
 	//while( moreDataFlag )
@@ -1759,13 +1769,8 @@ actor Algo_Synp_AVC_FREXT()
 		end
 		transform_size_8x8_flag := 0;
 		trsfSz8x8Tab[Mb_x+1]    := false;
-		foreach int i in 0 .. STRIDE-1 do
-			cbfLumaACTab[i] := cbfLumaACTab[4*STRIDE+i];
-		end
-		foreach int i in 0 .. STRIDE_4-1 do
-			cbfChromaACTab[i][0] := cbfChromaACTab[2*STRIDE_4+i][0];
-			cbfChromaACTab[i][1] := cbfChromaACTab[2*STRIDE_4+i][1];
-		end		
+		sub_mb_type   := [0 : for int i in 0 .. 4];
+		subMbPartIdx  := 0;
 	end
 
 	//if( mb_type = = I_PCM )
@@ -1908,6 +1913,18 @@ actor Algo_Synp_AVC_FREXT()
 									  availableA, mbTypeTab[Mb_x]  , cbpTab[Mb_x],
 									  availableB, mbTypeTab[Mb_x+1], cbpTab[Mb_x+1]);
 				cbpTab[Mb_x+1] := res[0];
+				if res[0] = 0 then	
+					cbfLumaDCTab[Mb_x+1] 	  := 0;
+	 				cbfChromaDCTab[Mb_x+1][0] := 0;
+	 				cbfChromaDCTab[Mb_x+1][1] := 0;
+					foreach int i in 0 .. 3 do
+	 					cbfChromaACTab[(Mb_x << 1) + locXYToTabIdx_4[i]][0] := 0;
+	 					cbfChromaACTab[(Mb_x << 1) + locXYToTabIdx_4[i]][1] := 0;
+	 				end
+	 				foreach int i in 0 .. 15 do
+	 					cbfLumaACTab[(Mb_x << 2) + locXYToTabIdx[i]] := 0;
+	 				end
+	 			end
 			end
 //			println("Mb_x = "+Mb_x+" Mb_y = "+Mb_y);
 			
@@ -1996,13 +2013,80 @@ actor Algo_Synp_AVC_FREXT()
 	int ref_idx_l0[4] := [ 0 : for int i in 0 .. 3];
  	function IS_B_Direct_8x8() --> bool : (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
 
+	procedure readRefIdxLX(int(size=32) result[1])
+	var
+		uint Idx,
+		uint(size=32) res[1],
+		bool 		  availA		= getNeigbourAvailA(availableA, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		bool 		  availB		= getNeigbourAvailB(availableB, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) mb_typeA		= getNeigbourMbTypeA(mbTypeTab[Mb_x  ], mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) mb_typeB		= getNeigbourMbTypeB(mbTypeTab[Mb_x+1], mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) sub_mb_typeA	= getNeigbourSubMbTypeA(subMbTypeTab, Mb_x  , mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) sub_mb_typeB	= getNeigbourSubMbTypeB(subMbTypeTab, Mb_x+1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 3) mbPartIdxA	= getNeigbourMbPartIdxA(availA, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type[mbPartIdx], mb_typeA, sub_mb_typeA),
+		uint(size= 3) mbPartIdxB	= getNeigbourMbPartIdxB(availB, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type[mbPartIdx], mb_typeB, sub_mb_typeB)
+	begin
+//		println(" mbPartIdx = "+mbPartIdx+", subMbPartIdx = "+subMbPartIdx);
+//		if mbPartIdx = 0  and subMbPartIdx = 0 then
+//			println("subMbType : "+subMbTypeTab[Mb_x][0]+" "+subMbTypeTab[Mb_x][1]);
+//			println("            "+subMbTypeTab[Mb_x][2]+" "+subMbTypeTab[Mb_x][3]);
+//		end
+		getRefIdx(codIRange, codIOffset, ctxTable, fifo, res,
+			availA, mb_typeA, sub_mb_typeA, getNeigbourRefIdxA(refIdxTab, Mb_x, mbPartIdx, mb_type), mbPartIdxA,
+			availB, mb_typeB, sub_mb_typeB, getNeigbourRefIdxB(refIdxTab, Mb_x, mbPartIdx, mb_type), mbPartIdxB,
+			true
+		);
+		setNeigbourRefIdx(refIdxTab, Mb_x, mb_type, mbPartIdx, res[0]);
+//		foreach int i in 0 .. 3 do
+//			Idx := (Mb_x<<1) + locXYToTabIdx_4[locXYToBlkIdx_4[i]];
+//			print(" "+Idx+"("+refIdxTab[Idx]+"), ");
+//			if (i&1)=1 then println(); end
+//		end
+		
+		result[0] := res[0];
+	end
+	procedure readMvdLX(int(size=32) mvd_lx[2], bool isL0)
+	var
+		uint Idx,
+		uint(size=32) res[1],
+		bool 		  availA		= getNeigbourAvailA(availableA, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		bool 		  availB		= getNeigbourAvailB(availableB, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) mb_typeA		= getNeigbourMbTypeA(mbTypeTab[Mb_x  ], mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) mb_typeB		= getNeigbourMbTypeB(mbTypeTab[Mb_x+1], mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) sub_mb_typeA	= getNeigbourSubMbTypeA(subMbTypeTab, Mb_x  , mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 6) sub_mb_typeB	= getNeigbourSubMbTypeB(subMbTypeTab, Mb_x+1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+		uint(size= 3) mbPartIdxA	= getNeigbourMbPartIdxA(availA, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type[mbPartIdx], mb_typeA, sub_mb_typeA),
+		uint(size= 3) mbPartIdxB	= getNeigbourMbPartIdxB(availB, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type[mbPartIdx], mb_typeB, sub_mb_typeB)
+	begin
+		//println(" mbPartIdx = "+mbPartIdx+", subMbPartIdx = "+subMbPartIdx);
+		getMvd(codIRange, codIOffset, ctxTable, fifo, res,
+			availA, mb_typeA, sub_mb_typeA, mbPartIdxA, getNeigbourMvdA(mvdTab, Mb_x, 0, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			availB, mb_typeB, sub_mb_typeB, mbPartIdxB, getNeigbourMvdB(mvdTab, Mb_x, 0, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			isL0, true
+		);
+		mvd_lx[0] := res[0];
+		getMvd(codIRange, codIOffset, ctxTable, fifo, res,
+			availA, mb_typeA, sub_mb_typeA, mbPartIdxA, getNeigbourMvdA(mvdTab, Mb_x, 1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			availB, mb_typeB, sub_mb_typeB, mbPartIdxB, getNeigbourMvdB(mvdTab, Mb_x, 1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			isL0, false
+		);
+		mvd_lx[1] := res[0];
+		setNeigbourMvd(mvdTab, Mb_x, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type, mvd_lx);
+//		foreach int i in 0 .. 15 do
+//			Idx := (Mb_x<<2) + locXYToTabIdx[locXYToBlkIdx[i]];
+//			print(" "+Idx+"("+mvdTab[Idx][0]+", "+mvdTab[Idx][1]+"), ");
+//			if (i&3)=3 then println(); end
+//		end
+	end
+
+
 	//for( mbPartIdx = 0; mbPartIdx < 4; mbPartIdx++ )
 	read_sub_MB_pred_sub_mb_type.loop: action ==> SUB_MB_TYPE :[subMbType]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < 4
 	var
-		uint(size=4) subMbType,
+		uint(size= 4) subMbType,
 		uint(size=32) res[1]
 	do
 		if entropy_coding_mode_flag[pps_id] = 0 then
@@ -2030,17 +2114,22 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < 4
 	var
-		uint(size=32) res[1]
+		int(size=32) res[1]
 	do
 		if ((slice_num_ref_idx_l0_active_minus1 > 0) and
 			not IS_B_Direct_8x8() and 
 			not (mb_type = BLOCK_TYPE_P_8x8ref0) and 
 			(subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)) then
-			if slice_num_ref_idx_l0_active_minus1 = 1 then 
-				vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
-				ref_idx_l0[mbPartIdx] := 1 - res[0];
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				if slice_num_ref_idx_l0_active_minus1 = 1 then 
+					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
+					ref_idx_l0[mbPartIdx] := 1 - res[0];
+				else 
+					vld_ue_name(  fifo, res, "ref_idx_lx[mbPartIdx]                             ");
+					ref_idx_l0[mbPartIdx] := res[0];
+				end
 			else
-				vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
+				readRefIdxLX(res);
 				ref_idx_l0[mbPartIdx] := res[0];
 			end
 		else
@@ -2065,16 +2154,21 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < 4
 	var
-		uint(size=32) res[1]
+		int(size=32) res[1]
 	do
 		if ((slice_num_ref_idx_l1_active_minus1 > 0) 
 			and not IS_B_Direct_8x8() 
 			and not (mb_type = BLOCK_TYPE_P_8x8ref0)
 			and (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)) then
-			if slice_num_ref_idx_l1_active_minus1 = 1 then 
-				vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				if slice_num_ref_idx_l0_active_minus1 = 1 then 
+					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
+				else 
+					vld_ue_name(  fifo, res, "ref_idx_lx[mbPartIdx]                             ");
+				end
 			else
-				vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
+				readRefIdxLX(res);
+				//ref_idx_l1[mbPartIdx] := res[0];
 			end
 		end
 		mbPartIdx := mbPartIdx +1;
@@ -2107,13 +2201,17 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		subMbPartIdx < numSubMbPart(mb_type, sub_mb_type[mbPartIdx])
 	var
-		uint(size=32) res[1],
+		uint res[1],
 		int mvd_l0[2]
 	do
-		vld_se_name(  fifo, res, "mvd_l0[0]                             ");
-		mvd_l0[0] := res[0];
-		vld_se_name(  fifo, res, "mvd_l0[1]                             ");
-		mvd_l0[1] := res[0];
+		if entropy_coding_mode_flag[pps_id] = 0 then	
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l0[0] := res[0];
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l0[1] := res[0];
+		else			
+			readMvdLX(mvd_l0, true);
+		end
 		subMbPartIdx := subMbPartIdx +1;
 	end
 	//end for
@@ -2160,10 +2258,17 @@ actor Algo_Synp_AVC_FREXT()
 		subMbPartIdx < numSubMbPart(mb_type, sub_mb_type[mbPartIdx]),
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		int mvd_l1[2]
 	do
-		vld_se_name(  fifo, res, "mvd_l1[0]                             ");
-		vld_se_name(  fifo, res, "mvd_l1[1]                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then	
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l1[0] := res[0];
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l1[1] := res[0];
+		else			
+			readMvdLX(mvd_l1, false);
+		end
 		subMbPartIdx := subMbPartIdx +1;
 	end
 	//end for
@@ -2336,15 +2441,20 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < numMbPart(mb_type)
 	var
-		uint(size=32) res[1]
+		int(size=32) res[1]
 	do
 		if ( (slice_num_ref_idx_l0_active_minus1 > 0)
 			and not Mb_Is_PredL1(mb_type, mbPartIdx)) then
-			if slice_num_ref_idx_l0_active_minus1 = 1 then 
-				vld_u_name(1,  fifo, res, "ref_idx_l0[mbPartIdx]                            ");
-				ref_idx_l0[mbPartIdx] := 1 - res[0];
-			else 
-				vld_ue_name(  fifo, res, "ref_idx_l0[mbPartIdx]                             ");
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				if slice_num_ref_idx_l0_active_minus1 = 1 then 
+					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
+					ref_idx_l0[mbPartIdx] := 1 - res[0];
+				else 
+					vld_ue_name(  fifo, res, "ref_idx_lx[mbPartIdx]                             ");
+					ref_idx_l0[mbPartIdx] := res[0];
+				end
+			else
+				readRefIdxLX(res);
 				ref_idx_l0[mbPartIdx] := res[0];
 			end
 		else
@@ -2368,14 +2478,18 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < numMbPart(mb_type)
 	var
-		uint(size=32) res[1]
+		int(size=32) res[1]
 	do
 		if ((slice_num_ref_idx_l1_active_minus1 > 0)
 			and not Mb_Is_PredL0(mb_type, mbPartIdx)) then
-			if slice_num_ref_idx_l1_active_minus1 = 1 then 
-				vld_u_name(1,  fifo, res, "ref_idx_l1[mbPartIdx]                             ");
-			else 
-				vld_ue_name(  fifo, res, "ref_idx_l1[mbPartIdx]                              ");
+			if entropy_coding_mode_flag[pps_id] = 0 then
+				if slice_num_ref_idx_l0_active_minus1 = 1 then 
+					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
+				else 
+					vld_ue_name(  fifo, res, "ref_idx_lx[mbPartIdx]                             ");
+				end
+			else
+				readRefIdxLX(res);
 			end
 		end
 		mbPartIdx := mbPartIdx +1;
@@ -2400,10 +2514,14 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size=32) res[1],
 		int mvd_l0[2]
 	do
-		vld_se_name(  fifo, res, "mvd_l0                             ");
-		mvd_l0[0] := res[0];
-		vld_se_name(  fifo, res, "mvd_l0                             ");
-		mvd_l0[1] := res[0];
+		if entropy_coding_mode_flag[pps_id] = 0 then	
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l0[0] := res[0];
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l0[1] := res[0];
+		else			
+			readMvdLX(mvd_l0, true);
+		end
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2433,10 +2551,17 @@ actor Algo_Synp_AVC_FREXT()
 		mbPartIdx < numMbPart(mb_type),
 		not Mb_Is_PredL0(mb_type, mbPartIdx)
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		int mvd_l1[2]
 	do
-		vld_se_name(  fifo, res, "mvd_l1                            ");
-		vld_se_name(  fifo, res, "mvd_l1                             ");
+		if entropy_coding_mode_flag[pps_id] = 0 then	
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l1[0] := res[0];
+			vld_se_name(  fifo, res, "mvd_lx                                ");
+			mvd_l1[1] := res[0];
+		else			
+			readMvdLX(mvd_l1, false);
+		end
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2501,7 +2626,9 @@ actor Algo_Synp_AVC_FREXT()
 		leveltype=0
 	do
 		i8x8 		:= 0;
-		i4x4 		:= 0; 
+		i4x4 		:= 0;
+//		println("Last "+ true);
+		//println("Last luma_DC.return "+ true);
 	end
 
 	//else
@@ -2556,6 +2683,8 @@ actor Algo_Synp_AVC_FREXT()
 	Residual_luma_AC.loop4x4.return: action ==> LAST: [true]
 	guard
 		leveltype = 1 or leveltype = 2
+	do
+//		println("Last "+ true);
 	end
 
 	// else 
@@ -2578,6 +2707,7 @@ actor Algo_Synp_AVC_FREXT()
 		NonZeroCount[Mb_x * 4 + locXYToTabIdx[luma4x4BlkIdx]] := 0;
 		i4x4 := i4x4 +1;
 		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8+1; end
+//		println("Last "+ true);
 	end
 	// end if
 
@@ -2636,18 +2766,22 @@ actor Algo_Synp_AVC_FREXT()
 		leveltype = 3
 	do
 		iCbCr := iCbCr +1; 
+//		println("Last "+ true);
+		//println("Last chroma_DC.return "+ true);
 	end
 
 	// else
 	Residual_chroma_DC.next : action ==> LAST: [true]
 	guard
 		iCbCr < 2,
-		(CodedBlockPatternChroma & 3) =0 or startIdx != 0
+		(CodedBlockPatternChroma & 3) = 0
 	do
 		//for( i = 0; i < 4 * NumC8x8; i++ )
 		//ChromaDCLevel[ iCbCr ][ i ] = 0
 		cbfChromaDCTab[Mb_x+1][iCbCr] := 0;
 		iCbCr := iCbCr +1; 
+//		println("Last "+ true);
+//		println("Last chroma_DC.next "+ true);
 	end   
 	//end if
 
@@ -2685,13 +2819,15 @@ actor Algo_Synp_AVC_FREXT()
 		i4x4 := i4x4 +1;
 		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8 +1; end
 		if i8x8 = NumC8x8 then i8x8 := 0; iCbCr := iCbCr +1; end
+//		println("Last "+ true);
+//		println("Last chroma_AC.return "+ true);
 	end
 
 	// else
 	Residual_chroma_AC.loop4x4_skip : action ==> LAST: [true]
 	guard
 		iCbCr < 2,
-		(CodedBlockPatternChroma & 2) != 2 or endIdx <= 0
+		(CodedBlockPatternChroma & 2) != 2
 	do
 		luma4x4BlkIdx := i4x4 + (i8x8 << 2);
 		/* for( i = 0; i < 15; i++ )
@@ -2704,6 +2840,8 @@ actor Algo_Synp_AVC_FREXT()
 		i4x4 := i4x4 +1;
 		if i4x4 = 4 then i4x4 := 0; i8x8 := i8x8 +1; end
 		if i8x8 = NumC8x8 then i8x8:=0; iCbCr := iCbCr +1; end
+//		println("Last "+ true);
+//		println("Last chroma_AC.loop4x4_skip "+ true);
 	end
 	//end if
 
@@ -2985,16 +3123,16 @@ actor Algo_Synp_AVC_FREXT()
 			Idx_B		:= Mb_x+1;
 			x			:= 0;
 			y			:= 0;
-			cbfA		:= cbfLumaDCTab[Mb_x];
-			cbfB		:= cbfLumaDCTab[Mb_x+1];
+			cbfA		:= cbfLumaDCTab[Idx_A];
+			cbfB		:= cbfLumaDCTab[Idx_B];
 		elsif leveltype = 3 then
 			Idx			:= Mb_x+1;
 			Idx_A		:= Mb_x;
 			Idx_B		:= Mb_x+1;
 			x			:= 0;
 			y			:= 0;
-			cbfA		:= cbfChromaDCTab[Mb_x][iCbCr];
-			cbfB		:= cbfChromaDCTab[Mb_x+1][iCbCr];
+			cbfA		:= cbfChromaDCTab[Idx_A][iCbCr];
+			cbfB		:= cbfChromaDCTab[Idx_B][iCbCr];
 		elsif leveltype = 4 then
 			mbLocxIdx 	:= Mb_x << 1;
 			Idx			:= mbLocxIdx + locXYToTabIdx_4[luma4x4BlkIdx];
@@ -3014,8 +3152,8 @@ actor Algo_Synp_AVC_FREXT()
 			cbfA		:= cbfLumaACTab[Idx_A];
 			cbfB		:= cbfLumaACTab[Idx_B];
 		end
-		availA	:= availableA or x!=0;
-		availB	:= availableB or y!=0;
+		availA	 := availableA or x!=0;
+		availB	 := availableB or y!=0;
 		mb_typeA := if x!=0 then mb_type else mbTypeTab[Mb_x]  end; 
 		mb_typeB := if y!=0 then mb_type else mbTypeTab[Mb_x+1] end;
 		if maxNumCoeff != 64 or chroma_format_idc[sps_id] = 3 then
@@ -3045,18 +3183,16 @@ actor Algo_Synp_AVC_FREXT()
 		numCoeff   		  := block_endIdx;
 		numCoeff_i 		  := block_startIdx;
 	end
-	
-	residual_block_cabac.dc.isDc :  action ==> LAST:[false], RUN:[0], VALUE:[0]
-	guard leveltype=0
-	end
 
-	residual_block_cabac.dc.notDc :  action ==>
-	guard leveltype != 0
-	end
-
-	residual_block_cabac.blockSkip :  action ==>
+	residual_block_cabac.blockSkip.default :  action ==>
 	guard
-		coded_block_flag = 0
+		coded_block_flag = 0 and (leveltype != 4 and leveltype != 1) 
+	end
+	residual_block_cabac.blockSkip.chroma_AC :  action ==> LAST:[false], RUN:[0], VALUE:[0]
+	guard
+		coded_block_flag = 0 and (leveltype = 4 or leveltype = 1) 
+	do
+//		println("Last "+ false + " Run " + 0 + " Value " + 0);
 	end
 	
 	residual_block_cabac.SigLast_loop :  action ==> 
@@ -3079,6 +3215,7 @@ actor Algo_Synp_AVC_FREXT()
 		end
 		numCoeff_i := numCoeff_i + 1;
 	end
+	
 	residual_block_cabac.SigLast_endLoop :  action ==> LAST:[false], RUN:[0], VALUE:[coeffLevel[numCoeff]]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
@@ -3088,8 +3225,9 @@ actor Algo_Synp_AVC_FREXT()
 			numCoeff := numCoeff - 1;
 		end
 		getCoeffLevel();
-		println("Last "+ false + " Run " + 0 + " Value " + coeffLevel[numCoeff]);
+//		println("Last "+ false + " Run " + 0 + " Value " + coeffLevel[numCoeff]);
 	end
+	
 	residual_block_cabac.Coeff_loop :  action ==> LAST:[false], RUN:[0], VALUE:[coeffLevel[numCoeff]]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
@@ -3099,11 +3237,19 @@ actor Algo_Synp_AVC_FREXT()
 		if sigLastTab[numCoeff] = 1 then	
 			getCoeffLevel();
 		end
-		println("Last "+ false + " Run " + 0 + " Value " + coeffLevel[numCoeff]);
+//		println("Last "+ false + " Run " + 0 + " Value " + coeffLevel[numCoeff]);
 	end
-	residual_block_cabac.Coeff_endLoop :  action ==>
+	
+	residual_block_cabac.Coeff_endLoop.default :  action ==>
 	guard
-		numCoeff = 0
+		numCoeff = 0 and (leveltype != 4 and leveltype != 1)
+	end
+	
+	residual_block_cabac.Coeff_endLoop.chroma_AC :  action ==> LAST:[false], RUN:[0], VALUE:[0]
+	guard
+		numCoeff = 0 and (leveltype = 4 or leveltype = 1)
+	do
+//		println("Last "+ false + " Run " + 0 + " Value " + 0);
 	end
 	//******* End of Residual Block CABAC ********  
 
@@ -3359,7 +3505,7 @@ actor Algo_Synp_AVC_FREXT()
 
 		// residual_block
 		Residual_block										( residual_block_init.cavlc							) --> Residual_block_read_suffixLength;
-		Residual_block										( residual_block_init.cabac							) --> residual_block_cabac_dc;
+		Residual_block										( residual_block_init.cabac							) --> residual_block_cabac_sigLast_loop;
 		Residual_block_read_suffixLength					( Residual_block_read_suffixLength					) --> Residual_block_read_non_zero_coeff;
 		Residual_block_read_non_zero_coeff					( Residual_block_read_trailing_ones_sign_flag		) --> Residual_block_read_non_zero_coeff;
 		
@@ -3372,7 +3518,6 @@ actor Algo_Synp_AVC_FREXT()
 		Residual_block_read_suffixLength					( Residual_block_skip_read_suffixLength				) --> Residual_return;
 
 		// residual_block_cabac
-		residual_block_cabac_dc								( residual_block_cabac.dc	    					) -->  residual_block_cabac_sigLast_loop;
 		residual_block_cabac_sigLast_loop					( residual_block_cabac.blockSkip					) --> Residual_return;
 		residual_block_cabac_sigLast_loop					( residual_block_cabac.SigLast_loop					) --> residual_block_cabac_sigLast_loop;
 		residual_block_cabac_sigLast_loop					( residual_block_cabac.SigLast_endLoop				) --> residual_block_cabac_coeff_loop;
