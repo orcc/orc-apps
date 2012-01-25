@@ -20,7 +20,7 @@ import org.mpeg4.part10.Imp_PictureInfo.*;
 import std.util.Math.*;
 import org.mpeg4.part10.cbp.MacroBlockInfo.*;
 
-actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
+actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	uint(size=6)  MB_TYPE,
 	uint(size=32) FRAME_TO_READ,
 	int(size=32)  DEL_LIST,
@@ -28,7 +28,7 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	bool          EnableRead,
 	int (size=12) RA,
 	uint(size=31) FRAME_NUM,
-	uint(size=7)  PIC_WIDTH_IN_MB
+	uint(size=32) currPicInfo
 		==> 
 	uint(size=8)  ReadResult
 		:
@@ -44,6 +44,8 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	int (size=32) picCurrIdx        := 0;
 	uint(size=7)  picWidthInMacroB  := 0;
 	uint(size=7)  picHeightInMacroB := 0;
+	uint(size=13) picSizeInMacroB   := 0;
+	uint(size=32) nbMacroBlocksWritten := 0;
 	uint(size=16) mbLocXInPic;
 	uint(size=16) mbLocYInPic;
 	uint(size=32) readIdx;
@@ -51,17 +53,12 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 
 	bool isIDR;
 
-	getIsNewPic: action EnableRead :[enabled_read], MB_TYPE:[mbType], PIC_WIDTH_IN_MB:[PicWidthInMb, PicHeightInMb]
-		==>
+	getIsNewPic: action EnableRead :[enabled_read], MB_TYPE:[mbType] ==>
 	do
 		if(DEBUG) then
 			println("EnableRead : "+enabled_read);
 		end
 		isIDR := (mbType = NEW_FRAME_IDR);
-		picWidthInMacroB     := PicWidthInMb;
-		picHeightInMacroB	 := PicHeightInMb;
-		mbLocXInPic := 0;
-		mbLocYInPic := 0;
 	end
 
 	getReadAddr: action
@@ -76,7 +73,7 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		uint i     := 0,
 		uint(size=SZ_NBPIC) refIdx := 0
 	do
-		if(false) then
+		if(DEBUG) then
 			println("ReadAddress : "+RaOffX + " ; "+RaOffY + " ; "+RAWidth + " ; "+RAHeight);
 			println("FrameToRead : "+FrameNumToRead);
 			println("EnableRead : "+ReadEnabled);
@@ -111,47 +108,23 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		readIdx    := 0;
 	end
 
-	Done: action 
-		MB_TYPE:[mbType], 
-		PIC_WIDTH_IN_MB:[PicWidthInMb, PicHeightInMb],
-		EnableRead  :[EnabledRead]
+	readDone: action
+		EnableRead  :[EnabledRead],
+		currPicInfo :[PicSizeInMb , PicWidthInMb]
 			==>
 	guard
-		not EnabledRead,
-		mbType >= NEW_FRAME_NON_IDR		
+		not EnabledRead
 	do
-		if(isIDR)then
-			foreach int j in 0 .. NB_PIC - 1 do
-				listFrameNum[j] := -1;
-			end
-			listFrameNum[picCurrIdx]:=0;
-		end
 		if(DEBUG) then
+			println("currPicInfo : "+PicSizeInMb + " ; "+PicWidthInMb);
 			println("EnableRead : "+EnabledRead);
 		end
-		isIDR := (mbType = NEW_FRAME_IDR);
 		picWidthInMacroB     := PicWidthInMb;
-		picHeightInMacroB	 := PicHeightInMb;
-		mbLocXInPic := 0;
-		mbLocYInPic := 0;
-		foreach int y in 2*MB_WIDTH .. (picHeightInMacroB + 2) * MB_WIDTH - 1 do
-			foreach int x in 0 .. 2*MB_WIDTH - 1 do
-				pictureBuffer[picCurrIdx][x][y] := pictureBuffer[picCurrIdx]
-				                                       [2*MB_WIDTH][y];
-				pictureBuffer[picCurrIdx][(picWidthInMacroB + 2) * MB_WIDTH + x]
-				    [y] := pictureBuffer[picCurrIdx]
-				               [(picWidthInMacroB + 2) * MB_WIDTH - 1][y];
-			end
-		end
-		foreach int x in 0 .. (picWidthInMacroB + 4) * MB_WIDTH - 1 do
-			foreach int y in 0 .. 2*MB_WIDTH - 1 do
-				pictureBuffer[picCurrIdx][x][y] := pictureBuffer[picCurrIdx][x]
-				                                       [2*MB_WIDTH];
-				pictureBuffer[picCurrIdx][x][(picHeightInMacroB + 2) * MB_WIDTH + y]
-				    := pictureBuffer[picCurrIdx][x]
-				           [(picHeightInMacroB + 2) * MB_WIDTH - 1];
-			end
-		end
+		picSizeInMacroB      := PicSizeInMb;
+		picHeightInMacroB    := picSizeInMacroB / picWidthInMacroB;
+		nbMacroBlocksWritten := 0;
+		mbLocXInPic          := 0;
+		mbLocYInPic          := 0;
 	end
 
 	readData.launch: action ==> ReadResult :[rd]
@@ -168,7 +141,6 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	guard
 		readIdx = readIdxMax
 	end
-
 	
 	readRefParameters: action
 		FRAME_NUM :[frame_num]
@@ -177,6 +149,11 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		bool idxSelected := false;
 		int(size=32) i := 0;
 
+		if(isIDR)then
+			foreach int j in 0 .. NB_PIC - 1 do
+				listFrameNum[j] := -1;
+			end
+		end
 		if(DEBUG) then
 			println("FrameNum : "+frame_num);
 			println("IsIDR : "+isIDR);
@@ -196,7 +173,6 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		end
 	end
 
-	
 	writeData.launch.Chroma: action
 		MB_TYPE:[mbType], WD :[Wd] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
 			==>
@@ -204,11 +180,13 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		mbType < NEW_SLICE,
 		MB_WIDTH = MB_WIDTH_CHROMA
 	do
-		foreach int y in 0 .. MB_WIDTH_CHROMA - 1 do
-			foreach int x in 0 .. MB_WIDTH_CHROMA - 1 do
-				pictureBuffer[picCurrIdx][(mbLocXInPic + 2) * MB_WIDTH_CHROMA + x ]
-				             [(mbLocYInPic + 2) * MB_WIDTH_CHROMA + y] 
-				                 := Wd[y*MB_WIDTH_CHROMA + x];
+		if(picCurrIdx != -1) then
+			foreach int y in 0 .. MB_WIDTH_CHROMA - 1 do
+				foreach int x in 0 .. MB_WIDTH_CHROMA - 1 do
+					pictureBuffer[picCurrIdx][(mbLocXInPic + 2) * MB_WIDTH_CHROMA + x ]
+					             [(mbLocYInPic + 2) * MB_WIDTH_CHROMA + y] 
+					                 := Wd[y*MB_WIDTH_CHROMA + x];
+				end
 			end
 		end
 		mbLocXInPic := mbLocXInPic + 1;
@@ -216,6 +194,7 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 			mbLocYInPic := mbLocYInPic + 1;
 			mbLocXInPic := 0;
 		end
+		nbMacroBlocksWritten := nbMacroBlocksWritten + 1;
 	end
 
 	writeData.launch.Luma: action
@@ -225,11 +204,13 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		mbType < NEW_SLICE,
 		MB_WIDTH = MB_WIDTH_LUMA
 	do
-		foreach int y in 0 .. MB_WIDTH_LUMA - 1 do
-			foreach int x in 0 .. MB_WIDTH_LUMA - 1 do
-				pictureBuffer[picCurrIdx][(mbLocXInPic + 2) * MB_WIDTH_LUMA + x ]
-				    [(mbLocYInPic + 2) * MB_WIDTH_LUMA + y]
-				        := Wd[y*MB_WIDTH_LUMA + x];
+		if(picCurrIdx != -1) then
+			foreach int y in 0 .. MB_WIDTH_LUMA - 1 do
+				foreach int x in 0 .. MB_WIDTH_LUMA - 1 do
+					pictureBuffer[picCurrIdx][(mbLocXInPic + 2) * MB_WIDTH_LUMA + x ]
+					    [(mbLocYInPic + 2) * MB_WIDTH_LUMA + y]
+					        := Wd[y*MB_WIDTH_LUMA + x];
+				end
 			end
 		end
 		mbLocXInPic := mbLocXInPic + 1;
@@ -237,6 +218,7 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 			mbLocYInPic := mbLocYInPic + 1;
 			mbLocXInPic := 0;
 		end
+		nbMacroBlocksWritten := nbMacroBlocksWritten + 1;
 	end
 
 	writeData.slice: action MB_TYPE:[mbType], FRAME_NUM :[frame_num] ==>
@@ -244,14 +226,37 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		mbType = NEW_SLICE
 	end
 
+	writeData.done: action MB_TYPE:[mbType]==>
+	guard
+		mbType >= NEW_FRAME_NON_IDR
+	do
+		isIDR := (mbType = NEW_FRAME_IDR);
+		if(picCurrIdx != -1) then
+			foreach int y in 2*MB_WIDTH .. (picHeightInMacroB + 2) * MB_WIDTH - 1 do
+				foreach int x in 0 .. 2*MB_WIDTH - 1 do
+					pictureBuffer[picCurrIdx][x][y] := pictureBuffer[picCurrIdx]
+					                                       [2*MB_WIDTH][y];
+					pictureBuffer[picCurrIdx][(picWidthInMacroB + 2) * MB_WIDTH + x]
+					    [y] := pictureBuffer[picCurrIdx]
+					               [(picWidthInMacroB + 2) * MB_WIDTH - 1][y];
+				end
+			end
+			foreach int x in 0 .. (picWidthInMacroB + 4) * MB_WIDTH - 1 do
+				foreach int y in 0 .. 2*MB_WIDTH - 1 do
+					pictureBuffer[picCurrIdx][x][y] := pictureBuffer[picCurrIdx][x]
+					                                       [2*MB_WIDTH];
+					pictureBuffer[picCurrIdx][x][(picHeightInMacroB + 2) * MB_WIDTH + y]
+					    := pictureBuffer[picCurrIdx][x]
+					           [(picHeightInMacroB + 2) * MB_WIDTH - 1];
+				end
+			end
+		end
+	end
 
 	readDelList.launch: action DEL_LIST:[DelFrame] ==>
 	guard
 		DelFrame != SENT_DONE
 	do
-		if(DEBUG) then
-			println("readDelList.launch : ");
-		end
 		foreach int i in 0 .. NB_PIC - 1 do
 			if(listFrameNum[i] = DelFrame) then
 				listFrameNum[i] := -1;
@@ -262,32 +267,30 @@ actor Mgnt_DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	readDelList.done: action DEL_LIST:[DelVal] ==>
 	guard
 		DelVal = SENT_DONE
-	do
-		if(DEBUG) then
-			println("readDelList.done : ");
-		end
 	end
   
 	schedule fsm  GetIsNewPic:
-		GetIsNewPic       (getIsNewPic        )--> ReadRefParameters;
-		ReadRefParameters (readRefParameters  )--> Checkreadwrite;
+		GetIsNewPic       (getIsNewPic        )--> Checkread;
 
-		Checkreadwrite    (getReadAddr        )--> Read;
+		Checkread         (getReadAddr        )--> Read;
+		Checkread         (readDone           )--> ReadDelList;
+
 		Read              (readData.launch    )--> Read;
-		Read              (readData.done      )--> Checkreadwrite;
-
-		Checkreadwrite    (writeData.launch   )--> Checkreadwrite;
-		
-		Checkreadwrite    (writeData.slice    )--> Checkreadwrite;
-		Checkreadwrite    (Done               )--> ReadDelList;
+		Read              (readData.done      )--> Checkread;
 
 		ReadDelList       (readDelList.launch )--> ReadDelList;
 		ReadDelList       (readDelList.done   )--> ReadRefParameters;
 
+		ReadRefParameters (readRefParameters  )--> Write;
+
+		Write             (writeData.launch   )--> Write;
+		Write             (writeData.done     )--> Checkread;
+		Write             (writeData.slice    )--> Write;
 	end
-	
 	priority
-		writeData          > getReadAddr > Done;
+		getReadAddr        > readDone;
+		readData.launch    > readData.done;
+		writeData.launch   > writeData.done > writeData.slice;
 		readDelList.launch > readDelList.done;
 	end
 end
