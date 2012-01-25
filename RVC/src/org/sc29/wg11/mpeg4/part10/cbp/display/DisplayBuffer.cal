@@ -43,6 +43,7 @@ actor DisplayBuffer ( int MB_WIDTH )
 	int (size=32) listPOC[NB_PIC];
 	bool          picDisplayed[NB_PIC] := [true  :for int s in 0 .. NB_PIC-1];
 	int           nbBlkWritten[NB_PIC];
+	int           picSizeInMacroB[NB_PIC];
 
 	int (size=32) picCurrIdx      := 0;
 
@@ -50,6 +51,7 @@ actor DisplayBuffer ( int MB_WIDTH )
 	int nbBlkDisplayed;
 	int(size=32)         nextPOCtoDisplay    := -1;
 	int(size=SZ_NBPIC+1) idxNextPOCtoDisplay := -1;
+	uint(size=6) mbTypeFrame;
 
 	bool isIDR;
 	
@@ -85,14 +87,33 @@ actor DisplayBuffer ( int MB_WIDTH )
 			picDisplayed[0] := false;
 		end
 		nbBlkWritten[picCurrIdx] := 0;
+		picSizeInMacroB[picCurrIdx] := 0;
 	end
 
+	getMbType.slice: action MB_TYPE:[mbType], POC:[Valpoc] ==>
+	guard
+		mbType = NEW_SLICE
+	end
+
+	getMbType.mb: action MB_TYPE:[mbType] ==>
+	guard
+		mbType < NEW_SLICE
+	do
+		picSizeInMacroB[picCurrIdx] := picSizeInMacroB[picCurrIdx] + 1;
+	end
+	
+	getMbType.frame: action MB_TYPE:[mbType] ==>
+	guard
+		mbType >= NEW_FRAME_NON_IDR
+	do
+		mbTypeFrame := mbType;
+	end
 
 	write_data.Luma : action
-		MB_TYPE:[mbType], WD :[wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
+		WD :[wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
 			==>
 	guard
-		mbType < NEW_SLICE,
+		nbBlkWritten[picCurrIdx] < picSizeInMacroB[picCurrIdx],
 		MB_WIDTH = MB_WIDTH_LUMA
 	do
 		foreach int i in 0 .. MB_WIDTH_LUMA * MB_WIDTH_LUMA - 1
@@ -100,13 +121,14 @@ actor DisplayBuffer ( int MB_WIDTH )
 			picture[picCurrIdx][nbBlkWritten[picCurrIdx]][i] := wd[i];
 		end
 		nbBlkWritten[picCurrIdx] := nbBlkWritten[picCurrIdx] + 1;
+		println("nbBlkWritten[picCurrIdx]" + nbBlkWritten[picCurrIdx]);
 	end
 
 	write_data.Chroma : action
-		MB_TYPE:[mbType], WD :[wd] repeat  MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+		WD :[wd] repeat  MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
 			==>
 	guard
-		mbType < NEW_SLICE,
+		nbBlkWritten[picCurrIdx] < picSizeInMacroB[picCurrIdx],
 		MB_WIDTH = MB_WIDTH_CHROMA
 	do
 		foreach int i in 0 .. MB_WIDTH_CHROMA * MB_WIDTH_CHROMA - 1
@@ -116,17 +138,12 @@ actor DisplayBuffer ( int MB_WIDTH )
 		nbBlkWritten[picCurrIdx] := nbBlkWritten[picCurrIdx] + 1;
 	end
 
-	write_picture.slice: action MB_TYPE:[mbType], POC:[Valpoc] ==>
-	guard
-		mbType = NEW_SLICE
-	end
-
-	write_picture.done: action MB_TYPE:[mbType] ==>
-	guard
-		mbType >= NEW_FRAME_NON_IDR
+	write_picture.done: action ==>
+	guard 
+		nbBlkWritten[picCurrIdx] = picSizeInMacroB[picCurrIdx]
 	do
 		nbBlkDisplayed := 0;
-		isIDR := (mbType = NEW_FRAME_IDR);
+		isIDR := (mbTypeFrame = NEW_FRAME_IDR);
 	end
 
 	//write MB on the output display
@@ -196,11 +213,14 @@ actor DisplayBuffer ( int MB_WIDTH )
   
 	schedule fsm  NewPic:
 		NewPic  			(ckeckNewPic          		)--> ReadPicParameters;
-		ReadPicParameters   (readPicParameters          )--> WriteData;
+		ReadPicParameters   (readPicParameters          )--> getMbType;
+
+		getMbType           (getMbType.slice            )--> getMbType;
+		getMbType           (getMbType.mb               )--> getMbType;
+		getMbType           (getMbType.frame            )--> WriteData;
 
 		WriteData           (write_data                 )--> WriteData;
 		WriteData           (write_picture.done         )--> getNextPOCtoDisplay;
-		WriteData           (write_picture.slice        )--> WriteData;
 
 		getNextPOCtoDisplay (getNextPOCtoDisplay.launch )--> getidxdisplay;
 		getNextPOCtoDisplay (getNextPOCtoDisplay.skip   )--> ReadPicParameters;
