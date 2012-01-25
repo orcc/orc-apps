@@ -51,6 +51,8 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	uint(size=32) readIdx;
 	uint(size=32) readIdxMax;
 	uint(size=31) frameNum;
+	
+	uint(size=6) mbTypeFrame;
 
 	bool isIDR;
 
@@ -71,7 +73,17 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	do
 		frameNum:=frame_num;
 	end
+
+	getMbType.skip: action MB_TYPE :[MbType] ==>
+	guard MbType <NEW_SLICE
+	end
 	
+	getMbType.slice: action MB_TYPE :[MbType], FRAME_NUM :[frame_num] ==>
+	guard MbType  = NEW_SLICE
+	do
+		frameNum:=frame_num;
+	end
+
 	getReadAddr: action
 		RA :[RaOffX , RaOffY , RAWidth , RAHeight],
 		FRAME_TO_READ :[FrameNumToRead],
@@ -120,13 +132,16 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	end
 
 	readDone: action
-		EnableRead  :[EnabledRead]
+		EnableRead  :[EnabledRead],
+		MB_TYPE  :[MbType]
 			==>
 	guard
-		not EnabledRead
+		not EnabledRead,
+		MbType >= NEW_FRAME_NON_IDR
 	do
 		mbLocXInPic          := 0;
 		mbLocYInPic          := 0;
+		mbTypeFrame := MbType;
 	end
 
 	readData.launch: action ==> ReadResult :[rd]
@@ -175,10 +190,9 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	end
 
 	writeData.launch.Chroma: action
-		MB_TYPE:[mbType], WD :[Wd] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+		WD :[Wd] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
 			==>
 	guard
-		mbType < NEW_SLICE,
 		nbMacroBlocksWritten < picSizeInMacroB,
 		MB_WIDTH = MB_WIDTH_CHROMA
 	do
@@ -200,10 +214,9 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	end
 
 	writeData.launch.Luma: action
-		MB_TYPE:[mbType], WD :[Wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
+		WD :[Wd] repeat MB_WIDTH_LUMA*MB_WIDTH_LUMA
 			==>
 	guard
-		mbType < NEW_SLICE,
 		nbMacroBlocksWritten < picSizeInMacroB,
 		MB_WIDTH = MB_WIDTH_LUMA
 	do
@@ -224,17 +237,11 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		nbMacroBlocksWritten := nbMacroBlocksWritten + 1;
 	end
 
-	writeData.slice: action MB_TYPE:[mbType], FRAME_NUM :[frame_num] ==>
+	writeData.done: action PIC_SIZE_IN_MB :[valPicWidthInMb, valPicHeightInMb] ==>
 	guard
-		mbType = NEW_SLICE
-	end
-
-	writeData.done: action MB_TYPE:[mbType], PIC_SIZE_IN_MB :[valPicWidthInMb, valPicHeightInMb] ==>
-	guard
-		mbType >= NEW_FRAME_NON_IDR,
 		nbMacroBlocksWritten = picSizeInMacroB
 	do
-		isIDR := (mbType = NEW_FRAME_IDR);
+		isIDR := (mbTypeFrame = NEW_FRAME_IDR);
 		if(picCurrIdx != -1) then
 			foreach int y in 2*MB_WIDTH .. (picHeightInMacroB + 2) * MB_WIDTH - 1 do
 				foreach int x in 0 .. 2*MB_WIDTH - 1 do
@@ -282,6 +289,7 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 
 		getFrameNum       (getFrameNum        )--> Checkread;
 
+		Checkread         (getMbType          )--> Checkread;
 		Checkread         (getReadAddr        )--> Read;
 		Checkread         (readDone           )--> ReadDelList;
 
@@ -295,12 +303,11 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 
 		Write             (writeData.launch   )--> Write;
 		Write             (writeData.done     )--> getFrameNum;
-		Write             (writeData.slice    )--> Write;
 	end
 	priority
 		getReadAddr        > readDone;
 		readData.launch    > readData.done;
-		writeData.launch   > writeData.done > writeData.slice;
+		writeData.launch   > writeData.done;
 		readDelList.launch > readDelList.done;
 	end
 end
