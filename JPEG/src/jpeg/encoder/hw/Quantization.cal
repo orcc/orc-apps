@@ -29,29 +29,39 @@
  
 // Author: Endri Bezati <endri.bezati@epfl.ch>
 
-package jpeg.encoder.hw.quanta;
+package jpeg.encoder.hw;
 
 import jpeg.encoder.common.Tables.QT;
 import jpeg.encoder.common.Tables.zigzag;
+import jpeg.encoder.common.Tables.DivTab;
 
-actor Quant()
+actor Quantization()
 	int(size=32) In
-		==>
-			int(size=32) QT_Out,
-			int(size=32) ZZ_Out:
+		==> 
+			int(size=32) Out:		
+	int Block_Type := 0; // Block_Type = 0,1,2,3 (Luma), Block_Type = 4,5 (Chroma)
 	
-	int Block_Type := 0; // Block_Type = 0,1,2,3 (Luma), Block_Type = 4,5 (Chroma)	
+	function division(int n, int d) --> int:
+		if n = 0 then
+			0
+		else
+			if n < 0 then
+				-((-n * DivTab[d - 1]) >> 16)
+			else
+				((n * DivTab[d - 1]) >> 16)
+			end
+		end 
+	end 
+	
+	int data[64];
 	
 	int Counter := 0;
 	
-	List(type:int(size=32), size=64) data := [0: for int i in 0 .. 63];
-	
-	
-	read: action In:[token]==> 
+	read: action In:[token] ==>
 	do
 		data[Counter] := token;
 		Counter := Counter + 1;
-	end	
+	end
 	
 	finish: action ==>
 	guard
@@ -61,15 +71,24 @@ actor Quant()
 	end
 	
 	
-	send: action ==> QT_Out:[qt], ZZ_Out:[zz]
+	send: action ==> Out:[token]
 	var
-		int(size=32) qt := 0,
-		int(size=32) zz	:= 0
+		int token,
+		int qt,
+		int dataCounter
 	do
 		qt := QT[Block_Type >> 2][Counter];
-		zz := data[zigzag[Counter]];
+		dataCounter := data[zigzag[Counter]];
+		if data[zigzag[Counter]] > 0 then
+			dataCounter := data[zigzag[Counter]] + (qt >> 2);
+		else
+			dataCounter := data[zigzag[Counter]] + (qt >> 2);
+		end
+		token := division(dataCounter, qt);
+		
 		Counter := Counter + 1;
-	end	
+		
+	end
 	
 	changeBlock: action ==>
 	do
@@ -79,13 +98,12 @@ actor Quant()
 		end
 	end
 	
+	
 	schedule fsm s0:
-		s0	(read)		--> s0;
+		s0	(read)	--> s0;
 		s0	(finish)	--> s1;
-		
-		s1	(send)		--> s1;
+		s1	(send)	--> s1;
 		s1	(finish)	--> s2;
-		
 		s2	(changeBlock)	--> s0;
 	end
 	
