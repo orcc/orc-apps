@@ -37,37 +37,37 @@ package jpeg.decoder.hw;
  
 actor Huffman420() 
 	int(size=8) Bit, 
-	uint(size=8) HT, int(size=32) SOI
+	int(size=9) HT, int(size=16) SOI
 		==> 
 			int(size=24) Block :
 
-	uint(size=3) v_read_HT := 0;
-	uint(size=16) cur_val := 0;
-	uint cur_len := 0;
-	uint(size=32) to_read := 0;
-	uint(size=32) to_readHT := 0;
-	uint(size=32) cur_HT;
+	int(size=4) v_read_HT := 0;
+	int(size=17) cur_val := 0;
+	int cur_len := 0;
+	int(size=32) to_read := 0;
+	int(size=32) to_readHT := 0;
+	int(size=32) cur_HT;
 	
 	// The indexes of each HT.
-	List(type:uint, size=3) dctab = [0, 1, 1];
-	List(type:uint, size=3) actab = [2, 3, 3];
+	List(type:int, size=3) dctab = [0, 1, 1];
+	List(type:int, size=3) actab = [2, 3, 3];
 	
-	List(type:List(type:uint(size=8), size=256), size=4) ht_lookup_codelen;
+	List(type:List(type:int(size=9), size=256), size=4) ht_lookup_codelen;
 
-	// A huge array is allocated for constant lookup in Huffman table.
-	// This is simple and fast, but clearly not memory efficient.
-	// The length of a code cannot exceed 16 bits, we therefore allocate 4 arrays of size 2^16.
-	List(type:List(type:uint(size=8), size=65536), size=4) ht_lookup_code;
+	int GUESSEDSIZE = 256;
+	List(type:List(type:int, size=GUESSEDSIZE), size=4) ht_lookup_code_index;
+	List(type:List(type:int(size=9), size=GUESSEDSIZE), size=4) ht_lookup_code_value;
 	
-	List(type:uint(size=8), size=16) ht_codes_len;
-	List(type:uint(size=8), size=256) ht_codes_list;
 	
-	uint cur_count := 0;
+	List(type:int(size=9), size=16) ht_codes_len;
+	List(type:int(size=9), size=256) ht_codes_list;
+	
+	int cur_count := 0;
 	int(size=32) component := 0;
-	List(type:uint, size=3) subsampling = [4, 1, 1];
+	List(type:int, size=3) subsampling = [4, 1, 1];
 	List(type:int(size=32), size=3) lastDC;
-	List(type:uint(size=24), size=64) block;
-	uint idx;
+	List(type:int(size=25), size=64) block;
+	int idx;
 	
 	// Utility action to read a specified number of bits.
 	// This is an unnamed action, ie it is always enabled and has highest priority.
@@ -98,56 +98,28 @@ actor Huffman420()
 	   	to_read := to_read - 1;
 	    cur_len := cur_len + 1;
 	    
-	     bitcount := (bitcount + 1) & 7;
+	    bitcount := (bitcount + 1) & 7;
 	end
 	
-	// Procedures
-	procedure generate_HT()
-	var
-		int v,
-		uint(size=8) len,
-		uint(size=8) code_idx,
-		uint(size=16) spread
-	begin
-		v := 0;
-		code_idx := 0;
-		spread := 32768;
-		// Depending on the size of the code, we "spread" the bit sequence on the array so that every value 
-		// prefixed by this sequence refers to the same code.
-		// For example if the code 23 is encoded by 1111110111 (10 bits), in the array all values ranging from
-		// 1111110111000000 (16 bits) to 1111110111111111 (16 bits) refers to code 23.
-		foreach uint(size=4) i in 0 .. 15
-		do
-			foreach uint(size=8) j in 0 .. ht_codes_len[i] - 1
-			do
-				len := i + 1;
-				ht_lookup_codelen[cur_HT][ht_codes_list[code_idx]] := len;
-				foreach uint(size=16) k in 0 .. spread - 1
-				do
-					ht_lookup_code[cur_HT][v] := ht_codes_list[code_idx];
-					v := v + 1;
-				end
-				code_idx := code_idx + 1;
-			end
-			spread := spread >> 1;
-		end
-	end
-	
-	uint code;
+	int code;
 	
 	// Actions
 	int count := 0;
 	int mbcount;
+	int width;
 	
-	getSOI: action SOI:[w, h] ==>
+	
+	getSoiW: action SOI:[w] ==>
 	do
-		mbcount := 6 * (w>>4) * (h>>4);
+		width := w;
 	end
 	
+	getSoiH: action SOI:[h] ==>
+	do
+		mbcount := 6 * width * h;
+	end
 	
 	int ht_idx;
-	
-	
 	List(type:int(size=9),size=17) htList;
 	
 	readHT: action HT:[token] ==>
@@ -165,7 +137,7 @@ actor Huffman420()
 	
 	receive_HT_len:action  ==>
 	var
-		uint sum := 0
+		int sum := 0
 	do
 		ht_idx := 0;
 		// HT selection
@@ -189,8 +161,34 @@ actor Huffman420()
 	
 	build_HT:action ==>
 	guard (to_readHT = 0)
+	var
+		int v,
+		int u,
+		int(size=9) len,
+		int(size=9) code_idx,
+		int(size=17) spread
 	do
-		generate_HT();
+		u := 0;
+		v := 0;
+		code_idx := 0;
+		spread := 32768;
+		foreach int i in 0 .. 15
+		do
+			foreach int j in 0 .. ht_codes_len[i] - 1
+			do
+				len := i + 1;
+				ht_lookup_codelen[cur_HT][ht_codes_list[code_idx]] := len;
+				
+				ht_lookup_code_index[cur_HT][u] := v;
+				ht_lookup_code_value[cur_HT][u] := ht_codes_list[code_idx];
+				u := u + 1;
+				v := v + spread;
+				
+				code_idx := code_idx + 1;
+			end
+			spread := spread >> 1;
+		end
+		ht_lookup_code_index[cur_HT][u] := 1000000000;
 		v_read_HT := v_read_HT + 1;
 	end
 	
@@ -208,12 +206,20 @@ actor Huffman420()
 	end
 	
 	DC.done_len:action ==>
-	guard (to_read = 0)
+	guard 
+		to_read = 0
+	var
+		int b := 0
 	do
 		// Even if cur_val is of size 16, it is represented by a BigInteger during Orcc simulation.
 		// A bitand is therefore needed to extract only 16 bits.
 		cur_val := cur_val & 0xFFFF;
-		code := ht_lookup_code[cur_HT][cur_val];
+		
+		while (cur_val >= ht_lookup_code_index[cur_HT][b]) do
+			b := b + 1;
+		end
+		code := ht_lookup_code_value[cur_HT][b - 1];
+
 		to_read := ht_lookup_codelen[cur_HT][code];
 	    cur_len := to_read;
 	end
@@ -245,10 +251,18 @@ actor Huffman420()
 	end
 	
 	AC.done_len:action ==>
-	guard (to_read = 0)
+	guard
+		to_read = 0
+	var
+		int b := 0
 	do
 	    cur_val := cur_val & 0xFFFF;
-		code := ht_lookup_code[cur_HT][cur_val];
+		
+		while (cur_val >= ht_lookup_code_index[cur_HT][b]) do
+			b := b + 1;
+		end
+		code := ht_lookup_code_value[cur_HT][b - 1];
+		
 		to_read := ht_lookup_codelen[cur_HT][code];
 		idx := idx + (code >> 4) + 1;
 	
@@ -344,8 +358,9 @@ actor Huffman420()
 		
 	// Schedule FSM
 	schedule fsm waitSOI:
-		waitSOI(getSOI) --> wait_HT;
-		
+	
+		waitSOI(getSoiW) --> waitSoiH;
+		waitSoiH(getSoiH) --> wait_HT;
 		
 		wait_HT	(readHT)			--> wait_HT;
 		wait_HT	(readHtFinish)		--> read_HT;
