@@ -28,6 +28,7 @@
 
 /*
  * Author : Felix Abecassis
+ * Modified: Abdellah Elguindy, HT tables reduction
  */
   
 package jpeg.decoder;
@@ -50,11 +51,11 @@ actor Huffman420()
 	List(type:uint, size=3) actab = [2, 3, 3];
 	
 	List(type:List(type:uint(size=8), size=256), size=4) ht_lookup_codelen;
-
-	// A huge array is allocated for constant lookup in Huffman table.
-	// This is simple and fast, but clearly not memory efficient.
-	// The length of a code cannot exceed 16 bits, we therefore allocate 4 arrays of size 2^16.
-	List(type:List(type:uint(size=8), size=65536), size=4) ht_lookup_code;
+	
+	// Values have to be adjusted!!!
+	int GUESSEDSIZE = 256;
+	List(type:List(type:int, size=GUESSEDSIZE), size=4) ht_lookup_code_index;
+	List(type:List(type:uint(size=8), size=GUESSEDSIZE), size=4) ht_lookup_code_value;
 	
 	List(type:uint(size=8), size=16) ht_codes_len;
 	List(type:uint(size=8), size=256) ht_codes_list;
@@ -98,13 +99,26 @@ actor Huffman420()
 	end
 	
 	// Procedures
+	procedure get_HT_val(uint(size=32) i, uint(size=16) j)
+	var
+		int b := 0
+	begin
+		while (j >= ht_lookup_code_index[i][b])
+		do
+			b := b + 1;
+		end
+		code := ht_lookup_code_value[i][b - 1];
+	end
+	
 	procedure generate_HT()
 	var
 		int v,
 		uint(size=8) len,
 		uint(size=8) code_idx,
-		uint(size=16) spread
+		uint(size=16) spread,
+		int u
 	begin
+		u := 0;
 		v := 0;
 		code_idx := 0;
 		spread := 32768;
@@ -114,19 +128,20 @@ actor Huffman420()
 		// 1111110111000000 (16 bits) to 1111110111111111 (16 bits) refers to code 23.
 		foreach uint(size=4) i in 0 .. 15
 		do
+			len := i + 1;
 			foreach uint(size=8) j in 0 .. ht_codes_len[i] - 1
 			do
-				len := i + 1;
 				ht_lookup_codelen[cur_HT][ht_codes_list[code_idx]] := len;
-				foreach uint(size=16) k in 0 .. spread - 1
-				do
-					ht_lookup_code[cur_HT][v] := ht_codes_list[code_idx];
-					v := v + 1;
-				end
+				
+				ht_lookup_code_index[cur_HT][u] := v;
+				ht_lookup_code_value[cur_HT][u] := ht_codes_list[code_idx];
+				u := u + 1;
+				v := v + spread;
 				code_idx := code_idx + 1;
 			end
 			spread := spread >> 1;
 		end
+		ht_lookup_code_index[cur_HT][u] := 1000000000;
 	end
 	
 	uint code;
@@ -137,7 +152,7 @@ actor Huffman420()
 	
 	getSOI: action SOI:[w, h] ==>
 	do
-		mbcount := 6 * (w) * (h);
+		mbcount := 6 * w * h;
 	end
 	
 	
@@ -193,7 +208,8 @@ actor Huffman420()
 		// Even if cur_val is of size 16, it is represented by a BigInteger during Orcc simulation.
 		// A bitand is therefore needed to extract only 16 bits.
 		cur_val := cur_val & 0xFFFF;
-		code := ht_lookup_code[cur_HT][cur_val];
+		get_HT_val(cur_HT, cur_val);
+		//code := ht_lookup_code[cur_HT][cur_val];
 		to_read := ht_lookup_codelen[cur_HT][code];
 	    cur_len := to_read;
 	end
@@ -228,8 +244,10 @@ actor Huffman420()
 	guard (to_read = 0)
 	do
 	    cur_val := cur_val & 0xFFFF;
-		code := ht_lookup_code[cur_HT][cur_val];
+	    get_HT_val(cur_HT, cur_val);
+		//code := ht_lookup_code[cur_HT][cur_val];
 		to_read := ht_lookup_codelen[cur_HT][code];
+		//println(idx + " " + code);
 		idx := idx + (code >> 4) + 1;
 	
 	    cur_len := to_read;
