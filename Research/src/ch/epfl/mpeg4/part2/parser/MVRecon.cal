@@ -57,6 +57,8 @@ actor MVRecon ()
 
 	List(type: int(size=MV_SZ), size=BUF_SIZE) buf := [ 0 : for int i in 1 .. BUF_SIZE ];
 
+	int(size=MV_SZ) f;
+	
 	int(size=MV_SZ) mv_rsize;
 
 	int(size=MV_SZ) mv_range;
@@ -91,10 +93,10 @@ actor MVRecon ()
 		ptr := 8;
 		if fcode > 0 then
 			mv_rsize := fcode - 1;
-			mv_range := 1 << (mv_rsize + 5);
-			mv_low := -mv_range;
-			mv_high := mv_range - 1;
-			mv_range := (mv_range << 1);
+			f := 1 << mv_rsize;
+			mv_high := 32*f- 1;
+			mv_low := -32*f;
+			mv_range := 64*f;
 		end	
 	end
 	
@@ -145,6 +147,8 @@ actor MVRecon ()
 	int b;
 	int c;
 	
+	// cf. 14496-2 sec.7.6.5
+	// block 0   1      above->2    above_right->2
 	compute.predict.y0: action ==>
 	guard
 		comp = 0
@@ -190,52 +194,52 @@ actor MVRecon ()
 		b := ptr;
 		c := ptr + 1;
 	end
-	
-	
-	function predict(int(size=9) mag, int(size=9) res, int(size=8) offset) --> int(size=9)
-	var
-		int apred := buf[a + offset],
-		int bpred := buf[b + offset],
-		int cpred := buf[c + offset],
-		int pred := if comp >= 2 or not top_edge then median(apred, bpred, cpred) else apred end, 
-		int shift := ( if mag < 0 then ~(mag) else mag - 1 end << mv_rsize) + res + 1	
-	:
-  		mvclip( mvcalc( pred, mag, shift ) )
-	end
-	
+		
 	// Compute MVs for all Y components in FOURMV mode, otherwise just one
 	compute.start: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
+	var 		
+		int pred
 	do
-		mv_x := predict(mag_x, res_x, 0);
+		if f = 1 or mag_x = 0 then
+			mv_x := mag_x;
+		else
+			mv_x := (abs(mag_x) - 1) * f + res_x + 1;
+			if  mag_x < 0 then
+				mv_x := -mv_x;
+			end
+		end
+		
+		pred := if comp >= 2 or not top_edge then median(buf[a], buf[b], buf[c]) else buf[a] end;
+		mv_x := pred + mv_x;
+		if (mv_x < mv_low)  then
+			mv_x := mv_x + mv_range;
+		end
+		if (mv_x > mv_high) then
+			mv_x := mv_x - mv_range;
+		end
+		
 		sum_x := sum_x + mv_x;
-		mv_y := predict(mag_y, res_y, 4);
+		
+		if f = 1 or mag_y = 0 then
+			mv_y := mag_y;
+		else
+			mv_y := (abs(mag_y) - 1) * f + res_y + 1;
+			if  mag_y < 0 then
+				mv_y := -mv_y;
+			end
+		end
+		
+		pred := if comp >= 2 or not top_edge then median(buf[a+4], buf[b+4], buf[c+4]) else buf[a+4] end;
+		mv_y := pred + mv_y;
+		if ( mv_y < mv_low )  then
+			mv_y := mv_x + mv_range;
+		end
+		if (mv_y > mv_high) then
+			mv_y := mv_y - mv_range;
+		end
 		sum_y := sum_y + mv_y;
 	end
 
-
-	function mvcalc(int pred, int mv_mag, int mag_shift) --> int :
-		if mv_rsize = 0 or mv_mag = 0 then
-			pred + mv_mag
-		else
-			if mv_mag < 0 then
-				pred - mag_shift
-			else
-				pred + mag_shift
-			end
-		end
-	end
-
-	function mvclip(int v) --> int :
-		if v < mv_low then
-			v + mv_range
-		else
-			if v > mv_high then
-				v - mv_range
-			else
-				v
-			end
-		end
-	end
 
 	write.luma: action ==> MV:[ mv_x, mv_y ]
 	guard
