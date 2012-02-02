@@ -105,12 +105,17 @@ actor Algo_Synp_AVC_FREXT()
 			int(size=5)   SUB_MB_PRED_REF_IDX_l0,
 			int(size=16)  SUB_MB_PRED_MVD_l0, 
 			
+			bool 		  DIRECT_SPATIAL_MV_PRED_FLAG,
+			
 			int(size=16)  WIDTH, 
 			int(size=16)  HEIGHT
 
 		:
 
 	bool DEBUG_BITSTREAM = false;
+	bool MB_PRED = false;
+	bool SUB_MB_PRED = false;
+	
 	/**************************************************************************
 	 * search_start_code or getByte
 	 *************************************************************************/
@@ -1094,18 +1099,20 @@ actor Algo_Synp_AVC_FREXT()
 	end
 
 	//if (redundant_pic_cnt_present_flag)
-	read_SliceH_redundant_pic_cnt: action ==>
+	read_SliceH_redundant_pic_cnt: action ==> DIRECT_SPATIAL_MV_PRED_FLAG:[direct_spatial_mv_pred_flag]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1],
-		uint(size=1) num_ref_idx_active_override_flag
+		uint(size=1) num_ref_idx_active_override_flag,
+		bool direct_spatial_mv_pred_flag := false
 	do
 		if(redundant_pic_cnt_present_flag[pps_id] = 1) then
 			vld_ue_name(  fifo, res, "redundant_pic_cnt                             ");
 		end
 		if( slice_type = SLICE_TYPE_B ) then
 			vld_u_name(1,  fifo, res, "direct_spatial_mv_pred_flag                             ");
+			direct_spatial_mv_pred_flag:= if res[0] = 1 then true else false end;
 		end
 		if( slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP or slice_type = SLICE_TYPE_B ) then
 			vld_u_name(1,  fifo, res, "num_ref_idx_active_override_flag                             ");
@@ -1141,15 +1148,15 @@ actor Algo_Synp_AVC_FREXT()
 		reordering_of_pic_nums_idc :=0;
 	end
 
-	//if (ref_pic_list_reordering_flag_l0) || (ref_pic_list_reordering_flag_l1)
+	//if (ref_pic_list_reordering_flag_l0))
 	//do
-	read_SliceH_ref_pic_list_reordering_flag.isl0: action ==>
+	read_SliceH_ref_pic_list_reordering_flag.l0.isl0: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		ref_pic_list_reordering_flag_l0 = 1
 	end
 
-	read_SliceH_reordering_of_pic_nums_idc: action ==> REF_REORDERING:[reordering_of_pic_nums_idc]
+	read_SliceH_reordering_of_pic_nums_idc.l0: action ==> REF_REORDERING:[reordering_of_pic_nums_idc]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
@@ -1159,8 +1166,8 @@ actor Algo_Synp_AVC_FREXT()
 		reordering_of_pic_nums_idc := res[0];
 	end
 
-	//if (reordering_of_pic_nums_idc == 0 || reordering_of_pic_nums_idc == 1)
-	read_SliceH_reordering_of_pic_nums_idc.idc1: action ==> REF_REORDERING:[abs_diff_pic_num_minus1]
+	//if (reordering_of_pic_nums_idc == 0)
+	read_SliceH_reordering_of_pic_nums_idc.l0.idc1: action ==> REF_REORDERING:[abs_diff_pic_num_minus1]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		reordering_of_pic_nums_idc =0 or reordering_of_pic_nums_idc =1
@@ -1178,7 +1185,7 @@ actor Algo_Synp_AVC_FREXT()
 	
 
 	// else if (reordering_of_pic_nums_idc == 2)
-	read_SliceH_reordering_of_pic_nums_idc.idc2: action ==> REF_REORDERING:[long_term_pic_num]
+	read_SliceH_reordering_of_pic_nums_idc.l0.idc2: action ==> REF_REORDERING:[long_term_pic_num]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		reordering_of_pic_nums_idc =2
@@ -1191,7 +1198,7 @@ actor Algo_Synp_AVC_FREXT()
 	end
 
 	//else (reordering_of_pic_nums_idc == 3)
-	read_SliceH_reordering_of_pic_nums_idc.idc3: action ==>
+	read_SliceH_reordering_of_pic_nums_idc.l0_idc3: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		reordering_of_pic_nums_idc = 3
@@ -1199,19 +1206,94 @@ actor Algo_Synp_AVC_FREXT()
 	//end if
 	//while (reordering_of_pic_nums_idc != 3)
 
-	//else ( !ref_pic_list_reordering_flag_l0 && !ref_pic_list_reordering_flag_l1 )
-	read_SliceH_skip_reordering_of_pic_nums_idc: action ==>
+	read_SliceH_skip_reordering_of_pic_nums_idc.l0: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		ref_pic_list_reordering_flag_l0 = 0
 	end
 	//end if
 
-	//else (slice_type % 5 == 2 || slice_type % 5 == 4)
-	read_SliceH_skip_ref_pic_list_reordering: action ==> REF_REORDERING:[0], NB_REF_FRAME_l0:[0], REF_TYPE_l0:[0]
+	uint(size=1) ref_pic_list_reordering_flag_l1;
+
+	//if (slice_type % 5 = 1)
+	read_SliceH_ref_pic_list_reordering_flag_l1: action ==> //mrl REF_TYPE_l1:[0], REF_REORDERING:[ref_pic_list_reordering_flag_l1], NB_REF_FRAME_l1:[slice_num_ref_idx_l1_active_minus1 + 1]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		slice_type = SLICE_TYPE_I or slice_type = SLICE_TYPE_SI
+		slice_type = SLICE_TYPE_B
+	var
+		uint(size=32) res[1]
+	do
+		vld_u_name(1,  fifo, res, "ref_pic_list_reordering_flag_l1                             ");
+		ref_pic_list_reordering_flag_l1 := res[0];
+		reordering_of_pic_nums_idc :=0;
+	end
+
+	//if (ref_pic_list_reordering_flag_l1))
+	//do
+	read_SliceH_ref_pic_list_reordering_flag.l1.isl1: action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		ref_pic_list_reordering_flag_l1 = 1
+	end
+
+	read_SliceH_reordering_of_pic_nums_idc.l1: action ==> //mrl REF_REORDERING:[reordering_of_pic_nums_idc]
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+	var
+		uint(size=32) res[1]
+	do
+		vld_ue_name(  fifo, res, "reordering_of_pic_nums_idc                             ");
+		reordering_of_pic_nums_idc := res[0];
+	end
+
+	//if (reordering_of_pic_nums_idc == 0 || reordering_of_pic_nums_idc == 1)
+	read_SliceH_reordering_of_pic_nums_idc.l1.idc1: action ==> //mrl REF_REORDERING:[abs_diff_pic_num_minus1]
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		reordering_of_pic_nums_idc =0 or reordering_of_pic_nums_idc =1
+	var
+		uint(size=32) res[1],
+		uint(size=32) abs_diff_pic_num_minus1
+	do
+		vld_ue_name(  fifo, res, "abs_diff_pic_num_minus1                             ");
+		abs_diff_pic_num_minus1 := res[0];
+	end
+
+	//******* dec_ref_pic_marking  ********/
+	
+
+	// else if (reordering_of_pic_nums_idc == 2)
+	read_SliceH_reordering_of_pic_nums_idc.l1.idc2: action ==> //mrl REF_REORDERING:[long_term_pic_num]
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		reordering_of_pic_nums_idc =2
+	var
+		uint(size=32) res[1],
+		uint(size=5) long_term_pic_num
+	do
+		vld_ue_name(  fifo, res, "long_term_pic_num                             ");
+		long_term_pic_num := res[0];
+	end
+
+	//else (reordering_of_pic_nums_idc == 3)
+	read_SliceH_reordering_of_pic_nums_idc.l1_idc3: action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		reordering_of_pic_nums_idc = 3
+	end
+	//end if
+	//while (reordering_of_pic_nums_idc != 3)
+
+	read_SliceH_skip_reordering_of_pic_nums_idc.l1: action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		ref_pic_list_reordering_flag_l1 = 0
+	end
+	//end if
+
+	read_SliceH_skip_ref_pic_list_reordering: action ==> REF_REORDERING:[0], NB_REF_FRAME_l0:[0], REF_TYPE_l0:[0]
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	end
 
 	//end if
@@ -2011,6 +2093,7 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=3) subMbPartIdx;
 	uint(size=4) sub_mb_type[5] := [ 0 : for int i in 0 .. 4];
 	int ref_idx_l0[4] := [ 0 : for int i in 0 .. 3];
+	int ref_idx_l1[4] := [ 0 : for int i in 0 .. 3];
  	function IS_B_Direct_8x8() --> bool : (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
 
 	procedure readRefIdxLX(int(size=32) result[1])
@@ -2077,6 +2160,9 @@ actor Algo_Synp_AVC_FREXT()
 		end
 		sub_mb_type[mbPartIdx] := res[0];
 		subMbType := sub_mb_type[mbPartIdx];
+if SUB_MB_PRED then
+				println("sub_mb_type[ "+mbPartIdx+" ] : "+subMbType);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 	//end for
@@ -2116,6 +2202,9 @@ actor Algo_Synp_AVC_FREXT()
 		else
 			ref_idx_l0[mbPartIdx] := 0;
 		end
+if(SUB_MB_PRED)then
+		println("refidxl0["+mbPartIdx+"] :"+ref_idx_l0[mbPartIdx]);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 	//end for
@@ -2142,16 +2231,21 @@ actor Algo_Synp_AVC_FREXT()
 			and not (mb_type = BLOCK_TYPE_P_8x8ref0)
 			and (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)) then
 			if entropy_coding_mode_flag[pps_id] = 0 then
-				if slice_num_ref_idx_l0_active_minus1 = 1 then 
+				if slice_num_ref_idx_l1_active_minus1 = 1 then 
 					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
+					ref_idx_l1[mbPartIdx] := 1 - res[0];
 				else 
 					vld_ue_name(  fifo, res, "ref_idx_lx[mbPartIdx]                             ");
+					ref_idx_l1[mbPartIdx] := res[0];
 				end
 			else
 				readRefIdxLX(res);
-				//ref_idx_l1[mbPartIdx] := res[0];
+				ref_idx_l1[mbPartIdx] := res[0];
 			end
 		end
+if(SUB_MB_PRED)then
+		println("refidxl1["+mbPartIdx+"] :"+ref_idx_l1[mbPartIdx]);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 
@@ -2193,6 +2287,10 @@ actor Algo_Synp_AVC_FREXT()
 		else			
 			readMvdLX(mvd_l0, true);
 		end
+if(SUB_MB_PRED)then
+		println("sub_mb_pred mvld0["+ (mbPartIdx) +"]["+subMbPartIdx+"][0]:"+mvd_l0[0]);
+		println("sub_mb_pred mvld0["+ (mbPartIdx) +"]["+subMbPartIdx+"][1]:"+mvd_l0[1]);
+end
 		subMbPartIdx := subMbPartIdx +1;
 	end
 	//end for
@@ -2209,7 +2307,7 @@ actor Algo_Synp_AVC_FREXT()
 	read_sub_MB_pred_mvd_l0.skip: action ==> 
 	guard
 		mbPartIdx < 4,
-		IS_B_Direct_8x8() or (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) = PRED_L1)
+		IS_B_Direct_8x8() or (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L0)
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2250,6 +2348,10 @@ actor Algo_Synp_AVC_FREXT()
 		else			
 			readMvdLX(mvd_l1, false);
 		end
+if(SUB_MB_PRED)then
+		println("mvld1["+ (mbPartIdx) +"]["+subMbPartIdx+"][0]:"+mvd_l1[0]);
+		println("mvld1["+ (mbPartIdx) +"]["+subMbPartIdx+"][1]:"+mvd_l1[1]);
+end
 		subMbPartIdx := subMbPartIdx +1;
 	end
 	//end for
@@ -2265,7 +2367,7 @@ actor Algo_Synp_AVC_FREXT()
 	read_sub_MB_pred_mvd_l1.skip: action ==> 
 	guard
 		mbPartIdx < 4,
-		IS_B_Direct_8x8() or (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) = PRED_L0)
+		IS_B_Direct_8x8() or (subMbPredMode(mb_type, sub_mb_type[ mbPartIdx ] ) != PRED_L1)
 	do
 		mbPartIdx := mbPartIdx+1;
 	end
@@ -2425,7 +2527,7 @@ actor Algo_Synp_AVC_FREXT()
 		int(size=32) res[1]
 	do
 		if ( (slice_num_ref_idx_l0_active_minus1 > 0)
-			and not Mb_Is_PredL1(mb_type, mbPartIdx)) then
+			and Mb_Is_PredL0(mb_type, mbPartIdx)) then
 			if entropy_coding_mode_flag[pps_id] = 0 then
 				if slice_num_ref_idx_l0_active_minus1 = 1 then 
 					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
@@ -2440,7 +2542,10 @@ actor Algo_Synp_AVC_FREXT()
 			end
 		else
 			ref_idx_l0[mbPartIdx] := 0;
-		end		
+		end	
+if MB_PRED then
+		println("ReadRefIdxL0["+mbPartIdx+"] : "+ref_idx_l0[mbPartIdx]);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 	//end for
@@ -2462,17 +2567,25 @@ actor Algo_Synp_AVC_FREXT()
 		int(size=32) res[1]
 	do
 		if ((slice_num_ref_idx_l1_active_minus1 > 0)
-			and not Mb_Is_PredL0(mb_type, mbPartIdx)) then
+			and Mb_Is_PredL1(mb_type, mbPartIdx)) then
 			if entropy_coding_mode_flag[pps_id] = 0 then
-				if slice_num_ref_idx_l0_active_minus1 = 1 then 
+				if slice_num_ref_idx_l1_active_minus1 = 1 then 
 					vld_u_name(1,  fifo, res, "ref_idx_lx[mbPartIdx]                            ");
+					ref_idx_l1[mbPartIdx] := 1 - res[0];
 				else 
 					vld_ue_name(  fifo, res, "ref_idx_lx[mbPartIdx]                             ");
+					ref_idx_l1[mbPartIdx] := res[0];
 				end
 			else
 				readRefIdxLX(res);
+				ref_idx_l1[mbPartIdx] := res[0];
 			end
-		end
+		else
+			ref_idx_l1[mbPartIdx] := 0;
+		end	
+if MB_PRED then
+		println("ReadRefIdxL1["+mbPartIdx+"] : "+ref_idx_l1[mbPartIdx]);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 	//end for
@@ -2490,7 +2603,7 @@ actor Algo_Synp_AVC_FREXT()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < numMbPart(mb_type),
-		not Mb_Is_PredL1(mb_type, mbPartIdx)
+		Mb_Is_PredL0(mb_type, mbPartIdx)
 	var
 		uint(size=32) res[1],
 		int mvd_l0[2]
@@ -2503,13 +2616,16 @@ actor Algo_Synp_AVC_FREXT()
 		else			
 			readMvdLX(mvd_l0, true);
 		end
+if MB_PRED then
+		println("ReadMvdL0["+mbPartIdx+"] : "+mvd_l0[0]+" ; "+mvd_l0[1]);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 
 	//else
 	read_MB_pred_mvd_l0.skip: action ==> 
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		Mb_Is_PredL1(mb_type, mbPartIdx),
 		mbPartIdx < numMbPart(mb_type)
 	do
 		mbPartIdx := mbPartIdx+1;
@@ -2530,7 +2646,7 @@ actor Algo_Synp_AVC_FREXT()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		mbPartIdx < numMbPart(mb_type),
-		not Mb_Is_PredL0(mb_type, mbPartIdx)
+		Mb_Is_PredL1(mb_type, mbPartIdx)
 	var
 		uint(size=32) res[1],
 		int mvd_l1[2]
@@ -2543,13 +2659,16 @@ actor Algo_Synp_AVC_FREXT()
 		else			
 			readMvdLX(mvd_l1, false);
 		end
+if MB_PRED then
+		println("ReadMvdL1["+mbPartIdx+"] : "+mvd_l1[0]+" ; "+mvd_l1[1]);
+end
 		mbPartIdx := mbPartIdx +1;
 	end
 
 	//else
 	read_MB_pred_mvd_l1.skip: action ==> 
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		Mb_Is_PredL0(mb_type, mbPartIdx),
 		mbPartIdx < numMbPart(mb_type)
 	do
 		mbPartIdx := mbPartIdx+1;
@@ -3329,18 +3448,27 @@ actor Algo_Synp_AVC_FREXT()
 		read_SliceH_delta_pic_order_cnt0					( read_SliceH_delta_pic_order_cnt0					) --> CalcPOC;
 
 		CalcPOC												( CalcPOC	                                        ) --> read_SliceH_redundant_pic_cnt;
-		read_SliceH_redundant_pic_cnt						( read_SliceH_redundant_pic_cnt                     ) --> read_SliceH_ref_pic_list_reordering;
+		read_SliceH_redundant_pic_cnt						( read_SliceH_redundant_pic_cnt                     ) --> read_SliceH_ref_pic_list_reordering_l0;
 
 		//ref_pic_list_reordering
-		read_SliceH_ref_pic_list_reordering					( read_SliceH_ref_pic_list_reordering_flag_l0		) --> read_SliceH_reordering_of_pic_nums_idc;
-		read_SliceH_ref_pic_list_reordering					( read_SliceH_skip_ref_pic_list_reordering			) --> read_SliceH_pred_weight_table;
+		read_SliceH_ref_pic_list_reordering_l0				( read_SliceH_ref_pic_list_reordering_flag_l0		) --> read_SliceH_reordering_of_pic_nums_idc_l0;
 		
-		read_SliceH_reordering_of_pic_nums_idc 				( read_SliceH_ref_pic_list_reordering_flag.isl0	    ) --> read_SliceH_reordering_of_pic_nums_idc_done;
-		read_SliceH_reordering_of_pic_nums_idc				( read_SliceH_skip_reordering_of_pic_nums_idc		) --> read_SliceH_pred_weight_table;	
-		read_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc     		) --> look_SliceH_reordering_of_pic_nums_idc_done;	
-		look_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc.idc1       ) --> read_SliceH_reordering_of_pic_nums_idc_done;	
-		look_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc.idc2		) --> read_SliceH_reordering_of_pic_nums_idc_done;
-		look_SliceH_reordering_of_pic_nums_idc_done			( read_SliceH_reordering_of_pic_nums_idc.idc3   	) --> read_SliceH_pred_weight_table;
+		read_SliceH_reordering_of_pic_nums_idc_l0 		    ( read_SliceH_ref_pic_list_reordering_flag.l0.isl0	) --> read_SliceH_reordering_of_pic_nums_idc_l0_done;
+		read_SliceH_reordering_of_pic_nums_idc_l0			( read_SliceH_skip_reordering_of_pic_nums_idc.l0	) --> read_SliceH_ref_pic_list_reordering_l1;	
+		read_SliceH_reordering_of_pic_nums_idc_l0_done		( read_SliceH_reordering_of_pic_nums_idc.l0     	) --> look_SliceH_reordering_of_pic_nums_idc_l0_done;	
+		look_SliceH_reordering_of_pic_nums_idc_l0_done		( read_SliceH_reordering_of_pic_nums_idc.l0_idc3   	) --> read_SliceH_ref_pic_list_reordering_l1;
+
+		read_SliceH_ref_pic_list_reordering_l1				( read_SliceH_ref_pic_list_reordering_flag_l1		) --> read_SliceH_reordering_of_pic_nums_idc_l1;
+
+		read_SliceH_reordering_of_pic_nums_idc_l1 		    ( read_SliceH_ref_pic_list_reordering_flag.l1.isl1	) --> read_SliceH_reordering_of_pic_nums_idc_l1_done;
+		read_SliceH_reordering_of_pic_nums_idc_l1			( read_SliceH_skip_reordering_of_pic_nums_idc.l1	) --> read_SliceH_pred_weight_table;	
+		read_SliceH_reordering_of_pic_nums_idc_l1_done		( read_SliceH_reordering_of_pic_nums_idc.l1     	) --> look_SliceH_reordering_of_pic_nums_idc_l1_done;	
+		look_SliceH_reordering_of_pic_nums_idc_l1_done		( read_SliceH_reordering_of_pic_nums_idc.l1_idc3   	) --> read_SliceH_pred_weight_table;
+
+
+		read_SliceH_ref_pic_list_reordering_l1				( read_SliceH_skip_ref_pic_list_reordering   		) --> read_SliceH_pred_weight_table;
+		read_SliceH_ref_pic_list_reordering_l0				( read_SliceH_skip_ref_pic_list_reordering			) --> read_SliceH_pred_weight_table;
+
 
 		//pred_weight_table
 		read_SliceH_pred_weight_table						( read_SliceH_pred_weight_table						) --> read_SliceH_dec_ref_pic_marking; //not yet realised
@@ -3491,6 +3619,7 @@ actor Algo_Synp_AVC_FREXT()
 		look_for > look_for_other_header;
 		read_SliceH_pred_weight_table > read_SliceH_skip_pred_weight_table;
 		read_SliceH_difference_of_pic_nums_minus1_done > read_SliceH_long_term_frame_idx_done > read_SliceH_memory_management_control_operation_done;
+		read_SliceH_ref_pic_list_reordering_flag > read_SliceH_skip_ref_pic_list_reordering;
 		read_MB_pred_mvd_l0.loop >  read_MB_pred_mvd_l0.skip > read_MB_pred_mvd_l0.done;
 		read_MB_pred_mvd_l1.loop >  read_MB_pred_mvd_l1.skip > MB_pred_done;
 	end
