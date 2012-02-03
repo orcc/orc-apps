@@ -125,7 +125,7 @@ actor Algo_Synp_AVC_FREXT()
 
 	bool DEBUG_BITSTREAM = false;
 	bool MB_PRED = false;
-	bool SUB_MB_PRED = true;
+	bool SUB_MB_PRED = false;
 	
 	/**************************************************************************
 	 * search_start_code or getByte
@@ -1579,8 +1579,8 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=6) cbpTab[MAX_PICWIDTH_BLK+2];
 	uint(size=2) intraChromaPredModeTab[MAX_PICWIDTH_BLK+2];
 	// mb_pred P or B
-	int(size= 5) refIdxTab[STRIDE_4 * 3];
-	int(size=16) mvdTab[STRIDE * 5][2];
+	int(size= 5) refIdxTab[STRIDE_4 * 3][2];
+	int(size=16) mvdTab[STRIDE * 5][2][2];
 	// residual
 	uint(size=1) cbfLumaDCTab[MAX_PICWIDTH_BLK+2];
 	uint(size=1) cbfLumaACTab[STRIDE*5];
@@ -1626,8 +1626,8 @@ actor Algo_Synp_AVC_FREXT()
 		cbpTab		 			:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		intraChromaPredModeTab	:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		// mb_pred P or B
-		refIdxTab				:= [0		: for int i in 0 .. 3*STRIDE_4-1];
-		mvdTab					:= [[0,0]	: for int i in 0 .. 5*STRIDE-1];
+		refIdxTab				:= [[0,0]	: for int i in 0 .. 3*STRIDE_4-1];
+		mvdTab					:= [[[0,0],[0,0]]	: for int i in 0 .. 5*STRIDE-1];
 		// residual
 		cbfLumaDCTab			:= [0		: for int i in 0 .. MAX_PICWIDTH_BLK+1];
 		cbfLumaACTab			:= [0		: for int i in 0 .. 5*STRIDE-1];
@@ -1771,20 +1771,26 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		entropy_coding_mode_flag[pps_id] = 1
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		uint 		  Idx
 	do
 		getEndOfSliceFlag(codIRange, codIOffset, ctxTable, fifo, res);
 		moreDataFlag := 1 - res[0];
 		mbTypeTab[Mb_x+1] := mb_type;
-		foreach int i in 0 .. STRIDE-1 do
-			cbfLumaACTab[i] := cbfLumaACTab[4*STRIDE+i];
-			mvdTab[i][0] 	:= mvdTab[4*STRIDE+i][0];
-			mvdTab[i][1] 	:= mvdTab[4*STRIDE+i][1];
+		Idx			 :=  (Mb_x << 2) + 1;
+		foreach int i in 0 .. 3 do
+			cbfLumaACTab[Idx+i] := cbfLumaACTab[4*STRIDE+Idx+i];
+			mvdTab[Idx+i][0][0]	:= mvdTab[4*STRIDE+Idx+i][0][0];
+			mvdTab[Idx+i][0][1]	:= mvdTab[4*STRIDE+Idx+i][0][1];			
+			mvdTab[Idx+i][1][0]	:= mvdTab[4*STRIDE+Idx+i][1][0];
+			mvdTab[Idx+i][1][1]	:= mvdTab[4*STRIDE+Idx+i][1][1];
 		end
-		foreach int i in 0 .. STRIDE_4-1 do
-			cbfChromaACTab[i][0] := cbfChromaACTab[2*STRIDE_4+i][0];
-			cbfChromaACTab[i][1] := cbfChromaACTab[2*STRIDE_4+i][1];
-			refIdxTab[i] 		 := refIdxTab[2*STRIDE_4+i];
+		Idx			 :=  (Mb_x << 1) + 1;
+		foreach int i in 0 .. 1 do
+			cbfChromaACTab[Idx+i][0] := cbfChromaACTab[2*STRIDE_4+Idx+i][0];
+			cbfChromaACTab[Idx+i][1] := cbfChromaACTab[2*STRIDE_4+Idx+i][1];
+			refIdxTab[Idx+i][0]		 := refIdxTab[2*STRIDE_4+Idx+i][0];
+			refIdxTab[Idx+i][1] 	 := refIdxTab[2*STRIDE_4+Idx+i][1];
 		end
 		setNeigbourSubMbType(subMbTypeTab, Mb_x+1 , mb_type, sub_mb_type);
 	end
@@ -2108,7 +2114,7 @@ actor Algo_Synp_AVC_FREXT()
 	int ref_idx_l1[4] := [ 0 : for int i in 0 .. 3];
  	function IS_B_Direct_8x8() --> bool : (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) and (sub_mb_type[mbPartIdx] = B_DIRECT_8x8) end
 
-	procedure readRefIdxLX(int(size=32) result[1])
+	procedure readRefIdxLX(int(size=32) result[1], uint(size=1) Lx)
 	var
 		uint(size=32) res[1],
 		bool 		  availA		= getNeigbourAvailA(availableA, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
@@ -2121,14 +2127,14 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size= 3) mbPartIdxB	= getNeigbourMbPartIdxB(availB, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type[mbPartIdx], mb_typeB, sub_mb_typeB)
 	begin
 		getRefIdx(codIRange, codIOffset, ctxTable, fifo, res,
-			availA, mb_typeA, sub_mb_typeA, getNeigbourRefIdxA(refIdxTab, Mb_x, mbPartIdx, mb_type), mbPartIdxA,
-			availB, mb_typeB, sub_mb_typeB, getNeigbourRefIdxB(refIdxTab, Mb_x, mbPartIdx, mb_type), mbPartIdxB,
-			true
+			availA, mb_typeA, sub_mb_typeA, getNeigbourRefIdxA(refIdxTab, Mb_x, Lx, mbPartIdx, mb_type), mbPartIdxA,
+			availB, mb_typeB, sub_mb_typeB, getNeigbourRefIdxB(refIdxTab, Mb_x, Lx, mbPartIdx, mb_type), mbPartIdxB,
+			Lx = 0
 		);
-		setNeigbourRefIdx(refIdxTab, Mb_x, mb_type, mbPartIdx, res[0]);
+		setNeigbourRefIdx(refIdxTab, Mb_x, Lx, mb_type, mbPartIdx, res[0]);
 		result[0] := res[0];
 	end
-	procedure readMvdLX(int(size=32) mvd_lx[2], bool isL0)
+	procedure readMvdLX(int(size=32) mvd_lx[2], uint(size=1) Lx)
 	var
 		uint(size=32) res[1],
 		bool 		  availA		= getNeigbourAvailA(availableA, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
@@ -2141,18 +2147,18 @@ actor Algo_Synp_AVC_FREXT()
 		uint(size= 3) mbPartIdxB	= getNeigbourMbPartIdxB(availB, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type[mbPartIdx], mb_typeB, sub_mb_typeB)
 	begin
 		getMvd(codIRange, codIOffset, ctxTable, fifo, res,
-			availA, mb_typeA, sub_mb_typeA, mbPartIdxA, getNeigbourMvdA(mvdTab, Mb_x, 0, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
-			availB, mb_typeB, sub_mb_typeB, mbPartIdxB, getNeigbourMvdB(mvdTab, Mb_x, 0, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
-			isL0, true
+			availA, mb_typeA, sub_mb_typeA, mbPartIdxA, getNeigbourMvdA(mvdTab, Mb_x, Lx, 0, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			availB, mb_typeB, sub_mb_typeB, mbPartIdxB, getNeigbourMvdB(mvdTab, Mb_x, Lx, 0, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			Lx = 0, true
 		);
 		mvd_lx[0] := res[0];
 		getMvd(codIRange, codIOffset, ctxTable, fifo, res,
-			availA, mb_typeA, sub_mb_typeA, mbPartIdxA, getNeigbourMvdA(mvdTab, Mb_x, 1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
-			availB, mb_typeB, sub_mb_typeB, mbPartIdxB, getNeigbourMvdB(mvdTab, Mb_x, 1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
-			isL0, false
+			availA, mb_typeA, sub_mb_typeA, mbPartIdxA, getNeigbourMvdA(mvdTab, Mb_x, Lx, 1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			availB, mb_typeB, sub_mb_typeB, mbPartIdxB, getNeigbourMvdB(mvdTab, Mb_x, Lx, 1, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type),
+			Lx = 0, false
 		);
 		mvd_lx[1] := res[0];
-		setNeigbourMvd(mvdTab, Mb_x, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type, mvd_lx);
+		setNeigbourMvd(mvdTab, Mb_x, Lx, mbPartIdx, subMbPartIdx, mb_type, sub_mb_type, mvd_lx);
 	end
 
 
@@ -2208,7 +2214,7 @@ end
 					ref_idx_l0[mbPartIdx] := res[0];
 				end
 			else
-				readRefIdxLX(res);
+				readRefIdxLX(res, 0);
 				ref_idx_l0[mbPartIdx] := res[0];
 			end
 		else
@@ -2251,7 +2257,7 @@ end
 					ref_idx_l1[mbPartIdx] := res[0];
 				end
 			else
-				readRefIdxLX(res);
+				readRefIdxLX(res, 1);
 				ref_idx_l1[mbPartIdx] := res[0];
 			end
 		end
@@ -2297,7 +2303,7 @@ end
 			vld_se_name(  fifo, res, "mvd_lx                                ");
 			mvd_l0[1] := res[0];
 		else			
-			readMvdLX(mvd_l0, true);
+			readMvdLX(mvd_l0, 0);
 		end
 if(SUB_MB_PRED)then
 		println("sub_mb_pred mvld0["+ (mbPartIdx) +"]["+subMbPartIdx+"][0]:"+mvd_l0[0]);
@@ -2360,7 +2366,7 @@ end
 			vld_se_name(  fifo, res, "mvd_lx                                ");
 			mvd_l1[1] := res[0];
 		else			
-			readMvdLX(mvd_l1, false);
+			readMvdLX(mvd_l1, 1);
 		end
 if(SUB_MB_PRED)then
 		println("mvld1["+ (mbPartIdx) +"]["+subMbPartIdx+"][0]:"+mvd_l1[0]);
@@ -2551,7 +2557,7 @@ end
 					ref_idx_l0[mbPartIdx] := res[0];
 				end
 			else
-				readRefIdxLX(res);
+				readRefIdxLX(res, 0);
 				ref_idx_l0[mbPartIdx] := res[0];
 			end
 		else
@@ -2591,7 +2597,7 @@ end
 					ref_idx_l1[mbPartIdx] := res[0];
 				end
 			else
-				readRefIdxLX(res);
+				readRefIdxLX(res, 1);
 				ref_idx_l1[mbPartIdx] := res[0];
 			end
 		else
@@ -2628,7 +2634,7 @@ end
 			vld_se_name(  fifo, res, "mvd_lx                                ");
 			mvd_l0[1] := res[0];
 		else			
-			readMvdLX(mvd_l0, true);
+			readMvdLX(mvd_l0, 0);
 		end
 if MB_PRED then
 		println("ReadMvdL0["+mbPartIdx+"] : "+mvd_l0[0]+" ; "+mvd_l0[1]);
@@ -2671,7 +2677,7 @@ end
 			vld_se_name(  fifo, res, "mvd_lx                                ");
 			mvd_l1[1] := res[0];
 		else			
-			readMvdLX(mvd_l1, false);
+			readMvdLX(mvd_l1, 1);
 		end
 if MB_PRED then
 		println("ReadMvdL1["+mbPartIdx+"] : "+mvd_l1[0]+" ; "+mvd_l1[1]);
