@@ -100,6 +100,7 @@ actor Huffman()
 	GetSzW: action SOI:[w] ==>
 	do
 		imageWidth := w;
+		CountRead := 0;
 	end
 	
 	GetSzH: action SOI:[h] ==>
@@ -230,7 +231,6 @@ actor Huffman()
 		int boIdx
 	do
 		v_abs := abs(boV);
-		println("v_abs: " + v_abs);
 		log2 := 0;
 			
 		if (boZRL != 16) then
@@ -246,12 +246,24 @@ actor Huffman()
 		else
 			code := 0xF0;
 		end
-		println("code: " + code);
+		
+		if currentHT = 0 then
+			if blockType <= 3 then 
+				blockMode := 0;
+			else
+				blockMode := 2;
+			end
+		else
+			if blockType <= 3 then 
+				blockMode := 1;
+			else
+				blockMode := 3;
+			end
+		end
+		
 		boIdx := HtLookUpCode[blockMode][currentHT][code];
-		println("boIdx: " + boIdx);
 		// Write the huffman code and the value to the output buffer.
 		len := HtLookUpBitlen[blockMode][currentHT][boIdx];
-		println("len: " + len);
 		foreach uint i in 0 .. len - 1 do
 			outputBuffer[boOffset + i] := (HtLookUpBits[blockMode][currentHT][boIdx] & (1 << (15 - i))) >> (15 - i);
 		end
@@ -261,14 +273,13 @@ actor Huffman()
 			v_abs := boV;
 		end
 		boOffset := boOffset + len;
-		println("boOffset1: " + boOffset);
 		foreach uint i in 1 .. log2 do
-			outputBuffer[boOffset + log2 - i] := v_abs mod 2;
-			v_abs := v_abs / 2;
+			outputBuffer[boOffset + log2 - i] := v_abs & 1;
+			v_abs := v_abs >> 1;
 		end
 		boOffset := boOffset + log2;
-		println("boOffset2: " + boOffset);
 		checkEOB := false;
+		currentHT := 1; // Now treat ACs
 	end
 	
 	function giveLastDcIdx(int x) --> int :
@@ -289,7 +300,6 @@ actor Huffman()
 	do
 		currentHT := 0;
 		lastDC := blockDC[giveLastDcIdx(blockType)];
-		println("DC Block y: " + blockDC[0] + " u: " + blockDC[1] + " v: "+ blockDC[2]);
 		boOffset := 0;
 		boV := block[0] - lastDC;
 		boZRL := 0;
@@ -297,11 +307,6 @@ actor Huffman()
 		// For AC
 		idx := 1;
 		
-		if blockType <= 3 then 
-			blockMode := 0;
-		else
-			blockMode := 2;
-		end
 		blockDC[giveLastDcIdx(blockType)] := block[0];
 	end
 	
@@ -310,12 +315,7 @@ actor Huffman()
 		int ZRL,
 		bool zero
 	do
-		currentHT := 1;
-		if blockType <= 3 then 
-			blockMode := 1;
-		else
-			blockMode := 3;
-		end
+		//currentHT := 1;
 		ZRL := 0;
 		zero := block[idx] = 0;
 		
@@ -361,7 +361,9 @@ actor Huffman()
 		idx := idx + 1;
 	end
 	
-	DoneSend: action ==> Count:[boOffset]
+	int CountRead := 0;
+	
+	DoneSend: action ==> 
 	guard
 		idx = boOffset
 	do
@@ -370,15 +372,40 @@ actor Huffman()
 		if blockType = 6 then
 			blockType := 0;
 		end
+		currentHT := 0;
+		CountRead := CountRead + boOffset;
 	end
 	
-	EOI: action ==>
+	int Stuff := 0;
+	
+	Stuffing: action ==>
 	guard 
 		blockCount = maxBlocks
+	var	
+		int Modulo
+	do	
+		Modulo := CountRead & 7;
+		if (Modulo != 0)
+		then
+			Stuff := 8 - Modulo;
+		else
+			Stuff := 0;
+		end
+	end
+	
+	SendStuffing: action ==>  Bit:[0]
+	do
+		Stuff := Stuff - 1;
+	end
+	
+	EOI: action ==> Count:[CountRead]
+	guard 
+		Stuff = 0
 	do
 		blockDC := [0:for int i in 0 .. 2];
 		boOffset := 0;
 		currentHT := 0;
+		blockCount := 0;
 	end
 	
 	schedule fsm s0:
@@ -404,13 +431,17 @@ actor Huffman()
 		s8		(SendBits)			--> s8;
 		s8		(DoneSend)			--> s5;
 		
-		s5		(EOI)				--> s0;
+		s5		(Stuffing)			--> s9;
+		
+		s9		(SendStuffing)		--> s9;
+		s9		(EOI)				--> s0;
 		
 	end
 	
 	priority
 		DoneHT > GenerateHT;
 		EOI > DcHuffman > GetBlock;
+		EOI > SendStuffing;
 		DoneSend > SendBits;
 		DoneAcHuffman > AcHuffman;
 	end
