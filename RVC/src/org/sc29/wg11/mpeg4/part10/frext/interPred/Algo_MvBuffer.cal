@@ -1,0 +1,603 @@
+/********************************************************************************
+
+This software module was originally developed by 
+Damien de Saint Jorre (IETR/INSA of Rennes), 
+in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-4.
+
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+license to copy, distribute, and make derivative works of this software 
+module or modifications thereof for use in implementations of the 
+ISO/IEC 23002-4 in products that satisfy conformance criteria (if any). 
+
+Those intending to use this software module in products are advised that 
+its use may infringe existing patents. ISO/IEC have no liability for use 
+of this software module or modifications thereof.
+
+Copyright is not released for products that do not conform to audiovisual 
+and image-coding related ITU Recommendations and/or ISO/IEC International 
+Standards.
+
+Assurance that the originally developed software module can be used 
+(1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and 
+(2) to develop the ISO/IEC 23002-4: 
+
+IETR/INSA of Rennes grants ISO/IEC all rights necessary to 
+include the originally developed software module or modifications thereof 
+in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, 
+worldwide, non-exclusive, copyright license to copy, distribute, and make 
+derivative works for use in implementations of the ISO/IEC 23002-4 in 
+products that satisfy conformance criteria (if any), and to the extent 
+that such originally developed software module or portions of it are 
+included in the ISO/IEC 23002-4.  To the extent that IETR/INSA of Rennes
+owns patent rights that would be required to make, use, or 
+sell the originally developed software module or portions thereof 
+included in the ISO/IEC 23002-4 in a conforming product, IETR/INSA of
+Rennes will assure the ISO/IEC that it is willing to 
+negotiate licenses under reasonable and non-discriminatory terms and 
+conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications 
+thereof for the sole  purpose of developing theISO/IEC 23002-4
+
+IETR/INSA of Rennes retains full right to modify and use the 
+code for its own purpose, assign or donate the code to a third party and 
+to inhibit third parties from using the code for products that do not 
+conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+This copyright notice must be included in all copies or derivative works. 
+Copyright (c) ISO/IEC 2008.
+*****************************************************************************/
+package org.sc29.wg11.mpeg4.part10.frext.interPred;
+
+import org.sc29.wg11.mpeg4.part10.MacroBlockInfo.*;
+import org.sc29.wg11.mpeg4.part10.Imp_PictureInfo.*;
+import std.util.Math.*;
+
+actor Algo_MvBuffer(bool DEBUG)
+	int (size=32) DelList,
+	bool          Direct8x8Inference,
+	bool          DirectSpatialMvPred,
+	bool          Empty_DPB,
+	uint(size=31) FrameNum,
+	int (size=32) LongTermList,
+	uint(size=7)  MbLocation,
+	uint(size=6)  MbType,
+	int (size=16) Mv,
+	int (size=32) Poc,
+	uint(size=4)  RefIdx,
+	int (size=32) RefList0,
+	int (size=32) RefList1,
+	uint(size=4)  SubMbType
+		==>
+	bool         ColZeroFlag,
+	int(size=32) TemporalInfo
+		:
+
+	bool DEBUG_INPUT  = true;
+	bool DEBUG_OUTPUT = true;
+
+	int (size=32) SENT_DONE = -2;
+	uint(size=4)  B_DIRECT_8x8 = 0;
+
+	bool          IsReference[17];
+	int (size=32) listFrameNum[17];
+	int (size=32) listPicOrdCnt[17];
+	int (size=32) longTermList[16];
+	int (size=16) mvList[17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4][2];
+	int (size=5)  refIdxList [17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4];
+	int (size=32) refNumList [17][2][MAX_PICWIDTH_PX/4][MAX_PICHEIGHT_PX/4];
+	int (size=32) refListX[2][16];
+
+	bool          colPic_IsShortTermRef;
+	bool          direct8x8Inference;
+	bool          directSpatialMvPred;
+	uint(size=3)  mbPartIdx;
+	uint(size=6)  mbType;
+	uint(size=32) mbX;
+	uint(size=32) mbY;
+	uint(size=5)  readListIdx;
+	uint(size=5)  refListIdx;
+	uint(size=5)  refListSize;
+	uint(size=3)  sizeMbMv;
+	uint(size=3)  subMbPartIdx;
+	uint(size=6)  subMbType;
+	uint(size=5)  writeListIdx;
+	uint(size=32) currFrameNum;
+
+	bool          colZeroFlag;
+	int (size=16) mvCol[2];
+	int (size=16) mvL0[2];
+	int (size=16) mvL1[2];
+	int (size=32) refIdxL0Temporal;
+	bool emptyList;
+
+	procedure computeColInfo(uint idxX, uint idxY)
+	begin
+		uint idxXInfer =
+			if(direct8x8Inference)then
+				getDirect8x8InfIdx(idxX)
+			else
+				idxX
+			end;
+		uint idxYInfer =
+			if(direct8x8Inference)then
+				getDirect8x8InfIdx(idxY)
+			else
+				idxY
+			end;
+		int(size=32) colPic := 0;
+		int(size=5)  refIdxCol;
+		uint(size=1) numList =
+			if(refIdxList[readListIdx][0][idxXInfer][idxYInfer] != -1) then
+				0
+			else
+				1
+			end;
+
+		//for spatial prediction, we need : colZeroFlag
+		//for temporal prediction, we need : refIdxL0Temporal, MvL0, MvL1
+		if(refIdxList[readListIdx][0][idxXInfer][idxYInfer] = -1 and
+		   refIdxList[readListIdx][1][idxXInfer][idxYInfer] = -1) then
+			refIdxCol := -1;
+			mvCol     := [0,0];
+			refIdxL0Temporal := 0;
+		else
+			refIdxCol := refIdxList[readListIdx][numList][idxXInfer][idxYInfer];
+			mvCol[0] := mvList[readListIdx][numList][idxXInfer][idxYInfer][0];
+			mvCol[1] := mvList[readListIdx][numList][idxXInfer][idxYInfer][1];
+			colPic := refNumList[readListIdx][numList][idxXInfer][idxYInfer];
+			foreach int i in 0 .. 15
+			do
+				if(refListX[0][15-i] = colPic)then
+					refIdxL0Temporal := 15-i;
+				end
+			end
+		end
+
+		if(directSpatialMvPred)then
+			colZeroFlag :=
+				if(not colPic_IsShortTermRef or refIdxCol = -1)then
+					false
+				else
+					refIdxCol =  0 and mvCol[0] >= -1 and mvCol[0] <= 1
+					   and mvCol[1] >= -1 and mvCol[1] <=  1
+				end;
+		else
+			computeMvComponent4Temporal(colPic);
+		end
+	end
+
+	procedure computeMvComponent4Temporal(int(size=32) ref0)
+	begin
+		int(size=32) curPicOrField = listPicOrdCnt[writeListIdx];
+
+		int (size=11) distScaleFactor;
+		bool          isLongTermRef := false;
+		int (size=32) pic0 := 0;
+		int (size=32) pic1 := 0;
+		int (size=8)  tb;
+		int (size=8)  td;
+		uint(size=14) tx;
+		
+		isLongTermRef := false;
+		foreach int i in 0 .. 15
+		do
+			if(longTermList[i] = pic0)then
+				isLongTermRef := true;
+			end
+		end
+
+		foreach int i in 0 .. 16
+		do
+			if(IsReference[i] and listFrameNum[i] = refListX[1][0]) then
+				pic1 := listPicOrdCnt[i];
+			end
+			if(IsReference[i] and listFrameNum[i] = ref0) then
+				pic0 := listPicOrdCnt[i];
+			end
+		end
+
+		if(isLongTermRef or pic0 = pic1)then
+			mvL0[0] := mvCol[0];
+			mvL0[1] := mvCol[1];
+			mvL1    := [0,0];
+		else
+			tb := clip_i32(curPicOrField - pic0,-128,127);
+			td := clip_i32(pic1 - pic0,-128,127);
+			tx := (16384 + abs(td/2))/td;
+			distScaleFactor := clip_i32((tb*tx+32)>>6, -1024, 1023);
+			mvL0[0] := (distScaleFactor * mvCol[0] + 128) >> 8;
+			mvL0[1] := (distScaleFactor * mvCol[1] + 128) >> 8;
+			mvL1[0] := mvL0[0] - mvCol[0];
+			mvL1[1] := mvL0[1] - mvCol[1];
+		end
+	end
+
+	function getDirect8x8InfIdx(uint Idx) --> uint :
+		//XXXXXX00 -> XXXXXX00
+		//XXXXXX01 -> XXXXXX00
+		//XXXXXX10 -> XXXXXX11
+		//XXXXXX11 -> XXXXXX11
+		(Idx & 0xFFFFFFFE) + ((Idx >> 1)&1)
+	end
+
+	getNewPic: action MbType:[isNewPic], Empty_DPB :[emptyDpb] ==>
+	guard
+		isNewPic >= NEW_FRAME_NON_IDR
+	do
+		emptyList:= emptyDpb;
+	end
+
+	getPicData: action FrameNum:[frameNum], Poc:[poc],
+		Direct8x8Inference:[direct8x8InferFlag],
+		DirectSpatialMvPred:[directSpatMvPred] ==>
+	do
+		currFrameNum := frameNum;
+		foreach int i in 0 .. 16
+		do
+			if(listFrameNum[i] = frameNum)then
+				IsReference[i] := false;
+			end
+		end
+		direct8x8Inference          := direct8x8InferFlag;
+		directSpatialMvPred         := directSpatMvPred;
+
+		writeListIdx := 0;
+		while(IsReference[writeListIdx] and writeListIdx < 16)
+		do
+			writeListIdx := writeListIdx + 1;
+		end
+
+		IsReference [writeListIdx]  := true;
+		listFrameNum[writeListIdx]  := currFrameNum;
+		listPicOrdCnt[writeListIdx] := poc;
+		if(DEBUG_INPUT and DEBUG) then
+			println("FrameNum : "+frameNum);
+			println("Poc : "+poc);
+			println("Direct8x8Inference : "+direct8x8InferFlag);
+			println("DirectSpatialMvPred : "+directSpatMvPred);
+		end
+	end
+
+	getNewSlice: action MbType:[isNewSlice], FrameNum:[frameNum],
+		Poc:[poc],Direct8x8Inference:[direct8x8InferFlag],
+		DirectSpatialMvPred:[directSpatMvPred], Empty_DPB :[emptyDpb] ==>
+	guard
+		isNewSlice = NEW_SLICE
+	do
+		if(DEBUG_INPUT and DEBUG) then
+			println("FrameNum : "+frameNum);
+			println("Poc : "+poc);
+		end
+		emptyList := emptyDpb;
+		directSpatialMvPred := directSpatMvPred;
+		direct8x8Inference  := direct8x8InferFlag;
+	end
+
+	getMbType: action MbType:[macroBlkType],
+		MbLocation:[mbLocX, mbLocY] ==>
+	guard
+		macroBlkType <NEW_SLICE
+	do
+		mbType := macroBlkType;
+		//There are 16 Partitions in a macroblock
+		mbX := mbLocX * 4;
+		mbY := mbLocY * 4;
+		mbPartIdx := 0;
+		sizeMbMv  := sizeMbPart(mbType);
+		if(DEBUG_INPUT and DEBUG) then
+			println("MbType : "+macroBlkType);
+			println("MbLocation : "+mbLocX+" ; "+mbLocY);
+		end
+	end
+
+	checkMbType.macroBlkIorSI: action ==>
+	guard
+		Mb_IsIntra(mbType)
+	do
+		foreach int i in mbX .. mbX + 3
+		do
+			foreach int j in mbY .. mbY + 3
+			do
+				refIdxList[writeListIdx][0][i][j] := -1;
+				refIdxList[writeListIdx][1][i][j] := -1;
+				refNumList[writeListIdx][0][i][j] := -1;
+				refNumList[writeListIdx][1][i][j] := -1;
+				mvList[writeListIdx][0][i][j][0]  :=  0;
+				mvList[writeListIdx][0][i][j][1]  :=  0;
+				mvList[writeListIdx][1][i][j][0]  :=  0;
+				mvList[writeListIdx][1][i][j][1]  :=  0;
+			end
+		end
+	end
+
+	checkMbType.isBSkipOrBDirect16x16: action ==>
+		ColZeroFlag :[isColZero] repeat 16,
+		TemporalInfo :[temporalInfo] repeat 80
+	guard
+		mbType = BLOCK_TYPE_B_SKIP or mbType = BLOCK_TYPE_B_DIRECT_16x16
+	do
+		uint(size=2)  blkIdx;
+		bool          isColZero[16];
+		int (size=32) temporalInfo[80];
+
+		foreach uint j in 0 .. 3
+		do
+			foreach uint i in 0 .. 3
+			do
+				computeColInfo(mbX+i,mbY+j);
+				blkIdx := 4*j+i;
+				if(directSpatialMvPred) then
+					isColZero[blkIdx]    := colZeroFlag;
+				else
+					temporalInfo[blkIdx] := refIdxL0Temporal;
+					temporalInfo[16+ 2*blkIdx]    := mvL0[0];
+					temporalInfo[16+ 2*blkIdx +1] := mvL0[1];
+					temporalInfo[48+ 2*blkIdx]    := mvL1[0];
+					temporalInfo[48+ 2*blkIdx +1] := mvL1[1];
+				end
+			end
+		end
+		if(DEBUG_OUTPUT and DEBUG) then
+			foreach int i in 0 .. 15
+			do
+				println("ColZeroFlag : "+isColZero[i]);
+			end
+			foreach int i in 0 .. 79
+			do
+				println("TemporalInfo : "+temporalInfo[i]);
+			end
+		end
+	end
+
+	checkMbType.others: action ==>
+	guard
+		not Mb_IsIntra(mbType) and mbType != BLOCK_TYPE_B_SKIP,
+		mbType != BLOCK_TYPE_B_DIRECT_16x16
+	end
+
+	check8x8Pred.isTrue: action SubMbType :[valSubMbType] ==>
+	guard
+		mbPartIdx < 4 and sizeMbMv = SZ_8x8
+	do
+		subMbPartIdx :=  0;
+		subMbType  := valSubMbType;
+		if(DEBUG_INPUT and DEBUG) then
+			println("SubMbType : "+valSubMbType);
+		end
+	end
+
+	check8x8Pred.isFalse: action ==>
+	guard
+		mbPartIdx = 4 or sizeMbMv != SZ_8x8
+	end
+
+	getMvVectors: action Mv:[mv] repeat 64, RefIdx :[refIdx] repeat 32 ==>
+	do
+
+		foreach int numList in 0 .. 1
+		do
+			foreach int y in 0 .. 3
+			do
+				foreach int x in 0 .. 3
+				do
+					refIdxList[writeListIdx][numList][mbX+x][mbY+y] :=
+						refIdx[numList*16 + y*4+x];
+					refNumList[writeListIdx][numList][mbX+x][mbY+y] :=
+						refListX[numList][refIdx[numList*16 + y*4+x] &15];
+					mvList[writeListIdx][numList][mbX+x][mbY+y][0] :=
+						mv[numList*32 + y*4+x];
+					mvList[writeListIdx][numList][mbX+x][mbY+y][1] :=
+						mv[numList*32 + y*4+x + 16];
+				end
+			end
+		end
+		if(DEBUG_INPUT and DEBUG) then
+			foreach int i in 0 .. 31
+			do
+				println("RefIdx : "+refIdx[i]);
+				println("Mv : "+mv[2*i]+" ; "+mv[2*i+1]);
+			end
+		end
+	end
+
+	checkSubMb.isBDirect8x8: action ==> ColZeroFlag :[isColZero],
+		TemporalInfo :[temporalInfo] repeat 5
+	guard
+		subMbPartIdx < 4 and mbType = BLOCK_TYPE_B_8x8,
+		subMbType = B_DIRECT_8x8
+	do
+		bool         isColZero;
+		int(size=32) temporalInfo[5];
+
+		computeColInfo(mbX + 2* (mbPartIdx&1) + (subMbPartIdx&1) ,mbY + 2* ((mbPartIdx >>1)&1) +  ((subMbPartIdx >>1)&1));
+		isColZero := colZeroFlag;
+		temporalInfo[0] := refIdxL0Temporal;
+		temporalInfo[1] := mvL0[0];
+		temporalInfo[2] := mvL0[1];
+		temporalInfo[3] := mvL1[0];
+		temporalInfo[4] := mvL1[1];
+
+		subMbPartIdx := subMbPartIdx + 1;
+		if(DEBUG_OUTPUT and DEBUG) then
+			println("ColZeroFlag : "+isColZero);
+			foreach int i in 0 .. 4
+			do
+				println("TemporalInfo : "+temporalInfo[i]);
+			end
+		end
+	end
+
+	checkSubMb.isNotBDirect8x8: action ==>
+	guard
+		subMbPartIdx = 4 or mbType != BLOCK_TYPE_B_8x8
+		or subMbType != B_DIRECT_8x8
+	do
+		mbPartIdx := mbPartIdx + 1;
+	end
+
+	readSizeRefList0: action RefList0 :[SizeRefList] ==>
+	do
+		refListSize := SizeRefList;
+		refListIdx  := 0;
+		refListX[0]    := [-1 : for int i in 0 .. 15];
+		if(DEBUG_INPUT and DEBUG) then
+			println("RefList0 : "+SizeRefList);
+		end
+	end
+
+	readRefList0.launch: action RefList0 :[ValRefList] ==>
+	guard
+		refListIdx < refListSize
+	do
+		refListX[0][refListIdx] := ValRefList;
+		refListIdx := refListIdx + 1;
+		if(DEBUG_INPUT and DEBUG) then
+			println("RefList0 : "+ValRefList);
+		end
+	end
+
+	readRefList0.done: action ==>
+	guard
+		refListIdx = refListSize
+	end
+
+	readSizeRefList1: action RefList1 :[SizeRefList] ==>
+	do
+		refListSize := SizeRefList;
+		refListIdx  := 0;
+		refListX[1] := [-1 : for int i in 0 .. 15];
+		if(DEBUG_INPUT and DEBUG) then
+			println("RefList1 : "+SizeRefList);
+		end
+	end
+
+	readRefList1.launch: action RefList1 :[valRefList] ==>
+	guard
+		refListIdx < refListSize
+	do
+		if(refListIdx = 0)then
+			readListIdx := 0;
+			while(listFrameNum[readListIdx] != valRefList) or (not IsReference[readListIdx])
+			do
+				readListIdx := readListIdx + 1;
+			end
+		end
+		refListX[1][refListIdx] := valRefList;
+		refListIdx := refListIdx + 1;
+		if(DEBUG_INPUT and DEBUG) then
+			println("RefList1 : "+valRefList);
+		end
+		if(readListIdx > 16) then
+			println("Problem in MvBuffer :");
+			print("FrameNum : "+valRefList +", not found.");
+			println(" Current FrameNum : " + listFrameNum[writeListIdx]);
+			println("List of Frame Num :");
+			foreach int i in 0 .. 16
+			do
+				if(IsReference[i])then
+					println("\tframeNum n"+i+" = "+ listFrameNum[i]);
+				else
+					println("\tframeNum n"+i+" = -1");
+				end
+			end
+			//Should be exit(TYPE_OF_ERROR);
+			while true do end
+		end
+	end
+
+	readRefList1.done: action ==>
+	guard
+		refListIdx = refListSize
+	end
+
+	readLTList: action LongTermList :[LTList] repeat 16 ==>
+	do
+		colPic_IsShortTermRef := true;
+		foreach int i in 0 .. 15
+		do
+			longTermList[i] := LTList[i];
+			if(LTList[i] = listFrameNum[readListIdx])then
+				colPic_IsShortTermRef := false;
+			end
+		end
+		if(DEBUG_INPUT and DEBUG) then
+			foreach int i in 0 .. 15
+			do
+				println("LTList : "+LTList[i]);
+			end
+		end
+	end
+
+	readDelList.launch: action DelList:[delFrame] ==>
+	guard
+		delFrame != SENT_DONE
+	do
+		foreach int i in 0 .. 16
+		do
+			if(delFrame = listFrameNum[i] and i != writeListIdx)then
+				IsReference[i] := false;
+			end
+		end
+		if(DEBUG_INPUT and DEBUG) then
+			println("DelList : "+delFrame);
+		end
+	end
+
+	readDelList.done: action DelList :[delVal] ==>
+	guard
+		delVal = SENT_DONE
+	do
+		if(emptyList)then
+			foreach int i in 0 .. 16
+			do
+				if(i != writeListIdx) then
+					IsReference[i] := false;
+				end
+			end
+		end
+		if(DEBUG_INPUT and DEBUG) then
+			println("DelList : "+delVal);
+			println("Empty_DPB : "+emptyList);
+		end
+	end
+
+	schedule fsm GetFirstPicInfo:
+		GetFirstPicInfo(getNewPic )--> GetPicData;
+
+		GetMbType (getNewPic   )--> ReadDelList;
+		GetMbType (getNewSlice )--> ReadSizeRefList0;
+		GetMbType (getMbType   )--> CheckMbType;
+
+		CheckMbType (checkMbType.macroBlkIorSI         )--> GetMbType;
+		CheckMbType (checkMbType.isBSkipOrBDirect16x16 )--> GetMvVectors;
+		CheckMbType (checkMbType.others                )--> Check8x8Mb;
+
+		Check8x8Mb (check8x8Pred.isTrue  )--> CheckSubMb;
+		Check8x8Mb (check8x8Pred.isFalse )--> GetMvVectors;
+
+		GetMvVectors (getMvVectors )--> GetMbType;
+
+		CheckSubMb (checkSubMb.isBDirect8x8    )--> CheckSubMb;
+		CheckSubMb (checkSubMb.isNotBDirect8x8 )--> Check8x8Mb;
+
+		ReadDelList (readDelList.launch )--> ReadDelList;
+		ReadDelList (readDelList.done   )--> GetPicData;
+
+		GetPicData (getPicData )--> ReadSizeRefList0;
+
+		ReadSizeRefList0 (readSizeRefList0    )--> ReadRefList0;
+		ReadRefList0     (readRefList0.launch )--> ReadRefList0;
+		ReadRefList0     (readRefList0.done   )--> ReadSizeRefList1;
+
+		ReadSizeRefList1 (readSizeRefList1    )--> ReadRefList1;
+		ReadRefList1     (readRefList1.launch )--> ReadRefList1;
+		ReadRefList1     (readRefList1.done   )--> ReadLTList;
+
+		ReadLTList (readLTList )--> GetMbType;
+	end
+end
