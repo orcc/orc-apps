@@ -1,59 +1,49 @@
 package org.ietr.ME.psdf;
 
-actor Search_FS () uint(size=PIX_SZ)  PIX ==>  int(size=32) Id, int(size=8) RW, uint(size=PIX_SZ) VAL, int (size=32) Address, int(size=32) Ref, int(size=32) MV:
+actor Search_FS () uint(size=PIX_SZ)  PIX ==>  int(size=32) Frame, int(size=32) Mb, int(size=8) RW, uint(size=PIX_SZ) VAL, int (size=32) Address, int(size=32) Ref, int(size=32) MV:
 	int(size=32) WIDTH = 352;
 	int(size=32) HEIGHT = 288;
 	int(size=32) MB_SZ = 16;
-	int(size=32) dx;
-	int(size=32) dy;
 	int(size=32) MAX_MOTION = 16;
+	int(size=32) dx := -MAX_MOTION;
+	int(size=32) dy:= -MAX_MOTION;
 	uint PIX_SZ = 8;
-	int(size=32) wId := 0;
+	int(size=32) frame_Id := 0;
+	int(size=32) mb_Id := 0;
 	int rx := 0;
 	int ry := 0;
 	int wx := -1;
 	int wy := 0;
-	bool isReady := false;
-	bool sendRef := false;
 	
- 	read_ln : action PIX:[pix] ==> RW:[2], VAL:[pix], Address:[wx, wy], Ref:[wId mod 2]
- 	guard
- 		isReady = false
+ 	read_ln : action PIX:[pix] ==> RW:[2], VAL:[pix], Address:[wx, wy], Ref:[frame_Id mod 2]		
  	do
  		wx := wx + 1;
  		
- 		if (rx >= WIDTH) then
+ 		if (wx >= WIDTH) then
  			wx := 0;
  			wy := wy + 1;
  		end
- 		
- 		if (0 =  wy mod MB_SZ ) && (wId > 1) then
- 			isReady := true;
- 		end
- 		
- 		if (ry >= HEIGHT) then
+ 				
+ 		if (wy >= HEIGHT) then
  			wx := 0;
  			wy := 0;
- 			wId := wId + 1; 			
- 			dx := - MAX_MOTION;
- 			dy := - MAX_MOTION;
+ 			frame_Id := frame_Id + 1;
  		end	
- 		
  	end
  	
- 	curMb: action ==> Id:[wId], RW:[1], Address:[rx, ry, rx + MB_SZ, ry + MB_SZ], Ref:[wId / 2]
+ 	curMb: action ==> Frame:[frame_Id], RW:[1], Address:[rx, ry, rx + MB_SZ - 1, ry + MB_SZ - 1], Ref:[frame_Id mod 2]
  	guard 
- 		isReady = true
+ 		(0 =  wy mod MB_SZ ) && (frame_Id > 0) && ( wy != 0) && (dy < MAX_MOTION)
  	end
  	
- 	refWin: action ==> Id:[wId], RW:[1], Address:[rx + dx, ry + dy, rx + MB_SZ + dx, ry + MB_SZ + dy], MV:[dx, dy], Ref:[wId mod 2]
- 	guard 
- 		sendRef = false,
- 		isReady = true
- 	do
- 		dx := dx + 1;
+ 	refWin: action ==> Frame:[frame_Id], RW:[1], Address:[rx + dx, ry + dy, rx + MB_SZ + dx - 1, ry + MB_SZ + dy - 1], MV:[dx, dy], Ref:[frame_Id / 2]
+  	end
+  	
+  	inc: action ==> Mb:[mb_Id]
+  	do
+  		dx := dx + 1;
  		
- 		if ((rx + MB_SZ + dx = WIDTH) || (dx = MAX_MOTION)) then
+ 		if ((rx + MB_SZ + dx > WIDTH) || (dx = MAX_MOTION)) then
  			dx := - MAX_MOTION;
  			dy :=  dy + 1;
  		end
@@ -63,37 +53,64 @@ actor Search_FS () uint(size=PIX_SZ)  PIX ==>  int(size=32) Id, int(size=8) RW, 
  		end 
  		
  		
- 		 if (ry + dy < 0) then
+ 		if (ry + dy < 0) then
  			dy := -ry;
- 		end
- 		
- 		 if ((ry + MB_SZ + dy = HEIGHT) || (dy = MAX_MOTION)) then
- 			sendRef := true;
  		end
   	end
   	
-  	compdone : action ==> 
+  	done : action ==>
+  	guard
+  		(dy = MAX_MOTION) || (ry + MB_SZ + dy > HEIGHT)
   	do
   		rx := rx + MB_SZ;
+  		mb_Id := mb_Id + 1;
   		
-  		if (rx > WIDTH)  then
-  			isReady := false;
-  			rx := 0;
-  			ry := ry + MB_SZ;
-  			
-  			if (ry > HEIGHT) then
-  				ry := 0;
-  			end
+  		if (rx - MAX_MOTION < 0) then
+  			dx := - rx;
+  		else
+  			dx := -MAX_MOTION;
+  		end
+  		
+  		if (ry - MAX_MOTION < 0) then
+  			dy := - ry;
+  		else
+  			dx := ry - MAX_MOTION;
+  		end
+  	end
+  	
+  	cont: action ==>
+  	guard
+  		(rx < WIDTH)
+  	end
+  	
+  	
+  	linedone : action ==>
+  	guard
+  		rx >=  WIDTH
+  	do
+  		rx := 0;
+  		ry := ry + MB_SZ ;
+  		wy := wy + 1;
+  		wx := -1;
+  		
+  		if (ry >= HEIGHT) then
+  			ry := 0;
   		end
   	end
  	
  	schedule fsm read :
-		read        (read_ln ) --> read;
-		read        ( curMb ) --> search;
-		search      ( refWin ) --> endSearch;
-		endSearch   ( compdone ) --> done;
-		done        ( curMb ) --> search;
-		done        ( read_ln ) --> read;
+		read      (read_ln ) --> read;
+		read      ( curMb ) --> search;
+		search    ( refWin ) --> up_index;
+		up_index    ( inc ) --> next;
+		next      ( curMb ) --> search;
+		next      ( done ) --> end_MB;
+		end_MB      ( cont ) --> next;
+		end_MB    ( linedone ) --> read;
 	end
  	
+ 	priority
+		curMb > read_ln;
+		done > curMb;
+	end
  end
