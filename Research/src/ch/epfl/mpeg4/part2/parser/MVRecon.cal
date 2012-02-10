@@ -57,8 +57,6 @@ actor MVRecon ()
 
 	List(type: int(size=MV_SZ), size=BUF_SIZE) buf := [ 0 : for int i in 1 .. BUF_SIZE ];
 
-	int(size=MV_SZ) f;
-	
 	int(size=MV_SZ) mv_rsize;
 
 	int(size=MV_SZ) mv_range;
@@ -93,10 +91,10 @@ actor MVRecon ()
 		ptr := 8;
 		if fcode > 0 then
 			mv_rsize := fcode - 1;
-			f := 1 << mv_rsize;
-			mv_high := 32*f- 1;
-			mv_low := -32*f;
-			mv_range := 64*f;
+			mv_range := 1 << (mv_rsize + 5);
+			mv_low := -mv_range;
+			mv_high := mv_range - 1;
+			mv_range := (mv_range << 1);
 		end	
 	end
 	
@@ -194,23 +192,22 @@ actor MVRecon ()
 		b := ptr;
 		c := ptr + 1;
 	end
-		
+	
 	// Compute MVs for all Y components in FOURMV mode, otherwise just one
 	compute.start: action MVIN:[ mag_x, res_x, mag_y, res_y ] ==>
-	var 		
-		int pred
+	var int pred
 	do
-		if f = 1 or mag_x = 0 then
+		if mv_rsize = 0 or mag_x = 0 then
 			mv_x := mag_x;
 		else
-			mv_x := (abs(mag_x) - 1) * f + res_x + 1;
-			if  mag_x < 0 then
-				mv_x := -mv_x;
+			mv_x := ((if mag_x < 0 then ~mag_x else mag_x - 1 end) << mv_rsize)  + res_x + 1;
+			if mag_x < 0 then
+				mv_x := - mv_x;
 			end
 		end
-		
 		pred := if comp >= 2 or not top_edge then median(buf[a], buf[b], buf[c]) else buf[a] end;
 		mv_x := pred + mv_x;
+		
 		if (mv_x < mv_low)  then
 			mv_x := mv_x + mv_range;
 		end
@@ -220,26 +217,27 @@ actor MVRecon ()
 		
 		sum_x := sum_x + mv_x;
 		
-		if f = 1 or mag_y = 0 then
+		
+		if mv_rsize = 0 or mag_y = 0 then
 			mv_y := mag_y;
 		else
-			mv_y := (abs(mag_y) - 1) * f + res_y + 1;
-			if  mag_y < 0 then
-				mv_y := -mv_y;
+			mv_y := ((if mag_y < 0 then ~mag_y else mag_y - 1 end) << mv_rsize) + res_y + 1; 
+			if mag_y < 0 then
+				mv_y := - mv_y;
 			end
 		end
-		
 		pred := if comp >= 2 or not top_edge then median(buf[a+4], buf[b+4], buf[c+4]) else buf[a+4] end;
 		mv_y := pred + mv_y;
-		if ( mv_y < mv_low )  then
-			mv_y := mv_x + mv_range;
+		
+		if (mv_y < mv_low)  then
+			mv_y := mv_y + mv_range;
 		end
 		if (mv_y > mv_high) then
 			mv_y := mv_y - mv_range;
 		end
+
 		sum_y := sum_y + mv_y;
 	end
-
 
 	write.luma: action ==> MV:[ mv_x, mv_y ]
 	guard
