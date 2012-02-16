@@ -1,0 +1,443 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+ 
+ // Author: Endri Bezati <endri.bezati@epfl.ch>
+
+package jpeg.encoder.sw;
+
+import jpeg.encoder.common.Tables.HT_Bits;
+import jpeg.encoder.common.Tables.lumaDCValues;
+import jpeg.encoder.common.Tables.lumaACValues;
+import jpeg.encoder.common.Tables.chromaDCValues;
+import jpeg.encoder.common.Tables.chromaACValues;
+
+actor Huffman()
+	int(size=32) SOI,
+	int(size=32) In
+		==>
+			int(size=4) Bit,
+			int(size=32) Count:
+
+	// Image Size in Blocks
+	int maxBlocks;
+	
+	// General Index
+	int idx;
+	
+	// Huffman Tables
+	// The constructed Huffman tables.
+	// Index 0 is DC Huffman table.
+	// Index 1 is AC Huffman table.
+	// all lists of size four because: 0 > lumaDC, 1 > lumaAC, 2 > chromaDC, 3 > chromaAC	
+	
+	int toRead[4] := [0, 0, 0, 0];
+	
+	// Temporary buffers to store the data of the Huffman table definition.
+	int htCodesLen[4][17];
+	int(size=9) HtCodesList[4][256];
+	
+	// The length of each code.
+	int HtLookUpBitlen[4][2][256];
+	// The binary representation of each code.
+	int(size=17) HtLookUpBits[4][2][256];
+	// The value of the code.
+	int(size=9) HtLookUpCode[4][2][256];
+	
+	int currentHT; //AC or DC of the block
+	
+	int blockMode; // AC/DC for Luma and Chroma
+	
+	// Block 8x8
+	int block[64];
+	int blockType :=0;
+	int idxEOB := 0;
+	
+	// Only the DC for each component is used
+	int blockDC[3] := [0,0,0]; 
+	int lastDC;
+	
+	// Build Output Buffer
+	
+	int boV;
+	int boZRL;
+	int boOffset;
+	int outputBuffer[2048];
+	
+	// Check EOB
+	bool checkEOB := false;
+
+	// Blocks to be send
+	int blockCount;
+		
+	
+	GetSz: action SOI:[w,h] ==>
+	do
+		CountRead := 0;
+		maxBlocks := (4 + 2) * ((w + 15) >> 4) * ((h + 15) >> 4);
+	end
+	
+	GetHT: action ==> 
+	do
+		toRead[0] := 0;
+		toRead[1] := 0;
+		toRead[2] := 0;
+		toRead[3] := 0;
+		
+		idx := 1;
+		while idx <= 16 do
+			htCodesLen[0][idx-1] := HT_Bits[0][idx];
+			htCodesLen[1][idx-1] := HT_Bits[2][idx];
+			htCodesLen[2][idx-1] := HT_Bits[1][idx];
+			htCodesLen[3][idx-1] := HT_Bits[3][idx];
+			
+			toRead[0] := toRead[0] + htCodesLen[0][idx-1];
+			toRead[1] := toRead[1] + htCodesLen[1][idx-1];
+			toRead[2] := toRead[2] + htCodesLen[2][idx-1];
+			toRead[3] := toRead[3] + htCodesLen[3][idx-1];
+			idx := idx + 1;
+		end	
+	end
+	
+	
+	FillHtCodesList: action ==> 
+	var 
+		int iterations := 0,
+		int value
+	do		
+		blockMode := 0;
+		while blockMode < 4 do
+			idx := 0;
+			iterations := toRead[blockMode];
+
+			while (iterations != 0) do
+				if(blockMode = 0) then
+					value :=  lumaDCValues[idx];
+				else 
+					if(blockMode = 1) then
+						value := lumaACValues[idx];
+					else
+						if(blockMode = 2) then
+							value := chromaDCValues[idx];
+						else
+							value := chromaACValues [idx];
+						end
+					end
+				end		
+				HtCodesList[blockMode][idx] :=  value;
+				idx := idx + 1;
+				iterations := iterations - 1;
+			end	
+			blockMode := blockMode + 1;		
+		end
+		blockMode := 0;
+	end
+	
+	GenerateHT: action ==>
+	var
+		int v,
+		int code_idx,
+		int shift
+	do
+		v := 0;
+		idx := 0;
+		shift := 15;
+		foreach int i in 0 .. 15 do
+			code_idx := 0;
+			while (code_idx != htCodesLen[blockMode][i]) do
+				HtLookUpBitlen[blockMode][currentHT][idx] := i + 1;
+				HtLookUpBits[blockMode][currentHT][idx] := v << shift;
+				HtLookUpCode[blockMode][currentHT][HtCodesList[blockMode][idx]] := idx;
+				
+				v := v + 1;
+				idx := idx + 1;
+				code_idx := code_idx + 1;
+			end
+			v := v << 1;
+			shift := shift - 1;
+		end
+		blockMode := blockMode + 1;
+		if blockMode = 4 and currentHT = 0 then
+			currentHT := 1;
+			blockMode := 0;
+		end
+	end
+
+	DoneHT: action ==>
+	guard
+		blockMode = 4
+	do
+		blockMode := 0;
+		idx := 0;
+	end
+	
+	GetBlock: action In:[token] ==> 
+	do
+		block[idx] := token;
+		if token != 0 then
+			idxEOB := idx;
+		end
+		idx := idx + 1;
+	end
+	
+	function abs(int x) --> int :
+		if x < 0 then
+			-x
+		else
+			x
+		end
+	end
+	
+	
+	BuildOutputBuffer: action ==>
+	guard
+		checkEOB
+	var
+		int v_abs,
+		int len,
+		int log2,
+		int code,
+		int boIdx
+	do
+		v_abs := abs(boV);
+		log2 := 0;
+			
+		if (boZRL != 16) then
+			if (boV != 0) then
+				while v_abs != 0 do
+					log2 := log2 + 1;
+					v_abs := v_abs >> 1;
+				end
+				code := (boZRL << 4) + log2;
+			else
+				code := 0x00;
+			end
+		else
+			code := 0xF0;
+		end
+		
+		if currentHT = 0 then
+			if blockType <= 3 then 
+				blockMode := 0;
+			else
+				blockMode := 2;
+			end
+		else
+			if blockType <= 3 then 
+				blockMode := 1;
+			else
+				blockMode := 3;
+			end
+		end
+		
+		boIdx := HtLookUpCode[blockMode][currentHT][code];
+		// Write the huffman code and the value to the output buffer.
+		len := HtLookUpBitlen[blockMode][currentHT][boIdx];
+		foreach uint i in 0 .. len - 1 do
+			outputBuffer[boOffset + i] := (HtLookUpBits[blockMode][currentHT][boIdx] & (1 << (15 - i))) >> (15 - i);
+		end
+		if (boV < 0) then
+			v_abs := boV + (1 << log2) - 1;
+		else
+			v_abs := boV;
+		end
+		boOffset := boOffset + len;
+		foreach uint i in 1 .. log2 do
+			outputBuffer[boOffset + log2 - i] := v_abs & 1;
+			v_abs := v_abs >> 1;
+		end
+		boOffset := boOffset + log2;
+		checkEOB := false;
+		currentHT := 1; // Now treat ACs
+	end
+	
+	function giveLastDcIdx(int x) --> int :
+		if x = 4 then
+			1
+		else
+			if x = 5 then
+				2
+			else
+				0
+			end
+		end
+	end
+	
+	DcHuffman: action ==>
+	guard
+		idx = 64
+	do
+		currentHT := 0;
+		lastDC := blockDC[giveLastDcIdx(blockType)];
+		boOffset := 0;
+		boV := block[0] - lastDC;
+		boZRL := 0;
+		checkEOB := true;
+		// For AC
+		idx := 1;
+		
+		blockDC[giveLastDcIdx(blockType)] := block[0];
+	end
+	
+	AcHuffman: action ==>
+	var
+		int ZRL,
+		bool zero
+	do
+		//currentHT := 1;
+		ZRL := 0;
+		zero := block[idx] = 0;
+		
+		while zero do
+			ZRL := ZRL + 1;
+			idx := idx + 1;
+			zero := block[idx] = 0 and ZRL < 15;
+		end
+		
+		if block[idx] = 0 then
+			boV := 0;
+			boZRL := 16;
+			checkEOB := true;
+		else
+			boV := block[idx];
+			boZRL := ZRL;
+			checkEOB := true;
+		end	
+		idx := idx + 1;
+	end
+	
+	DoneAcHuffman: action ==>
+	guard
+		idx > idxEOB
+	do
+		idx := 0;
+		if idxEOB < 63 then
+			boV := 0;
+			boZRL := 0;
+			checkEOB := true;
+		end
+		
+		blockCount := blockCount + 1;
+	end
+	
+	SendBits: action ==> Bit:[token]
+	guard
+		not checkEOB
+	var
+		int token
+	do
+		token := outputBuffer[idx];
+		idx := idx + 1;
+	end
+	
+	int CountRead := 0;
+	
+	DoneSend: action ==> 
+	guard
+		idx = boOffset
+	do
+		idx := 0;
+		blockType := blockType + 1;
+		if blockType = 6 then
+			blockType := 0;
+		end
+		currentHT := 0;
+		CountRead := CountRead + boOffset;
+	end
+	
+	int Stuff := 0;
+	
+	Stuffing: action ==>
+	guard 
+		blockCount = maxBlocks
+	var	
+		int Modulo
+	do	
+		Modulo := CountRead & 7;
+		if (Modulo != 0)
+		then
+			Stuff := 8 - Modulo;
+		else
+			Stuff := 0;
+		end
+	end
+	
+	SendStuffing: action ==>  Bit:[0]
+	do
+		Stuff := Stuff - 1;
+	end
+	
+	EOI: action ==> Count:[CountRead]
+	guard 
+		Stuff = 0
+	do
+		blockDC := [0:for int i in 0 .. 2];
+		boOffset := 0;
+		currentHT := 0;
+		blockCount := 0;
+	end
+	
+	schedule fsm s0:
+		s0		(GetSz)			--> s2;
+		
+		s2		(GetHT)				--> s3;
+		s3		(FillHtCodesList)	--> s4;	
+		
+		s4		(GenerateHT)		--> s4;
+		s4		(DoneHT)			--> s5;
+		
+		s5		(GetBlock)			--> s5;
+		s5		(DcHuffman)			--> s6;
+		
+		s6		(BuildOutputBuffer)	--> s7;
+		
+		s7		(AcHuffman)			--> s71;
+		s71		(BuildOutputBuffer)	--> s7;
+		s7		(DoneAcHuffman)		--> s8;
+		
+		s8		(BuildOutputBuffer)	--> s8;
+		s8		(SendBits)			--> s8;
+		s8		(DoneSend)			--> s5;
+		
+		s5		(Stuffing)			--> s9;
+		
+		s9		(SendStuffing)		--> s9;
+		s9		(EOI)				--> s0;
+		
+	end
+	
+	priority
+		DoneHT > GenerateHT;
+		EOI > DcHuffman > GetBlock;
+		EOI > SendStuffing;
+		DoneSend > SendBits;
+		DoneAcHuffman > AcHuffman;
+	end
+	
+end
