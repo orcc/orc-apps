@@ -93,6 +93,10 @@ actor Algo_Synp_AVC_FREXT()
 			uint(size=7)  PIC_SIZE_IN_MB,
 			int           POC, 
 
+			uint(size=8)  SCALING_LIST_Y,
+			uint(size=8)  SCALING_LIST_U,
+			uint(size=8)  SCALING_LIST_V,
+
 			uint(size=7)  MB_LOCATION,
 			uint(size=6)  MB_TYPE,
 			uint(size=16) CBP_BLK,
@@ -476,6 +480,8 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); sps_id                     := res[0]; // getBits(10) max
 		level_idc[sps_id] := sps_level_idc;
+		sps_ScalingList4x4[sps_id] := [[16 : for int i in 0 .. 15] : for int j in 0 .. 5];
+		sps_ScalingList8x8[sps_id] := [[16 : for int i in 0 .. 63] : for int j in 0 .. 1];		
 	end
   
 	read_Sps_chroma_format_idc: action ==>
@@ -1112,6 +1118,16 @@ actor Algo_Synp_AVC_FREXT()
 		varScaling[5]  := 5 + (res[0]<<1); // end index loop
 		vld_u_name(1,  fifo, res, "pic_scaling_matrix_present_flag       ");
 		scaling_matrix_present_flag := res[0];
+		foreach int i in 0 .. 5 do
+			foreach int j in 0 .. 15 do
+				pps_ScalingList4x4[pps_id][i][j] := sps_ScalingList4x4[sps_id][i][j];
+			end
+		end
+		foreach int i in 0 .. 1 do
+			foreach int j in 0 .. 63 do
+				pps_ScalingList8x8[pps_id][i][j] := sps_ScalingList8x8[sps_id][i][j];
+			end
+		end
 	end
 
 	read_Pps_not_High_Profile: action ==>
@@ -1270,7 +1286,8 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=3) SLICE_TYPE_SI = 4;
 	uint(size=1) isIDR;
 
-	read_SliceH_slice_type: action ==> CONSTRAINED_IFLAG:[constrained_intra_pred_flag[pps_id]],DIRECT_8X8_INTERFERENCE_FLAG:[direct_8x8_interference_flag[sps_id]]
+	read_SliceH_slice_type: action ==> CONSTRAINED_IFLAG:[constrained_intra_pred_flag[pps_id]],
+									   DIRECT_8X8_INTERFERENCE_FLAG:[direct_8x8_interference_flag[sps_id]]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
@@ -1811,10 +1828,17 @@ actor Algo_Synp_AVC_FREXT()
 	//******* End of dec_ref_pic_marking  ********/
 
 	//if (entropy_coding_mode_flag && slice_type != I && slice_type != SI)
-	read_SliceH_cabac_init_idc: action ==> SLICE_DBF_PARAM:[val_QP_Y, val_QP_Cb, val_QP_Cr], MB_TYPE:[if first_mb_in_slice=0 then NEW_FRAME_NON_IDR + isIDR else NEW_SLICE end]
+	read_SliceH_cabac_init_idc: action ==> SLICE_DBF_PARAM:[val_QP_Y, val_QP_Cb, val_QP_Cr],
+										   MB_TYPE:[if first_mb_in_slice=0 then NEW_FRAME_NON_IDR + isIDR else NEW_SLICE end],
+									   	   SCALING_LIST_Y:[ScalingList_Y] repeat 2*16+64,
+									       SCALING_LIST_U:[ScalingList_U] repeat 2*16,
+									       SCALING_LIST_V:[ScalingList_V] repeat 2*16
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
+		uint(size=8) ScalingList_Y[2*16+64],
+		uint(size=8) ScalingList_U[2*16],
+		uint(size=8) ScalingList_V[2*16],
 		uint(size=32) res[1],
 		int slice_qp_delta
 	do
@@ -1834,6 +1858,16 @@ actor Algo_Synp_AVC_FREXT()
 				vld_u_name(1,  fifo, res, "sp_for_switch_flag                             ");
 			end
 			vld_se_name(  fifo, res, "slice_qs_delta                             ");
+		end
+		foreach int i in 0 .. 1 do
+			foreach int j in 0 .. 15 do
+				ScalingList_Y[i*16+j] := pps_ScalingList4x4[pps_id][  i*3][j];
+				ScalingList_U[i*16+j] := pps_ScalingList4x4[pps_id][1+i*3][j];
+				ScalingList_V[i*16+j] := pps_ScalingList4x4[pps_id][2+i*3][j];
+			end
+		end
+		foreach int j in 0 .. 63 do
+			ScalingList_Y[2*16+j] := pps_ScalingList8x8[pps_id][0][j];
 		end
 	end
 
