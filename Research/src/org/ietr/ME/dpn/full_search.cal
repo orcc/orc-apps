@@ -27,54 +27,84 @@
  * SUCH DAMAGE.
  */
   
-// Author: Herve Yvique <herve.yviquel@irisa.fr>
-// Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
-// Modified by Jerome Gorin IETR/INSA of Rennes (France)
+// Author: by Jerome Gorin IETR/INSA of Rennes (France)
 
 package org.ietr.ME.dpn;
+import std.util.Math.* ;
 
-actor SourceME () ==> uint(size=8) yuv, uint(size=8) yuv_ref/* , uint(size=32) width, uint(size=32) height*/ :
-	
+actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, uint(size=32) height*/ ==> uint(size=8) mb :
 	int WITDH = 352;
 	int HEIGHT = 288;
-	int N = 300;
-	int FRAME_SIZE = WITDH*HEIGHT * 3/2;
+	int BLOCKSIZE = 16;
+	int MAX_MOTION = 16;
+	int FRAME_SIZE = WITDH*HEIGHT;
+	uint(size=8) y_array[FRAME_SIZE];
+	uint(size=8) y_ref_array[FRAME_SIZE];
+	int cnt := 0;
+	int bestSad := 0;
+	int mvx := 0;
+	int mvy := 0;
 	
-	@native procedure source_init()
-	end
-
-	@native procedure source_readNBytes(uint(size=8) outTable[N * FRAME_SIZE], uint(size=12) nbTokenToRead)
-	end
-	
-	@native procedure source_rewind()
-	end
-
-	uint(size=8) yuv_array[N * FRAME_SIZE];
-	uint(size=8) yuv_ref_array[N * FRAME_SIZE];
-	uint(size=32) cnt := 0;
-	
-	initialize ==> /*width:[WITDH], height:[HEIGHT]*/
-	do
-		source_init();
+  function calc(int sad, int v, int n ) --> int :
+    sad + abs(v-n)
+  end
+  
+   procedure SAD( int ox, int oy, int dx, int dy, int h, int w )
+   var
+     int rx = ox + dx,
+     int ry = oy +dy,
+     int sad := 0
+    begin
+    
+    if (abs(dx) <= MAX_MOTION && abs(dy) <= MAX_MOTION && rx >=0 && ry >=0 && rx+w <= WITDH && ry + h <= HEIGHT) then
+    	foreach int j in 0 .. BLOCKSIZE
+		do
+			foreach int i in 0 .. BLOCKSIZE
+			do
+				sad :=  calc(sad, oy * WITDH + ox, ry * WITDH + rx);
+			end
+		end
 		
-		// Avoid first frame and read all frames after first frame
-		source_readNBytes(yuv_array, FRAME_SIZE);
-		source_readNBytes(yuv_array, N * FRAME_SIZE);
-		
-		// Rewind and read all frames
-		source_rewind();
-		source_readNBytes(yuv_ref_array, N * FRAME_SIZE);
-	end
-	
-	action ==> yuv:[yuv_val], yuv_ref:[yuv_ref_val]
+		if (sad >= bestSad) then
+			bestSad := sad;
+		end
+    end
+    
+    
+    
+  end
+  
+	procedure search_FS(int x , int y, int h, int w)
 	var
-		uint(size=8) yuv_val,
-		uint(size=8) yuv_ref_val
+		int ox = x * BLOCKSIZE,
+		int oy = y * BLOCKSIZE
+	begin
+		bestSad := 0xffffff;
+		
+		foreach int j in -MAX_MOTION .. MAX_MOTION
+		do
+			foreach int i in 0 .. WITDH / BLOCKSIZE
+			do
+				SAD(ox, oy, i,j, h, w);
+			end
+		end
+	end
+	
+	load:action  y:[y_val], y_ref:[y_ref_val] ==>
 	do
-		yuv_val := yuv_array[cnt];
-		yuv_ref_val := yuv_ref_array[cnt];
+		y_array[cnt] := y_val;
+		y_array[cnt] := y_ref_val;
 		cnt := cnt + 1;
 	end
-	
 
+	start: action ==>
+	do
+		foreach int j in 0 .. HEIGHT / BLOCKSIZE
+		do
+			foreach int i in 0 .. WITDH / BLOCKSIZE
+			do
+				search_FS(i,j, BLOCKSIZE,BLOCKSIZE);
+			end
+		end
+	end
 end
