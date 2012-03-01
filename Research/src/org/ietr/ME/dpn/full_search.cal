@@ -38,15 +38,19 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
 	int BLOCKSIZE = 16;
 	int MAX_MOTION = 16;
 	int FRAME_SIZE = WITDH*HEIGHT;
+	
+	
 	uint(size=8) y_array[FRAME_SIZE];
 	uint(size=8) y_ref_array[FRAME_SIZE];
-	int cnt := 0;
-	int bestSad := 0;
-	int mvx := 0;
-	int mvy := 0;
+	int(size=32) mvx[WITDH / BLOCKSIZE * HEIGHT /BLOCKSIZE];
+	int(size=32) mvy[WITDH / BLOCKSIZE * HEIGHT /BLOCKSIZE];
+	int(size=32) cnt := 0;
+	int(size=32) id := HEIGHT/BLOCKSIZE * WITDH/BLOCKSIZE;
+	int(size=32) bestSad := 0;
 	
-  function calc(int sad, int v, int n ) --> int :
-    sad + abs(v-n)
+	
+  function calc(int sad, int y, int y_ref ) --> int :
+    sad + abs(y_array[y] - y_ref_array[y_ref])
   end
   
    procedure SAD( int ox, int oy, int dx, int dy, int h, int w )
@@ -61,12 +65,14 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
 		do
 			foreach int i in 0 .. BLOCKSIZE
 			do
-				sad :=  calc(sad, oy * WITDH + ox, ry * WITDH + rx);
+				sad :=  calc(sad, (oy+j) * WITDH + ox+ i, (ry+j) * WITDH + rx +i);
 			end
 		end
 		
 		if (sad >= bestSad) then
 			bestSad := sad;
+			mvx[oy * WITDH/BLOCKSIZE + ox] := dx;
+			mvy[oy * WITDH/BLOCKSIZE + ox] := dy;
 		end
     end
     
@@ -74,6 +80,8 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
     
   end
   
+  // HMPP : Codelet
+  // TODO: inline transformation
 	procedure search_FS(int x , int y, int h, int w)
 	var
 		int ox = x * BLOCKSIZE,
@@ -90,27 +98,66 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
 		end
 	end
 	
+	//@hmpp allocate 
+	initialize ==>
+	do
+	
+	end
+	
 	load:action  y:[y_val], y_ref:[y_ref_val] ==>
 	guard
 		cnt < FRAME_SIZE
 	do
+
 		y_array[cnt] := y_val;
 		y_array[cnt] := y_ref_val;
 		cnt := cnt + 1;
 	end
 
+	// HMPP : Advanced load y, y_ref
 	start: action ==>
 	guard
 		cnt = FRAME_SIZE
 	do
+		id := 0;
 		foreach int j in 0 .. HEIGHT / BLOCKSIZE
 		do
 			foreach int i in 0 .. WITDH / BLOCKSIZE
 			do
+			// HMPP : Callsite
+			// Todo: faire une transformation selon ce qui l'a besoin
 				search_FS(i,j, BLOCKSIZE,BLOCKSIZE);
 			end
 		end
+	end
+	
+	//HMPP : Delegated store mvx, mvy
+	send: action ==> mb:[mbid], mv:[vx, vy]
+	guard
+		id < HEIGHT/BLOCKSIZE * WITDH/BLOCKSIZE
+	var
+		int mbid,
+		int vx,
+		int vy
+	do
+		mbid := id;
+		vx := mvx[id];
+		vy := mvy[id];
+		id := id + 1;
+	end
+	
+	end_send: action ==>
+	guard
+		id = HEIGHT/BLOCKSIZE * WITDH/BLOCKSIZE
+	do
 		cnt := 0;
+	end
+	
+	schedule fsm s_load :
+		s_load ( load ) --> s_load;
+		s_load ( start ) --> s_send;
+		s_send ( send ) --> s_send;
+		s_send ( end_send ) --> s_load;
 	end
 
 end
