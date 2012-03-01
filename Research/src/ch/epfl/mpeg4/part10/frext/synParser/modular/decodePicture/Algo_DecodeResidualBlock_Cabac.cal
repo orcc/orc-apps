@@ -1,0 +1,215 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.frext.synParser.modular.decodePicture;
+
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+
+actor Algo_DecodeResidualBlock_Cabac(bool DEBUG)
+	int (size=16) Parameters,
+	int (size=32) ValVLD
+		==>
+	bool          CodedBlockFlag,
+	bool          Last,
+	uint(size=4)  Run,
+	uint(size=5)  TypeOfVLD,
+	int (size=12) Value,
+	int (size=32) VldParam
+		:
+
+	bool          codedBlock;
+	int (size=9)  coeffAbsLvl;
+	uint(size=10) cbfChNeighb;
+	uint(size=4)  ctxBlockCat;
+	int (size=7)  iLoop;
+	uint(size=4)  luma4x4BlkIdx;
+	uint(size=7)  maxNumCoeff;
+	int (size=6)  numCoeffMinus1;
+	bool          significantCoeffTab[64];
+	bool          signifCoeff;
+
+	readParameters: action Parameters:[ctxBlkCat, maxNumCoeffVal, startIndex,
+		endIndex, luma4x4Idx, cbfNeighbours] ==>
+	do
+		cbfChNeighb      := cbfNeighbours;
+		ctxBlockCat := ctxBlkCat;
+		luma4x4BlkIdx  := luma4x4Idx;
+		numCoeffMinus1 := endIndex;
+		maxNumCoeff := maxNumCoeffVal;
+		iLoop       := startIndex;
+	end
+
+	askCodedBlockFlag: action ==> TypeOfVLD:[CABAC_CODED_BLOCK_FLAG],
+		VldParam:[vldParam]
+//	guard
+//		maxNumCoeff = 64
+	do
+		int(size=32) vldParam = ctxBlockCat + (luma4x4BlkIdx << 4) + (cbfChNeighb << 14);
+	end
+
+	getCodedBlockFlag: action ValVLD:[codedBlkFlag] ==>
+		CodedBlockFlag:[codedBlock]
+	do
+		codedBlock := (codedBlkFlag != 0);
+		if(DEBUG) then
+			println("coded_block_flag : "+codedBlkFlag);
+		end
+	end
+
+	askSignificantCoeff: action ==> TypeOfVLD:[CABAC_SIGNIFICANT_COEFF_FLAG],
+		VldParam:[iLoop]
+	guard
+		codedBlock
+	end
+
+	getSignificantCoeff: action ValVLD:[signCoeffFlag] ==>
+	do
+		signifCoeff := (signCoeffFlag != 0);
+		significantCoeffTab[iLoop] := signifCoeff;
+		if(DEBUG) then
+			println("significant_coeff_flag : "+signCoeffFlag);
+		end
+		if(not signifCoeff)then
+			iLoop := iLoop + 1;
+		end
+	end
+
+	askLastSignCoeff: action ==> TypeOfVLD:[CABAC_LAST_SIGNIFICANT_COEFF_FLAG]
+	guard
+		signifCoeff
+	end
+
+	getLastSignCoeff: action ValVLD:[lastSignCoef] ==>
+	do
+		if(DEBUG) then
+			println("last_significant_coeff_flag : "+ lastSignCoef);
+		end
+		if(lastSignCoef = 0) then
+			iLoop := iLoop + 1;
+		else
+			numCoeffMinus1 := iLoop;
+		end
+	end
+
+	checkEndOfLoop.isFalse: action ==>
+	guard
+		iLoop < numCoeffMinus1
+	end
+
+	askCoeffAbsLvl.launch: action ==> TypeOfVLD:[CABAC_COEFF_ABS_LEVEL_MINUS1]
+	guard//                               the last coeff is always decoded
+		significantCoeffTab[numCoeffMinus1] or(iLoop = numCoeffMinus1)
+	end
+
+	askCoeffAbsLvl.skip: action ==> Run:[0], Value:[0], Last:[false]
+	do
+		numCoeffMinus1 := numCoeffMinus1 - 1;
+	end
+
+	getCoeffAbsLvl: action ValVLD:[coeffAbsLvlMin1] ==>
+	do
+		if(DEBUG) then
+			println("coeff_abs_level_minus1 : "+ coeffAbsLvlMin1);
+		end
+		coeffAbsLvl := coeffAbsLvlMin1 + 1;
+	end
+
+	askCoeffSignFlag: action ==> TypeOfVLD:[CABAC_COEFF_SIGN_FLAG]
+	end
+
+	getCoeffSignFlag: action ValVLD:[coeffSignFlag] ==> Run:[0],
+		Value:[coeffAbsLvl], Last:[false]
+	do
+		if(DEBUG) then
+			println("coeff_sign_flag : "+ coeffSignFlag);
+		end
+		if(coeffSignFlag != 0) then
+			coeffAbsLvl := -coeffAbsLvl;
+		end
+		numCoeffMinus1 := numCoeffMinus1 - 1;
+	end
+
+	checkEndOfCoeffLoop.isFalse: action ==>
+	guard
+		numCoeffMinus1 >= 0
+	end
+
+
+	// The first coeffAC will be replaced by coeffDC
+	sendEndOfDecoding.withDc: action ==> TypeOfVLD:[SKIP_NAL],
+		Run:[0], Value:[0], Last:[false, true]
+	guard
+		maxNumCoeff = 15
+	end
+
+	sendEndOfDecoding.withoutDc: action ==> TypeOfVLD:[SKIP_NAL],
+		Last:[true]
+	guard
+		maxNumCoeff != 15
+	end
+
+	schedule fsm ReadParam:
+		ReadParam         (readParameters    )--> AskCodedBlockFlag;
+		AskCodedBlockFlag (askCodedBlockFlag )--> GetCodedBlockFlag;
+		AskCodedBlockFlag (sendEndOfDecoding )--> ReadParam;
+		GetCodedBlockFlag (getCodedBlockFlag )--> CheckCodedBlockFlag;
+		CheckCodedBlockFlag (askSignificantCoeff )--> GetSignificantCoeff;
+		CheckCodedBlockFlag (sendEndOfDecoding   )--> ReadParam;
+
+		GetSignificantCoeff (getSignificantCoeff    )--> CheckSignCoeffFlag;
+		CheckSignCoeffFlag  (askLastSignCoeff       )--> GetLastSignCoeff;
+		CheckSignCoeffFlag  (checkEndOfLoop.isFalse )--> AskSignificantCoeff;
+		CheckSignCoeffFlag  (askCoeffAbsLvl.launch  )--> GetCoeffAbsLvl;
+		CheckSignCoeffFlag  (askCoeffAbsLvl.skip    )--> CheckEndOfCoeffLoop;
+
+		GetLastSignCoeff (getLastSignCoeff       )--> CheckEndOfLoop;
+		CheckEndOfLoop   (checkEndOfLoop.isFalse )--> AskSignificantCoeff;
+		CheckEndOfLoop   (askCoeffAbsLvl.launch  )--> GetCoeffAbsLvl;
+		CheckEndOfLoop   (askCoeffAbsLvl.skip    )--> CheckEndOfCoeffLoop;
+
+		AskSignificantCoeff (askSignificantCoeff )--> GetSignificantCoeff;
+
+		AskCoeffAbsLvl   (askCoeffAbsLvl.launch )--> GetCoeffAbsLvl;
+		AskCoeffAbsLvl   (askCoeffAbsLvl.skip   )--> CheckEndOfCoeffLoop;
+		GetCoeffAbsLvl   (getCoeffAbsLvl        )--> AskCoeffSignFlag;
+		AskCoeffSignFlag (askCoeffSignFlag      )--> GetCoeffSignFlag;
+		GetCoeffSignFlag (getCoeffSignFlag      )--> CheckEndOfCoeffLoop;
+
+		CheckEndOfCoeffLoop (checkEndOfCoeffLoop.isFalse )--> AskCoeffAbsLvl;
+		CheckEndOfCoeffLoop (sendEndOfDecoding           )--> ReadParam;
+	end
+	priority
+		askCodedBlockFlag     > sendEndOfDecoding;
+		askSignificantCoeff   > sendEndOfDecoding;
+		askLastSignCoeff      > checkEndOfLoop > askCoeffAbsLvl;
+		checkEndOfCoeffLoop   > sendEndOfDecoding;
+		askCoeffAbsLvl.launch > askCoeffAbsLvl.skip;
+	end
+end

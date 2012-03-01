@@ -1,0 +1,170 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.svc.synParser.modular.Sei;
+
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+
+actor MgntSei()
+	int (size=32) ValVLD,
+
+	int (size=6)  SeiMessageTypeOfVLD,
+	int (size=32) SeiMessageVLDParam,
+	int (size=6)  ScalInfoTypeOfVLD,
+	int (size=32) ScalInfoVLDParam
+		==>
+	uint(size=5)  TypeOfVLD,
+	int (size=32) VLD_Param,
+
+	int (size=32) SeiMessageValVLD,
+	int (size=32) ScalInfoValVLD
+		:
+
+	uint(size=32) nbParamToDecod := 0;
+	
+	SeiMessage.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
+		SeiMessageValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	SeiMessage.GetVLDVal.Done: action ==>
+	guard
+		nbParamToDecod = 0
+	end
+
+	SeiMessage.WaitVLDVal: action ==>
+	guard
+		nbParamToDecod > 0
+	end
+
+	SeiMessage.FunctionWithoutParam: action SeiMessageTypeOfVLD :[ValTypeOfVLD] ==>
+		TypeOfVLD :[ValTypeOfVLD]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 0
+	do
+		if(ValTypeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	SeiMessage.FunctionWith1Param: action
+		SeiMessageTypeOfVLD :[ValTypeOfVLD],
+		SeiMessageVLDParam  :[Param]
+			==>
+		TypeOfVLD       :[ValTypeOfVLD],
+		VLD_Param       :[Param]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+/*	SeiMessage.LaunchScalInfo: action
+		SeiMessageTypeOfVLD :[Function],
+		SeiMessageVLDParam  :[Actor]
+			==>
+	guard
+		Function = LAUNCH_ACTOR,
+		Actor    = SCALABILITY_INFO,
+		nbParamToDecod = 0
+	end*/
+
+	ScalInfo.GetVLDVal.Launch: action ValVLD :[VLDecoding] ==>
+		ScalInfoValVLD :[VLDecoding]
+	guard
+		nbParamToDecod > 0
+	do
+		nbParamToDecod := nbParamToDecod - 1;
+	end
+
+	ScalInfo.GetVLDVal.Done: action ==>
+	guard
+		nbParamToDecod = 0
+	end
+
+	ScalInfo.WaitVLDVal: action ==>
+	guard
+		nbParamToDecod > 0
+	end
+
+	ScalInfo.FunctionWithoutParam: action ScalInfoTypeOfVLD :[ValTypeOfVLD] ==>
+		TypeOfVLD :[ValTypeOfVLD]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 0,
+		ValTypeOfVLD  != SKIP_NAL
+	do
+		if(ValTypeOfVLD != BYTE_ALIGNED_REQUIRED)then
+			nbParamToDecod := nbParamToDecod + 1;
+		end
+	end
+
+	ScalInfo.FunctionWith1Param: action
+		ScalInfoTypeOfVLD :[ValTypeOfVLD],
+		ScalInfoVLDParam  :[Param]
+			==>
+		TypeOfVLD       :[ValTypeOfVLD],
+		VLD_Param       :[Param]
+	guard
+		NbParamForFunction(ValTypeOfVLD) = 1
+	do
+		nbParamToDecod := nbParamToDecod + 1;
+	end
+
+	ScalInfo.Done: action ScalInfoTypeOfVLD :[Function] ==>
+	guard
+		Function = SKIP_NAL
+	end
+
+	schedule fsm LaunchSeiMessage:
+		LaunchSeiMessage (SeiMessage.FunctionWithoutParam )--> LaunchSeiMessage;
+		LaunchSeiMessage (SeiMessage.FunctionWith1Param   )--> LaunchSeiMessage;
+		LaunchSeiMessage (SeiMessage.WaitVLDVal           )--> LaunchSeiMessageGetVLDVal;
+//		LaunchSeiMessage (SeiMessage.LaunchScalInfo       )--> LaunchRefPicMark;
+			LaunchSeiMessageGetVLDVal (SeiMessage.GetVLDVal.Launch )--> LaunchSeiMessageGetVLDVal;
+			LaunchSeiMessageGetVLDVal (SeiMessage.GetVLDVal.Done   )--> LaunchSeiMessage;
+
+			LaunchScalInfo (ScalInfo.FunctionWithoutParam )--> LaunchScalInfo;
+			LaunchScalInfo (ScalInfo.FunctionWith1Param   )--> LaunchScalInfo;
+			LaunchScalInfo (ScalInfo.WaitVLDVal           )--> LaunchScalInfoGetVLDVal;
+			LaunchScalInfo (ScalInfo.Done                 )--> LaunchSeiMessage;
+				LaunchScalInfoGetVLDVal (ScalInfo.GetVLDVal.Launch )--> LaunchScalInfoGetVLDVal;
+				LaunchScalInfoGetVLDVal (ScalInfo.GetVLDVal.Done   )--> LaunchScalInfo;
+	end
+	priority
+		SeiMessage.FunctionWithoutParam > SeiMessage.FunctionWith1Param > SeiMessage.WaitVLDVal /*> SeiMessage.LaunchScalInfo*/;
+		SeiMessage.GetVLDVal.Launch > SeiMessage.GetVLDVal.Done;
+
+		ScalInfo.FunctionWithoutParam > ScalInfo.FunctionWith1Param > ScalInfo.WaitVLDVal > ScalInfo.Done;
+		ScalInfo.GetVLDVal.Launch > ScalInfo.GetVLDVal.Done;
+	end
+end

@@ -1,0 +1,417 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.frext.synParser.modular.decodePicture;
+
+import org.sc29.wg11.mpeg4.part10.MacroBlockInfo.*;
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import std.util.BitOps.*;
+
+actor Algo_DecodeSubMbPred()
+	int (size=32) ValVLD,
+
+	uint(size=6)  Parameters
+		==>
+	uint(size=5)  TypeOfVLD,
+	int (size=32) VldParam,
+
+	uint(size=4) SubMbType,
+
+	uint(size=4) RefIdxL0,
+	uint(size=4) RefIdxL1,
+	int(size=16) MvResl0,
+	int(size=16) MvResl1
+		:
+
+	bool DEBUG_MV = false;
+
+	bool          entropyCodingMode;
+	uint(size=5)  num_ref_idx_l0_active;
+	uint(size=5)  num_ref_idx_l1_active;
+	bool          mb_field_decoding_flag;
+	uint(size=6)  mb_type;
+
+	uint(size=3) mbPartIdx;
+	uint(size=3) subMbPartIdx;
+	uint(size=3) subMbPartIdxMax;
+
+	List(type: uint(size=4), size=4) sub_mb_type;
+	List (type:int,size=4) ref_idx_l0 := [ 0 : for int i in 0 .. 3];
+	List (type:int,size=4) ref_idx_l1 := [ 0 : for int i in 0 .. 3];
+
+
+	ReadParameters: action Parameters:[MacroBType,NumRefIdxL0Act,
+		NumRefIdxL1Act,Flag] ==>
+	do
+		num_ref_idx_l0_active  := NumRefIdxL0Act;
+		num_ref_idx_l1_active  := NumRefIdxL1Act;
+		mb_type                := MacroBType;
+		mb_field_decoding_flag := getFlag(Flag,0);
+		entropyCodingMode      := getFlag(Flag,1);
+		mbPartIdx    := 0;
+		ref_idx_l0 := [ 0 : for int i in 0 .. 3];
+		ref_idx_l1 := [ 0 : for int i in 0 .. 3];
+	end
+
+	ReadSubMbType.Asked.cavlc: action ==> TypeOfVLD:[VLD_UE, VLD_UE, VLD_UE,
+		VLD_UE]
+	guard
+		not entropyCodingMode
+	end
+
+	ReadSubMbType.Asked.cabac: action ==> TypeOfVLD:[CABAC_SUB_MB_TYPE,
+		CABAC_SUB_MB_TYPE, CABAC_SUB_MB_TYPE, CABAC_SUB_MB_TYPE]
+	guard
+		entropyCodingMode
+	end
+
+	ReadSubMbType.Done: action ValVLD:[ValueOfVLD] repeat 4 ==>
+		SubMbType :[ValueOfVLD] repeat 4
+	do
+		foreach int i in 0 .. 3
+		do
+			sub_mb_type[i] := ValueOfVLD[i];
+			if(DEBUG_MV)then
+				println("sub_mb_type[ "+i+" ] : "+ValueOfVLD[i]);
+			end
+		end
+	end
+/*
+for( mbPartIdx = 0; mbPartIdx < 4; mbPartIdx++ )
+   if( ( num_ref_idx_l0_active_minus1 > 0 || mb_field_decoding_flag ) &&
+       mb_type != P_8x8ref0 &&
+       sub_mb_type[ mbPartIdx ] != B_Direct_8x8 &&
+       SubMbPredMode( sub_mb_type[ mbPartIdx ] ) != Pred_L1 )
+       	ref_idx_l0[ mbPartIdx ] = te(v)
+*/
+	AskRefIdxL0.Launch: action ==> TypeOfVLD:[typeOfVld], VldParam:[param]
+	guard
+		/* ( num_ref_idx_l0_active_minus1 > 0 || mb_field_decoding_flag ) */
+		num_ref_idx_l0_active > 1 or mb_field_decoding_flag,
+		/* mb_type != P_8x8ref0 */
+		   mb_type != BLOCK_TYPE_P_8x8ref0,
+		/* sub_mb_type[ mbPartIdx ] != B_Direct_8x8 */
+		not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) or (sub_mb_type[mbPartIdx] != B_DIRECT_8x8),
+		/* SubMbPredMode( sub_mb_type[ mbPartIdx ] ) != Pred_L1 )*/
+		subMbPredMode(mb_type, sub_mb_type[mbPartIdx]) != PRED_L1,
+		mbPartIdx < 4
+	do
+		uint(size=6) typeOfVld =
+			if(not entropyCodingMode) then
+				VLD_TE
+			else
+				CABAC_REF_IDX_LX
+			end;
+		int(size=32) param =
+			if(not entropyCodingMode) then
+				num_ref_idx_l0_active - 1
+			else
+			//  isL0  + mbPartIdx
+				 0x08 + mbPartIdx
+			end;
+		mbPartIdx := mbPartIdx + 1;
+	end
+
+	AskRefIdxLX.Skip: action ==> TypeOfVLD:[READ_BITS], VldParam:[0]
+	guard
+		mbPartIdx < 4
+	do
+		mbPartIdx := mbPartIdx + 1;
+	end
+
+	SendOrReadDone: action ==>
+	guard
+		mbPartIdx = 4
+	do
+		mbPartIdx := 0;
+	end
+
+/*
+for( mbPartIdx = 0; mbPartIdx < 4; mbPartIdx++ )
+   if( (num_ref_idx_l1_active_minus1 > 0 | | mb_field_decoding_flag ) &&
+        sub_mb_type[ mbPartIdx ] != B_Direct_8x8 &&
+        SubMbPredMode( sub_mb_type[ mbPartIdx ] ) != Pred_L0 )
+           ref_idx_l1[ mbPartIdx ] := te(v);
+*/
+	AskRefIdxL1.Launch: action ==> TypeOfVLD:[typeOfVld], VldParam:[param]
+	guard
+		/* ( num_ref_idx_l1_active_minus1 > 0 | | mb_field_decoding_flag ) */
+		num_ref_idx_l1_active > 1 or mb_field_decoding_flag,
+		/* sub_mb_type[ mbPartIdx ] != B_Direct_8x8 */
+		not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) or (sub_mb_type[mbPartIdx] != B_DIRECT_8x8),
+		/* SubMbPredMode( sub_mb_type[ mbPartIdx ] ) != Pred_L0 )*/
+		subMbPredMode(mb_type, sub_mb_type[mbPartIdx]) != PRED_L0,
+		mbPartIdx < 4
+	do
+		uint(size=6) typeOfVld =
+			if(not entropyCodingMode) then
+				VLD_TE
+			else
+				CABAC_REF_IDX_LX
+			end;
+		int(size=32) param =
+			if(not entropyCodingMode) then
+				num_ref_idx_l1_active - 1
+			else
+				mbPartIdx
+			end;
+		mbPartIdx := mbPartIdx + 1;
+	end
+
+
+	CheckmbPartIdx: action
+				==>
+		guard
+			mbPartIdx < 4
+		do
+			subMbPartIdx    := 0;
+			subMbPartIdxMax := numSubMbPart(mb_type,sub_mb_type[mbPartIdx]);
+			mbPartIdx       := mbPartIdx + 1;
+		end
+
+/*
+if( sub_mb_type[ mbPartIdx ] != B_Direct_8x8 &&
+    SubMbPredMode( sub_mb_type[ mbPartIdx ] ) != Pred_L1 )
+*/
+	//                                                mvd_l0
+	ReadMvdl0Asked.Launch.cavlc: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
+	guard
+		   not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX)
+		or    (sub_mb_type[mbPartIdx - 1] != B_DIRECT_8x8),
+		subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L1,
+		subMbPartIdx < subMbPartIdxMax and not entropyCodingMode
+	do
+		subMbPartIdx := subMbPartIdx +1;
+	end
+
+	ReadMvdl0Asked.Launch.cabac: action ==> TypeOfVLD:[CABAC_MVD_LX_0,
+		CABAC_MVD_LX_1], VldParam:[partsIdx, partsIdx]
+	guard
+		   not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX)
+		or    (sub_mb_type[mbPartIdx - 1] != B_DIRECT_8x8),
+		subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L1,
+		subMbPartIdx < subMbPartIdxMax and entropyCodingMode
+	do
+		uint(size=6) partsIdx = setFlag(true, 6, (mbPartIdx-1 << 3) + subMbPartIdx);
+		subMbPartIdx := subMbPartIdx +1;
+	end
+
+	ReadMvdl0Asked.Skip: action
+				==>
+		guard
+			   (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX and sub_mb_type[mbPartIdx - 1] = B_DIRECT_8x8)
+			or subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) = PRED_L1,
+			subMbPartIdx < subMbPartIdxMax
+		do
+			subMbPartIdx := subMbPartIdx +1;
+		end
+
+/*
+if( sub_mb_type[ mbPartIdx ] != B_Direct_8x8 &&
+    SubMbPredMode( sub_mb_type[ mbPartIdx ] ) != Pred_L0 )
+*/
+	//                                 mvd_l0
+	ReadMvdl1Asked.Launc.cavlc: action ==> TypeOfVLD:[VLD_SE, VLD_SE]
+	guard
+		not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) or (sub_mb_type[mbPartIdx - 1] != B_DIRECT_8x8),
+		subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L0,
+		subMbPartIdx < subMbPartIdxMax and not entropyCodingMode
+	do
+		subMbPartIdx := subMbPartIdx +1;
+	end
+
+	ReadMvdl1Asked.Launc.cabac: action ==> TypeOfVLD:[CABAC_MVD_LX_0,
+		CABAC_MVD_LX_1], VldParam:[partsIdx, partsIdx]
+	guard
+		not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) or (sub_mb_type[mbPartIdx - 1] != B_DIRECT_8x8),
+		subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L0,
+		subMbPartIdx < subMbPartIdxMax and entropyCodingMode
+	do
+		uint(size=6) partsIdx = (mbPartIdx-1 << 3) + subMbPartIdx;
+		subMbPartIdx := subMbPartIdx +1;
+	end
+
+	ReadMvdl1Asked.Skip: action
+				==>
+		guard
+			   (mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX and sub_mb_type[mbPartIdx - 1] = B_DIRECT_8x8)
+			or subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L0,
+			subMbPartIdx < subMbPartIdxMax
+		do
+			subMbPartIdx := subMbPartIdx +1;
+		end
+
+	ReadRefIdxLX: action
+			ValVLD :[ValueOfVLD] repeat 8
+				==>
+		do
+			foreach int i in 0 .. 3
+			do
+				ref_idx_l0[i] := ValueOfVLD[i];
+				ref_idx_l1[i] := ValueOfVLD[i+4];
+				if(DEBUG_MV)then
+						println("refidxl1["+i+"] :"+ValueOfVLD[i+4]);
+						println("refidxl0["+i+"] :"+ValueOfVLD[i]);
+				end
+			end
+		end
+
+	HasMvdl0: action ==>
+		guard
+			//Fix me : should be SubMbPredMode(mb_type,sub_mb_type)& PRED_L0 != 0
+			not(mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX) or (sub_mb_type[mbPartIdx - 1] != B_DIRECT_8x8),
+			subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L1
+		end
+
+	HasNotMvdl0: action ==>
+		guard
+			//Fix me : should be SubMbPredMode(mb_type,sub_mb_type)& PRED_L0 = 0
+			mb_type >= BLOCK_TYPE_B_MIN and mb_type <= BLOCK_TYPE_B_MAX and sub_mb_type[mbPartIdx - 1] = B_DIRECT_8x8
+			or subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) = PRED_L1
+		end
+
+	ReadMvdl0.Launch: action
+			ValVLD   :[ValueOfVLD] repeat 2
+				==>
+			RefIdxL0     :[ref_idx_l0[mbPartIdx-1]],
+			MvResl0      :[ValueOfVLD] repeat 2
+		guard
+			subMbPartIdx < subMbPartIdxMax
+		do
+			if(DEBUG_MV)then
+				println("sub_mb_pred mvld0["+ (mbPartIdx - 1) +"]["+subMbPartIdx+"][0]:"+ValueOfVLD[0]);
+				println("sub_mb_pred mvld0["+ (mbPartIdx - 1) +"]["+subMbPartIdx+"][1]:"+ValueOfVLD[1]);
+			end
+			subMbPartIdx := subMbPartIdx +1;
+		end
+
+	ReadMvdlX_Done: action ==>
+		guard
+			subMbPartIdx = subMbPartIdxMax
+		end
+
+
+	HasMvdl1: action ==>
+		guard
+			//Fix me : should be SubMbPredMode(mb_type,sub_mb_type)& PRED_L1 != 0
+			mb_type >= BLOCK_TYPE_B_MIN,
+			mb_type <= BLOCK_TYPE_B_MAX,
+			sub_mb_type[mbPartIdx - 1] != B_DIRECT_8x8,
+			subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) != PRED_L0
+		end
+
+	HasNotMvdl1: action ==>
+		guard
+			//Fix me : should be SubMbPredMode(mb_type,sub_mb_type)& PRED_L1 = 0
+			mb_type < BLOCK_TYPE_B_MIN
+			or mb_type > BLOCK_TYPE_B_MAX
+			or sub_mb_type[mbPartIdx - 1] = B_DIRECT_8x8
+			or subMbPredMode(mb_type, sub_mb_type[mbPartIdx - 1]) = PRED_L0
+		end
+
+	ReadMvdl1.Launch: action
+			ValVLD :[ValueOfVLD] repeat 2
+				==>
+			MvResl1      :[ValueOfVLD] repeat 2,
+			RefIdxL1 :[ref_idx_l1[mbPartIdx-1]]
+		guard
+			subMbPartIdx < subMbPartIdxMax
+		do
+			if(DEBUG_MV)then
+				println("mvld1["+ (mbPartIdx - 1) +"]["+subMbPartIdx+"][0]:"+ValueOfVLD[0]);
+				println("mvld1["+ (mbPartIdx - 1) +"]["+subMbPartIdx+"][1]:"+ValueOfVLD[1]);
+			end
+			subMbPartIdx := subMbPartIdx +1;
+		end
+
+	SendEndSubMbPred: action
+				==>
+			TypeOfVLD   :[ SKIP_NAL ]
+		end
+
+	schedule fsm ReadParameters:
+		ReadParameters     (ReadParameters      )--> ReadSubMbTypeAsked;
+		ReadSubMbTypeAsked (ReadSubMbType.Asked )--> ReadSubMbTypeDone;
+		ReadSubMbTypeDone  (ReadSubMbType.Done  )--> AskRefIdxL0;
+		AskRefIdxL0        (AskRefIdxL0.Launch  )--> AskRefIdxL0;
+		AskRefIdxL0        (AskRefIdxLX.Skip    )--> AskRefIdxL0;
+		AskRefIdxL0        (SendOrReadDone      )--> AskRefIdxL1;
+
+		AskRefIdxL1        (AskRefIdxL1.Launch  )--> AskRefIdxL1;
+		AskRefIdxL1        (AskRefIdxLX.Skip    )--> AskRefIdxL1;
+		AskRefIdxL1        (SendOrReadDone      )--> CheckmbPartIdx0;
+
+		CheckmbPartIdx0    (CheckmbPartIdx      )--> ReadMvdl0Asked;
+
+		ReadMvdl0Asked     (ReadMvdl0Asked      )--> ReadMvdl0Asked;
+		ReadMvdl0Asked     (CheckmbPartIdx      )--> ReadMvdl0Asked;
+		ReadMvdl0Asked     (SendOrReadDone      )--> CheckmbPartIdx1;
+
+		CheckmbPartIdx1    (CheckmbPartIdx      )--> ReadMvdl1Asked;
+
+		ReadMvdl1Asked     (ReadMvdl1Asked      )--> ReadMvdl1Asked;
+		ReadMvdl1Asked     (CheckmbPartIdx      )--> ReadMvdl1Asked;
+		ReadMvdl1Asked     (SendOrReadDone      )--> ReadRefIdxLX;
+
+		ReadRefIdxLX       (ReadRefIdxLX        )--> CheckmbPartIdx2;
+
+		CheckmbPartIdx2    (CheckmbPartIdx      )--> CheckReadMvdl0;
+
+		CheckReadMvdl0     (HasMvdl0            )--> ReadMvdl0;
+		CheckReadMvdl0     (HasNotMvdl0         )--> CheckMbPart4MvdL0;
+
+		ReadMvdl0          (ReadMvdl0           )--> ReadMvdl0;
+		ReadMvdl0          (ReadMvdlX_Done      )--> CheckMbPart4MvdL0;
+
+		CheckMbPart4MvdL0  (CheckmbPartIdx      )--> CheckReadMvdl0;
+		CheckMbPart4MvdL0  (SendOrReadDone      )--> CheckmbPartIdx3;
+
+		CheckmbPartIdx3    (CheckmbPartIdx      )--> CheckReadMvdl1;
+
+		CheckReadMvdl1     (HasMvdl1            )--> ReadMvdl1;
+		CheckReadMvdl1     (HasNotMvdl1         )--> CheckMbPart4MvdL1;
+
+		ReadMvdl1          (ReadMvdl1           )--> ReadMvdl1;
+		ReadMvdl1          (ReadMvdlX_Done      )--> CheckMbPart4MvdL1;
+
+		CheckMbPart4MvdL1  (CheckmbPartIdx      )--> CheckReadMvdl1;
+		CheckMbPart4MvdL1  (SendOrReadDone      )--> SendEndSubMbPred;
+		SendEndSubMbPred   (SendEndSubMbPred    )--> ReadParameters;
+	end
+	priority
+		AskRefIdxL0.Launch   > AskRefIdxLX.Skip;
+		AskRefIdxLX.Skip     > SendOrReadDone;
+		AskRefIdxL1.Launch   > AskRefIdxLX.Skip;
+		CheckmbPartIdx       > SendOrReadDone;
+		ReadMvdl0Asked       > CheckmbPartIdx;
+		ReadMvdl1Asked       > CheckmbPartIdx;
+		ReadMvdl0            > ReadMvdlX_Done;
+	end
+end

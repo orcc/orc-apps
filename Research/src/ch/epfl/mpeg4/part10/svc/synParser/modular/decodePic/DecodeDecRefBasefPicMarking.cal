@@ -1,0 +1,134 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.svc.synParser.modular.decodePic;
+
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import std.util.BitOps.*;
+
+actor DecodeDecRefBasefPicMarking(bool DEBUG)
+	bool          SkipActor,
+	int (size=32) ValVLD
+		==>
+	uint(size=5)  TypeOfVLD,
+	int (size=32) VLDParam
+		:
+
+	bool          adaptRefBasePicMode;
+	uint(size=31) memMgntCtrlOp;
+
+	skipActor.isTrue: action SkipActor:[skip] ==>
+	guard
+		skip
+	end
+
+	skipActor.isFalse: action SkipActor:[skip] ==>
+		TypeOfVLD:[READ_BITS], VLDParam:[1]
+	guard
+		not skip
+	end
+
+	getAdaptRefBasePic: action ValVLD:[adptRefBasPicMod] ==>
+	do
+		if(DEBUG) then
+			println("\t\tadaptive_ref_base_pic_marking_mode_flag : "+
+				adptRefBasPicMod);
+		end
+		adaptRefBasePicMode := (adptRefBasPicMod != 0);
+	end
+
+	checkAdaptRefBasePic: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		adaptRefBasePicMode
+	end
+
+	getMmco: action ValVLD:[mmco] ==>
+	do
+		if(DEBUG) then
+			println("\t\tmemory_management_control_operation : "+mmco);
+		end
+		memMgntCtrlOp := mmco;
+	end
+
+	askDiffPicNumMinus1: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		memMgntCtrlOp = 1
+	end
+
+	getDiffPicNumMinus1: action ValVLD:[diffPic] ==> TypeOfVLD:[VLD_UE]
+	do
+		if(DEBUG) then
+			println("\t\tdifference_of_pic_nums_minus1 : "+diffPic);
+		end
+	end
+
+	askLongTermPicNum: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		memMgntCtrlOp = 2
+	end
+
+	getLongTermPicNum: action ValVLD:[ltPicNum] ==> TypeOfVLD:[VLD_UE]
+	do
+		if(DEBUG) then
+			println("\t\tlong_term_pic_num : "+ltPicNum);
+		end
+	end
+
+	askMmco: action ==> TypeOfVLD:[VLD_UE]
+	guard
+		memMgntCtrlOp != 0
+	end
+
+	endDecrefBasePicMarking: action ==> TypeOfVLD:[SKIP_NAL]
+	end
+
+	schedule fsm CheckSkipActor:
+		CheckSkipActor (skipActor.isTrue  )--> CheckSkipActor;
+		CheckSkipActor (skipActor.isFalse )--> GetAdaptRefBasePic;
+
+		GetAdaptRefBasePic   (getAdaptRefBasePic      )--> CheckAdaptRefBasePic;
+		CheckAdaptRefBasePic (checkAdaptRefBasePic    )--> GetMmco;
+		CheckAdaptRefBasePic (endDecrefBasePicMarking )--> CheckSkipActor;
+
+		GetMmco   (getMmco                 )--> CheckMmco;
+		CheckMmco (askDiffPicNumMinus1     )--> GetDiffPicNumMinus1;
+		CheckMmco (askLongTermPicNum       )--> GetLongTermPicNum;
+		CheckMmco (askMmco                 )--> GetMmco;
+		CheckMmco (endDecrefBasePicMarking )--> CheckSkipActor;
+
+		GetDiffPicNumMinus1 (getDiffPicNumMinus1 )--> GetMmco;
+		GetLongTermPicNum   (getLongTermPicNum   )--> GetMmco;
+	end
+	priority
+		checkAdaptRefBasePic > endDecrefBasePicMarking;
+		askDiffPicNumMinus1  > askLongTermPicNum > askMmco;
+		askMmco              > endDecrefBasePicMarking;
+	end
+end

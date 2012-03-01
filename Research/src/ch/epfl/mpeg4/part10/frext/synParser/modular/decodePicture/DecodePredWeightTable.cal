@@ -1,0 +1,260 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.frext.synParser.modular.decodePicture;
+
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import std.util.BitOps.*;
+
+actor DecodePredWeightTable(bool DEBUG)
+	uint(size=5)  NumRefIdxLXAct,
+	int (size=32) PpsParameters,
+	uint(size=4)  SliceType,
+	uint(size=32) SpsParameters,
+	int (size=32) ValVld
+		==>
+	int (size=9)  WeightedParam,
+	uint(size=5)  TypeOfVld,
+	int (size=32) VldParam,
+	uint(size=2)  WeightedPredIdc
+		:
+
+	uint(size=3) SLICE_TYPE_P  = 0;
+	uint(size=3) SLICE_TYPE_B  = 1;
+	uint(size=4) SLICE_TYPE_SP = 3;
+
+	uint(size=3) chrLog2WeightDenom;
+	uint(size=2) chromaArrayType;
+	uint(size=5) iLoop;
+	bool         isL0;
+	uint(size=3) lumaLog2WeightDenom;
+	uint(size=5) numRefIdxL0Active;
+	uint(size=5) numRefIdxL1Active;
+	uint(size=3) sliceType;
+	bool         weightedPred;
+	uint(size=2) weightedBiPredIdc;
+
+
+	getParam: action
+		NumRefIdxLXAct:[numRefIdxLXAct] repeat 2, PpsParameters:[ppsParam] repeat 6, SliceType:[sliceTypeVal],
+		SpsParameters:[spsParam] repeat 9 ==> WeightedPredIdc:[weightedPredOutput]
+	do
+		uint(size=2) weightedPredOutput;
+
+		chromaArrayType   := spsParam[2];
+		numRefIdxL0Active := numRefIdxLXAct[0];
+		numRefIdxL1Active := numRefIdxLXAct[1];
+		sliceType    := sliceTypeVal;
+		weightedPred := getFlag(ppsParam[4],4);
+		weightedBiPredIdc := ppsParam[5];
+		weightedPredOutput :=
+			if(sliceType = SLICE_TYPE_B) then
+				weightedBiPredIdc
+			else if(sliceType = SLICE_TYPE_P or sliceType = SLICE_TYPE_SP) then
+				if(weightedPred) then
+					1
+				else
+					0
+				end
+			else
+				0
+			end end;
+		iLoop := 0;
+		isL0  := true;
+	end
+
+	readLumaWeightDenom.asked: action  ==> TypeOfVld:[VLD_UE]
+	guard
+		weightedPred and (sliceType = SLICE_TYPE_P or
+			sliceType = SLICE_TYPE_SP) or
+		weightedBiPredIdc = 1 and sliceType = SLICE_TYPE_B
+	end
+
+	readLumaWeightDenom.done: action ValVld:[vldVal] ==>
+		WeightedParam:[vldVal]
+	do
+		lumaLog2WeightDenom := vldVal;
+		if(DEBUG) then
+			println("luma_log2_weight_denom : "+vldVal+" ; ");
+		end
+	end
+
+	readChrWeightDenom.asked: action ==> TypeOfVld:[VLD_UE]
+	guard
+		chromaArrayType != 0
+	end
+
+	readChrWeightDenom.skip: action ==>
+	guard
+		chromaArrayType = 0
+	end
+
+	readChrWeightDenom.done: action ValVld:[vldVal] ==>
+		WeightedParam:[vldVal]
+	do
+		chrLog2WeightDenom := vldVal;
+		if(DEBUG) then
+			println("chroma_log2_weight_denom : "+vldVal);
+		end
+	end
+
+	checkILoop.isNotFinished: action ==>
+	guard
+		iLoop < numRefIdxL0Active and isL0 or
+		iLoop < numRefIdxL1Active and not isL0
+	do
+		iLoop := iLoop + 1;
+	end
+
+	readLumaWeightLXFlag.asked: action ==> TypeOfVld:[READ_BITS], VldParam:[1]
+	end
+
+	readLumaWeightLXFlag.isTrue: action ValVld:[lumaWeightFlag] ==>
+		TypeOfVld:[VLD_SE, VLD_SE]
+	guard
+		lumaWeightFlag != 0
+	do
+		if(DEBUG) then
+			println("luma_weight_l"+ not isL0+"_flag : 1");
+		end
+	end
+
+	readLumaWeightLXFlag.isFalse: action ValVld:[lumaWeightFlag] ==>
+		WeightedParam:[1<<lumaLog2WeightDenom, 0]
+	guard
+		lumaWeightFlag = 0
+	do
+		if(DEBUG) then
+			println("luma_weight_l"+ not isL0+"_flag : 0");
+		end
+	end
+
+	readLumaWeightLX.done: action ValVld:[lumaWeightLX, lumaOffsetLX] ==>
+		WeightedParam:[lumaWeightLX, lumaOffsetLX]
+	do
+		if(DEBUG) then
+			println("luma_weight_l"+ not isL0+" : "+lumaWeightLX);
+			println("luma_offset_l"+ not isL0+" : "+lumaOffsetLX);
+		end
+	end
+
+	readChrWeightLXFlag.asked: action ==> TypeOfVld:[READ_BITS], VldParam:[1]
+	guard
+		chromaArrayType != 0
+	end
+
+	readChrWeightLXFlag.skip: action ==>
+	guard
+		chromaArrayType = 0
+	end
+
+	readChrWeightLXFlag.isTrue: action ValVld:[chrWeightFlag] ==>
+		TypeOfVld:[VLD_SE, VLD_SE, VLD_SE, VLD_SE]
+	guard
+		chrWeightFlag != 0
+	do
+		if(DEBUG) then
+			println("chroma_weight_l"+ not isL0+"_flag : 1");
+		end
+	end
+
+	readChrWeightLXFlag.isFalse: action ValVld:[chrWeightFlag] ==>
+		WeightedParam:[1<<chrLog2WeightDenom, 0, 1<<chrLog2WeightDenom, 0]
+	guard
+		chrWeightFlag = 0
+	do
+		if(DEBUG) then
+			println("chroma_weight_l"+ not isL0+"_flag : 0");
+		end
+	end
+
+	readChrWeightLX.done: action ValVld:[chrWeightParam] repeat 4 ==>
+		WeightedParam:[chrWeightParam] repeat 4
+	do
+		if(DEBUG) then
+			println("chroma_weight_l"+ not isL0+"[0] : "+chrWeightParam[0]);
+			println("chroma_offset_l"+ not isL0+"[0] : "+chrWeightParam[1]);
+			println("chroma_weight_l"+ not isL0+"[1] : "+chrWeightParam[2]);
+			println("chroma_offset_l"+ not isL0+"[1] : "+chrWeightParam[3]);
+		end
+	end
+
+	checkSliceType.launchL1: action ==> WeightedParam:[1]
+	guard
+		sliceType = SLICE_TYPE_B and isL0
+	do
+		isL0 := false;
+		iLoop := 0;
+	end
+
+	checkSliceType.skipL1: action ==> WeightedParam:[0]
+	guard
+		isL0
+	end
+
+	sendEndOfNal: action ==> TypeOfVld:[SKIP_NAL]
+	end
+
+	schedule fsm GetParam:
+		GetParam           (getParam                  )--> ReadLumWgtDenAsked;
+		ReadLumWgtDenAsked (readLumaWeightDenom.asked )--> ReadLumWgtDenDone;
+		ReadLumWgtDenAsked (sendEndOfNal              )--> GetParam;
+
+		ReadLumWgtDenDone  (readLumaWeightDenom.done  )--> ReadChrWgtDenAsked;
+		ReadChrWgtDenAsked (readChrWeightDenom.asked  )--> ReadChrWgtDenDone;
+		ReadChrWgtDenAsked (readChrWeightDenom.skip   )--> CheckILoop;
+
+		ReadChrWgtDenDone (readChrWeightDenom.done  )--> CheckILoop;
+		CheckILoop        (checkILoop.isNotFinished )--> ReadLumWgtLXFlgAsked;
+		CheckILoop        (checkSliceType.launchL1  )--> CheckILoop;
+		CheckILoop        (checkSliceType.skipL1    )--> SendEndOfNal;
+		CheckILoop        (sendEndOfNal             )--> GetParam;
+
+		ReadLumWgtLXFlgAsked (readLumaWeightLXFlag.asked  )--> CheckLumWgtLXFlg;
+		CheckLumWgtLXFlg (readLumaWeightLXFlag.isTrue  )--> ReadLumaWeightLX;
+		CheckLumWgtLXFlg (readLumaWeightLXFlag.isFalse )--> ReadChrWgtLXFlgAsked;
+
+		ReadLumaWeightLX     (readLumaWeightLX )--> ReadChrWgtLXFlgAsked;
+		ReadChrWgtLXFlgAsked (readChrWeightLXFlag.asked )--> CheckChrWgtLXFlg;
+		ReadChrWgtLXFlgAsked (readChrWeightLXFlag.skip )--> CheckILoop;
+
+		CheckChrWgtLXFlg (readChrWeightLXFlag.isTrue  )--> ReadChrWeightLX;
+		CheckChrWgtLXFlg (readChrWeightLXFlag.isFalse )--> CheckILoop;
+
+		ReadChrWeightLX (readChrWeightLX )--> CheckILoop;
+
+		SendEndOfNal (sendEndOfNal )--> GetParam;
+	end
+	priority
+		readLumaWeightDenom > sendEndOfNal;
+		checkILoop > checkSliceType > sendEndOfNal;
+		checkSliceType.launchL1 > checkSliceType.skipL1 > sendEndOfNal;
+	end
+end

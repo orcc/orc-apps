@@ -1,0 +1,176 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+package org.mpeg4.part10.frext.synParser.modular.decodePicture;
+
+actor Algo_GenerateSkipBlockInformation()
+	bool          isCabac,
+	bool          SData_SkipMb,
+	uint(size=5)  SData_SzMb,
+	uint(size=5)  NbCoeffInMB,
+	bool          MbLay_SkipMb,
+	bool          Skip_Block,
+	bool          ResLastCabac,
+	bool          ResLastCavlc,
+	uint(size=4)  ResRunCabac,
+	uint(size=4)  ResRunCavlc,
+	int (size=12) ResValueCabac,
+	int (size=12) ResValueCavlc,
+	bool          IsIPCM,
+	uint(size=16) CbpBlk
+		==>
+	bool          Last,
+	uint(size=4)  Run,
+	int (size=12) Value,
+	uint(size=16) cbp_blk
+		:
+
+
+	uint(size=5) NbCoefLeft;
+	bool         isCabac;
+
+	SData.LaunchMbLayer: action SData_SkipMb:[skip] ==>
+	guard
+		skip = false
+	end
+
+	SData.SkipMbLayer: action SData_SkipMb:[skip], SData_SzMb:[SizeMacroB] ==>
+		cbp_blk:[0]
+	guard
+		skip = true
+	do
+		NbCoefLeft := SizeMacroB;
+	end
+
+	GetNumberOfMacroBlk: action IsIPCM:[IPCM], NbCoeffInMB:[NbCoeff] ==>
+	guard
+		IPCM = false
+	do
+		NbCoefLeft := NbCoeff;
+	end
+
+	IsIPCM_MacroB: action IsIPCM:[IPCM] ==> cbp_blk:[0]
+	guard
+		IPCM = true
+	end
+
+	MBLaySkipBlk.IsTrue: action MbLay_SkipMb:[SkipMb] ==> cbp_blk:[0]
+	guard
+		SkipMb = true
+	end
+
+	MBLaySkipBlk.IsFalse: action MbLay_SkipMb:[SkipMb], CbpBlk:[codBlkPatt]
+		==> cbp_blk:[codBlkPatt]
+	guard
+		SkipMb = false
+	end
+
+	SkipBlockIsEqualToTrue: action Skip_Block:[skip_tablet] ==>
+		Last:[skip_tablet]
+	guard
+		skip_tablet = true,
+		NbCoefLeft  > 0
+	do
+		NbCoefLeft := NbCoefLeft - 1;
+	end
+
+	SkipBlockIsEqualToFalse: action Skip_Block:[skip_tablet], isCabac:[isCabacFlag] ==>
+	guard
+		skip_tablet = false,
+		NbCoefLeft  > 0
+	do
+		NbCoefLeft := NbCoefLeft - 1;
+		isCabac := isCabacFlag;
+	end
+
+	EndOfMacroBlock: action ==>
+	guard
+		NbCoefLeft = 0
+	end
+
+	ResLastIsEqualToFalse.cavlc: action ResLastCavlc:[last], ResRunCavlc:[run],
+		ResValueCavlc:[value] ==> Last:[last], Run:[run], Value:[value]
+	guard
+		last = false and not isCabac
+	end
+
+	ResLastIsEqualToFalse.cabac: action ResLastCabac:[last], ResRunCabac:[run],
+		ResValueCabac:[value] ==> Last:[last], Run:[run], Value:[value]
+	guard
+		last = false and isCabac
+	end
+
+	ResLastIsEqualToTrue.cavlc: action ResLastCavlc:[last] ==> Last:[last]
+	guard
+		last = true and not isCabac
+	end
+
+	ResLastIsEqualToTrue.cabac: action ResLastCabac:[last] ==> Last:[last]
+	guard
+		last = true and isCabac
+	end
+
+	SkipBlk: action ==> Last:[true]
+	guard
+		NbCoefLeft  > 0
+	do
+		NbCoefLeft := NbCoefLeft - 1;
+	end
+
+	EndSkipBlk: action ==>
+		end
+
+	schedule fsm CheckSDataInfo:
+		CheckSDataInfo (SData.LaunchMbLayer     )--> GetNbrOfMBlk;
+		CheckSDataInfo (SData.SkipMbLayer       )--> CheckSDataInfo;
+
+		GetNbrOfMBlk   (GetNumberOfMacroBlk     )--> MBLaySkipBlk;
+		GetNbrOfMBlk   (IsIPCM_MacroB           )--> CheckSDataInfo;
+
+		MBLaySkipBlk   (MBLaySkipBlk.IsTrue     )--> SkipMb;
+		MBLaySkipBlk   (MBLaySkipBlk.IsFalse    )--> CheckSkipBlock;
+
+		CheckSkipBlock (SkipBlockIsEqualToTrue  )--> CheckSkipBlock;
+		CheckSkipBlock (SkipBlockIsEqualToFalse )--> Launch_ResBlk;
+		CheckSkipBlock (EndOfMacroBlock         )--> CheckSDataInfo;
+
+		Launch_ResBlk  (ResLastIsEqualToFalse   )--> Launch_ResBlk;
+		Launch_ResBlk  (ResLastIsEqualToTrue    )--> CheckSkipBlock;
+
+		SkipMb          (SkipBlk                )--> SkipMb;
+		SkipMb          (EndSkipBlk             )--> CheckSDataInfo;
+	end
+	priority
+		SkipBlockIsEqualToTrue  > EndOfMacroBlock;
+		SkipBlockIsEqualToFalse > EndOfMacroBlock;
+		ResLastIsEqualToFalse   > ResLastIsEqualToTrue;
+		SkipBlk                 > EndSkipBlk;
+	end
+end

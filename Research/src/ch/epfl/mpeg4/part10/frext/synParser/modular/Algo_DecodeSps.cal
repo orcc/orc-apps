@@ -1,0 +1,942 @@
+/***********************************************************************
+
+This software module was originally developed by Damien de Saint Jorre IETR/INSA of Rennes (France), in the course of development of the ISO/IEC 23002-4 for reference purposes and its performance may not have been optimized. This software module is an implementation of one or more tools as specified by the MPEG-C part 4.
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works of this software module or modifications thereof for use in implementations of the ISO/IEC 23002-4  in products that satisfy conformance criteria (if any).
+Those intending to use this software module in products are advised that its use may infringe existing patents. ISO/IEC have no liability for use of this software module or modifications thereof.
+Copyright is not released for products that do not conform to audiovisual and image-coding related ITU Recommendations and/or ISO/IEC International Standards.
+Assurance that the originally developed software module can be used (1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and (2) to develop the MPEG-C part 4:
+
+IETR/INSA of Rennes (France) grants ISO/IEC all rights necessary to include the originally developed software module or modifications thereof in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works for use in implementations of the MPEG-C part 4 in products that satisfy conformance criteria (if any), and to the extent that such originally developed software module or portions of it are included in the MPEG-C part 4.  To the extent that IETR/INSA of Rennes (France) owns patent rights that would be required to make, use, or sell the originally developed software module or portions thereof included in the MPEG-C part 4 in a conforming product,  IETR/INSA of Rennes (France) will assure the ISO/IEC that it is willing to negotiate licenses under reasonable and non-discriminatory terms and conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications thereof for the sole  purpose of developing the MPEG-C part 4
+
+IETR/INSA of Rennes (France) retains full right to modify and use the code for its own purpose, assign or donate the code to a third party and to inhibit third parties from using the code for products that do not conform to MPEG-related ITU Recommendations and/or ISO/IEC International Standards.
+This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
+***********************************************************************/
+package org.mpeg4.part10.frext.synParser.modular;
+
+import org.mpeg4.part10.cbp.synParser.modular.decodePicture.decodingFunctions.*;
+import std.util.BitOps.*;
+
+actor Algo_DecodeSps(bool IsAvc)
+	int (size=32) ValVLD,
+	uint(size=5)  NalUnitType,
+	uint(size=5)  NumSpsAsked
+		==>
+	uint(size=5)  TypeOfVLD,
+	int (size=32) NbBitsToRead,
+	uint(size=8)  SzDPB,
+	uint(size=31) MMCO_MaxFrameNum,
+	uint(size=5)  MMCO_NumRefFrame,
+	bool          Direct8x8Inference,
+	int (size=32) SpsParameters
+		:
+
+
+/*   
+*
+* Constants
+*
+*/
+	uint(size=5) NAL_SLICE_NON_IDR = 1;
+	uint(size=5) NAL_SLICE_IDR     = 5;
+	uint(size=5) NAL_SPS           = 7;
+	uint(size=5) NAL_PPS           = 8;
+	uint(size=5) NAL_SUBSET_SPS    = 15;
+	uint(size=5) NAL_SVC_SLICE     = 20;
+
+	List(type: uint, size=64) MaxFS_LookUpTable = [   99,    99,    99,    99,    99,    99,    99,    99,    99,    99,
+	                                                  99,   396,   396,   396,   396,   396,   396,   396,   396,   396,
+	                                                 396,   792,  1620,  1620,  1620,  1620,  1620,  1620,  1620,  1620,
+	                                                1620,  3600,  5120,  8192,  8192,  8192,  8192,  8192,  8192,  8192,
+	                                                8192,  8192,  8704, 36864, 36864, 36864, 36864, 36864, 36864, 36864,
+	                                               22080, 36864, 36864, 36864, 36864, 36864, 36864, 36864, 36864, 36864,
+	                                               36864, 36864, 36864, 36864 ];
+
+	List(type: uint, size=64) Sqrt_8MaxFS_LookUpTable = [  28,  28,  28,  28,  28,  28,  28,  28,  28,  28,
+	                                                       28,  56,  56,  56,  56,  56,  56,  56,  56,  56,
+	                                                       56,  80, 114, 114, 114, 114, 114, 114, 114, 114,
+	                                                       114, 170, 202, 256, 256, 256, 256, 256, 256, 256,
+	                                                       256, 256, 264, 543, 543, 543, 543, 543, 543, 543,
+	                                                       420, 543, 543, 543, 543, 543, 543, 543, 543, 543,
+	                                                       543, 543, 543, 543 ];
+  
+	List(type: uint, size=64) MaxDPB_x_2_LookUpTable = [    297,    297,    297,    297,    297,    297,    297,    297,    297,    297,
+	                                                        297,    675,   1782,   1782,   1782,   1782,   1782,   1782,   1782,   1782,
+	                                                       1782,   3564,   6075,   6075,   6075,   6075,   6075,   6075,   6075,   6075,
+	                                                       6075,  13500,  15360,  24576,  24576,  24576,  24576,  24576,  24576,  24576,
+	                                                      24576,  24576,  26112, 138240, 138240, 138240, 138240, 138240, 138240, 138240,
+	                                                      82800, 138240, 138240, 138240, 138240, 138240, 138240, 138240, 138240, 138240,
+	                                                     138240, 138240, 138240, 138240 ];
+
+
+	bool DEBUG_FLAG_DECODED = false;
+/*
+*
+* State Variables
+*
+*/
+
+//	List (type: List( type: int(size=32), size=255), size=32) offset_for_ref_frame         := [[ 0 : for int i in 0 .. 254 ]: for int j in 0 .. 31 ];
+	List (type: List( type: int(size=32), size=255), size=32) offset_for_ref_frame_accumul := [[ 0 : for int i in 0 .. 254 ]: for int j in 0 .. 31 ];
+//Compute the real values !!!!
+	List (type: uint(size=8) , size=32) level_idc                             := [ 0     : for int i in 0 .. 31 ];
+//	List (type: uint(size=4) , size=32) constraint_set_flag                   := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=8) , size=32) profile_idc                           := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=4) , size=32) log2_max_frame_num_minus4             := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) max_frame_num                         := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=2) , size=32) pic_order_cnt_type                    := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=4) , size=32) log2_max_pic_order_cnt_lsb_minus4     := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=1) , size=32) delta_pic_order_always_zero_flag      := [ 0     : for int i in 0 .. 31 ];
+	List (type: int (size=32), size=32) offset_for_non_ref_pic                := [ 0     : for int i in 0 .. 31 ];
+	List (type: int (size=32), size=32) offset_for_top_to_bottom_field        := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=8) , size=32) num_ref_frames_in_pic_order_cnt_cycle := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) num_ref_frames                        := [ 0     : for int i in 0 .. 31 ];
+//	List (type: uint(size=1) , size=32) gaps_in_frame_num_value_allowed_flag  := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) pic_width_in_mbs_minus1               := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) pic_height_in_map_units_minus1        := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=1) , size=32) frame_mbs_only_flag                   := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=1) , size=32) mb_adaptive_frame_field_flag          := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=1) , size=32) direct_8x8_inference_flag             := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=1) , size=32) frame_cropping_flag                   := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) frame_crop_x_min;
+	List (type: uint(size=32), size=32) frame_crop_x_max;
+	List (type: uint(size=32), size=32) frame_crop_y_min;
+	List (type: uint(size=32), size=32) frame_crop_y_max;
+//	List (type: uint(size=1) , size=32) vui_parameters_present_flag           := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=5) , size=32) MaxDPBSz                              := [16     : for int i in 0 .. 31 ];
+	List (type: int (size=32), size=32) expected_delta_per_poc_cycle          := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=32), size=32) pic_size_in_mbs                       := [ 0     : for int i in 0 .. 31 ];
+	List (type: uint(size=2) , size=32) Chroma_Array_Type                     := [ 1     : for int i in 0 .. 31 ];
+	List (type: uint(size=2) , size=32) NumC8x8                               := [ 0     : for int i in 0 .. 31 ];
+	//High Profile
+	List (type:uint(size=4), size=32 ) bit_depth_luma_minus8                  := [ 0     : for int i in 0 .. 31 ];
+	List (type:uint(size=3), size=32 ) bit_depth_chroma_minus8                := [ 0     : for int i in 0 .. 31 ];
+	List (type:uint(size=2), size=32 ) chroma_format_idc                      = [ 1     : for int i in 0 .. 31 ];
+	List (type:uint(size=5), size=32 ) MbWidthC                               := [ 8     : for int i in 0 .. 31 ];
+	List (type:uint(size=5), size=32 ) MbHeightC                              := [ 8     : for int i in 0 .. 31 ];
+	bool seq_scaling_matrix_present_flag;
+
+	uint(size=4)  spsId      := 0;
+	uint(size=5)  last_sps_id := 0;
+	int (size=32) LoopVal     := 0;
+	int (size=32) PrevOffForRefFramAccum;
+	int (size=6) nalUnitType := -1;
+	
+	int(size=9) varScaling[6];
+	uint(size=8) ScalingList4x4[32][6][16];
+	uint(size=8) ScalingList8x8[32][2][64];
+	uint(size=8) DEFAULT_SCALING4[2][16] = 
+	[
+   		[
+			 6, 13, 13, 20,
+   			20, 20, 28, 28,
+   			28, 28, 32, 32,
+   			32, 37, 37, 42
+   		],[
+   			10, 14, 14, 20,
+   			20, 20, 24, 24,
+   			24, 24, 27, 27,
+   			27, 30, 30, 34
+		]
+	];
+	uint(size=8) DEFAULT_SCALING8[2][64] = 
+	[
+		[
+			 6, 10, 10, 13, 11, 13, 16, 16, 
+			16, 16, 18, 18, 18, 18, 18, 23, 
+			23, 23, 23, 23, 23, 25, 25, 25, 
+			25, 25, 25, 25, 27, 27, 27, 27, 
+			27, 27, 27, 27, 29, 29, 29, 29, 
+			29, 29, 29, 31, 31, 31, 31, 31, 
+			31, 33, 33, 33, 33, 33, 36, 36, 
+			36, 36, 38, 38, 38, 40, 40, 42
+		],[
+		 	 9, 13, 13, 15, 13, 15, 17, 17, 
+			17, 17, 19, 19, 19, 19, 19, 21, 
+			21, 21, 21, 21, 21, 22, 22, 22, 
+			22, 22, 22, 22, 24, 24, 24, 24, 
+			24, 24, 24, 24, 25, 25, 25, 25, 
+			25, 25, 25, 27, 27, 27, 27, 27, 
+			27, 28, 28, 28, 28, 28, 30, 30, 
+			30, 30, 32, 32, 32, 33, 33, 35
+   		]
+   	];
+/*
+*
+* Actions
+*
+*/
+
+	ReadSpsId.Asked: action
+				==>
+			//             profile_idc, constrain , reserved  , level_idc , spsId
+			TypeOfVLD    :[ READ_BITS , READ_BITS , READ_BITS , READ_BITS , VLD_UE ],
+			NbBitsToRead :[     8     ,     4     ,     4     ,     8     ]
+		end
+
+	getNalUnitType: action NalUnitType:[nalUnit] ==>
+	guard
+		nalUnitType = -1
+	do
+		if(nalUnit = NAL_PPS or nalUnit = NAL_SLICE_IDR or
+		   nalUnit = NAL_SLICE_NON_IDR or nalUnit = NAL_SPS or
+		     (nalUnit = NAL_SUBSET_SPS or nalUnit = NAL_SVC_SLICE)
+		     and not IsAvc
+		)then
+			nalUnitType := nalUnit;
+		end
+	end
+
+	SpsParam.AskedFromSvc: action ==> SpsParameters  :[3 , profile_idc[last_sps_id] , Chroma_Array_Type[last_sps_id], last_sps_id]
+	guard
+		nalUnitType = NAL_SUBSET_SPS
+	do
+		nalUnitType := -1;	
+	end
+
+	SpsParam.skip: action ==>
+	guard
+		nalUnitType != NAL_SUBSET_SPS
+	do
+		nalUnitType := -1;	
+	end
+
+	SpsParam.AskedFromPic: action NumSpsAsked     :[ValSps] ==>
+			SpsParameters         :[paramToSend] repeat 15,
+			SzDPB                 :[MaxDPBSz[ValSps]],
+			Direct8x8Inference    :[ValDirect8x8Inference],
+
+			MMCO_MaxFrameNum      :[max_frame_num[ValSps]],
+			MMCO_NumRefFrame      :[num_ref_frames[ValSps]]
+		guard
+			nalUnitType = NAL_SLICE_NON_IDR or nalUnitType = NAL_SLICE_IDR
+			or nalUnitType = NAL_SVC_SLICE
+		var
+			bool ValDirect8x8Inference,
+			bool val_frame_mbs_only,
+			bool ValDeltaPic,
+			bool ValMbAdaptFrameField
+		do
+			int(size=32) paramToSend[15];
+
+			nalUnitType := -1;	
+			val_frame_mbs_only    := (frame_mbs_only_flag[ValSps]              != 0);
+			ValDeltaPic           := (delta_pic_order_always_zero_flag[ValSps] != 0);
+			ValMbAdaptFrameField  := (mb_adaptive_frame_field_flag[ValSps]     != 0);
+			ValDirect8x8Inference := (direct_8x8_inference_flag[ValSps]        != 0);
+
+			/*Size of List Header Param*/
+			paramToSend[0] := 14 + num_ref_frames_in_pic_order_cnt_cycle[ValSps] + 1;
+
+			paramToSend[1]  := expected_delta_per_poc_cycle[ValSps];
+			paramToSend[2]  := log2_max_frame_num_minus4[ValSps] + 4;
+			paramToSend[3]  := num_ref_frames_in_pic_order_cnt_cycle[ValSps];
+			paramToSend[4]  := offset_for_top_to_bottom_field[ValSps];
+			paramToSend[5]  := offset_for_non_ref_pic[ValSps];
+			paramToSend[6]  := log2_max_pic_order_cnt_lsb_minus4[ValSps] + 4;
+			paramToSend[7]  := pic_order_cnt_type[ValSps];
+			paramToSend[8]  := setFlag(val_frame_mbs_only,2,setFlag(ValDeltaPic,1,setFlag(ValMbAdaptFrameField,0,0)));
+			paramToSend[9]  := pic_width_in_mbs_minus1[ValSps] + 1;
+			paramToSend[10] := pic_height_in_map_units_minus1[ValSps] + 1;
+			paramToSend[11] := frame_crop_x_min[ValSps];
+			paramToSend[12] := frame_crop_x_max[ValSps];
+			paramToSend[13] := frame_crop_y_min[ValSps];
+			paramToSend[14] := frame_crop_y_max[ValSps];
+
+			spsId  := ValSps;
+			LoopVal := 0;
+		end
+
+	SendOff4RefFrameAcc.Launch: action
+				==>
+			SpsParameters:[offset_for_ref_frame_accumul[spsId][LoopVal]]
+		guard
+			LoopVal <= num_ref_frames_in_pic_order_cnt_cycle[spsId]
+		do
+			LoopVal := LoopVal + 1;
+		end
+
+	SendOff4RefFrameAcc.Done: action
+				==>
+			SpsParameters :[SliceDataParam] repeat 10
+		guard
+			LoopVal >  num_ref_frames_in_pic_order_cnt_cycle[spsId]
+		var
+			bool ValDirect8x8Inference,
+			List(type: int(size=32), size=10) SliceDataParam
+		do
+			ValDirect8x8Inference := (direct_8x8_inference_flag[spsId] != 0);
+
+			/*Size of List Data Param*/
+			SliceDataParam[0] := 9;
+
+			SliceDataParam[1] := bit_depth_chroma_minus8[spsId]+8;
+			SliceDataParam[2] := bit_depth_luma_minus8[spsId]+8;
+			SliceDataParam[3] := Chroma_Array_Type[spsId];
+			SliceDataParam[4] := NumC8x8[spsId];
+			SliceDataParam[5] := pic_size_in_mbs[spsId];
+			SliceDataParam[6] := pic_width_in_mbs_minus1[spsId] + 1;
+			SliceDataParam[7] := setFlag(ValDirect8x8Inference,0,0);
+			SliceDataParam[8] := MbWidthC[spsId];
+			SliceDataParam[9] := MbHeightC[spsId];
+		end
+
+	SpsParam.AskedFromPps: action NumSpsAsked:[ValSps] ==>
+			SpsParameters :[param] repeat (6*16+2*64)/4+3
+		guard
+			nalUnitType = NAL_PPS
+		var
+			uint(size=8)  ScalingListSize = (6*16+2*64)/4,
+			uint(size=32) param[ScalingListSize+3]
+		do
+			nalUnitType := -1;	
+			param[0]    := 2+ScalingListSize;
+			param[1]    := pic_width_in_mbs_minus1[ValSps] + 1;
+			foreach int i in 0 .. 5 do
+				foreach int j in 0 .. 3 do
+					param[2+i*4+j] := (ScalingList4x4[ValSps][i][4*j  ]<<24) +
+								   	  (ScalingList4x4[ValSps][i][4*j+1]<<16) +
+								      (ScalingList4x4[ValSps][i][4*j+2]<< 8) +
+								   	  (ScalingList4x4[ValSps][i][4*j+3]);
+				end
+			end
+			foreach int i in 0 .. 1 do
+				foreach int j in 0 .. 15 do
+					param[2+6*4+i*16+j] := (ScalingList8x8[ValSps][i][4*j  ]<<24) +
+										   (ScalingList8x8[ValSps][i][4*j+1]<<16) +
+										   (ScalingList8x8[ValSps][i][4*j+2]<< 8) +
+								   		   (ScalingList8x8[ValSps][i][4*j+3]);
+				end
+			end
+			param[ScalingListSize+2] := pic_height_in_map_units_minus1[ValSps] + 1;
+			
+
+		end
+	
+	ReadSpsId.Done: action ValVLD:[ValueOfVLD] repeat 5 ==>
+	guard
+		nalUnitType = NAL_SPS or nalUnitType = NAL_SUBSET_SPS
+	do
+		if(DEBUG_FLAG_DECODED)then
+			println(" ***********SPS**************");
+			println("\t\tprofile_idc : "+ValueOfVLD[0]);
+			println("\t\tconstrained_set_flag : "+ValueOfVLD[1]);
+			println("\t\tlevel_idc : "+ValueOfVLD[3]);
+			println("\t\tsps_id : "+ValueOfVLD[4]);
+		end
+
+		spsId                                        := ValueOfVLD[4];
+
+		profile_idc[spsId]                           := ValueOfVLD[0];
+//		constraint_set_flag[spsId]                   := ValueOfVLD[1];
+		level_idc[spsId]                             := ValueOfVLD[3];
+		expected_delta_per_poc_cycle[spsId]          := 0;
+		PrevOffForRefFramAccum                        := 0;
+		num_ref_frames_in_pic_order_cnt_cycle[spsId] := 0;
+		
+		ScalingList4x4[spsId] := [[16 : for int i in 0 .. 15] : for int j in 0 .. 5];
+		ScalingList8x8[spsId] := [[16 : for int i in 0 .. 63] : for int j in 0 .. 1];
+	end
+
+
+	//if( profile_idc = = 100 || profile_idc = = 110 ||
+	//    profile_idc = = 122 || profile_idc = = 244 || profile_idc = = 44 ||
+	//    profile_idc = = 83  || profile_idc = = 86 )
+	ReadChromaFormatIdc.Asked: action ==>
+			//   chroma_format_idc
+			TypeOfVLD :[VLD_UE]
+		guard
+			(  profile_idc[spsId] = 100 
+			or profile_idc[spsId] = 110 
+			or profile_idc[spsId] = 122 
+			or profile_idc[spsId] = 244 
+			or profile_idc[spsId] = 44 
+			or profile_idc[spsId] = 83 
+			or profile_idc[spsId] = 86  )
+		end
+
+	ReadChromaFormatIdc.IsEqualTo3: action ValVLD :[ValueOfVLD] ==>
+			//         separate_colour_plane_flag
+			TypeOfVLD    :[ READ_BITS ],
+			NbBitsToRead :[     1     ]
+		guard
+			ValueOfVLD = 3
+		do
+			Chroma_Array_Type[spsId] := ValueOfVLD;
+			println("chroma_format_idc = 3 not managed yet !");
+		end
+
+	ReadChromaFormatIdc.IsNotEqualTo3: action ValVLD :[ValueOfVLD] ==>
+			//             bit_dept bit_dept qpprime_y_  seq_scaling
+			TypeOfVLD    :[ VLD_UE , VLD_UE , READ_BITS , READ_BITS ],
+			NbBitsToRead :[                       1     ,     1     ]
+		guard
+			ValueOfVLD != 3
+		do
+			Chroma_Array_Type[spsId] := ValueOfVLD;
+			if ValueOfVLD != 1 then
+				println("chroma_format_idc = "+ValueOfVLD+" not managed yet !");
+				while true do end
+			end
+		end
+		
+	readBitDepth.Done : action ValVLD:[bitDepthLuma , bitDepthChroma , 
+	                                   qprimeY , secScaling] ==>
+	do
+		bit_depth_luma_minus8[spsId] := bitDepthLuma;
+		bit_depth_chroma_minus8[spsId] := bitDepthChroma;
+		//qpprime_y_zero_transform_bypass_flag
+		seq_scaling_matrix_present_flag := (secScaling != 0);
+	end
+
+/******************************************************************************
+ * ScalingMatrix Loop
+ *****************************************************************************/
+	secScalingFlag.isEqualToTrue: action ==>
+										 // seq_scaling_list_present_flag
+										 TypeOfVLD    :[ READ_BITS ],
+										 NbBitsToRead :[     1     ]
+	guard
+		seq_scaling_matrix_present_flag
+	do
+		varScaling[0]  := 0; // i index loop
+		varScaling[5]  := 7; // end index loop
+	end
+	scalingMatrix.present: action 
+						// seq_scaling_list_present_flag
+						ValVLD :[ValueOfVLD]
+						==>
+						// delta_scale 
+						TypeOfVLD:[ VLD_SE ]
+	guard
+		ValueOfVLD = 1
+	do
+		varScaling[1] := 0; // j index loop
+		if varScaling[0] < 6 then
+			varScaling[2] := 15; // j index end
+		else
+			varScaling[2] := 63; // j index end
+		end
+		varScaling[3] := 8; // lastScale
+		varScaling[4] := 8; // nextScale
+	end
+	scalingMatrix.noPresent: action  
+						// seq_scaling_list_present_flag
+						ValVLD :[ValueOfVLD]
+						==>
+	guard
+		ValueOfVLD = 0
+	do
+		if varScaling[0] < 6 then
+			if varScaling[0] = 0 or  varScaling[0] = 3 then
+				foreach int i in 0 .. 15 do
+					ScalingList4x4[spsId][varScaling[0]][i] := DEFAULT_SCALING4[varScaling[0]&1][i];
+				end
+			else
+				foreach int i in 0 .. 15 do
+					ScalingList4x4[spsId][varScaling[0]][i] := ScalingList4x4[spsId][varScaling[0]-1][i];
+				end
+			end
+		else
+			foreach int i in 0 .. 63 do
+				ScalingList8x8[spsId][varScaling[0]-6][i] := DEFAULT_SCALING8[varScaling[0]-6][i];
+			end
+		end
+	end
+	scalingMatrix.loopNext: action
+						==>
+						// seq_scaling_list_present_flag
+						TypeOfVLD    :[ READ_BITS ],
+						NbBitsToRead :[     1     ]
+	guard
+		varScaling[0] != varScaling[5]
+	do
+		varScaling[0] := varScaling[0] + 1;
+	end
+/******************************************************************************
+ * ScalingList Loop
+ *****************************************************************************/
+	scalingListLoop: action
+						// delta_scale
+						ValVLD :[ValueOfVLD] ==>
+	guard
+		varScaling[4] != 0
+	var 
+		int(size=9) tmp := varScaling[3] 
+	do
+		varScaling[4] := (varScaling[4] + ValueOfVLD + 256) & 255;
+		if varScaling[4] != 0 then
+			tmp := varScaling[4];
+		end
+		if varScaling[0] < 6 then
+			ScalingList4x4[spsId][varScaling[0]][varScaling[1]] := tmp;
+		else
+			ScalingList8x8[spsId][varScaling[0]-6][varScaling[1]] := tmp;
+		end
+		varScaling[3] := tmp;
+	end
+	scalingListNext: action ==> 
+						// delta_scale
+						TypeOfVLD:[ VLD_SE ]
+	guard
+		varScaling[4] != 0 and varScaling[1] != varScaling[2]
+	do
+		varScaling[1] := varScaling[1] + 1;
+	end
+	scalingListEnd.nextScaleNull: action ==>
+	guard
+		varScaling[4] = 0
+	do
+		if varScaling[0]<6 then
+			foreach int i in varScaling[1] .. 15 do
+				ScalingList4x4[spsId][varScaling[0]][i] := varScaling[3];
+			end
+		else
+			foreach int i in varScaling[1] .. 63 do
+				ScalingList8x8[spsId][varScaling[0]-6][i] := varScaling[3];
+			end
+		end
+	end
+	scalingListEnd.nextScaleNoNull: action ==>
+	guard
+		varScaling[4] != 0
+	end
+/*****************************************************************************/
+   
+   ReadSeparColourPlane.Done: action
+			ValVLD :[ValueOfVLD]
+				==>
+		do
+			if(ValueOfVLD = 1)then
+				Chroma_Array_Type[spsId] := 0;
+			end
+		end
+
+	Read_MaxFrameNum_PocType.Asked: action
+				==>
+			//          log2_ma , poc_type
+			TypeOfVLD :[ VLD_UE , VLD_UE ]
+		end
+
+
+	Read_MaxFrameNum_PocType.Done: action
+			ValVLD :[ValueOfVLD] repeat 2
+				==>
+		do
+			log2_max_frame_num_minus4[spsId] := ValueOfVLD[0];
+			max_frame_num[spsId]             := 1 << (ValueOfVLD[0] + 4);
+			pic_order_cnt_type[spsId]        := ValueOfVLD[1];
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tlog2_max_frame_num_minus4 : "+ValueOfVLD[0]);
+				println("\t\tpic_order_cnt_type : "+ValueOfVLD[1]);
+			end
+		end
+
+
+	// if( pic_order_cnt_type == 0 )
+	ReadPocType.IsEqualTo0: action
+				==>
+			//       log2_max_pic_order_cnt_lsb_minus4
+			TypeOfVLD    :[ VLD_UE ]
+		guard
+			pic_order_cnt_type[spsId] = 0
+		end
+
+
+	ReadLog2MaxPocLsb.Done: action
+			ValVLD :[ValueOfVLD]
+				==>
+		do
+			log2_max_pic_order_cnt_lsb_minus4[spsId] := ValueOfVLD;
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tlog2_max_pic_order_cnt_lsb_minus4 : "+ValueOfVLD);
+			end
+		end
+
+
+	// if( pic_order_cnt_type == 1 )
+	ReadPocType.IsEqualTo1: action
+				==>
+			//              delta_pic , offset , offset , num_ref
+			TypeOfVLD    :[ READ_BITS , VLD_SE , VLD_SE , VLD_UE ],
+			NbBitsToRead :[     1                                ]
+		guard
+			pic_order_cnt_type[spsId] = 1
+		end
+
+
+	ReadPocType1Param: action
+			ValVLD :[ValueOfVLD] repeat 4
+				==>
+		do
+			delta_pic_order_always_zero_flag[spsId]      := ValueOfVLD[0];
+			offset_for_non_ref_pic[spsId]                := ValueOfVLD[1];
+			offset_for_top_to_bottom_field[spsId]        := ValueOfVLD[2];
+			num_ref_frames_in_pic_order_cnt_cycle[spsId] := ValueOfVLD[3] & 0xFF;
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tdelta_pic_order_always_zero_flag : "+ValueOfVLD[0]);
+				println("\t\toffset_for_non_ref_pic : "+ValueOfVLD[1]);
+				println("\t\toffset_for_top_to_bottom_field : "+ValueOfVLD[2]);
+				println("\t\tnum_ref_frames_in_pic_order_cnt_cycle : "+ValueOfVLD[3]);
+			end
+		end
+
+	CheckNumRefInPocCycle.IsEqualTo0: action
+				==>
+			//         offset_for_ref_frame[i]
+			TypeOfVLD    :[ VLD_SE ]
+		guard
+			num_ref_frames_in_pic_order_cnt_cycle[spsId] > 0
+		do
+			LoopVal := 0;
+		end
+
+
+	//for( i = 0; i < num_ref_frames_in_pic_order_cnt_cycle; i++ )
+	//    offset_for_ref_frame[ i ]
+	ReadOffset4RefFrame.Launch: action
+			ValVLD :[ValueOfVLD]
+				==>
+			//         offset_for_ref_frame[i]
+			TypeOfVLD    :[ VLD_SE ]
+		guard
+			LoopVal < num_ref_frames_in_pic_order_cnt_cycle[spsId] - 1
+		do
+//			offset_for_ref_frame[spsId][LoopVal]           := ValueOfVLD;
+			expected_delta_per_poc_cycle[spsId]            := expected_delta_per_poc_cycle[spsId] + ValueOfVLD;
+			offset_for_ref_frame_accumul[spsId][LoopVal+1] := PrevOffForRefFramAccum + ValueOfVLD;
+			PrevOffForRefFramAccum                          := PrevOffForRefFramAccum + ValueOfVLD;
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\toffset_for_ref_frame["+LoopVal+"] : "+ValueOfVLD);
+			end
+			LoopVal := LoopVal + 1;
+		end
+
+
+	ReadOffset4RefFrame.Done: action
+			ValVLD :[ValueOfVLD]
+				==>
+		do
+//			offset_for_ref_frame[spsId][LoopVal]           := ValueOfVLD;
+			offset_for_ref_frame_accumul[spsId][LoopVal+1] := PrevOffForRefFramAccum + ValueOfVLD;
+			expected_delta_per_poc_cycle[spsId]            := expected_delta_per_poc_cycle[spsId] + ValueOfVLD;
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\toffset_for_ref_frame["+(LoopVal+1)+"] : "+ValueOfVLD);
+			end
+		end
+
+
+	ReadNumRefFrame.Asked: action
+				==>
+			//               num_r. , gaps_in_. ; pic_wi , pic_he , frame_mbs
+			TypeOfVLD    :[ VLD_UE , READ_BITS , VLD_UE , VLD_UE , READ_BITS ],
+			NbBitsToRead :[              1     ,                       1     ]
+		end
+
+
+	ReadNumRefFrame.Done: action
+			ValVLD :[ValueOfVLD] repeat 5
+				==>
+	var
+		uint(size=32) PicWidthInMacroBs,
+		uint(size=32) FrameHeightInMacroBs,
+		int(size=32)  MaxDPB_x_2,
+		uint(size=32) MaxFS,
+		uint(size=32) Sqrt_8MaxFS,
+		uint(size=32) FrameHeight_x_PicWidth,
+		uint(size=32) MaxDPBSize
+		do
+			num_ref_frames[spsId]                       := ValueOfVLD[0];
+//			gaps_in_frame_num_value_allowed_flag[spsId] := ValueOfVLD[1];
+			pic_width_in_mbs_minus1[spsId]              := ValueOfVLD[2];
+			pic_height_in_map_units_minus1[spsId]       := ValueOfVLD[3];
+			frame_mbs_only_flag[spsId]                  := ValueOfVLD[4];
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tnum_ref_frames : "+ValueOfVLD[0]);
+				println("\t\tgaps_in_frame_num_value_allowed_flag : "+ValueOfVLD[1]);
+				println("\t\tpic_width_in_mbs_minus1 : "+ValueOfVLD[2]);
+				println("\t\tpic_height_in_map_units_minus1 : "+ValueOfVLD[3]);
+				println("\t\tframe_mbs_only_flag : "+ValueOfVLD[4]);
+			end
+
+			MaxFS       := MaxFS_LookUpTable       [level_idc[spsId] & 0x3F];
+			Sqrt_8MaxFS := Sqrt_8MaxFS_LookUpTable [level_idc[spsId] & 0x3F];
+			MaxDPB_x_2  := MaxDPB_x_2_LookUpTable  [level_idc[spsId] & 0x3F];
+			PicWidthInMacroBs    := pic_width_in_mbs_minus1[spsId] + 1;
+			FrameHeightInMacroBs := (2 - 0) * (pic_height_in_map_units_minus1[spsId] + 1);
+			if(PicWidthInMacroBs > Sqrt_8MaxFS) then
+				PicWidthInMacroBs := Sqrt_8MaxFS;
+			end
+			if(FrameHeightInMacroBs > Sqrt_8MaxFS) then
+				FrameHeightInMacroBs := Sqrt_8MaxFS;
+			end
+			FrameHeight_x_PicWidth := FrameHeightInMacroBs * PicWidthInMacroBs;
+			if(FrameHeight_x_PicWidth > MaxFS) then
+				FrameHeight_x_PicWidth := MaxFS;
+			end
+			MaxDPBSize := (512 * MaxDPB_x_2) / (FrameHeight_x_PicWidth * 384);
+			MaxDPBSz[spsId] :=
+				if(MaxDPBSize >= 16) then
+					16
+				else
+					MaxDPBSize
+				end;
+		end
+
+
+	FrameMbsOnlyFlag.IsEqualTo0: action
+				==>
+			//    mb_adaptive_frame_field_flag
+			TypeOfVLD    :[ READ_BITS ],
+			NbBitsToRead :[     1     ]
+		guard
+			frame_mbs_only_flag[spsId] = 0
+		do
+			println("Warning : We don't manage interlaced sequences !");
+		end
+
+
+	ReadMbAdaptFrameField: action ValVLD:[ValueOfVLD] ==>
+	do
+		mb_adaptive_frame_field_flag[spsId] := ValueOfVLD;
+		if(DEBUG_FLAG_DECODED)then
+			println("\t\tmb_adaptive_frame_field_flag : "+ValueOfVLD);
+		end
+	end
+
+
+	ReadDirect8x8.Asked: action
+				==>
+			//              Direct8x8 , frame_crop
+			TypeOfVLD    :[ READ_BITS , READ_BITS ],
+			NbBitsToRead :[     1     ,      1    ]
+		end
+
+
+	ReadDirect8x8.Done: action
+			ValVLD :[ValueOfVLD] repeat 2
+				==>
+		do
+			uint(size=32) picWidthInSampleL =
+				(pic_width_in_mbs_minus1[spsId]+1) * 16;
+			uint(size=32) picHeightInSampleL =
+				(pic_height_in_map_units_minus1[spsId]+1) * 16;
+
+			direct_8x8_inference_flag[spsId] := ValueOfVLD[0];
+			frame_cropping_flag[spsId]          := ValueOfVLD[1];
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tdirect_8x8_inference_flag : "+ValueOfVLD[0]);
+				println("\t\tframe_cropping_flag : "+ValueOfVLD[1]);
+			end
+
+			frame_crop_x_min[spsId] := 0;
+			frame_crop_x_max[spsId] := picWidthInSampleL-1;
+			frame_crop_y_min[spsId] := 0;
+			frame_crop_y_max[spsId] := picHeightInSampleL-1;
+		end
+
+
+	FrameCroppingFlag.IsEqualTo1: action ==>
+			//              frame_ , frame_ , frame_ , frame_ 
+			TypeOfVLD    :[ VLD_UE , VLD_UE , VLD_UE , VLD_UE ]
+		guard
+			frame_cropping_flag[spsId] = 1
+		end
+
+
+	ReadFrameCrop: action
+			ValVLD :[ValueOfVLD] repeat 4
+				==>
+		do
+			uint(size=3) cropUnitX;
+			uint(size=4) cropUnitY;
+			uint(size=3) subWidthC = 2;
+			uint(size=3) subHeightC = 2;
+			uint(size=32) picWidthInSampleL =
+				(pic_width_in_mbs_minus1[spsId]+1) * 16;
+			uint(size=32) picHeightInSampleL =
+				(pic_height_in_map_units_minus1[spsId]+1) * 16;
+
+			if(Chroma_Array_Type[spsId] = 0)then
+				cropUnitX := 1;
+				cropUnitY := 2 - frame_mbs_only_flag[spsId];
+			else
+				cropUnitX := subWidthC;
+				cropUnitY := subHeightC * (2 - frame_mbs_only_flag[spsId]);
+			end
+			frame_crop_x_min[spsId] := cropUnitX * ValueOfVLD[0];
+			frame_crop_x_max[spsId] := picWidthInSampleL -(cropUnitX *
+				ValueOfVLD[1] + 1);
+			frame_crop_y_min[spsId] := cropUnitY * ValueOfVLD[2];
+			frame_crop_y_max[spsId] := picHeightInSampleL -(cropUnitY *
+				ValueOfVLD[3] + 1);
+
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tframe_crop_left_offset : "+ValueOfVLD[0]);
+				println("\t\tframe_crop_right_offset : "+ValueOfVLD[1]);
+				println("\t\tframe_crop_top_offset : "+ValueOfVLD[2]);
+				println("\t\tframe_crop_bottom_offset : "+ValueOfVLD[3]);
+			end
+		end
+
+
+	ReadVuiParameters.Asked: action
+				==>
+			//        vui_parameters_present_flag
+			TypeOfVLD    :[ READ_BITS ],
+			NbBitsToRead :[     1     ]
+		end
+
+
+	ReadVuiParameters.Done: action
+			ValVLD  :[ValueOfVLD]
+				==>
+			TypeOfVLD :[SKIP_NAL]
+		do
+//			vui_parameters_present_flag[spsId] := ValueOfVLD;
+			pic_size_in_mbs[spsId] := (pic_width_in_mbs_minus1[spsId] +1) * (pic_height_in_map_units_minus1[spsId] +1);
+			NumC8x8[spsId] :=
+				if(chroma_format_idc[spsId] = 1)then
+					1
+				else
+					if(chroma_format_idc[spsId] = 2)then
+						2
+					else
+						4
+					end
+				end;
+			if(chroma_format_idc[spsId] = 0)then
+				MbWidthC[spsId]  := 0;
+				MbHeightC[spsId] := 0;
+			else
+				if(chroma_format_idc[spsId] = 1)then
+					MbWidthC[spsId]  := 8;
+					MbHeightC[spsId] := 8;
+				else
+					if(chroma_format_idc[spsId] = 2)then
+						MbWidthC[spsId]  :=  8;
+						MbHeightC[spsId] := 16;
+					else
+						MbWidthC[spsId]  := 16;
+						MbHeightC[spsId] := 16;
+					end
+				end
+			end
+			if(DEBUG_FLAG_DECODED)then
+				println("\t\tvui_parameters_present_flag : "+ValueOfVLD);
+			end
+			last_sps_id := spsId;
+		end
+
+	//remove me !!
+	bool actorNotFinished := true;
+	undefined: action ==>
+	guard
+		actorNotFinished
+	do
+		println("DecodeSps doesn't manage this case yet");
+		actorNotFinished := false;
+	end
+
+		
+/*
+*
+* Scheduler
+*
+*/
+
+	schedule fsm AskReadSpsId:
+		AskReadSpsId                 (ReadSpsId.Asked                )--> ReadSpsIdDone;
+
+		ReadSpsIdDone                (getNalUnitType                  )--> ReadSpsIdDone;
+		ReadSpsIdDone                (SpsParam.AskedFromPic          )--> SendOff4RefFrameAcc;
+		ReadSpsIdDone                (SpsParam.AskedFromPps          )--> ReadSpsIdDone;
+		ReadSpsIdDone                (ReadSpsId.Done                 )--> CheckProfileIdc;
+
+		SendOff4RefFrameAcc          (SendOff4RefFrameAcc.Launch        )--> SendOff4RefFrameAcc;
+		SendOff4RefFrameAcc          (SendOff4RefFrameAcc.Done          )--> ReadSpsIdDone;
+
+		CheckProfileIdc              (ReadChromaFormatIdc.Asked         )--> ReadChromaFormatIdcDone;
+		CheckProfileIdc              (Read_MaxFrameNum_PocType.Asked    )--> Read_MaxFrameNum_PocTypeDone;
+
+		ReadChromaFormatIdcDone      (ReadChromaFormatIdc.IsEqualTo3    )--> ReadSeparColourPlane;
+		ReadChromaFormatIdcDone      (ReadChromaFormatIdc.IsNotEqualTo3 )--> ReadBitDepthDone;
+
+		ReadSeparColourPlane         (ReadSeparColourPlane.Done         )-->                             undefined;//Not implemented yet
+
+		ReadBitDepthDone             (readBitDepth.Done                 )--> ChecksecScalingFlag;
+
+		ChecksecScalingFlag          (secScalingFlag.isEqualToTrue     )--> getScalingMatrixLoop;
+		ChecksecScalingFlag          (Read_MaxFrameNum_PocType.Asked   )--> Read_MaxFrameNum_PocTypeDone;
+
+		/*********************************************************************
+		 * Scaling_Matrix
+		 ********************************************************************/
+		getScalingMatrixLoop         (scalingMatrix.present          ) --> getScalingListLoop;
+		getScalingMatrixLoop         (scalingMatrix.noPresent        ) --> getScalingMatrixLoopNext;
+		//
+		getScalingListLoop           (scalingListLoop                ) --> getScalingListNext;
+		getScalingListNext           (scalingListNext                ) --> getScalingListLoop;
+		getScalingListNext           (scalingListEnd                 ) --> getScalingMatrixLoopNext;
+		//		
+		getScalingMatrixLoopNext     (scalingMatrix.loopNext         ) --> getScalingMatrixLoop;
+		getScalingMatrixLoopNext     (Read_MaxFrameNum_PocType.Asked ) --> Read_MaxFrameNum_PocTypeDone;
+		
+		
+		Read_MaxFrameNum_PocTypeDone (Read_MaxFrameNum_PocType.Done  )--> CheckValPocType;
+
+		CheckValPocType              (ReadPocType.IsEqualTo0         )--> ReadLog2MaxPocLsbDone;
+		CheckValPocType              (ReadPocType.IsEqualTo1         )--> ReadPocType1Param;
+		CheckValPocType              (ReadNumRefFrame.Asked          )--> ReadNumRefFrameDone;
+
+		ReadLog2MaxPocLsbDone        (ReadLog2MaxPocLsb.Done         )--> ReadNumRefFrameAsked;
+
+		ReadPocType1Param            (ReadPocType1Param              )--> CheckNumRefInPocCycle;
+
+		CheckNumRefInPocCycle        (CheckNumRefInPocCycle          )--> ReadOffset4RefFrame;
+		CheckNumRefInPocCycle        (ReadNumRefFrame.Asked          )--> ReadNumRefFrameDone;
+
+		ReadOffset4RefFrame          (ReadOffset4RefFrame.Launch     )--> ReadOffset4RefFrame;
+		ReadOffset4RefFrame          (ReadOffset4RefFrame.Done       )--> ReadNumRefFrameAsked;
+		
+		ReadNumRefFrameAsked         (ReadNumRefFrame.Asked          )--> ReadNumRefFrameDone;
+
+		ReadNumRefFrameDone          (ReadNumRefFrame.Done           )--> CheckFrameMbsOnlyFlag;
+
+		CheckFrameMbsOnlyFlag        (FrameMbsOnlyFlag.IsEqualTo0    )--> ReadMbAdaptFrameField;
+		CheckFrameMbsOnlyFlag        (ReadDirect8x8.Asked            )--> ReadDirect8x8Done;
+
+		ReadMbAdaptFrameField        (ReadMbAdaptFrameField          )--> ReadDirect8x8Asked;
+
+		ReadDirect8x8Asked           (ReadDirect8x8.Asked            )--> ReadDirect8x8Done;
+
+		ReadDirect8x8Done            (ReadDirect8x8.Done             )--> CheckFrameCroppingFlag;
+
+		CheckFrameCroppingFlag       (FrameCroppingFlag.IsEqualTo1   )--> ReadFrameCrop;
+		CheckFrameCroppingFlag       (ReadVuiParameters.Asked        )--> ReadVuiParametersDone;
+
+		ReadFrameCrop                (ReadFrameCrop                  )--> ReadVuiParametersAsked;
+
+		ReadVuiParametersAsked       (ReadVuiParameters.Asked        )--> ReadVuiParametersDone;
+
+		ReadVuiParametersDone        (ReadVuiParameters.Done         )--> CheckNalUnitType;
+
+		CheckNalUnitType             (SpsParam.AskedFromSvc          )--> AskReadSpsId;
+		CheckNalUnitType             (SpsParam.skip                  )--> AskReadSpsId;
+
+		undefined (undefined )--> undefined;
+	end
+
+	priority
+		SpsParam                     > ReadSpsId;
+		ReadChromaFormatIdc.Asked    > Read_MaxFrameNum_PocType.Asked;
+		ReadPocType.IsEqualTo0       > ReadPocType.IsEqualTo1          > ReadNumRefFrame.Asked;
+		CheckNumRefInPocCycle        > ReadNumRefFrame.Asked;
+		ReadOffset4RefFrame.Launch   > ReadOffset4RefFrame.Done;
+		FrameMbsOnlyFlag.IsEqualTo0  > ReadDirect8x8.Asked;
+		FrameCroppingFlag.IsEqualTo1 > ReadVuiParameters.Asked;
+		secScalingFlag.isEqualToTrue > Read_MaxFrameNum_PocType.Asked;
+		scalingMatrix.loopNext       > Read_MaxFrameNum_PocType.Asked;
+	end
+end
