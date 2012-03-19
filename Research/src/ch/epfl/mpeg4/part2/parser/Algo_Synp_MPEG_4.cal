@@ -136,14 +136,15 @@ actor Algo_Synp_MPEG_4 ()
   // with read_result(). Use the done function in a guard to wait for the
   // reading to be complete.
   int(size=8) bits_to_read_count := -1;
-  int(size=32) read_result_in_progress;
+  uint(size=32) read_result_in_progress;
   procedure set_bits_to_read( int count )
   begin
     bits_to_read_count := count - 1;
     read_result_in_progress := 0;
   end
   function done_reading_bits() --> bool : bits_to_read_count < 0 end
-  function read_result() --> int : read_result_in_progress end
+  function read_result() --> uint : read_result_in_progress end
+  
   action bits:[ b ] ==>
   guard 
     not done_reading_bits()
@@ -153,7 +154,7 @@ actor Algo_Synp_MPEG_4 ()
     bit_count := bit_count + 1;
   end
 
-  int(size=4) bit_count := 0;
+  uint(size=8) bit_count := 0;
 
 /*************************************************************
  *************************************************************
@@ -355,12 +356,12 @@ actor Algo_Synp_MPEG_4 ()
   int(size=7) intra_dc_vlc_thr;
 
 	
-  send_new_vop_cmd: action ==> BTYPE:[ cmd, vol_width, vol_height ],  SIZE: [ vol_width, vol_height ]
+  send_new_vop_cmd: action ==> BTYPE:[ cmd ]
   guard
     done_reading_bits()
   var
     bool round := false,
-    int(size=BTYPE_SZ) cmd := NEWVOP | if prediction_is_IVOP then INTRA else INTER end
+    uint(size=BTYPE_SZ) cmd := NEWVOP | if prediction_is_IVOP then INTRA else INTER end
   do
     if not prediction_is_IVOP then
       round := (read_result() >> (INTRA_DC_VLC_THR_LENGTH + BITS_QUANT + VOP_FCODE_FOR_LENGTH) & 1) = 1;
@@ -378,6 +379,10 @@ actor Algo_Synp_MPEG_4 ()
     cmd := cmd | if round then ROUND_TYPE else 0 end;
     cmd := cmd | ((fcode << FCODE_SHIFT) & FCODE_MASK);
 end
+
+send_new_vop_width: action ==> BTYPE: [ vol_width ], SIZE: [ vol_width ] end
+
+send_new_vop_height: action ==> BTYPE: [ vol_height ], SIZE: [ vol_height ] end
 
 /*************************************************************
  *************************************************************
@@ -423,13 +428,16 @@ end
 
   // Nothing to do - uncoded
   mcbpc_pvop_uncoded: action bits:[b] ==>
-      BTYPE:[ INTER, INTER, INTER, INTER, INTER, INTER ], 
-      QP:[vop_quant, vop_quant, vop_quant, vop_quant, vop_quant, vop_quant]
+      BTYPE:[ INTER ], QP:[vop_quant]
   guard
     not prediction_is_IVOP
   do
     next_mbxy();
     bit_count := bit_count + 1;
+  end
+
+  mcbpc_pvop_uncoded1: action ==>
+      BTYPE:[ INTER ], QP:[vop_quant]
   end
 
   bool acpredflag;
@@ -1095,7 +1103,7 @@ end
     (vld_codeword & 3) = 2 
   do
     vld_codeword := vld_table[ vld_index + b ];
-    vld_index := (vld_codeword >> 2);
+    vld_index := (vld_codeword >> 2) & 2047;
     bit_count := bit_count + 1;
   end
   do_vld_failure: action ==>
@@ -1183,17 +1191,24 @@ end
     vol_misc           ( generic_done                     ) --> stuck;
 
     // Process a new VOP
-    vop_predict        ( vop_predict.supported            ) --> vop_timebase;
+    vop_predict        ( vop_predict.supported      ) --> vop_timebase;
     vop_predict        ( generic_done                     ) --> stuck;
     vop_timebase       ( vop_timebase.one                 ) --> vop_timebase;
     vop_timebase       ( vop_timebase.zero                ) --> vop_coding;
     vop_coding         ( vop_coding.uncoded               ) --> stuck;
 	vop_coding         ( vop_coding.coded                 ) --> send_new_vop_info;
-	send_new_vop_info  ( send_new_vop_cmd                 ) --> mb;
+	send_new_vop_info  ( send_new_vop_cmd                 ) --> send_new_vop_width;
+	send_new_vop_width ( send_new_vop_width               ) --> send_new_vop_height;
+	send_new_vop_height( send_new_vop_height              ) --> mb;
 
     // Start MB
     mb          ( mb_done                    ) --> stuck;
-	mb          ( mcbpc_pvop_uncoded         ) --> mb;
+	mb            ( mcbpc_pvop_uncoded         ) --> pvop_uncoded1;
+	pvop_uncoded1 ( mcbpc_pvop_uncoded1        ) --> pvop_uncoded2;
+	pvop_uncoded2 ( mcbpc_pvop_uncoded1        ) --> pvop_uncoded3;
+	pvop_uncoded3 ( mcbpc_pvop_uncoded1        ) --> pvop_uncoded4;
+	pvop_uncoded4 ( mcbpc_pvop_uncoded1        ) --> pvop_uncoded5;
+	pvop_uncoded5 ( mcbpc_pvop_uncoded1        ) --> mb;
     mb          ( get_mcbpc                  ) --> get_mbtype;
     get_mbtype  ( do_vld_failure             ) --> stuck;
     get_mbtype  ( get_mbtype                 ) --> final_cbpy;
@@ -1240,8 +1255,8 @@ end
     mag_x           ( do_vld_failure    ) -->  stuck;
     mag_x           ( mag_x             ) -->  get_residual_x;         
     get_residual_x  ( get_residual_x    ) -->  mv_y;
-    mag_y           ( do_vld_failure    ) -->  stuck;
     mv_y            ( mvcode            ) -->  mag_y;
+    mag_y           ( do_vld_failure    ) -->  stuck;
     mag_y           ( mag_y             ) -->  get_residual_y;
     get_residual_y  ( get_residual_y    ) -->  mv;
 
