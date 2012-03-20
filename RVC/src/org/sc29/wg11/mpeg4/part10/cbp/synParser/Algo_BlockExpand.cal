@@ -68,7 +68,7 @@ actor Algo_BlockExpand ()
 
 	/* Constants */
 	uint(size=2) BLOCK_4x4   = 0;
-//	uint(size=2) BLOCK_8x8   = 1;
+	uint(size=2) BLOCK_8x8   = 1;
 	uint(size=2) BLOCK_16x16 = 2;
 
 	uint(size=2)  Y_COMPONENT = 0;
@@ -77,13 +77,14 @@ actor Algo_BlockExpand ()
 
 	int (size=5) SZ_LUMA_DC_16X16 = 16;
 	int (size=5) SZ_LUMA_AC_16X16 = 16;
+	int (size=7) SZ_LUMA_AC_8X8   = 64;
 	int (size=5) SZ_LUMA_AC_4X4   = 16;
 	int (size=5) SZ_CHROMA_DC     = 4;
 	int (size=5) SZ_CHROMA_AC     = 16;
 
 	/* State Variable */
-	int(size=12) ValCoeff[16];
-	uint(size=5) IdxValCoeff      := 0;
+	int(size=12) ValCoeff[64];
+	uint(size=7) IdxValCoeff      := 0;
 
 	uint(size=8) LumaMBSize;
 	uint(size=2) Component        := Y_COMPONENT;
@@ -108,6 +109,8 @@ actor Algo_BlockExpand ()
 			LumaMBSize       :=
 				if(Is_Intra_16x16(mb_type))then
 					BLOCK_16x16
+				elsif mb_type = BLOCK_TYPE_I_8x8 then
+					BLOCK_8x8
 				else
 					BLOCK_4x4
 				end;
@@ -126,6 +129,7 @@ actor Algo_BlockExpand ()
 		do
 			ValCoeff[IdxValCoeff] := Val;
 			IdxValCoeff           := IdxValCoeff + 1;
+			
 			if (ValRun > 0) then
 				foreach int j in 0 .. ValRun - 1
 				do
@@ -217,7 +221,7 @@ actor Algo_BlockExpand ()
 	isLumaAC_4x4: action ==>
 		guard
 			Component   = Y_COMPONENT,
-			LumaMBSize != BLOCK_16x16
+			LumaMBSize  = BLOCK_4x4
 		do
 			foreach int j in IdxValCoeff .. SZ_LUMA_AC_4X4 - 1
 			do
@@ -245,6 +249,37 @@ actor Algo_BlockExpand ()
 			NbBlocksSent     := 0;
 		end
 
+		/************ Send Luma AC Component (8x8) ************/
+	isLumaAC_8x8: action ==>
+		guard
+			Component   = Y_COMPONENT,
+			LumaMBSize  = BLOCK_8x8
+		do
+			foreach int j in IdxValCoeff .. SZ_LUMA_AC_8X8 - 1
+			do
+				ValCoeff[j] := 0;
+			end
+			IdxValCoeff := 0;	
+		end
+
+
+	SendLumaAC_8x8.Launch: action
+				==>
+			BLOCK :[ValCoeff] repeat SZ_LUMA_AC_8X8
+		guard
+			NbBlocksSent     < 3
+		do
+			NbBlocksSent := NbBlocksSent + 1;
+		end
+
+
+	SendLumaAC_8x8.LastBlock: action
+				==>
+			BLOCK :[ValCoeff] repeat SZ_LUMA_AC_8X8
+		do	
+			Component        := U_COMPONENT;
+			NbBlocksSent     := 0;
+		end
 
 		/************ Send Chroma DC Component ************/
 	isChromaDC: action ==>
@@ -333,6 +368,9 @@ actor Algo_BlockExpand ()
 		ChooseSizeData   ( isLumaAC_16x16                    )--> SendLumaAC_16x16;
 		SendLumaAC_16x16 ( SendLumaAC_16x16                  )--> ReadData;
 
+		ChooseSizeData   ( isLumaAC_8x8                      )--> SendLuma_8x8;
+		SendLuma_8x8     ( SendLumaAC_8x8                    )--> ReadData;
+
 		ChooseSizeData   ( isLumaAC_4x4                      )--> SendLuma_4x4;
 		SendLuma_4x4     ( SendLumaAC_4x4                    )--> ReadData;
 
@@ -348,9 +386,10 @@ actor Algo_BlockExpand ()
 	priority
 		NoLast                  > Last_equaltrue;
 		SendLumaAC_16x16.Launch > SendLumaAC_16x16.LastBlock;
+		SendLumaAC_8x8.Launch   > SendLumaAC_8x8.LastBlock;
 		SendLumaAC_4x4.Launch   > SendLumaAC_4x4.LastBlock;
 		SendChromaAC.Launch     > SendChromaAC.LastBlock_UComponent > SendChromaAC.LastBlock_VComponent;
-		isLumaAC_4x4            > isLumaAC_16x16                    > isChromaAC;
+		isLumaAC_4x4            > isLumaAC_8x8        			    > isLumaAC_16x16       > isChromaAC;
 		isChromaAC              > isChromaDC                        > isLumaDC_16x16;
 		SkipBlock               > ReadBlockSize;
 	end
