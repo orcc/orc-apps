@@ -93,9 +93,9 @@ actor Algo_Synp_AVC_FREXT()
 			uint(size=7)  PIC_SIZE_IN_MB,
 			int           POC, 
 
-			 int(size=8)  SCALING_LIST_Y,
-			 int(size=8)  SCALING_LIST_U,
-			 int(size=8)  SCALING_LIST_V,
+			uint(size=8)  SCALING_LIST_Y,
+			uint(size=8)  SCALING_LIST_U,
+			uint(size=8)  SCALING_LIST_V,
 
 			uint(size=7)  MB_LOCATION,
 			uint(size=6)  MB_TYPE,
@@ -411,11 +411,11 @@ actor Algo_Synp_AVC_FREXT()
 	uint(size=2) chroma_format_idc[32] := [ 1 : for int i in 0 .. 31 ];
 	uint(size=3) bit_depth_luma_minus8[32] := [ 0 : for int i in 0 .. 31 ];
 	uint(size=3) bit_depth_chroma_minus8[32] := [ 0 : for int i in 0 .. 31 ];
-	 int(size=8) varScaling[6];
-	uint(size=1) scaling_matrix_present_flag;
+	uint(size=8) varScaling[6];
+	uint(size=1) sps_scaling_matrix_present_flag[32];
 	uint(size=1) scaling_list_present_flag;
-	 int(size=8) sps_ScalingList4x4[32][6][16];
-	 int(size=8) sps_ScalingList8x8[32][2][64];
+	uint(size=8) sps_ScalingList4x4[32][6][16];
+	uint(size=8) sps_ScalingList8x8[32][2][64];
 	uint(size=8) DEFAULT_SCALING4[2][16] = 
 	[
    		[
@@ -511,7 +511,7 @@ actor Algo_Synp_AVC_FREXT()
 		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   "); bit_depth_luma_minus8[sps_id] := res[0];
 		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 "); bit_depth_chroma_minus8[sps_id] := res[0];
 		vld_u_name( 1, fifo, res,  "qpprime_y_zero_transform_bypass_flag    ");
-		vld_u_name( 1, fifo, res,  "seq_scaling_matrix_present_flag         "); scaling_matrix_present_flag := res[0];
+		vld_u_name( 1, fifo, res,  "seq_scaling_matrix_present_flag         "); sps_scaling_matrix_present_flag[sps_id] := res[0];
 	end
 	
 	/******************************************************************************
@@ -519,18 +519,18 @@ actor Algo_Synp_AVC_FREXT()
 	 *****************************************************************************/
 	read_Sps_secScalingFlag.isEqualToTrue: action ==>
 	guard
-		scaling_matrix_present_flag = 1
+		sps_scaling_matrix_present_flag[sps_id] = 1
 	var
 		uint(size=32) res[1]
 	do
 		varScaling[0]  := 0; // i index loop
 		varScaling[5]  := 7; // end index loop		
 		vld_u_name(1,  fifo, res, "seq_scaling_list_present_flag         ");
-		scaling_list_present_flag := res[0];
+		scaling_list_present_flag := res[0];		
 	end
 	read_Sps_secScalingFlag.isEqualToFalse: action ==>
 	guard
-		scaling_matrix_present_flag = 0
+		sps_scaling_matrix_present_flag[sps_id] = 0
 	var
 		uint(size=32) res[1]
 	do
@@ -538,7 +538,6 @@ actor Algo_Synp_AVC_FREXT()
 		log2_max_frame_num_minus4[sps_id] := res[0];
 		vld_ue_name(    fifo, res, "pic_order_cnt_type                      ");
 		pic_order_cnt_type[sps_id] := res[0];
-
 	end
 	read_Sps_scalingMatrix.present: action ==>
 	guard
@@ -581,7 +580,7 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		varScaling[0] := varScaling[0] + 1;
 		vld_u_name(1,  fifo, res, "seq_scaling_list_present_flag         ");
-		scaling_list_present_flag := res[0];
+		scaling_list_present_flag := res[0];		
 	end
 	read_Sps_scalingMatrix.loopEnd: action ==>
 	guard
@@ -603,10 +602,10 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var 
 		int(size=32) res[1],
-		int(size=8) tmp := varScaling[3] 
+		uint(size=8) tmp := varScaling[3] 
 	do
 		vld_se_name(  fifo, res,   "delta_scale                                     ");
-		varScaling[4] := (tmp + res[0]) & 255;
+		varScaling[4] := (tmp + res[0]) & 255;		
 		if varScaling[4] != 0 then
 			tmp := varScaling[4];
 		end
@@ -623,9 +622,9 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		varScaling[1] := varScaling[1] + 1;
 	end
-	read_Sps_scalingListEnd.nextScaleNull: action ==>
+	read_Sps_scalingListEnd.nextScaleNull.noDefaultList: action ==>
 	guard
-		varScaling[4] = 0
+		varScaling[4] = 0 and varScaling[1] != 0
 	do
 		if varScaling[0]<6 then
 			foreach int i in varScaling[1] .. 15 do
@@ -634,6 +633,24 @@ actor Algo_Synp_AVC_FREXT()
 		else
 			foreach int i in varScaling[1] .. 63 do
 				sps_ScalingList8x8[pps_id][varScaling[0]-6][i] := varScaling[3];
+			end
+		end
+	end
+	read_Sps_scalingListEnd.nextScaleNull.DefaultList: action ==>
+	guard
+		varScaling[4] = 0 and varScaling[1] = 0
+	do
+		if varScaling[0]<3 then
+			foreach int i in 0 .. 15 do
+				pps_ScalingList4x4[pps_id][varScaling[0]][i] := DEFAULT_SCALING4[0][i];
+			end
+		elsif varScaling[0]<6 then
+			foreach int i in 0 .. 15 do
+				pps_ScalingList4x4[pps_id][varScaling[0]][i] := DEFAULT_SCALING4[1][i];
+			end
+		else
+			foreach int i in 0 .. 63 do
+				pps_ScalingList8x8[pps_id][varScaling[0]-6][i] := DEFAULT_SCALING8[varScaling[0]-6][i];
 			end
 		end
 	end
@@ -1010,8 +1027,9 @@ actor Algo_Synp_AVC_FREXT()
 
 	//High profile 
 	uint(size=1) transform_8x8_mode_flag[255] := [ 0 : for int i in 0 .. 254];
-	 int(size=8) pps_ScalingList4x4[255][6][16];
-	 int(size=8) pps_ScalingList8x8[255][2][64];
+	uint(size=1) pps_scaling_matrix_present_flag;
+	uint(size=8) pps_ScalingList4x4[255][6][16];
+	uint(size=8) pps_ScalingList8x8[255][2][64];
 	int(size=5) second_chroma_qp_index_offset[255] := [ 0 : for int i in 0 .. 254];
 
 
@@ -1026,6 +1044,7 @@ actor Algo_Synp_AVC_FREXT()
 		pps_id := res[0];
 		vld_ue_name(  fifo, res,   "sequence_parameter_set_id                             ");
 		sequence_parameter_set_id[pps_id] := res[0];
+		sps_id := res[0];
 		foreach int i in 0 .. 5 do
 			foreach int j in 0 .. 15 do
 				pps_ScalingList4x4[pps_id][i][j] := sps_ScalingList4x4[res[0]][i][j];
@@ -1128,7 +1147,7 @@ actor Algo_Synp_AVC_FREXT()
 		vld_u_name(1,  fifo, res, "transform_8x8_mode_flag               ");
 		transform_8x8_mode_flag[pps_id] := res[0];
 		vld_u_name(1,  fifo, res, "pic_scaling_matrix_present_flag       ");
-		scaling_matrix_present_flag := res[0];
+		pps_scaling_matrix_present_flag := res[0];		
 	end
 
 	read_Pps_not_High_Profile: action ==>
@@ -1140,18 +1159,18 @@ actor Algo_Synp_AVC_FREXT()
 	 *****************************************************************************/
 	read_Pps_secScalingFlag.isEqualToTrue: action ==>
 	guard
-		scaling_matrix_present_flag = 1
+		pps_scaling_matrix_present_flag = 1
 	var
 		uint(size=32) res[1]
 	do
 		varScaling[0]  := 0; // i index loop
 		varScaling[5]  := 5 + (transform_8x8_mode_flag[pps_id]<<1); // end index loop
 		vld_u_name(1,  fifo, res, "pic_scaling_list_present_flag         ");
-		scaling_list_present_flag := res[0];
+		scaling_list_present_flag := res[0];		
 	end
 	read_Pps_secScalingFlag.isEqualToFalse: action ==>
 	guard
-		scaling_matrix_present_flag = 0
+		pps_scaling_matrix_present_flag = 0
 	var
 		int(size=32) res[1]
 	do
@@ -1171,9 +1190,29 @@ actor Algo_Synp_AVC_FREXT()
 		varScaling[3] := 8; // lastScale
 		varScaling[4] := 8; // nextScale
 	end
-	read_Pps_scalingMatrix.noPresent: action ==>
+	read_Pps_scalingMatrix.noPresent.spsPresent: action ==>
 	guard
-		scaling_list_present_flag = 0
+		scaling_list_present_flag = 0 and sps_scaling_matrix_present_flag[sps_id] = 1
+	do
+		if varScaling[0] < 6 then
+			if varScaling[0] = 0 or varScaling[0] = 3 then
+				foreach int i in 0 .. 15 do
+					pps_ScalingList4x4[pps_id][varScaling[0]][i] := sps_ScalingList4x4[sps_id][varScaling[0]][i];
+				end
+			else
+				foreach int i in 0 .. 15 do
+					pps_ScalingList4x4[pps_id][varScaling[0]][i] := pps_ScalingList4x4[pps_id][varScaling[0]-1][i];
+				end
+			end
+		else
+			foreach int i in 0 .. 63 do
+				pps_ScalingList8x8[pps_id][varScaling[0]-6][i] := sps_ScalingList8x8[sps_id][varScaling[0]-6][i];
+			end
+		end
+	end
+	read_Pps_scalingMatrix.noPresent.spsNoPresent: action ==>
+	guard
+		scaling_list_present_flag = 0 and sps_scaling_matrix_present_flag[sps_id] = 0
 	do
 		if varScaling[0] < 6 then
 			if varScaling[0] = 0 or varScaling[0] = 3 then
@@ -1219,10 +1258,10 @@ actor Algo_Synp_AVC_FREXT()
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var 
 		int(size=32) res[1],
-		int(size= 8) tmp := varScaling[3] 
+		uint(size= 8) tmp := varScaling[3] 
 	do
 		vld_se_name(  fifo, res,   "delta_scale                                     ");
-		varScaling[4] := (tmp + res[0]) & 255;
+		varScaling[4] := (tmp + res[0]) & 255;		
 		if varScaling[4] != 0 then
 			tmp := varScaling[4];
 		end
@@ -1239,9 +1278,9 @@ actor Algo_Synp_AVC_FREXT()
 	do
 		varScaling[1] := varScaling[1] + 1;
 	end
-	read_Pps_scalingListEnd.nextScaleNull: action ==>
+	read_Pps_scalingListEnd.nextScaleNull.noDefaultList: action ==>
 	guard
-		varScaling[4] = 0
+		varScaling[4] = 0 and varScaling[1] != 0
 	do
 		if varScaling[0]<6 then
 			foreach int i in varScaling[1] .. 15 do
@@ -1250,6 +1289,24 @@ actor Algo_Synp_AVC_FREXT()
 		else
 			foreach int i in varScaling[1] .. 63 do
 				pps_ScalingList8x8[pps_id][varScaling[0]-6][i] := varScaling[3];
+			end
+		end
+	end
+	read_Pps_scalingListEnd.nextScaleNull.DefaultList: action ==>
+	guard
+		varScaling[4] = 0 and varScaling[1] = 0
+	do
+		if varScaling[0]<3 then
+			foreach int i in 0 .. 15 do
+				pps_ScalingList4x4[pps_id][varScaling[0]][i] := DEFAULT_SCALING4[0][i];
+			end
+		elsif varScaling[0]<6 then
+			foreach int i in 0 .. 15 do
+				pps_ScalingList4x4[pps_id][varScaling[0]][i] := DEFAULT_SCALING4[1][i];
+			end
+		else
+			foreach int i in 0 .. 63 do
+				pps_ScalingList8x8[pps_id][varScaling[0]-6][i] := DEFAULT_SCALING8[varScaling[0]-6][i];
 			end
 		end
 	end
@@ -2016,11 +2073,11 @@ actor Algo_Synp_AVC_FREXT()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		 int(size= 8) ScalingList_Y[2*16+2*64],
-		 int(size= 8) ScalingList_U[2*16],
-		 int(size= 8) ScalingList_V[2*16],
-		 int(size=32) res[1],
-		 int slice_qp_delta
+		 uint(size= 8) ScalingList_Y[2*16+2*64],
+		 uint(size= 8) ScalingList_U[2*16],
+		 uint(size= 8) ScalingList_V[2*16],
+		  int(size=32) res[1],
+		  int slice_qp_delta
 	do
 		cabac_init_idc := -1;
 		if (entropy_coding_mode_flag[pps_id] = 1 and
