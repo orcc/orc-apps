@@ -23,7 +23,9 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 	uint(size=6) MB_TYPE,
 	uint(size=4) SUB_MB_TYPE,
 	uint(size=2) SELECT_LIST,
-	uint(size=8) INTERP
+	uint(size=8) INTERP,
+	int (size=9) WP_PARAM,
+	uint(size=2) WP_IDC
 		==>
 	int(size=9) MBPRED
 		:
@@ -50,11 +52,21 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 	uint(size=5) y_idx;
 
 	bool IsBiPred;
-
-	SkipMbType: action MB_TYPE:[MacroBlkType] ==>
 	
+
+	ReadSlice: action MB_TYPE:[MacroBlkType] ==> 
 	guard
-		Mb_IsIntra(MacroBlkType) or MacroBlkType >= NEW_SLICE
+		MacroBlkType >= NEW_SLICE
+	end
+
+	ReadWP: action WP_IDC:[wpIdc] ==> 
+	do
+		weightedPredIdc := wpIdc;
+	end
+
+	SkipMbType: action MB_TYPE:[MacroBlkType] ==> 
+	guard
+		Mb_IsIntra(MacroBlkType)
 	end
 
 	GetMbType: action
@@ -168,6 +180,29 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 		do
 			MbPartIdx := MbPartIdx + 1;
 		end
+
+	uint(size=2) weightedPredIdc;
+	uint(size=3) logWDc;
+	int (size=8) off0c;
+	int (size=8) offXc;
+	int (size=9) weightXc;
+
+	readWeightParam.launch: action WP_PARAM:[weightInfo] repeat 3 ==>
+	guard
+		weightedPredIdc != 0
+	do
+		logWDc   := weightInfo[0];
+		weightXc := weightInfo[1];
+		offXc    := weightInfo[2];
+		if(IsBiPred and NbListToGet != 0) then
+			off0c := offXc;
+		end
+	end
+
+	readWeightParam.skip: action ==>
+	guard
+		weightedPredIdc = 0
+	end
 
 	GetInterp.Launch8x8: action
 			SUB_MB_TYPE :[ValSubMbType]
@@ -299,13 +334,33 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 		guard
 			ReadIdx < NbValueToRead
 		do
+		int(size=32) computedValue;
 
-			if(IsBiPred and NbListToGet = 0)then
-					ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := (ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] + InterpolationValue + 1) >> 1;
+		if(IsBiPred and NbListToGet = 0)then
+			if(weightedPredIdc != 0) then
+				computedValue := ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] + InterpolationValue * weightXc + (1 << logWDc);
+				computedValue := (computedValue >> (logWDc + 1)) +((off0c + offXc + 1)>>1);
+				ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := clip_i32(computedValue, 0, 255);
+			else
+				ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := (ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] + InterpolationValue + 1) >> 1;
+			end
+		else
+			if(weightedPredIdc = 1 or weightedPredIdc = 2 and IsBiPred) then
+				if(not IsBiPred) then
+					if(logWDc >= 1) then
+						computedValue := ( (InterpolationValue * weightXc + (1 << logWDc-1)) >> logWDc) + offXc;
+					else
+						computedValue := InterpolationValue * weightXc + offXc;
+					end
+					ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := clip_i32(computedValue, 0, 255);
+				else
+					ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := InterpolationValue * weightXc;
+				end
 			else
 				ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := InterpolationValue;
 			end
-			ReadIdx := ReadIdx + 1;
+		end
+		ReadIdx := ReadIdx + 1;
 		end
 
 	ReadInterp.Done: action ==>
@@ -336,6 +391,8 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 		end
 
 	schedule fsm GetMbType:
+		GetMbType          (ReadSlice                )--> ReadWP;
+		ReadWP             (ReadWP                   )--> GetMbType;
 		GetMbType          (SkipMbType               )--> GetMbType;
 		GetMbType          (GetMbType                )--> GetListSel4Mb;
 
@@ -343,24 +400,26 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 		GetListSel4Mb      (GetInterp.Launch8x8      )--> GetListSel4SubMb;
 		GetListSel4Mb      (GetMbInfo.Done           )--> SendParameters;
 
-		GetMb              (GetInterp.Launch16x16    )--> ReadInterpForMb;
-		GetMb              (GetInterp.Launch16x8     )--> ReadInterpForMb;
-		GetMb              (GetInterp.Launch8x16     )--> ReadInterpForMb;
-		GetMb              (GetInterp.LaunchBSkip    )--> ReadInterpForMb;
+		GetMb              (GetInterp.Launch16x16    )--> ReadWeighted4Mb;
+		GetMb              (GetInterp.Launch16x8     )--> ReadWeighted4Mb;
+		GetMb              (GetInterp.Launch8x16     )--> ReadWeighted4Mb;
+		GetMb              (GetInterp.LaunchBSkip    )--> ReadWeighted4Mb;
 		GetMb              (GetInterp.Done           )--> GetListSel4Mb;
 
+		ReadWeighted4Mb    (readWeightParam          )--> ReadInterpForMb;
 		ReadInterpForMb    (ReadInterp.Launch        )--> ReadInterpForMb;
 		ReadInterpForMb    (ReadInterp.Done          )--> GetMb;
 
 		GetListSel4SubMb   (GetListSel4SubMb         )--> GetSubMb;
 		GetListSel4SubMb   (GetSubMbInfo.Done        )--> GetListSel4Mb;
 
-		GetSubMb           (GetInterpSubMb.Launch8x8 )--> ReadInterpForSubMb;
-		GetSubMb           (GetInterpSubMb.Launch8x4 )--> ReadInterpForSubMb;
-		GetSubMb           (GetInterpSubMb.Launch4x8 )--> ReadInterpForSubMb;
-		GetSubMb           (GetInterpSubMb.Launch4x4 )--> ReadInterpForSubMb;
+		GetSubMb           (GetInterpSubMb.Launch8x8 )--> ReadWeighted4SubMb;
+		GetSubMb           (GetInterpSubMb.Launch8x4 )--> ReadWeighted4SubMb;
+		GetSubMb           (GetInterpSubMb.Launch4x8 )--> ReadWeighted4SubMb;
+		GetSubMb           (GetInterpSubMb.Launch4x4 )--> ReadWeighted4SubMb;
 		GetSubMb           (GetInterpSubMb.Done      )--> GetListSel4SubMb;
 
+		ReadWeighted4SubMb (readWeightParam          )--> ReadInterpForSubMb;
 		ReadInterpForSubMb (ReadInterp.Launch        )--> ReadInterpForSubMb;
 		ReadInterpForSubMb (ReadInterp.Done          )--> GetSubMb;
 

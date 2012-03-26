@@ -66,8 +66,8 @@ actor FrameNumToPocList()
 	int (size=32) RefList0,
 	int (size=32) RefList1
 		==>
-//	int (size=32)  PocListX,
-//	bool           PocIsLTList
+	int (size=32)  PocListX,
+	bool           PocIsLTList
 		:
 
 	int (size=32) SENT_DONE = -2;
@@ -84,19 +84,24 @@ actor FrameNumToPocList()
 	uint(size=5)  refListSize;
 	uint(size=5)  writeListIdx;
 
+	action MB_TYPE:[isMb] ==>
+	guard
+		isMb < NEW_SLICE
+	end
+
+	bool delList;
 	ChckPicOrSlc.isPic: action MB_TYPE:[isPic] ==>
 	guard
 		isPic  >= NEW_FRAME_NON_IDR
+	do
+		delList:=true;
 	end
 
 	ChckPicOrSlc.isSlc: action MB_TYPE:[isSlice] ==>
 	guard
 		isSlice = NEW_SLICE
-	end
-
-	ChckPicOrSlc.isMb: action MB_TYPE:[isMb] ==>
-	guard
-		isMb < NEW_SLICE
+	do
+		delList:=false;	
 	end
 
 	getPicData: action FrameNum:[frameNum], Poc:[poc] ==>
@@ -189,6 +194,16 @@ actor FrameNumToPocList()
 		end
 	end
 
+	DelList.launch: action ==>
+	guard
+		delList
+	end
+
+	DelList.skip: action ==>
+	guard
+		not delList
+	end
+
 	readDelList.launch: action DelList:[delFrame] ==>
 	guard
 		delFrame != SENT_DONE
@@ -215,7 +230,7 @@ actor FrameNumToPocList()
 		end
 	end
 
-	sendWeightsWpIdc2.info: action ==> //PocListX:[pocListX] repeat 33, PocIsLTList:[pocIsLT] repeat 32
+	sendWeightsWpIdc2.info: action ==> PocListX:[pocListX] repeat 33, PocIsLTList:[pocIsLT] repeat 32
 	do
 		int(size=32) pocListX[33];
 		bool         pocIsLT[32];
@@ -230,15 +245,10 @@ actor FrameNumToPocList()
 		end
 	end
 
-	schedule fsm GetPicData:
-		GetFirstPic (ChckPicOrSlc.isPic )--> GetPicData;
+	schedule fsm ChckPicOrSlc:
 
 		ChckPicOrSlc (ChckPicOrSlc.isSlc )--> GetPicData;
-		ChckPicOrSlc (ChckPicOrSlc.isPic )--> ReadDelList;
-		ChckPicOrSlc (ChckPicOrSlc.isMb )-->  ChckPicOrSlc;
-
-		ReadDelList (readDelList.launch )--> ReadDelList;
-		ReadDelList (readDelList.done   )--> GetPicData;
+		ChckPicOrSlc (ChckPicOrSlc.isPic )--> GetPicData;
 
 		GetPicData (getPicData )--> ReadSizeRefList0;
 
@@ -251,6 +261,10 @@ actor FrameNumToPocList()
 		ReadRefList1     (readRefList1.done   )--> ReadLTList;
 
 		ReadLTList        (readLTList        )--> SendWeightsWpIdc2;
-		SendWeightsWpIdc2 (sendWeightsWpIdc2 )--> ChckPicOrSlc;
+		SendWeightsWpIdc2 (sendWeightsWpIdc2 )--> DelList;
+		DelList           (DelList.launch    )--> ReadDelList;
+		DelList           (DelList.skip      )--> ChckPicOrSlc;
+		ReadDelList (readDelList.launch )--> ReadDelList;
+		ReadDelList (readDelList.done   )--> ChckPicOrSlc;
 	end
 end
