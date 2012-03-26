@@ -127,7 +127,8 @@ actor Algo_Synp_AVC_PHP()
 			int(size=16)  HEIGHT,
 			bool          TRANSFORM_SIZE_8x8_FLAG,
 			
-			uint(size=2)  WEIGHTED_PRED_IDC
+			uint(size=2)  WEIGHTED_PRED_IDC//,
+//			int (size=9)  WP_PARAM
 
 		:
 
@@ -968,7 +969,17 @@ actor Algo_Synp_AVC_PHP()
 	read_Sps_frame_crop_left_offset: action ==>
 	guard
 		frame_cropping_flag = 1
+	var
+		uint(size=32) res[1]
 	do 
+		vld_ue_name( fifo, res,   "frame_crop_left_offset                    ");
+		println("frame_crop_left_offset :=" +  res[0]);
+		vld_ue_name( fifo, res,   "frame_crop_right_offset                    ");
+		println("frame_crop_right_offset :=" +  res[0]);
+		vld_ue_name( fifo, res,   "frame_crop_top_offset                    ");
+		println("frame_crop_top_offset :=" +  res[0]);
+		vld_ue_name( fifo, res,   "frame_crop_bottom_offset                    ");
+		println("frame_crop_bottom_offset :=" +  res[0]);
 		println("frame_cropping_flag not not managed yet !");
 	end
 
@@ -1745,34 +1756,35 @@ actor Algo_Synp_AVC_PHP()
 	//if (weighted_pred_flag && (slice_type == P or slice_type == SP)) ||
 	//   (weighted_bipred_idc == 1 && slice_type == B)
 	int i_wp;
-	read_SliceH_pred_weight_table: action ==> 
+	read_SliceH_pred_weight_table: action ==> //WP_PARAM:[luma_log2_weight_denom, chroma_log2_weight_denom]
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		(weighted_pred_flag[sps_id] and (slice_type = SLICE_TYPE_P or slice_type = SLICE_TYPE_SP))
 		or (weighted_bipred_idc[sps_id] = 1 and slice_type = SLICE_TYPE_B)
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		int luma_log2_weight_denom,
+		int chroma_log2_weight_denom
 	do
 		vld_ue_name(  fifo, res, "luma_log2_weight_denom                             ");
+		luma_log2_weight_denom := res[0];
 		println("luma_log2_weight_denom : "+res[0]+" ; ");
 		if (chroma_format_idc[sps_id] != 0) then
 			vld_ue_name(  fifo, res, "chroma_log2_weight_denom                             ");
 			println("chroma_log2_weight_denom : "+res[0]);
+			chroma_log2_weight_denom := res[0];
 		end
 		i_wp:=0;
+		wpParamTable:=[0: for int i in 1 .. 16 * 6 ];
 	end
 	
-	read_SliceH_pred_weight_table_l0.endloop: action ==>
+	read_SliceH_pred_weight_table_l0.endloop: action ==> //WP_PARAM:[wpParamTable] repeat 32 * 3
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 	    i_wp = slice_num_ref_idx_l0_active_minus1 + 1
 	end
 	
-	int (size=9) luma_weight_l0[32];
-	int (size=8) luma_offset_l0[32];
-
-	int (size=9) chroma_weight_l0[2][32];
-	int (size=8) chroma_offset_l0[2][32];
+	int (size=9) wpParamTable[16*6];
 	
 	read_SliceH_pred_weight_table_l0.loop: action ==>
 	guard
@@ -1788,11 +1800,11 @@ actor Algo_Synp_AVC_PHP()
 		
 		if (luma_weight_l0_flag) then
 			vld_se_name(  fifo, res, "luma_weight_l0                             ");
-			luma_weight_l0[i_wp] := res[0];
+			wpParamTable[6*i_wp] := res[0];
 			vld_se_name(  fifo, res, "luma_offset_l0                             ");
-			luma_offset_l0[i_wp] := res[0];
-			println("luma_weight_l0 : "+luma_weight_l0[i_wp]);
-			println("luma_offset_l0 : "+luma_offset_l0[i_wp]);
+			wpParamTable[6*i_wp + 1] := res[0];
+			println("luma_weight_l0 : "+wpParamTable[6*i_wp]);
+			println("luma_offset_l0 : "+wpParamTable[6*i_wp + 1]);
 		end
 	end
 
@@ -1810,11 +1822,11 @@ actor Algo_Synp_AVC_PHP()
 			println("chroma_weight_l0_flag : " + res[0]);
 			if (chroma_weight_l0_flag) then
 				vld_se_name(  fifo, res, "chroma_weight_l0[0]                             ");
-				chroma_weight_l0[0][i_wp] := res[0];
+				wpParamTable[6*i_wp + 2] := res[0];
 				vld_se_name(  fifo, res, "chroma_offset_l0[0]                             ");
-				chroma_offset_l0[0][i_wp] := res[0];
-				println("chroma_weight_l0[0] : "+chroma_weight_l0[0][i_wp]);
-				println("chroma_offset_l0[0] : "+chroma_offset_l0[0][i_wp]);
+				wpParamTable[6*i_wp + 3] := res[0];
+				println("chroma_weight_l0[0] : "+wpParamTable[6*i_wp + 2]);
+				println("chroma_offset_l0[0] : "+wpParamTable[6*i_wp + 3]);
 			end
 		end
 	end
@@ -1828,11 +1840,11 @@ actor Algo_Synp_AVC_PHP()
 		if (chroma_format_idc[sps_id] != 0) then
 			if (chroma_weight_l0_flag) then
 				vld_se_name(  fifo, res, "chroma_weight_l0[1]                             ");
-				chroma_weight_l0[1][i_wp] := res[0];
+				wpParamTable[6*i_wp + 4] := res[0];
 				vld_se_name(  fifo, res, "chroma_offset_l0[1]                             ");
-				chroma_offset_l0[1][i_wp] := res[0];
-				println("chroma_weight_l0[1] : "+chroma_weight_l0[1][i_wp]);
-				println("chroma_offset_l0[1] : "+chroma_offset_l0[1][i_wp]);
+				wpParamTable[6*i_wp + 4] := res[0];
+				println("chroma_weight_l0[1] : "+wpParamTable[6*i_wp + 4]);
+				println("chroma_offset_l0[1] : "+wpParamTable[6*i_wp + 5]);
 			end
 		end
 		i_wp:=i_wp + 1;
@@ -1843,25 +1855,22 @@ actor Algo_Synp_AVC_PHP()
 		slice_type = SLICE_TYPE_B
 	do
 		i_wp:=0;
+		wpParamTable:=[0: for int i in 1 .. 16 * 6 ];
 	end 
 
-	read_SliceH_pred_weight_table_B.skip: action ==> 
+	read_SliceH_pred_weight_table_B.skip: action ==> //WP_PARAM:[wpParamTable] repeat 32 * 3
 	guard
 		slice_type != SLICE_TYPE_B
+	do
+		wpParamTable:=[0: for int i in 1 .. 16 * 6 ];
 	end
 	
-	read_SliceH_pred_weight_table_l1.endloop: action ==>
+	read_SliceH_pred_weight_table_l1.endloop: action ==> //WP_PARAM:[wpParamTable] repeat 32 * 3
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 	    i_wp = slice_num_ref_idx_l1_active_minus1 + 1
 	end
-	
-	int (size=9) luma_weight_l1[32];
-	int (size=8) luma_offset_l1[32];
-
-	int (size=9) chroma_weight_l1[2][32];
-	int (size=8) chroma_offset_l1[2][32];
-	
+		
 	read_SliceH_pred_weight_table_l1.loop: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
@@ -1876,11 +1885,11 @@ actor Algo_Synp_AVC_PHP()
 		
 		if (luma_weight_l1_flag) then
 			vld_se_name(  fifo, res, "luma_weight_l1                             ");
-			luma_weight_l1[i_wp] := res[0];
+			wpParamTable[6*i_wp] := res[0];
 			vld_se_name(  fifo, res, "luma_offset_l1                             ");
-			luma_offset_l1[i_wp] := res[0];
-			println("luma_weight_l1 : "+luma_weight_l1[i_wp]);
-			println("luma_offset_l1 : "+luma_offset_l1[i_wp]);
+			wpParamTable[6*i_wp + 1] := res[0];
+			println("luma_weight_l1 : "+wpParamTable[6*i_wp]);
+			println("luma_offset_l1 : "+wpParamTable[6*i_wp + 1]);
 		end
 	end
 
@@ -1898,11 +1907,11 @@ actor Algo_Synp_AVC_PHP()
 			println("chroma_weight_l1_flag : " + res[0]);
 			if (chroma_weight_l1_flag) then
 				vld_se_name(  fifo, res, "chroma_weight_l1[0]                             ");
-				chroma_weight_l1[0][i_wp] := res[0];
+				wpParamTable[6*i_wp + 2] := res[0];
 				vld_se_name(  fifo, res, "chroma_offset_l1[0]                             ");
-				chroma_offset_l1[0][i_wp] := res[0];
-				println("chroma_weight_l1[0] : "+chroma_weight_l1[0][i_wp]);
-				println("chroma_offset_l1[0] : "+chroma_offset_l1[0][i_wp]);
+				wpParamTable[6*i_wp + 3] := res[0];
+				println("chroma_weight_l1[0] : "+wpParamTable[6*i_wp + 2]);
+				println("chroma_offset_l1[0] : "+wpParamTable[6*i_wp + 3]);
 			end
 		end
 	end
@@ -1916,11 +1925,11 @@ actor Algo_Synp_AVC_PHP()
 		if (chroma_format_idc[sps_id] != 0) then
 			if (chroma_weight_l1_flag) then
 				vld_se_name(  fifo, res, "chroma_weight_l1[1]                             ");
-				chroma_weight_l1[1][i_wp] := res[0];
+				wpParamTable[6*i_wp + 4] := res[0];
 				vld_se_name(  fifo, res, "chroma_offset_l1[1]                             ");
-				chroma_offset_l1[1][i_wp] := res[0];
-				println("chroma_weight_l1[1] : "+chroma_weight_l1[1][i_wp]);
-				println("chroma_offset_l1[1] : "+chroma_offset_l1[1][i_wp]);
+				wpParamTable[6*i_wp + 5] := res[0];
+				println("chroma_weight_l1[1] : "+wpParamTable[6*i_wp + 4]);
+				println("chroma_offset_l1[1] : "+wpParamTable[6*i_wp + 5]);
 			end
 		end
 		i_wp:=i_wp + 1;
@@ -4134,7 +4143,7 @@ end
 		read_Sps_mb_adaptive_frame_field_flag				( read_Sps_mb_adaptive_frame_field_flag  	        ) --> read_Sps_direct_8x8_interference_flag;
 		read_Sps_direct_8x8_interference_flag 				( read_Sps_direct_8x8_interference_flag             ) --> read_Sps_frame_crop_left_offset;    
 
-		read_Sps_frame_crop_left_offset						( read_Sps_frame_crop_left_offset  	                ) --> undefined;
+		read_Sps_frame_crop_left_offset						( read_Sps_frame_crop_left_offset  	                ) --> read_Sps_vui_parameters_present_flag;
 		read_Sps_frame_crop_left_offset						( read_Sps_skip_frame_crop_left_offset	  	        ) --> read_Sps_vui_parameters_present_flag; 
 		read_Sps_vui_parameters_present_flag				( read_Sps_vui_parameters_present_flag	  	        ) --> read_Sps_vui_parameters_present_flag_done;
 		read_Sps_vui_parameters_present_flag_done			( read_Sps_done	                            		) --> look_for_Sequence_Header; //end of Sps
