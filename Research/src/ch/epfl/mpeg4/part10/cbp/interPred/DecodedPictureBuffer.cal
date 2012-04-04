@@ -19,7 +19,7 @@ package ch.epfl.mpeg4.part10.cbp.interPred;
 import org.sc29.wg11.mpeg4.part10.Imp_PictureInfo.*;
 import std.util.Math.*;
 
-actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
+actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG, uint(size=1) numComp)
 	uint(size=32) FrameToRead,
 	int(size=32)  DelList,
 	uint(size=8)  WD,
@@ -36,7 +36,7 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	uint(size=32) NB_PIC    = 16;
 	uint(size=32) SZ_NBPIC  = 6; /* >= log2(NB_PIC) */
 
-	uint(size=8)  pictureBuffer[NB_PIC][MAX_PICWIDTH_PX + 4*MB_WIDTH_MAX]
+	uint(size=8)  pictureBuffer[NB_PIC][2][MAX_PICWIDTH_PX + 4*MB_WIDTH_MAX]
 	                           [MAX_PICHEIGHT_PX + 4*MB_WIDTH_MAX];
 	int (size=31) listFrameNum[NB_PIC] := [-1    :for int s in 0 .. NB_PIC-1];
 	uint(size=32) ReadTable[32 * 32];
@@ -97,7 +97,7 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 			    RaOffY + RAHeight - 1 + 2*MB_WIDTH do
 			foreach int xAddr in RaOffX + 2*MB_WIDTH ..
 				    RaOffX + RAWidth - 1 + 2*MB_WIDTH do
-				ReadTable[readIdxMax] := pictureBuffer[refIdx][xAddr][yAddr];
+				ReadTable[readIdxMax] := pictureBuffer[refIdx][numComp][xAddr][yAddr];
 				readIdxMax            := readIdxMax + 1;
 			end
 		end
@@ -171,18 +171,20 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	end
 
 	writeData.launch.Chroma: action
-		WD :[Wd] repeat MB_WIDTH_CHROMA*MB_WIDTH_CHROMA
+		WD :[Wd] repeat 128
 			==>
 	guard
 		nbMacroBlocksWritten < picSizeInMacroB,
 		MB_WIDTH = MB_WIDTH_CHROMA
 	do
 		if(picCurrIdx != -1) then
-			foreach int y in 0 .. MB_WIDTH_CHROMA - 1 do
-				foreach int x in 0 .. MB_WIDTH_CHROMA - 1 do
-					pictureBuffer[picCurrIdx][(mbLocXInPic + 2) * MB_WIDTH_CHROMA + x ]
-					             [(mbLocYInPic + 2) * MB_WIDTH_CHROMA + y] 
-					                 := Wd[y*MB_WIDTH_CHROMA + x];
+			foreach uint comp in 0 .. 1 do
+				foreach uint y in 0 .. 7 do
+					foreach uint x in 0 .. 7 do
+						pictureBuffer[picCurrIdx][comp][(mbLocXInPic + 2) * MB_WIDTH_CHROMA + x ]
+						             [(mbLocYInPic + 2) * MB_WIDTH_CHROMA + y] 
+						                 := Wd[y*MB_WIDTH_CHROMA + x + comp*64];
+					end
 				end
 			end
 		end
@@ -204,7 +206,7 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 		if(picCurrIdx != -1) then
 			foreach int y in 0 .. MB_WIDTH_LUMA - 1 do
 				foreach int x in 0 .. MB_WIDTH_LUMA - 1 do
-					pictureBuffer[picCurrIdx][(mbLocXInPic + 2) * MB_WIDTH_LUMA + x ]
+					pictureBuffer[picCurrIdx][0][(mbLocXInPic + 2) * MB_WIDTH_LUMA + x ]
 					    [(mbLocYInPic + 2) * MB_WIDTH_LUMA + y]
 					        := Wd[y*MB_WIDTH_LUMA + x];
 				end
@@ -221,24 +223,30 @@ actor DecodedPictureBuffer ( int MB_WIDTH, bool DEBUG)
 	writeData.done: action ==>
 	guard
 		nbMacroBlocksWritten = picSizeInMacroB
+	var
+		uint(size=1) compMax = if(MB_WIDTH = MB_WIDTH_LUMA)then 0 else 1 end
 	do
 		if(picCurrIdx != -1) then
-			foreach int y in 2*MB_WIDTH .. (picHeightInMacroB + 2) * MB_WIDTH - 1 do
-				foreach int x in 0 .. 2*MB_WIDTH - 1 do
-					pictureBuffer[picCurrIdx][x][y] := pictureBuffer[picCurrIdx]
-					                                       [2*MB_WIDTH][y];
-					pictureBuffer[picCurrIdx][(picWidthInMacroB + 2) * MB_WIDTH + x]
-					    [y] := pictureBuffer[picCurrIdx]
-					               [(picWidthInMacroB + 2) * MB_WIDTH - 1][y];
+			foreach int comp in 0 .. compMax
+			do
+				foreach int y in 2*MB_WIDTH .. (picHeightInMacroB + 2) * MB_WIDTH - 1 do
+					foreach int x in 0 .. 2*MB_WIDTH - 1 do
+						pictureBuffer[picCurrIdx][comp][x][y] :=
+							pictureBuffer[picCurrIdx][comp][2*MB_WIDTH][y];
+						pictureBuffer[picCurrIdx][comp]
+							[(picWidthInMacroB + 2) * MB_WIDTH + x][y]
+							:= pictureBuffer[picCurrIdx][comp]
+						       [(picWidthInMacroB + 2) * MB_WIDTH - 1][y];
+					end
 				end
-			end
-			foreach int x in 0 .. (picWidthInMacroB + 4) * MB_WIDTH - 1 do
-				foreach int y in 0 .. 2*MB_WIDTH - 1 do
-					pictureBuffer[picCurrIdx][x][y] := pictureBuffer[picCurrIdx][x]
-					                                       [2*MB_WIDTH];
-					pictureBuffer[picCurrIdx][x][(picHeightInMacroB + 2) * MB_WIDTH + y]
-					    := pictureBuffer[picCurrIdx][x]
-					           [(picHeightInMacroB + 2) * MB_WIDTH - 1];
+				foreach int x in 0 .. (picWidthInMacroB + 4) * MB_WIDTH - 1 do
+					foreach int y in 0 .. 2*MB_WIDTH - 1 do
+						pictureBuffer[picCurrIdx][comp][x][y] := pictureBuffer[picCurrIdx]
+							[comp][x][2*MB_WIDTH];
+						pictureBuffer[picCurrIdx][comp][x][(picHeightInMacroB + 2) * MB_WIDTH + y]
+						    := pictureBuffer[picCurrIdx][comp][x]
+						           [(picHeightInMacroB + 2) * MB_WIDTH - 1];
+					end
 				end
 			end
 		end
