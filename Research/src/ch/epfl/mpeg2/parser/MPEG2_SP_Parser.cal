@@ -1,0 +1,663 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Cesar Laurent <cesar.laurent@epfl.ch>
+
+package ch.epfl.mpeg2.parser;
+
+actor MPEG2_SP_Parser()
+	uint(size=1) Bitstream
+		==>
+			:
+			
+	// ////////////////////////////////////////////////////////////////////////
+	// State Variables
+	
+	// Start Code Values :
+	uint(size=8) PICTURE_START_CODE = 0x00;
+ 	uint(size=8) SLICE_BEGIN_START_CODE = 0x01;
+ 	uint(size=8) SLICE_END_START_CODE = 0xAF;
+	uint(size=8) USER_DATA_START_CODE = 0xB2;
+	uint(size=8) SEQUENCE_HEADER_CODE = 0xB3;
+	uint(size=8) SEQUENCE_ERROR_CODE = 0xB4;
+	uint(size=8) EXTENSION_START_CODE = 0xB5;
+	uint(size=8) SEQUENCE_END_CODE = 0xB7;
+	uint(size=8) GROUP_START_CODE = 0xB8;
+	
+	// Extension Start Code Identifier Values :
+	uint(size=4) SEQUENCE_EXTENSION_ID = 0x1;
+	uint(size=4) SEQUENCE_DISPLAY_EXTENSION_ID = 0x2;
+	uint(size=4) QUANT_MATRIX_EXTENSION_ID = 0x3;
+	uint(size=4) COPYRIGHT_EXTENSION_ID = 0x4;
+	uint(size=4) SEQUENCE_SCALABLE_EXTENSION_ID = 0x5;
+	uint(size=4) PICTURE_DISPLAY_EXTENSION_ID = 0x7;
+	uint(size=4) PICTURE_CODING_EXTENSION_ID = 0x8;
+	uint(size=4) PICTURE_SPATIAL_SCALABLE_EXTENSION_ID = 0x9;
+	uint(size=4) PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID = 0xA;
+	uint(size=4) CAMERA_PARAMETERS_EXTENSION_ID = 0xB;
+	uint(size=4) ITUT_EXTENSION_ID = 0xC;
+	
+	uint(size=32) nextbits := 0;
+	
+	uint(size=1) bit_buffer[1024];
+	
+	// Video information
+	uint(size=12) 	horizontal_size_value;
+	uint(size=12)	vertical_size_value;
+	uint(size=4) 	aspect_ration_information;
+	uint(size=4) 	frame_rate_code;
+	uint(size=18)	bit_rate_value;
+	uint(size=10)	vbv_buffer_size_value;
+	
+	uint(size=8)	profile_and_level_indication;
+	uint(size=1)	progressive_sequence;
+	uint(size=2)	chroma_format;
+	uint(size=2)	horizontal_size_extension;
+	uint(size=2)	vertical_size_extension;
+	uint(size=12)	bit_rate_extension;
+	uint(size=8)	vbv_buffer_size_extension;
+	uint(size=1)	low_delay;
+	uint(size=2)	frame_rate_extension_n;
+	uint(size=5)	frame_rate_extension_d;
+	
+	// Sequence Display Extension
+	uint(size=3)	video_format;
+	uint(size=1)	colour_description;
+	uint(size=8)	colour_primaries;
+	uint(size=8)	transfer_characteristics;
+	uint(size=8)	matrix_coefficients;
+	uint(size=14)	display_horizontal_size;
+	uint(size=14)	display_vertical_size;
+		
+	// Quantiser matrices
+	uint(size=1) load_intra_quantiser_matrix;
+	uint(size=1) load_non_intra_quantiser_matrix;
+	uint(size=8) intra_quantiser_matrix[64];
+	uint(size=8) non_intra_quantiser_matrix[64];
+	
+	// Extension and User Data
+	uint(size=1) eud_i;				// the i in extension_and_user_data(i). This variable is set in the action before any extension_and_user_data(i)
+	uint(size=8) user_data[512];
+	uint(size=1) ud_counter := 0;
+	uint(size=1) ud_buffer[16];
+	
+	// Group of Pictures Header
+	uint(size=25)	time_code;
+	uint(size=1)	closed_gop;
+	uint(size=1)	broken_link;
+	
+	// Picture Header
+	uint(size=10)	temporal_reference;
+	uint(size=3)	picture_coding_type;
+	uint(size=16)	vbv_delay;
+	uint(size=1)	full_pel_forward_vector;
+	uint(size=4)	forward_f_code;
+	uint(size=1)	full_pel_backward_vector;
+	uint(size=4)	backward_f_code;
+	uint(size=8)	extra_information_picture;
+	
+	// Picture Coding Extension
+	uint(size=4)	f_code00; 		// (forward horizontal) 
+	uint(size=4)	f_code01;		// (forward vertical) 
+	uint(size=4)	f_code10; 		// (backward horizontal) 
+	uint(size=4)	f_code11; 		// (backward vertical) 
+	uint(size=2)	intra_dc_precision;
+	uint(size=2)	picture_structure;
+	uint(size=1)	top_field_first;
+	uint(size=1)	frame_pred_frame_dct;
+	uint(size=1)	concealment_motion_vectors;
+	uint(size=1)	q_scale_type;
+	uint(size=1)	intra_vlc_format;
+	uint(size=1)	alternate_scan;
+	uint(size=1)	repeat_first_field;
+	uint(size=1)	chroma_420_type;
+	uint(size=1)	progressive_frame;
+	uint(size=1)	composite_display_flag;
+	
+	uint(size=1)	v_axis;
+	uint(size=3)	field_sequence;
+	uint(size=1)	sub_carrier;
+	uint(size=7)	burst_amplitude;
+	uint(size=8)	sub_carrier_phase;
+	
+	// ////////////////////////////////////////////////////////////////////////
+	// Functions / Procedures
+
+	procedure compute_nextbits(int start, int stop)
+	var
+		uint(size=512) res := 0
+	begin
+		foreach int i in start .. stop do
+			res := res << 1 | bit_buffer[i];
+		end
+		nextbits := res;
+	end
+	
+	function testStartCodePrefix24(uint(size=1) bit[24]) --> bool:
+		bit[0] = 0 and bit[1] = 0 and bit[2] = 0 and bit[3] = 0 and
+		bit[4] = 0 and bit[5] = 0 and bit[6] = 0 and bit[7] = 0 and
+		bit[8] = 0 and bit[9] = 0 and bit[10] = 0 and bit[11] = 0 and
+		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
+		bit[16] = 0 and bit[17] = 0 and bit[18] = 0 and bit[19] = 0 and
+		bit[20] = 0 and bit[21] = 0 and bit[22] = 0 and bit[23] = 1
+	end
+	
+	function testStartCodePrefix16(uint(size=1) bit[16]) --> bool:
+		bit[0] = 0 and bit[1] = 0 and bit[2] = 0 and bit[3] = 0 and
+		bit[4] = 0 and bit[5] = 0 and bit[6] = 0 and bit[7] = 0 and
+		bit[8] = 0 and bit[9] = 0 and bit[10] = 0 and bit[11] = 0 and
+		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
+		bit[16] = 1
+	end
+	
+	function testByteZero(uint(size=1) bit[8]) --> bool:
+		bit[0] = 0 and bit[1] = 0 and bit[2] = 0 and bit[3] = 0 and
+		bit[4] = 0 and bit[5] = 0 and bit[6] = 0 and bit[7] = 0 and
+		bit[8] = 0
+	end
+	 
+	
+	// ////////////////////////////////////////////////////////////////////////
+	// Untagged Actions
+
+	// ////////////////////////////////////////////////////////////////////////
+	// Action
+	
+	// Next Start Code
+	
+	next_start_code: action Bitstream: [token] repeat 32 ==>
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 31];
+		compute_nextbits(0, 23);
+		if nextbits != 0x001 then
+			println("Error start_code!");
+		end
+		compute_nextbits(24,31);
+	end
+	
+	next_start_code2: action Bitstream: [token] repeat 128 ==>
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 127];
+		compute_nextbits(0, 23);
+		if nextbits != 0x001 then
+			println("Error start_code!");
+		end
+		compute_nextbits(24,31);
+	end
+	// Next Extension Start Code
+	
+	next_extension_start_code: action Bitstream: [token] repeat 4 ==>
+	guard
+		nextbits = EXTENSION_START_CODE
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 3];
+		compute_nextbits(0, 3);
+	end
+	
+	// Sequence Header
+	
+	sh_sequence_header: action Bitstream: [token] repeat 63 ==>
+	guard
+		nextbits = SEQUENCE_HEADER_CODE
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 61];
+		compute_nextbits(0, 11);
+		horizontal_size_value := nextbits;
+		compute_nextbits(12, 23);
+		vertical_size_value := nextbits;
+		compute_nextbits(24, 27);
+		aspect_ration_information := nextbits;
+		compute_nextbits(28, 31);
+		frame_rate_code := nextbits;
+		compute_nextbits(32 , 49);
+		bit_rate_value := nextbits;
+		compute_nextbits(50, 50);		// marker_bit
+		compute_nextbits(51, 60);
+		vbv_buffer_size_value := nextbits;
+		compute_nextbits(61, 61);		// constrained_parameters_flag
+		load_intra_quantiser_matrix := token[62];
+	end
+	
+	sh_not_sequence_header: action ==>
+	guard
+		nextbits != SEQUENCE_HEADER_CODE
+	do
+		println("Error sequence_header_code");
+	end
+	
+	sh_read_intra_quantiser_matrix: action Bitstream: [token] repeat 513 ==>
+	guard
+		load_intra_quantiser_matrix = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 511];
+		foreach int i in 0 .. 63 do
+			compute_nextbits(8*i, 8*i + 8);
+			intra_quantiser_matrix[i] := nextbits;
+		end
+		load_non_intra_quantiser_matrix := token[512];
+	end
+	
+	sh_check_non_intra_quantiser_matrix: action Bitstream: [token] ==>
+	guard
+		load_intra_quantiser_matrix = 0
+	do
+		load_non_intra_quantiser_matrix := token;
+	end
+	
+	sh_read_non_intra_quantiser_matrix: action Bitstream: [token] repeat 512 ==>
+	guard
+		load_non_intra_quantiser_matrix = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 511];
+		foreach int i in 0 .. 63 do
+			compute_nextbits(8*i, 8*i + 8);
+			non_intra_quantiser_matrix[i] := nextbits;
+		end
+	end
+	
+	sh_not_read_non_intra_quantiser_matrix: action ==>
+	guard
+		load_non_intra_quantiser_matrix = 0
+	end
+	
+	// Sequence Extension
+	
+	se_sequence_extension: action Bitstream: [token] repeat 44 ==>
+	guard
+		nextbits = SEQUENCE_EXTENSION_ID
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 43];
+		compute_nextbits(0, 7);
+		profile_and_level_indication := nextbits;
+		compute_nextbits(8, 8);
+		progressive_sequence := nextbits;
+		compute_nextbits(9, 10);
+		chroma_format := nextbits;
+		compute_nextbits(11, 12);
+		horizontal_size_extension := nextbits;
+		compute_nextbits(13, 14);
+		vertical_size_extension := nextbits;
+		compute_nextbits(15, 26);
+		bit_rate_extension := nextbits;
+		compute_nextbits(27, 27);		// marker_bit
+		compute_nextbits(28, 35);
+		vbv_buffer_size_extension := nextbits;
+		compute_nextbits(36, 36);
+		low_delay := nextbits;
+		compute_nextbits(37, 38);
+		frame_rate_extension_n := nextbits;
+		compute_nextbits(39, 43);
+		frame_rate_extension_d := nextbits;
+		
+		eud_i := 0;	// Set the i for extension_and_user_data(0)
+	end
+	
+	se_not_next_extension_start_code: action ==>
+	guard
+		nextbits != EXTENSION_START_CODE
+	do
+		println("Error extension start code - MPEG1!");
+	end
+	
+	// Extension and User Data
+	
+	start_extension_and_user_data: action ==>
+	guard
+		nextbits = USER_DATA_START_CODE,
+		nextbits = EXTENSION_START_CODE
+	end
+	
+	ud_start_user_data: action ==>
+	guard
+		nextbits = USER_DATA_START_CODE
+	end
+	
+	ud_user_data: action Bitstream: [token] repeat 24 ==>
+	guard
+		not testStartCodePrefix24(token)
+	do
+		uint(size=1) j := 0;
+		bit_buffer := [token[i]: for int i in 0 .. 7];
+		compute_nextbits(0, 7);
+		user_data[ud_counter] := nextbits;
+		ud_counter := ud_counter + 1;
+		while j != 16 do
+			ud_buffer[j] := token[j+8];
+			j := j + 1;
+		end
+	end
+	
+	ud_no_user_data: action Bitstream: [token] repeat 24 ==>
+	guard
+		testStartCodePrefix24(token)
+	end
+	
+	ud_more_user_data: action Bitstream: [token] repeat 8 ==>
+	guard
+		testByteZero(token) and testStartCodePrefix16(ud_buffer)	
+	end
+	
+	ud_no_more_user_data: action Bitstream: [token] repeat 8 ==>
+	guard
+		not testStartCodePrefix16(ud_buffer)
+	do
+		bit_buffer := [ud_buffer[i]: for int i in 0 .. 7];	// Translate from buffer to user_data
+		compute_nextbits(0, 7);
+		user_data[ud_counter] := nextbits;
+		foreach int j in 0 .. 7 do							// Shift datas in the buffer
+			ud_buffer[j] := ud_buffer[j + 8];
+		end
+		foreach int k in 0 .. 7 do							// Store token into buffer
+			ud_buffer[k + 8] := token[k];
+		end
+	end
+	
+	ud_read_next_start_code: action Bitstream: [token] repeat 8 ==>
+	do
+		bit_buffer := [ud_buffer[i]: for int i in 0 .. 7];
+		compute_nextbits(0, 7);
+	end
+	
+	end_extension_and_user_data_0: action ==>	// To go back at the right place in the fsm
+	guard
+		nextbits != EXTENSION_START_CODE,
+		nextbits != USER_DATA_START_CODE,
+		eud_i = 0
+	end
+	
+	end_extension_and_user_data_1: action ==>
+	guard
+		nextbits != EXTENSION_START_CODE,
+		nextbits != USER_DATA_START_CODE,
+		eud_i = 1
+	end
+	
+	end_extension_and_user_data_2: action ==>
+	guard
+		nextbits != EXTENSION_START_CODE,
+		nextbits != USER_DATA_START_CODE,
+		eud_i = 2
+	end
+	
+	// Sequence Display Extension
+	
+	sde_sequence_display_extension: action Bitstream: [token] repeat 4 ==>
+	guard
+		nextbits = SEQUENCE_DISPLAY_EXTENSION_ID,
+		eud_i = 0
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 3];
+		compute_nextbits(0, 2);
+		video_format := nextbits;
+		compute_nextbits(3, 3);
+		colour_description := nextbits;
+	end
+	
+	sde_read_colour: action Bitstream: [token] repeat 53 ==>
+	guard
+		colour_description = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 52];
+		compute_nextbits(0, 7);
+		colour_primaries := nextbits;
+		compute_nextbits(8, 15);
+		transfer_characteristics := nextbits;
+		compute_nextbits(16, 23);
+		matrix_coefficients := nextbits;
+		compute_nextbits(24, 37);
+		display_horizontal_size := nextbits;
+		compute_nextbits(38, 38);		// marker bit
+		compute_nextbits(39, 52);
+		display_vertical_size := nextbits;
+	end
+	
+	sde_not_read_colour: action Bitstream: [token] repeat 29 ==>
+	guard
+		colour_description = 0
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 28];
+		compute_nextbits(0, 13);
+		display_horizontal_size := nextbits;
+		compute_nextbits(14, 14);		// marker bit
+		compute_nextbits(15, 28);
+		display_vertical_size := nextbits;
+	end
+	
+	sde_not_sequence_display_extension: action ==>
+	guard
+		nextbits != SEQUENCE_DISPLAY_EXTENSION_ID,
+		eud_i = 0
+	end
+	
+	// Group of Pictures Header
+	
+	group_of_pictures_header: action Bitstream: [token] repeat 27 ==>
+	guard
+		nextbits = GROUP_START_CODE
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 26];
+		compute_nextbits(0, 24);
+		time_code := nextbits;
+		compute_nextbits(25, 25);
+		closed_gop := nextbits;
+		compute_nextbits(26, 26);
+		broken_link := nextbits;
+		
+		eud_i := 1;	// Set the i for extension_and_user_data(1)
+	end
+	
+	// Picture Header
+	
+	ph_picture_header: action Bitstream: [token] repeat 29 ==>
+	guard
+		nextbits = PICTURE_START_CODE
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 28];
+		compute_nextbits(0, 9);
+		temporal_reference := nextbits;
+		compute_nextbits(10, 12);
+		picture_coding_type := nextbits;
+		compute_nextbits(13, 18);
+		vbv_delay := nextbits;
+	end
+	
+	ph_picture_coding_type_2: action Bitstream: [token] repeat 5 ==>
+	guard
+		picture_coding_type = 2
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 4];
+		compute_nextbits(0, 0);
+		full_pel_forward_vector := nextbits;
+		compute_nextbits(1, 3);
+		forward_f_code := nextbits;
+		compute_nextbits(4, 4);
+	end
+	
+	ph_picture_coding_type_3: action Bitstream: [token] repeat 9 ==>
+	guard
+		picture_coding_type = 3
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 8];
+		compute_nextbits(0, 0);
+		full_pel_forward_vector := nextbits;
+		compute_nextbits(1, 3);
+		forward_f_code := nextbits;
+		compute_nextbits(4, 4);
+		full_pel_backward_vector := nextbits;
+		compute_nextbits(5, 7);
+		backward_f_code := nextbits;
+		compute_nextbits(8, 8);
+	end
+	
+	ph_extra_bit_picture_1: action Bitstream: [token] repeat 9 ==>
+	guard
+		nextbits = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 8];
+		compute_nextbits(0, 7);
+		extra_information_picture := nextbits;
+		compute_nextbits(8, 8);
+	end
+	
+	ph_extra_bit_picture_0: action ==>
+	guard
+		nextbits = 0
+	end
+	
+	
+	// Picture Coding Extension
+	
+	pce_picture_coding_extension: action Bitstream: [token] repeat 30 ==>
+	guard
+		nextbits = PICTURE_CODING_EXTENSION_ID
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 29];
+		compute_nextbits(0, 3);
+		f_code00 := nextbits;
+		compute_nextbits(4, 7);
+		f_code01 := nextbits;
+		compute_nextbits(8, 11);
+		f_code10 := nextbits;
+		compute_nextbits(12, 15);
+		f_code11 := nextbits; 
+		compute_nextbits(16, 17);
+		intra_dc_precision := nextbits;
+		compute_nextbits(18, 19);
+		picture_structure := nextbits;
+		compute_nextbits(20, 20);
+		top_field_first := nextbits;
+		compute_nextbits(21, 21);
+		frame_pred_frame_dct := nextbits;
+		compute_nextbits(22, 22);
+		concealment_motion_vectors := nextbits;
+		compute_nextbits(23, 23);
+		q_scale_type := nextbits;
+		compute_nextbits(24, 24);
+		intra_vlc_format := nextbits;
+		compute_nextbits(25, 25);
+		alternate_scan := nextbits;
+		compute_nextbits(26, 26);
+		repeat_first_field := nextbits;
+		compute_nextbits(27, 27);
+		chroma_420_type := nextbits;
+		compute_nextbits(28, 28);
+		progressive_frame := nextbits;
+		compute_nextbits(29, 29);
+		composite_display_flag := nextbits;
+		
+		eud_i := 2;	// Set the i for extension_and_user_data(1)
+	end
+	
+	pce_composite_display: action Bitstream: [token] repeat 20 ==>
+	guard
+		composite_display_flag = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 19];
+		compute_nextbits(0, 0);
+		v_axis := nextbits;
+		compute_nextbits(1, 3);
+		field_sequence := nextbits;
+		compute_nextbits(4, 4);
+		sub_carrier := nextbits;
+		compute_nextbits(5, 11);
+		burst_amplitude := nextbits;
+		compute_nextbits(12, 19);
+		sub_carrier_phase := nextbits;
+	end
+	
+	pce_not_composite_display: action ==>
+	guard
+		composite_display_flag = 0
+	end
+	
+	schedule fsm start :
+		start					(next_start_code)						-->		sequence_header;
+		sequence_header			(sh_sequence_header)					-->		load_q_matrix;
+		sequence_header			(sh_not_sequence_header)				-->		start;
+		load_q_matrix			(sh_read_intra_quantiser_matrix)		-->		load_nq_matrix;
+		load_q_matrix			(sh_check_non_intra_quantiser_matrix)	-->		load_nq_matrix;
+		load_nq_matrix			(sh_read_non_intra_quantiser_matrix)	-->		end_sequence_header;
+		load_nq_matrix			(sh_not_read_non_intra_quantiser_matrix)-->		end_sequence_header;
+		
+		end_sequence_header		(next_start_code)						-->		check_sequence_extension;
+		check_sequence_extension	(next_extension_start_code)			-->		sequence_extension;
+		check_sequence_extension	(se_not_next_extension_start_code)	-->		start;
+		sequence_extension		(se_sequence_extension)					-->		end_sequence_extension;
+		end_sequence_extension	(next_start_code)						-->		begin_boucle_do_1;				
+		
+		// Boucle do 1
+
+		begin_boucle_do_1		(start_extension_and_user_data)			-->		extension_and_user_data;
+		begin_boucle_do_1		(group_of_pictures_header)				-->		group_of_pictures_header;
+		begin_boucle_do_1		(ph_picture_header)						-->		begin_picture_header;
+		group_of_pictures_header	(next_start_code2)					-->		begin_boucle_do_1;
+		
+		// Extension and User Data
+		extension_and_user_data	(next_extension_start_code)				-->		begin_extension_data;
+		extension_and_user_data	(ud_start_user_data)					-->		begin_user_data;
+		
+		// Extension Data																											
+		begin_extension_data	(sde_sequence_display_extension)		-->		sde_read_colour;
+		begin_extension_data	(sde_not_sequence_display_extension)	-->		while_extension_data;
+		// Add there the others extensions (when i = 2)
+		sde_read_colour			(sde_read_colour)						-->		while_extension_data;
+		sde_read_colour			(sde_not_read_colour)					-->		while_extension_data;
+		
+		while_extension_data	(next_start_code)						-->		end_extension_data;
+		end_extension_data		(next_extension_start_code)				-->		begin_extension_data;
+		end_extension_data		(ud_start_user_data)					-->		begin_user_data;
+		end_extension_data		(end_extension_and_user_data_0)			-->		begin_boucle_do_1;
+		end_extension_data		(end_extension_and_user_data_1)			-->		begin_boucle_do_1;
+		end_extension_data		(end_extension_and_user_data_2)			-->		start;	 // picture_data : not codded yet
+		
+		// User Data
+		begin_user_data			(ud_user_data)							-->		read_user_data;
+		begin_user_data			(ud_no_user_data)						-->		end_user_data;
+		read_user_data			(ud_more_user_data)						-->		while_user_data;
+		read_user_data			(ud_no_more_user_data)					-->		end_user_data;
+		while_user_data			(ud_more_user_data)						-->		while_user_data;
+		while_user_data			(ud_no_more_user_data)					-->		end_user_data;
+		end_user_data			(ud_read_next_start_code)				-->		end_extension_data;
+
+		// Picture Header
+		begin_picture_header	(ph_picture_coding_type_2)				-->		ph_extra_bit_picture;
+		begin_picture_header	(ph_picture_coding_type_3)				-->		ph_extra_bit_picture;
+		ph_extra_bit_picture	(ph_extra_bit_picture_1)				-->		ph_end_picture_header;
+		ph_extra_bit_picture	(ph_extra_bit_picture_0)				-->		ph_end_picture_header;
+		ph_end_picture_header	(next_start_code)						-->		check_pce_extension;
+		check_pce_extension		(next_extension_start_code)				-->		picture_coding_extension;
+		picture_coding_extension	(pce_picture_coding_extension)		--> 	pce_composite_display;
+		pce_composite_display	(pce_composite_display)					-->		end_picture_coding_extension;
+		pce_composite_display	(pce_not_composite_display)				-->		end_picture_coding_extension;
+		end_picture_coding_extension	(next_start_code)				-->		check_eud_2;
+		check_eud_2				(start_extension_and_user_data)			-->		extension_and_user_data;
+		// check_eud_2				(picture_data)							-->		...
+	end	
+	
+end
