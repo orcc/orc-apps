@@ -60,13 +60,16 @@
 //Modified by Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
 package ch.epfl.mpeg4.part10.cbp.interPred;
 
-actor Algo_Interp_EighthPelBilinear()
+actor Algo_Interp_EighthPelBilinear(uint(size=1) numComp)
 	int(size=16) Mv, 
-	uint(size=8) ReadResult, 
+	uint(size=8) ReadResultU,
+	uint(size=8) ReadResultV, 
 	uint(size=6) PartSZ 
 		==> 
 	uint(size=8) Interp
 		:
+
+	uint(size=1) currNumComp:=0;
 
 	int(size=32) x := 0;
 	int(size=32) y := 0;
@@ -99,9 +102,9 @@ actor Algo_Interp_EighthPelBilinear()
 	end
 
 	// fetch (width+1)x(height+1) pixels
-	fetch: action ReadResult:[d] ==>
+	fetch.uComp: action ReadResultU:[d] ==>
 	guard
-		x < (width+1) and y < (height+1)
+		x < (width+1) and y < (height+1), currNumComp = 0
 	do
 		inbuf[y * 17 + x] := d;
 		x := x + 1;
@@ -111,13 +114,36 @@ actor Algo_Interp_EighthPelBilinear()
 		end
 	end
 
-	process: action ==> Interp:[ p ]
+	fetch.vComp: action ReadResultV:[d] ==>
 	guard
-		x = 0 and y = (height+1)
+		x < (width+1) and y < (height+1), currNumComp = 1
+	do
+		inbuf[y * 17 + x] := d;
+		x := x + 1;
+		if x >= (width+1) then
+			x := 0;
+			y := y + 1;
+		end
+	end
+
+	process.launch: action ==> Interp:[ p ]
+	guard
+		x = 0 and y = (height+1), currNumComp = numComp
 	var
 		uint(size=8) p
 	do
 		p := chromaSampleInterpolation();
+		xOut := xOut + 1;
+		if xOut >= width then
+			xOut := 0;
+			yOut := yOut + 1;
+		end
+	end
+
+	process.skip: action ==>
+	guard
+		x = 0 and y = (height+1), currNumComp != numComp
+	do
 		xOut := xOut + 1;
 		if xOut >= width then
 			xOut := 0;
@@ -133,13 +159,23 @@ actor Algo_Interp_EighthPelBilinear()
 		y := 0;
 		xOut := 0;
 		yOut := 0;
+		if(currNumComp = 0) then
+			currNumComp := 1;
+		else
+			currNumComp := 0;
+		end
 	end
 
 	schedule fsm GetParam:
 		GetParam      (getParam ) --> InterpolateU;
+
 		InterpolateU  (fetch    ) --> InterpolateU;
 		InterpolateU  (process  ) --> InterpolateU;
-		InterpolateU  (done     ) --> GetParam;
+		InterpolateU  (done     ) --> InterpolateV;
+
+		InterpolateV  (fetch    ) --> InterpolateV;
+		InterpolateV  (process  ) --> InterpolateV;
+		InterpolateV  (done     ) --> GetParam;
 	end
 
 	priority
