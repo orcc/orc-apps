@@ -23,7 +23,7 @@ package ch.epfl.mpeg4.part10.cbp.intraPred;
 import org.sc29.wg11.mpeg4.part10.MacroBlockInfo.*;
 import org.sc29.wg11.mpeg4.part10.Imp_PictureInfo.*;
 
-actor Buffer_Neighbour_FullMb ( int MB_WIDTH , bool IsChroma)
+actor Buffer_Neighbour_FullMb ( int MB_WIDTH , bool IsChroma, uint(size=1) numComp)
 	uint(size=6)  Mb_Type,
 	uint(size=7)  MbLocation,
 	uint(size=8) MB_IN
@@ -39,9 +39,9 @@ actor Buffer_Neighbour_FullMb ( int MB_WIDTH , bool IsChroma)
   	uint(size=6)  mbType  := 0;
   	
 	//List containing edge pixel value 
-	uint(size=16) topEdge[MAX_PICWIDTH_BLK * MB_WIDTH_MAX];
-	uint(size=16) leftEdge[MB_WIDTH_MAX];
-	uint(size=16) topLeftEdge := 0;
+	uint(size=16) topEdge[2][MAX_PICWIDTH_BLK * MB_WIDTH_MAX];
+	uint(size=16) leftEdge[2][MB_WIDTH_MAX];
+	uint(size=16) topLeftEdge[2];
 	
 	//FIXME! PICWIDTH used
 	uint(size=16) result[MAX_PICWIDTH_BLK * MB_WIDTH_MAX];
@@ -58,64 +58,63 @@ actor Buffer_Neighbour_FullMb ( int MB_WIDTH , bool IsChroma)
   	//Receive pixel value from current decoded macroblock
   	mbNeighbour.luma: action MB_IN:[mbPix] repeat 256 ==> 
   	guard
-  		MB_WIDTH = MB_WIDTH_LUMA
+  		not IsChroma
   	do
   		//Store bottom , right and bottom right edge
-  		topLeftEdge := topEdge[MB_WIDTH-1+ mbIndex*MB_WIDTH];
+  		topLeftEdge[numComp] := topEdge[numComp][MB_WIDTH-1+ mbIndex*MB_WIDTH];
   		foreach int s in 0 .. MB_WIDTH-1
   		do
-  			topEdge[s+ mbIndex *MB_WIDTH]:= mbPix[s+(MB_WIDTH-1)*MB_WIDTH];
+  			topEdge[0][s+ mbIndex *MB_WIDTH]:= mbPix[s+(MB_WIDTH-1)*MB_WIDTH];
+  			leftEdge[0][s] := mbPix[(s+1)*MB_WIDTH-1];
   		end
-  		leftEdge :=  [mbPix[s*MB_WIDTH-1]:for int s in 1 .. MB_WIDTH_LUMA];
   	end
   
   	//Receive pixel value from current decoded macroblock
-  	mbNeighbour.chroma: action MB_IN:[mbPix] repeat 64 ==> 
+  	mbNeighbour.chroma: action MB_IN:[mbPix] repeat 128 ==> 
   	guard
-  		MB_WIDTH = MB_WIDTH_CHROMA
+  		IsChroma
   	do
   		//Store bottom , right and bottom right edge
-  		topLeftEdge := topEdge[MB_WIDTH-1+ mbIndex*MB_WIDTH];
+  		topLeftEdge[numComp] := topEdge[numComp][MB_WIDTH-1+ mbIndex*MB_WIDTH];
   		foreach int s in 0 .. MB_WIDTH-1
   		do
-  			topEdge[s+ mbIndex *MB_WIDTH]:= mbPix[s+(MB_WIDTH-1)*MB_WIDTH];
+  			topEdge[numComp][s+ mbIndex *MB_WIDTH]:= mbPix[s+(MB_WIDTH-1)*MB_WIDTH + numComp*64];
+  			leftEdge[0][s] :=  mbPix[(s+1)*MB_WIDTH-1];
+  			leftEdge[1][s] :=  mbPix[(s+1)*MB_WIDTH-1+64];
   		end
-  		leftEdge :=  [mbPix[s*MB_WIDTH-1]:for int s in 1 .. MB_WIDTH_CHROMA];
   	end
   
   	computeEdge.luma: action ==> EDGE:[ [ result[s] : for int s in 0 .. 2*MB_WIDTH_LUMA]	] repeat 2*MB_WIDTH_LUMA+1
 	guard
-		Is_Intra_16x16(mbType) or (Is_Intra_NxN(mbType) and IsChroma),
-		MB_WIDTH = MB_WIDTH_LUMA
+		Is_Intra_16x16(mbType) and not IsChroma
   	do
 		
 		foreach int s in 0 .. MB_WIDTH-1
 		do
-  			result[s]:= leftEdge[s];
+  			result[s]:= leftEdge[0][s];
   		end
-  		result[MB_WIDTH]:= topLeftEdge;
+  		result[MB_WIDTH]:= topLeftEdge[0];
   		
   		foreach int s in 0 .. MB_WIDTH-1 
 		do
-  			result[MB_WIDTH+1+s]:= topEdge [s+ mbIndex *MB_WIDTH];
+  			result[MB_WIDTH+1+s]:= topEdge[0][s+ mbIndex *MB_WIDTH];
   		end
 
   	end
   
 	computeEdge.chroma: action ==> EDGE:[ [ result[s] : for int s in 0 .. 2*MB_WIDTH_CHROMA]	] repeat 2*MB_WIDTH_CHROMA+1
 	guard
-		Is_Intra_16x16(mbType) or (Is_Intra_NxN(mbType) and IsChroma),
-  		MB_WIDTH = MB_WIDTH_CHROMA
+		(Is_Intra_16x16(mbType) or Is_Intra_NxN(mbType)) and IsChroma
 	do
 		foreach int s in 0 .. MB_WIDTH-1
 		do
-  			result[s]:= leftEdge[s];
+  			result[s]:= leftEdge[numComp][s];
   		end
-  		result[MB_WIDTH]:= topLeftEdge;
+  		result[MB_WIDTH]:= topLeftEdge[numComp];
   		
   		foreach int s in 0 .. MB_WIDTH-1 
 		do
-  			result[MB_WIDTH+1+s]:= topEdge [s+ mbIndex *MB_WIDTH];
+  			result[MB_WIDTH+1+s]:= topEdge[numComp][s+ mbIndex *MB_WIDTH];
   		end
 
   	end

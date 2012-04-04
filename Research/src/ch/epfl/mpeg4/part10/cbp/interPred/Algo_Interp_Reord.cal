@@ -18,7 +18,7 @@ package ch.epfl.mpeg4.part10.cbp.interPred;
 
 import org.sc29.wg11.mpeg4.part10.MacroBlockInfo.*;
 
-actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
+actor Algo_Interp_Reord(uint(size=8) SzSidePerPart, bool isLuma)
 	uint(size=6) MbType,
 	uint(size=4) SubMbType,
 	uint(size=8) Interp
@@ -26,9 +26,10 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 	int(size=9) MbPred
 		:
 
-	List(type: List(type: int(size=9), size=16), size=16) ListInterp;
+	int(size=9) ListInterp[2][16][16];
 
 	uint(size=6) mb_type;
+	uint(size=1) component := 0;
 
 	uint(size=3) MbPartIdxMax;
 	uint(size=3) MbPartIdx;
@@ -99,7 +100,7 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 			end
 			NbValueToRead := 8 * SzSidePerPart * SzSidePerPart;
 			ReadIdx       := 0;
-			NbListToGet := NbListToGet - 1;
+			NbListToGet   := NbListToGet - 1;
 		end
 
 	GetInterp.Launch8x16: action ==>
@@ -117,7 +118,7 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 			end
 			NbValueToRead := 8 * SzSidePerPart * SzSidePerPart;
 			ReadIdx       := 0;
-			NbListToGet := NbListToGet - 1;
+			NbListToGet   := NbListToGet - 1;
 		end
 
 	GetInterp.LaunchBSkip: action ==>
@@ -185,7 +186,7 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 			end
 			NbValueToRead := 4*SzSidePerPart*SzSidePerPart;
 			ReadIdx       := 0;
-			NbListToGet := NbListToGet - 1;
+			NbListToGet   := NbListToGet - 1;
 		end
 
 	GetInterpSubMb.Launch8x4: action
@@ -242,7 +243,7 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 			end
 			NbValueToRead := SzSidePerPart*SzSidePerPart;
 			ReadIdx       := 0;
-			NbListToGet := NbListToGet - 1;
+			NbListToGet   := NbListToGet - 1;
 		end
 
 	GetInterpSubMb.Done: action ==>
@@ -267,19 +268,24 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 			y_idx := 0;
 		end
 
-	ReadInterp.Launch: action
-			Interp:[InterpolationValue]
-				==>
-		guard
-			ReadIdx < NbValueToRead
-		do
-			ListInterp[TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := InterpolationValue;
-			ReadIdx := ReadIdx + 1;
-		end
+	ReadInterp.Launch: action Interp:[InterpolationValue] ==>
+	guard
+		ReadIdx < NbValueToRead
+	do
+		ListInterp[component][TabX_Out[ReadIdx]][TabY_Out[ReadIdx]] := InterpolationValue;
+		ReadIdx := ReadIdx + 1;
+	end
 
 	ReadInterp.Done: action ==>
 		guard
 			ReadIdx = NbValueToRead
+		do
+			if(component = 0 and not isLuma) then
+				component := 1;
+				NbListToGet := NbListToGet + 1;
+			else
+				component:= 0;
+			end
 		end
 
 	SendParameters.Launch: action
@@ -290,11 +296,15 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 		var
 			int(size=16) mb_pred
 		do
-			mb_pred := ListInterp[x_idx][y_idx];
+			mb_pred := ListInterp[component][x_idx][y_idx];
 			x_idx := x_idx + 1;
 			if(x_idx >= 4*SzSidePerPart)then
 				x_idx := 0;
 				y_idx := y_idx + 1;
+				if(y_idx = 4*SzSidePerPart and component = 0 and not isLuma) then
+					component := 1;
+					y_idx := 0;
+				end
 			end
 		end
 
@@ -302,6 +312,8 @@ actor Algo_Interp_Reord(uint(size=8) SzSidePerPart)
 				==>
 		guard
 			y_idx = 4*SzSidePerPart
+		do
+			component := 0;
 		end
 
 	schedule fsm GetMbType:
