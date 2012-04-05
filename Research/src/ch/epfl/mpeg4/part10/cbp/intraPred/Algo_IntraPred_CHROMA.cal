@@ -67,7 +67,7 @@ IETR/INSA of Rennes (France) retains full right to modify and use the code for i
 This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
 
 *****************************************************************************/
-package org.sc29.wg11.mpeg4.part10.cbp.intraPred;
+package ch.epfl.mpeg4.part10.cbp.intraPred;
 
 import std.util.Math.*;
 import std.util.BitOps.*;
@@ -97,10 +97,10 @@ actor Algo_IntraPred_CHROMA ()
 	uint(size=1) up_avail;
 	uint(size=1) up_left_avail;
 
-	List(type:int(size=16), size=8) c_left;
-	List(type:int(size=16), size=8) c_up;
-	int(size=16)			 c_up_left:= 0 ;
-	List( type:int(size=16), size=8*8 ) mpr := [ 0 : for int i in 0 .. 63 ];
+	int(size=16) c_left[2][8];
+	int(size=16) c_up[2][8];
+	int(size=16) c_up_left[2];
+
 	
 	read.avail: action AVAIL:[avail] repeat 3 ==>
 	do
@@ -110,19 +110,39 @@ actor Algo_IntraPred_CHROMA ()
 		//println("read.avail "+avail);
 	end
 
-	readpix.l.av: action C_LEFT:[x] repeat 8 ==>
+	readpix.l.av: action C_LEFT:[x] repeat 16 ==>
 	guard left_avail = 1
+	var
+		uint(size=4) offset
 	do
-		c_left := x;
+		foreach uint comp in 0 .. 1
+		do
+			offset := 8*comp;
+			foreach uint i in 0 .. 7
+			do
+				c_left[comp][i] := x[i+offset];
+			end
+		end
 		//println("c_left "+c_left);
 	end
-	readpix.u.av: action C_UP:[x] repeat 8 ==>
+
+	readpix.u.av: action C_UP:[x] repeat 16 ==>
 	guard up_avail = 1
+	var
+		uint(size=4) offset
 	do
-		c_up := x;
+		foreach uint comp in 0 .. 1
+		do
+			offset := 8*comp;
+			foreach int i in 0 .. 7
+			do
+				c_up[comp][i] := x[i+offset];
+			end
+		end
 		//println("c_up "+c_up);
 	end
-	readpix.ul.av: action C_UP_LEFT:[x] ==>
+
+	readpix.ul.av: action C_UP_LEFT:[x] repeat 2 ==>
 	guard up_left_avail = 1
 	do
 		c_up_left := x;
@@ -143,7 +163,7 @@ actor Algo_IntraPred_CHROMA ()
 	end
 
 	write.mode0: action PredMode:[mode] ==>
-		MPR:[[mpr[8*j+i]: for int i in	0 .. 7, for int j in 0 .. 7]] repeat 8*8
+		MPR:[[intraMb[numComp][8*j+i]: for uint numComp in 0 .. 1, for int i in	0 .. 7, for int j in 0 .. 7]] repeat 128
 	guard
  		mode = 0
 	var
@@ -155,107 +175,125 @@ actor Algo_IntraPred_CHROMA ()
 		//	 +----+----+
 		int s0 := 0, int s1 := 0, int s2 := 0, int s3 := 0,
 		int m0 := 128, int m1 := 128, int m2 := 128, int m3 := 128,
-		List(type: int(size = 16), size = 7) sum_list
+		List(type: int(size = 16), size = 7) sum_list,
+		int(size=16) intraMb[2][64]
 	do
-		if up_avail = 1 then
-			/*	
-				s0 := sum([c_up[i]:for int i in 0 .. 3],4);
-			*/
-			sum_list := [c_up[i]:for int i in 0 .. 3];//todo
-			Sum(sum_list,4);
-			s0 := res;
+		foreach uint comp in 0 .. 1
+		do
+			if up_avail = 1 then
+				/*	
+					s0 := sum([c_up[i]:for int i in 0 .. 3],4);
+				*/
+				sum_list := [c_up[comp][i]:for int i in 0 .. 3];//todo
+				Sum(sum_list,4);
+				s0 := res;
+					
+				/*
+					s1 := sum([c_up[i]:for int i in 4 .. 7],4);
+				*/
+				sum_list := [c_up[comp][i]:for int i in 4 .. 7];
+				Sum(sum_list,4);
+				s1 := res;
+			end
 				
-			/*
-				s1 := sum([c_up[i]:for int i in 4 .. 7],4);
-			*/
-			sum_list := [c_up[i]:for int i in 4 .. 7];
-			Sum(sum_list,4);
-			s1 := res;
+			if left_avail = 1 then
+				/*
+					s2 := sum([c_left[i]:for int i in 0 .. 3],4);
+					s3 := sum([c_left[i]:for int i in 4 .. 7],4);
+				*/
+				sum_list := [c_left[comp][i]:for int i in 0 .. 3];
+				Sum(sum_list,4);
+				s2 := res;
+					
+				sum_list := [c_left[comp][i]:for int i in 4 .. 7];
+				Sum(sum_list,4);
+				s3 := res;
+			end
+					
+			if left_avail = 1 and up_avail = 1 then
+				m0 := (s0 + s2 + 4) >> 3;
+				m1 := (s1 + 2) >> 2;
+				m2 := (s3 + 2) >> 2;
+			 	m3 := (s1 + s3 + 4) >> 3;
+			elsif left_avail = 1 then
+				m0 := (s2 + 2) >> 2;
+				m1 := (s2 + 2) >> 2;
+				m2 := (s3 + 2) >> 2;
+				m3 := (s3 + 2) >> 2;
+			elsif up_avail = 1	then
+				m0 := (s0 + 2) >> 2;
+				m1 := (s1 + 2) >> 2;
+				m2 := (s0 + 2) >> 2;
+				m3 := (s1 + 2) >> 2;
+			end
+	
+			intraMb[comp] := [if j<4 then
+						if i<4 then m0 else m1 end
+					else
+						if i<4 then m2 else m3 end
+					end : for int i in 0 .. 7, for int j in 0 .. 7];
 		end
-			
-		if left_avail = 1 then
-			/*
-				s2 := sum([c_left[i]:for int i in 0 .. 3],4);
-				s3 := sum([c_left[i]:for int i in 4 .. 7],4);
-			*/
-			sum_list := [c_left[i]:for int i in 0 .. 3];
-			Sum(sum_list,4);
-			s2 := res;
-				
-			sum_list := [c_left[i]:for int i in 4 .. 7];
-			Sum(sum_list,4);
-			s3 := res;
-		end
-				
-		if left_avail = 1 and up_avail = 1 then
-			m0 := (s0 + s2 + 4) >> 3;
-			m1 := (s1 + 2) >> 2;
-			m2 := (s3 + 2) >> 2;
-		 	m3 := (s1 + s3 + 4) >> 3;
-		elsif left_avail = 1 then
-			m0 := (s2 + 2) >> 2;
-			m1 := (s2 + 2) >> 2;
-			m2 := (s3 + 2) >> 2;
-			m3 := (s3 + 2) >> 2;
-		elsif up_avail = 1	then
-			m0 := (s0 + 2) >> 2;
-			m1 := (s1 + 2) >> 2;
-			m2 := (s0 + 2) >> 2;
-			m3 := (s1 + 2) >> 2;
-		end
-
-		mpr := [if j<4 then
-					if i<4 then m0 else m1 end
-				else
-					if i<4 then m2 else m3 end
-				end : for int i in 0 .. 7, for int j in 0 .. 7];
 	end
 
 	write.mode1: action PredMode:[mode] ==>
-		MPR:[[mpr[8*j+i]: for int i in	0 .. 7, for int j in 0 .. 7]] repeat 8*8
+		MPR:[[intraMb[numComp][8*j+i]: for uint numComp in 0 .. 1, for int i in	0 .. 7, for int j in 0 .. 7]] repeat 128
 	guard
  		mode = 1
+ 	var
+		int(size=16) intraMb[2][64]
 	do
-		mpr := [c_left[j]: for int i in	0 .. 7, for int j in 0 .. 7];
+		foreach uint comp in 0 .. 1
+		do
+			intraMb[comp] := [c_left[comp][j]: for int i in	0 .. 7, for int j in 0 .. 7];
+		end
 	end
  
 	write.mode2: action PredMode:[mode] ==>
-		MPR:[[mpr[8*j+i]: for int i in	0 .. 7, for int j in 0 .. 7]] repeat 8*8
+		MPR:[[intraMb[numComp][8*j+i]: for uint numComp in 0 .. 1, for int i in	0 .. 7, for int j in 0 .. 7]] repeat 128
 	guard
  		mode = 2
+ 	var
+		int(size=16) intraMb[2][64]
 	do
-		mpr := [c_up[i]	: for int i in	0 .. 7, for int j in 0 .. 7];
+		foreach uint comp in 0 .. 1
+		do
+			intraMb[comp] := [c_up[comp][i]: for int i in	0 .. 7, for int j in 0 .. 7];
+		end
 	end
 
 	write.mode3: action PredMode:[mode] ==>
-		MPR:[[mpr[8*j+i]: for int i in	0 .. 7, for int j in 0 .. 7]] repeat 8*8
+		MPR:[[intraMb[numComp][8*j+i]: for uint numComp in 0 .. 1, for int i in	0 .. 7, for int j in 0 .. 7]] repeat 128
 	guard
 		mode = 3
 	var
 		int H, int V, int a, int b, int c,
-		List(type: int(size = 16), size = 3) sum_list
+		List(type: int(size = 16), size = 3) sum_list,
+		int(size=16) intraMb[2][64]
 	do
-		sum_list := [(i+1)*(c_up[4+i]	- c_up[2-i]	):for int i in 0 .. 2];
-		Sum(sum_list,3);
-		H := res + (3+1)*(c_up[4+3]	- c_up_left);
-			
-		sum_list := [(j+1)*(c_left[4+j] - c_left[2-j]):for int j in 0 .. 2];
-		Sum(sum_list,3);
-		V := res + (3+1)*(c_left[4+3] - c_up_left);
-			
-		a:= 16*(c_left[7] + c_up[7]);
-		b:= (34*H + 32) >> 6;
-		c:= (34*V + 32) >> 6;
-
-		mpr := [clip_i32((a + b*(i-3) + c*(j-3) + 16) >> 5, 0, 255 ): for int i in	0 .. 7, for int j in 0 .. 7];
+		foreach uint comp in 0 .. 1
+		do
+			sum_list := [(i+1)*(c_up[comp][4+i]	- c_up[comp][2-i]	):for int i in 0 .. 2];
+			Sum(sum_list,3);
+			H := res + (3+1)*(c_up[comp][4+3]	- c_up_left[comp]);
+				
+			sum_list := [(j+1)*(c_left[comp][4+j] - c_left[comp][2-j]):for int j in 0 .. 2];
+			Sum(sum_list,3);
+			V := res + (3+1)*(c_left[comp][4+3] - c_up_left[comp]);
+				
+			a:= 16*(c_left[comp][7] + c_up[comp][7]);
+			b:= (34*H + 32) >> 6;
+			c:= (34*V + 32) >> 6;
+			intraMb[comp] := [clip_i32((a + b*(i-3) + c*(j-3) + 16) >> 5, 0, 255 )
+				: for int i in 0 .. 7, for int j in 0 .. 7];
+		end
 	end
 
 	schedule fsm start:
-		start		( read.avail ) --> readpix0;
-		readpix0 ( readpix.l	) --> readpix1;
-		readpix1 ( readpix.u	) --> readpix2;
+		start    ( read.avail ) --> readpix0;
+		readpix0 ( readpix.l  ) --> readpix1;
+		readpix1 ( readpix.u  ) --> readpix2;
 		readpix2 ( readpix.ul ) --> pixdone;
-		pixdone	( write			) --> start;
+		pixdone	 ( write      ) --> start;
 	end
 
 end
