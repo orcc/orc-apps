@@ -1,50 +1,35 @@
-RVC-CAL Implementation of AES (Rijndael)
+RVC-CAL Implementation of AES (Rijndael) based on the Look Up Tables (LUTs) scheme described in [1].
+[1] G. Bertoni, L. Breveglieri, P. Fragneto, M. Macchetti and S. Marchesin, "Efficient Software Implementation of AES on 32-Bit Platforms",
+in the proceedings of the CRYPTOGRAPHIC HARDWARE AND EMBEDDED SYSTEMS - CHES 2002, Lecture Notes in Computer Science, Vol. 2523, pp. 129-142, 2003.
 
 **********************************************************
 
-Shujun Li, Junaid Jameel Ahmad @ Uni-Konstanz
+Junaid Jameel Ahmad @ Uni-Konstanz
 
-Last modified on 06 June, 2011
+Last modified on 05.04.2012
 
 **********************************************************
 
-This RVC-CAL implementation of AES (FIPS 197) is composed of the following files.
-The naming of cal files follow the terms used in FIPS 197.
+This is the RVC-CAL implementation of AES (FIPS 197) based on the look up tables technique described in [1].
+Unlike the byte-oriented standard implementation of AES (in the package Block_Ciphers.AES), this implementation does not have separate
+CAL files for each AES operation. Both the encipher and the decipher of this implementation are implemented in a single CAL file each. 
+These files are:
+
+AES_Cipher.cal
+AES_InvCihper.cal
+Tables.cal
 
 The test vectors and golden responses are taken from FIPS 197.
 
 All the three editions of AES are implemented: AES-128, AES-192, and AES-256.
 The FUs are written to automatically recognize the key size and work in the corresponding edition.
 
-To support parallel processing of multiple blocks, the output of each FU is expanded to include the round number.
-That is, each 16-byte block is expanded to 17-byte block, whose first byte is the current round index of the block. 
-
-== Basic FUs ==
-
-All basic FUs were written to be compliant with the subset of RVC-CAL supported by Orcc.
-
--- Common FUs for both AES cipher and inverse cipher --
-
-AddRoundKey.cal
-
--- For AES cipher (encipher) --
-
-SubBytes.cal
-ShiftRows.cal
-MixColumns.cal
-
--- For AES inverse cipher (decipher) --
-
-InvSubBytes.cal
-InvShiftRows.cal
-InvMixColumns.cal
-
 == AES encipher and decipher as FU networks ==
 
 -- ECB mode --
 
-AES_Cipher.xdf: AES encipher (as described in NIST AES standard)
-AES_InvCipher.xdf: AES decipher (as described in NIST AES standard)
+AES_Cipher.cal
+AES_InvCihper.cal
 
 -- CBC mode --
 
@@ -66,6 +51,5 @@ AES_OFB_Cipher.xdf: AES encipher/decipher
 -- CTR mode --
 
 AES_CTR_Cipher.xdf: AES encipher/decipher
-
 
 Note: CBC, CFB, OFB and CTR modes have external dependencies on the CAL files are located under package Block_Ciphers.Modes.

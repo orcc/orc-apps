@@ -1,0 +1,243 @@
+/**
+ * This FU is a CAL implementation of AES (Rijndael) cipher using the look up tables (LUTs).
+ * 
+ * FU ID: AES_Cipher
+ * Three input ports:
+ *   1) uint(size=8) IP1_Plaintext: the plaintext
+ *   2) uint(size=8) IP2_KeySize: the key size
+ *   3) uint(size=8) IP3_Key: the key
+ * One output port:
+ *   1) uint(size=8) OP_Ciphertext: the ciphertext
+ *
+ * Note: The key is also read from an input port because it is possible that key is dynamically changed.
+ *       Currently the key is read only once, so it is fixed for the whole encryption/decryption process.
+ *       Support to dynamically updated keys are to be added when necessary.
+ * 
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2011
+ * Last modified: 06.04.2012
+ */
+
+package Block_Ciphers.AES_LUT;
+
+import Block_Ciphers.AES_LUT.Tables.Te0;
+import Block_Ciphers.AES_LUT.Tables.Te1;
+import Block_Ciphers.AES_LUT.Tables.Te2;
+import Block_Ciphers.AES_LUT.Tables.Te3;
+import Block_Ciphers.AES_LUT.Tables.Te4;
+import Block_Ciphers.AES_LUT.Tables.rcon;
+
+actor AES_Cipher () uint(size=8) IP1_Plaintext, uint(size=8) IP2_KeySize, uint(size=8) IP3_Key ==> 
+		uint(size=8) OP_Ciphertext:
+
+	// The following variables are values for AES-256.
+	// They will be updated later according to the key received from the source.
+	// Note: Nr and Nk are variables in FIPS standard, so they don't follow the normal naming convention.
+	int keySize := 32;
+	int Nk := (keySize >> 2); // = keySize/4 = Nk @ FIPS 197
+	int Nr := 6 + Nk; // keySize = [16, 24, 32] => Nr = [10, 12, 14] (Nr = number of rounds)
+	// A list for storing expanded keys for all rounds.
+	List(type:uint(size=32), size=60) keyEx := [0 : for int i in 1 .. 60]; // Nr16 = 240
+	
+	bool keyInfoUpdated := false;
+	int keyCounter := 0;
+	bool keyExpanded := false;
+
+	// Read the key size and update other parameters.
+	readKeyInfo:
+	action IP2_KeySize:[K] ==>
+	guard not keyInfoUpdated
+	do	
+		keySize := K;		
+		Nk := (keySize >> 2); // Also represents keySize as 32-bit double words.
+		Nr := 6 + Nk;
+		keyInfoUpdated := true;
+	end
+	
+
+	uint(size=32) temp; // Temporary variable.
+	uint ksIndex := 0; // Index for the key scheduling array.
+	// Read the key according to the value of KeySize.
+	keyExpansion:
+	action IP3_Key:[k] ==>
+	guard keyInfoUpdated and keyCounter<keySize
+	do
+		keyEx[ksIndex] := (keyEx[ksIndex]<<8) | k;
+		keyCounter := keyCounter + 1;
+		if((keyCounter mod 4) = 0) then
+			ksIndex := ksIndex + 1;
+		end
+		if keyCounter>=keySize then // Expand the key after all bytes have been read.
+			if (keySize = 16) then
+				foreach int i in 0 .. 9 do
+					ksIndex := i * 4;					
+					temp  := keyEx[ksIndex+3];
+					keyEx[ksIndex+4] := keyEx[ksIndex] ^
+						(Te4[(temp >> 16) & 0xff] & 0xff000000) ^
+						(Te4[(temp >>  8) & 0xff] & 0x00ff0000) ^
+						(Te4[(temp      ) & 0xff] & 0x0000ff00) ^
+						(Te4[(temp >> 24)       ] & 0x000000ff) ^
+						rcon[i];
+					keyEx[ksIndex+5] := keyEx[ksIndex+1] ^ keyEx[ksIndex+4];
+					keyEx[ksIndex+6] := keyEx[ksIndex+2] ^ keyEx[ksIndex+5];
+					keyEx[ksIndex+7] := keyEx[ksIndex+3] ^ keyEx[ksIndex+6];
+				end				
+			else
+				if (keySize = 24) then
+					foreach int i in 0 .. 7 do
+						ksIndex := i * 6;						
+						temp := keyEx[ksIndex+5];
+						keyEx[ksIndex+6] := keyEx[ksIndex] ^
+							(Te4[(temp >> 16) & 0xff] & 0xff000000) ^
+							(Te4[(temp >>  8) & 0xff] & 0x00ff0000) ^
+							(Te4[(temp      ) & 0xff] & 0x0000ff00) ^
+							(Te4[(temp >> 24)       ] & 0x000000ff) ^
+							rcon[i];
+						keyEx[ksIndex+7] := keyEx[ksIndex+1] ^ keyEx[ksIndex+6];
+						keyEx[ksIndex+8] := keyEx[ksIndex+2] ^ keyEx[ksIndex+7];
+						keyEx[ksIndex+9] := keyEx[ksIndex+3] ^ keyEx[ksIndex+8];
+						if (i < 7) then
+							keyEx[ksIndex+10] := keyEx[ksIndex+4] ^ keyEx[ksIndex+9];
+							keyEx[ksIndex+11] := keyEx[ksIndex+5] ^ keyEx[ksIndex+10];
+						end
+					end
+				else
+					if (keySize = 32) then
+						foreach int i in 0 .. 6 do
+							ksIndex := i * 8;						
+							temp := keyEx[ksIndex+7];
+							keyEx[ksIndex+8] := keyEx[ksIndex] ^
+								(Te4[(temp >> 16) & 0xff] & 0xff000000) ^
+								(Te4[(temp >>  8) & 0xff] & 0x00ff0000) ^
+								(Te4[(temp      ) & 0xff] & 0x0000ff00) ^
+								(Te4[(temp >> 24)       ] & 0x000000ff) ^
+								rcon[i];
+							keyEx[ksIndex+9] := keyEx[ksIndex+1] ^ keyEx[ksIndex+8];
+							keyEx[ksIndex+10] := keyEx[ksIndex+2] ^ keyEx[ksIndex+9];
+							keyEx[ksIndex+11] := keyEx[ksIndex+3] ^ keyEx[ksIndex+10];
+							if (i < 6) then
+								temp := keyEx[ksIndex+11];
+								keyEx[ksIndex+12] := keyEx[ksIndex+4] ^
+									(Te4[(temp >> 24)       ] & 0xff000000) ^
+									(Te4[(temp >> 16) & 0xff] & 0x00ff0000) ^
+									(Te4[(temp >>  8) & 0xff] & 0x0000ff00) ^
+									(Te4[(temp      ) & 0xff] & 0x000000ff);
+								keyEx[ksIndex+13] := keyEx[ksIndex+5] ^ keyEx[ksIndex+12];
+								keyEx[ksIndex+14] := keyEx[ksIndex+6] ^ keyEx[ksIndex+13];
+								keyEx[ksIndex+15] := keyEx[ksIndex+7] ^ keyEx[ksIndex+14];
+							end
+						end
+					end	
+				end
+			end
+			keyExpanded := true;
+		end
+	end
+
+	encrypt:
+	action IP1_Plaintext:[text] repeat 16 ==> OP_Ciphertext:[text] repeat 16
+	guard keyExpanded
+	var
+		// State variables
+		uint(size=32) s0, uint(size=32) s1, uint(size=32) s2, uint(size=32) s3,
+		// Temporary state variables
+		uint(size=32) t0, uint(size=32) t1, uint(size=32) t2, uint(size=32) t3
+	do
+		s0 := ((text[0] << 24) | (text[1] << 16) | (text[2] << 8) | text[3]) ^ keyEx[0];
+		s1 := ((text[4] << 24) | (text[5] << 16) | (text[6] << 8) | text[7]) ^ keyEx[1];
+		s2 := ((text[8] << 24) | (text[9] << 16) | (text[10] << 8) | text[11]) ^ keyEx[2];
+		s3 := ((text[12] << 24) | (text[13] << 16) | (text[14] << 8) | text[15]) ^ keyEx[3];
+		ksIndex := 0;
+    	foreach int r in 0 .. Nr-1 do    	
+	        t0 :=
+	            Te0[(s0 >> 24)       ] ^
+	            Te1[(s1 >> 16) & 0xff] ^
+	            Te2[(s2 >>  8) & 0xff] ^
+	            Te3[(s3      ) & 0xff] ^
+	            keyEx[ksIndex+4];
+	        t1 :=
+	            Te0[(s1 >> 24)       ] ^
+	            Te1[(s2 >> 16) & 0xff] ^
+	            Te2[(s3 >>  8) & 0xff] ^
+	            Te3[(s0      ) & 0xff] ^
+	            keyEx[ksIndex+5];
+	        t2 :=
+	            Te0[(s2 >> 24)       ] ^
+	            Te1[(s3 >> 16) & 0xff] ^
+	            Te2[(s0 >>  8) & 0xff] ^
+	            Te3[(s1      ) & 0xff] ^
+	            keyEx[ksIndex+6];
+	        t3 :=
+	            Te0[(s3 >> 24)       ] ^
+	            Te1[(s0 >> 16) & 0xff] ^
+	            Te2[(s1 >>  8) & 0xff] ^
+	            Te3[(s2      ) & 0xff] ^
+	            keyEx[ksIndex+7];
+	
+	        ksIndex := ksIndex + 8;
+	        r := r + 1;
+	        if (r < Nr-1) then
+		        s0 :=
+		            Te0[(t0 >> 24)       ] ^
+		            Te1[(t1 >> 16) & 0xff] ^
+		            Te2[(t2 >>  8) & 0xff] ^
+		            Te3[(t3      ) & 0xff] ^
+		            keyEx[ksIndex+0];
+		        s1 :=
+		            Te0[(t1 >> 24)       ] ^
+		            Te1[(t2 >> 16) & 0xff] ^
+		            Te2[(t3 >>  8) & 0xff] ^
+		            Te3[(t0      ) & 0xff] ^
+		            keyEx[ksIndex+1];
+		        s2 :=
+		            Te0[(t2 >> 24)       ] ^
+		            Te1[(t3 >> 16) & 0xff] ^
+		            Te2[(t0 >>  8) & 0xff] ^
+		            Te3[(t1      ) & 0xff] ^
+		            keyEx[ksIndex+2];
+		        s3 :=
+		            Te0[(t3 >> 24)       ] ^
+		            Te1[(t0 >> 16) & 0xff] ^
+		            Te2[(t1 >>  8) & 0xff] ^
+		            Te3[(t2      ) & 0xff] ^
+		            keyEx[ksIndex+3];
+		    end
+		end
+		
+		s0 :=
+			(Te4[(t0 >> 24)       ] & 0xff000000) ^
+			(Te4[(t1 >> 16) & 0xff] & 0x00ff0000) ^
+			(Te4[(t2 >>  8) & 0xff] & 0x0000ff00) ^
+			(Te4[(t3      ) & 0xff] & 0x000000ff) ^
+			keyEx[ksIndex+0];
+		text[0] := (s0 >> 24) & 0xff; text[1] := (s0 >> 16) & 0xff;
+		text[2] := (s0 >> 8) & 0xff; text[3] := s0 & 0xff;		 
+
+		s1 :=
+			(Te4[(t1 >> 24)       ] & 0xff000000) ^
+			(Te4[(t2 >> 16) & 0xff] & 0x00ff0000) ^
+			(Te4[(t3 >>  8) & 0xff] & 0x0000ff00) ^
+			(Te4[(t0      ) & 0xff] & 0x000000ff) ^
+			keyEx[ksIndex+1];
+		text[4] := (s1 >> 24) & 0xff; text[5] := (s1 >> 16) & 0xff;
+		text[6] := (s1 >> 8) & 0xff; text[7] := s1 & 0xff;
+
+		s2 :=
+			(Te4[(t2 >> 24)       ] & 0xff000000) ^
+			(Te4[(t3 >> 16) & 0xff] & 0x00ff0000) ^
+			(Te4[(t0 >>  8) & 0xff] & 0x0000ff00) ^
+			(Te4[(t1      ) & 0xff] & 0x000000ff) ^
+			keyEx[ksIndex+2];
+		text[8] := (s2 >> 24) & 0xff; text[9] := (s2 >> 16) & 0xff;
+		text[10] := (s2 >> 8) & 0xff; text[11] := s2 & 0xff;		 
+
+		s3 :=
+			(Te4[(t3 >> 24)       ] & 0xff000000) ^
+			(Te4[(t0 >> 16) & 0xff] & 0x00ff0000) ^
+			(Te4[(t1 >>  8) & 0xff] & 0x0000ff00) ^
+			(Te4[(t2      ) & 0xff] & 0x000000ff) ^
+			keyEx[ksIndex+3];
+		text[12] := (s3 >> 24) & 0xff; text[13] := (s3 >> 16) & 0xff;
+		text[14] := (s3 >> 8) & 0xff; text[15] := s3 & 0xff;
+
+	end
+end
