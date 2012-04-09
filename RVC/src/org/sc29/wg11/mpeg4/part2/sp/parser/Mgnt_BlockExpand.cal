@@ -1,0 +1,147 @@
+/*************************************************************************
+* This software module was originally developed by David B. Parlour (Xilinx Inc.), 
+* in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+* for reference purposes and its performance may not have been optimized. 
+* This software module is an implementation of one or more tools as 
+* specified by the ISO/IEC 23002-4.
+* 
+* ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+* license to copy, distribute, and make derivative works of this software 
+* module or modifications thereof for use in implementations of the 
+* ISO/IEC 23002-4 in products that satisfy conformance criteria (if any). 
+* 
+* Those intending to use this software module in products are advised that 
+* its use may infringe existing patents. ISO/IEC have no liability for use 
+* of this software module or modifications thereof.
+* 
+* Copyright is not released for products that do not conform to audiovisual 
+* and image-coding related ITU Recommendations and/or ISO/IEC International 
+* Standards. 
+* 
+* Assurance that the originally developed software module can be used 
+* (1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and 
+* (2) to develop the ISO/IEC 23002-4: 
+* 
+* Xilinx Inc. Corporation grants ISO/IEC all rights necessary to 
+* include the originally developed software module or modifications thereof 
+* in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, 
+* worldwide, non-exclusive, copyright license to copy, distribute, and make 
+* derivative works for use in implementations of the ISO/IEC 23002-4 in 
+* products that satisfy conformance criteria (if any), and to the extent 
+* that such originally developed software module or portions of it are 
+* included in the ISO/IEC 23002-4.  To the extent that Xilinx Inc. 
+* owns patent rights that would be required to make, use, or 
+* sell the originally developed software module or portions thereof 
+* included in the ISO/IEC 23002-4 in a conforming product, Xilinx Inc.
+* will assure the ISO/IEC that it is willing to 
+* negotiate licenses under reasonable and non-discriminatory terms and 
+* conditions with applicants throughout the world.
+* 
+* ISO/IEC gives You a free license to this software module or modifications 
+* thereof for the sole  purpose of developing theISO/IEC 23002-4
+* 
+* Xilinx Inc. retains full right to modify and use the 
+* code for its own purpose, assign or donate the code to a third party and 
+* to inhibit third parties from using the code for products that do not 
+* conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+* Standards. 
+* 
+* This copyright notice must be included in all copies or derivative works. 
+* Copyright (c) ISO/IEC 2007-2011.
+*************************************************************************/
+/**********************
+ *  Mgnt_BlockExpand
+*
+* Author: David B. Parlour (dave.parlour@xilinx.com)
+*******************/
+
+// Insert zero coefficients into a sparsely encoded block
+package org.sc29.wg11.mpeg4.part2.sp.parser;
+
+import org.sc29.wg11.mpeg4.part2.Constants.*;
+
+actor Mgnt_BlockExpand () 
+	int(size=SAMPLE_COUNT_SZ) RUN, 
+	int(size=SAMPLE_SZ) VALUE,
+	bool LAST 
+		==> 
+		int(size=SAMPLE_SZ) OUT :
+
+// Port size declaration
+	int SAMPLE_SZ = 13;
+
+	int SAMPLE_COUNT_SZ = 8;
+
+	int BLOCK_SIZE = 64;
+
+	int(size=SAMPLE_COUNT_SZ) count := 0;
+
+	// Index of next sample to be transmitted
+	int(size=SAMPLE_COUNT_SZ) run := -1;
+
+	// Index offset of next sample decoded (-1 means no sample pending)
+	int(size=SAMPLE_SZ) next_value;
+
+	// Value of next non-zero to be transmitted
+	bool last := false;
+
+	// Next sample is the last non-zero.
+	// End of block - reset counters
+	done: action ==>
+	guard
+		count = BLOCK_SIZE
+	do
+		count := 0;
+		run := -1;
+		last := false;
+	end
+
+	// When run count is zero, transmit the value
+	write.value: action ==> OUT:[ next_value ]
+	guard
+		run = 0
+	do
+		run := -1;
+		count := count + 1;
+	end
+
+	// Stuff zeros before the sample value, and after as well if it was the last
+	write.zero: action ==> OUT:[ 0 ]
+	guard
+		run > 0 or last
+	do
+		run := run - 1;
+		count := count + 1;
+	end
+
+	// Read actions are all lower priority than write actions
+	// Read and write the sample out immediately if RUN = 0
+	read.immediate: action RUN:[ r ], VALUE:[ v ], LAST:[ l ] ==> OUT:[ v ]
+	guard
+		r = 0,
+		count != BLOCK_SIZE
+	do
+		last := l;
+		count := count + 1;
+	end
+
+	// Write out a zero sample
+	read.save: action RUN:[ r ], VALUE:[ v ], LAST:[ l ] ==> OUT:[ 0 ]
+	guard
+		count != BLOCK_SIZE
+	do
+		run := r - 1;
+		next_value := v;
+		last := l;
+		count := count + 1;
+	end
+
+	priority
+		done > read;
+		done > write;
+		write > read;
+		read.immediate > read.save;
+		write.value > write.zero;
+	end
+
+end
