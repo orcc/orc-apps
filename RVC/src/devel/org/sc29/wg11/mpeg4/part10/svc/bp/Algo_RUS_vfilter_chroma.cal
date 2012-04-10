@@ -37,50 +37,49 @@ This copyright notice must be included in all copies or derivative works. Copyri
  
 
 *****************************************************************************/
-package ch.epfl.mpeg4.part10.svc;
+package devel.org.sc29.wg11.mpeg4.part10.svc.bp;
 import std.util.BitOps.*;
 
-actor Algo_RUS_hfilter_chroma() int(size=32) In_NAL , int(size=16) Base_res_Chroma , int (size=32) Residual_prediction_flag, int (size=16)X16 , int (size=16) XK16, int (size=16) XP16, int (size=16) YP16 ==> int (size=16) Tmp_res_Chroma
+actor Algo_RUS_vfilter_chroma() int(size=32) In_NAL, int (size=32) Residual_prediction_flag, int (size=16)Y16 , int (size=16) YK16, int (size=16) YP16, int (size=16) Tmp_res_Chroma ==> int (size=16) Current_res_Chroma   
 :
   
   int n:=0;
   int n1:=0;
-  int nx :=0;
   int ny :=0;
   int nb_res_pred :=0;
-  int n_chroma :=0;  
-  int nb_MB:=0;
+  int n_tmp :=0;
+  int nb_MB :=0;
   int PicSizeInMbs :=0 ;
   int PicWidthInMbs :=0;
-  int pos_x_InPix :=0;
-  int pos_y_InPix :=0;
   int pred_flag :=0;
-  
-  
+  int pos_x_InPix:=0;
+  int pos_y_InPix:=0;
+    
   //non_diadic, is_cropping, RefLayerPicWidthInSamples, RefLayerPicHeightInSamples, ScaledRefLayerPicWidthInSamples, ScaledRefLayerPicHeightInSamples
   List( type:int(size=32), size=6 ) in_nal; 
-  List( type:int(size=16), size=(8*8) ) chroma_in_MB;
-  List( type:int(size=16), size=(1920*1080) ) chroma_in_I;
-  List( type:int(size=16), size=(8*8) ) chroma_tmp_MB;
-  List( type:int(size=16), size=1920 ) x16;
-  List( type:int(size=16), size=1920 ) xk16;
-  List( type:int(size=16), size=1920 ) xp16;
-  List( type:int(size=16), size=1080 ) yp16;  
+  List( type:int(size=16), size=8*8 ) chroma_out_MB;
+  List( type:int(size=16), size=8*8 ) chroma_tmp_MB;
+  List( type:int(size=16), size=(1920*1080) ) chroma_tmp_I;
+  List( type:int(size=16), size=1080 ) y16;
+  List( type:int(size=16), size=1080 ) yk16;
+  List( type:int(size=16), size=1080 ) yp16;
+  
    
-  procedure horizontal_filter ( )
+   
+  procedure vertical_filter ( )
   var 
-    int p2, int p3, int i1, int k, int p , int q, int addr_chroma_tmp, int addr_chroma_in
+    int p2, int p3, int i1, int k, int p, int addr_chroma_tmp, int addr_chroma_out
   begin
-
-	foreach int y in 0 .. 7 do
-		q := yp16[pos_y_InPix] + y;	
-		addr_chroma_tmp := y * 8;
-		addr_chroma_in := q * in_nal[2];
+	
+	foreach int x in 0 .. 7 do
+	
+		addr_chroma_tmp := pos_x_InPix + x;
+		addr_chroma_out := x;
 		
-		foreach int x in 0 .. 7 do
-			i1 := x16[pos_x_InPix + x];
-			k := xk16[pos_x_InPix + x];
-			p := (xp16[pos_x_InPix + x]) >> 2;
+		foreach int y in 0 .. 7 do
+			i1 := y16[pos_y_InPix + y];
+			k := yk16[pos_y_InPix + y]; 
+			p := yp16[pos_y_InPix + y] >> 2;
 			
 			if (i1 >> 2) = p then 
 			  p2 :=  i1;
@@ -93,100 +92,98 @@ actor Algo_RUS_hfilter_chroma() int(size=32) In_NAL , int(size=16) Base_res_Chro
 			  p3 := (p << 2) + 3;
 			end
 
-			chroma_tmp_MB[addr_chroma_tmp + x] := (16 - k) * chroma_in_I[addr_chroma_in + p2] + k * chroma_in_I[addr_chroma_in + p3];
-		end	
+			chroma_out_MB[addr_chroma_out + y*8] := ((16 - k) * chroma_tmp_I[ addr_chroma_tmp + in_nal[4] * p2 ] + k * chroma_tmp_I[ addr_chroma_tmp + in_nal[4] * p3 ] + 128) >> 8;
+		end
+		
 	end
   end
-    
+  
   get_In_NAL: action In_NAL:[f] ==>
   guard
-    n < 6
+    n < 6 
   do
     in_nal[n] := f;
     n := n+1;
     if n = 6 then
-      PicSizeInMbs := (in_nal[4] * in_nal[5]) >> 8;
+      PicSizeInMbs := (in_nal[5] * in_nal[4]) >> 8;
       PicWidthInMbs := in_nal[4] >> 4;
     end
   end
     
-  get_Chroma_in: action Base_res_Chroma:[f] ==>
-  guard
-    n_chroma < 8*8  
-  do
-   chroma_in_MB[n_chroma] := f;
-   n_chroma := n_chroma+1;
-  end
-  
   get_Residual_prediction_flag: action Residual_prediction_flag:[f] ==>
   guard
     nb_res_pred = 0   
   do
    pred_flag := f;
-   nb_res_pred :=1;   
-  end
-
-  get_X16_XK16_XP16: action  X16:[ a ],XK16:[ b ], XP16:[ c ] ==>
-  guard
-    nx < in_nal[4] 
-  do
-     x16[nx]:= a;
-     xk16[nx]:= b;
-     xp16[nx]:= c;
-     nx := nx +1;
+   nb_res_pred := 1;
   end
   
-  get_YP16: action  YP16:[ v ] ==>
+  get_Y16_YK16_YP16: action  Y16:[ a ],YK16:[ b ], YP16:[ c ] ==>
   guard
     ny < in_nal[5] 
   do
-     yp16[ny]:= v;
-     ny := ny +1; 
-  end
-             
-  get_done: action ==>
-  guard
-   n = 6 and n_chroma = 8*8 and nb_res_pred = 1 and nx = in_nal[4] 
+     y16[ny]:= a;
+     yk16[ny]:= b;
+     yp16[ny]:= c;
+     ny := ny +1;
   end
   
-  horizontal_loop: action ==>   
+  get_chroma_tmp: action Tmp_res_Chroma:[f] ==>
+  guard
+    n_tmp < 8*8  
   do
-     pos_x_InPix := (nb_MB mod PicWidthInMbs) << 3;
-     pos_y_InPix := (nb_MB / PicWidthInMbs) << 3;
+   chroma_tmp_MB[n_tmp] := f;
+   n_tmp := n_tmp+1;
+  end
+  
+  get_done: action ==>
+  guard
+   n =6 and nb_res_pred = 1 and ny = in_nal[5] and n_tmp = 8*8
+  end
+  
+  
+  vertical_loop: action ==>   
+  do
+    pos_x_InPix := (nb_MB mod PicWidthInMbs) << 3;
+    pos_y_InPix := (nb_MB / PicWidthInMbs) << 3;
      
      foreach int y in 0 .. 7 do
        foreach int x in 0 .. 7 do
-         if xp16[pos_x_InPix] + x < in_nal[2] and yp16[pos_y_InPix] + y < in_nal[3] then
-           chroma_in_I[xp16[pos_x_InPix]+x + (yp16[pos_y_InPix]+y) * in_nal[2]] := chroma_in_MB[x+y*8];
+         if pos_x_InPix + x < in_nal[4] and yp16[pos_y_InPix] + y < in_nal[3] then
+           chroma_tmp_I[pos_x_InPix + x + (yp16[pos_y_InPix]+y) * in_nal[4]] := chroma_tmp_MB[x+y*8];
          end
        end
 	 end
 	 
-	 if pred_flag = 1 then
-		horizontal_filter();
-	 end
+	if pred_flag = 1 then
+		vertical_filter();
+	else
+	  foreach  int j in 0 .. 7 do
+        foreach int k in 0 .. 7 do
+	       chroma_out_MB[ k + j* 8] :=0;
+	    end
+	  end
+	end
   end
   
-  luma_out: action ==> Tmp_res_Chroma:[ p ]
+  chroma_out: action ==> Current_res_Chroma:[ p ]
   var int p   
   do
-     p := chroma_tmp_MB[n1];
+     p := chroma_out_MB[n1];
      n1 := n1 +1;
   end
   
-  luma_out_done: action ==>
+  chroma_out_done: action ==>
   guard
     n1 = 8*8
   do
+    nb_res_pred :=0;
+    n_tmp :=0;
     n1:=0;
-    n_chroma :=0;
-    nb_res_pred :=0; 
-    nb_MB := nb_MB + 1;
-    
+    nb_MB :=nb_MB+1;
     if nb_MB = PicSizeInMbs then
       n:=0;
-      nx :=0;
-      ny:=0;
+      ny :=0;
       nb_MB :=0;
     end
   end
@@ -194,18 +191,17 @@ actor Algo_RUS_hfilter_chroma() int(size=32) In_NAL , int(size=16) Base_res_Chro
   schedule fsm get_init:
 
     get_init  	( get_In_NAL        				   ) --> get_init;
-    get_init  	( get_Chroma_in    					   ) --> get_init;
     get_init  	( get_Residual_prediction_flag ) --> get_init;
-    get_init  	( get_X16_XK16_XP16    				 ) --> get_init;
-	  get_init  	( get_YP16    						   	 ) --> get_init;	
-    get_init  	( get_done       					     ) --> h_filter;
-	  h_filter   	( horizontal_loop 					   ) --> out;
-	  out 		    ( luma_out 							       ) --> out;
-	  out 		    ( luma_out_done 					     ) --> get_init;
+    get_init  	( get_Y16_YK16_YP16    				 ) --> get_init;
+    get_init  	( get_chroma_tmp    				   ) --> get_init;
+    get_init  	( get_done       					     ) --> v_filter;
+	  v_filter 	  ( vertical_loop 					     ) --> out;
+	  out 		    ( chroma_out 						       ) --> out;
+	  out 	    	( chroma_out_done 					   ) --> get_init;
   end
 
   priority
-    luma_out_done > luma_out ;
+    chroma_out_done > chroma_out ;
   end
   
 end
