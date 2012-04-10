@@ -1,0 +1,315 @@
+/*************************************************************************
+This software module was originally developed by 
+dandanding(dandan2036@163.com) (Zhejiang University and EPFL)
+in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-4.
+*************************************************************************/
+
+//Name:VLD_coeff_inter.cal
+//Data:04.04.2008
+//function: Decode the inter coefficients syntax for MPEG-4 SP(table B17).
+//modify:2008-6-1 8:47
+//*change input bits datatype to bool.
+//*change output finish to bool.
+  
+package org.sc29.wg11.mpeg4.part2.sp.parser.vlc;
+
+import org.sc29.wg11.mpeg4.part2.Constants.*;
+import std.util.BitOps.* ;
+
+actor Algo_VLDtableB17_MPEG4part2(
+) 
+  bool BITS,
+  int(size=VLD_DATA_SZ) DCT_DC_SIZE
+  ==> bool FINISH, int(size=SAMPLE_COUNT_SZ) RUN, int(size=SAMPLE_SZ) VALUE, bool LAST:
+
+  int VLD_DATA_SZ=32;
+  int VLD_ADDR_SZ=32; 
+ 
+
+  int START_INDEX = 0;
+  int ESCAPE_CODE = 7167;
+  int RUN_LENGTH = 6;
+  int MARKER_LENGTH = 1;
+  int LEVEL_LENGTH = 12;
+  int RUN_MASK = lshift( 1, RUN_LENGTH ) - 1;
+  int LEVEL_MASK = lshift( 1, LEVEL_LENGTH ) - 1;
+
+  int(size=VLD_ADDR_SZ) vld_index;
+  int(size=VLD_DATA_SZ) vld_codeword := 1;
+  int(size=SAMPLE_SZ) level_lookup_inter;
+  int(size=SAMPLE_SZ) run_lookup_inter;
+  bool escape := false;
+  int(size=1) b_last := 0;
+
+  List( type:int( size=VLD_DATA_SZ ), size=236 ) vld_table = [
+10, 922, 18, 850, 26, 762, 34, 618, 42, 490, 50, 298, 58, 242, 66, 218, 74, 194, 82, 138, 90, 114, 98, 106, 1, 1, 1, 1, 122, 130, 1, 1, 1, 1, 146, 170, 154, 162, 1, 1, 1, 1, 178, 186, 1, 1, 1, 1, 202, 210, 16456, 16396, 44, 40, 226, 234, 18180, 18116, 18052, 17988, 250, 274, 258, 266, 584, 520, 456, 392, 282, 290, 328, 204, 140, 80, 306, 28668, 314, 370, 322, 346, 330, 338, 48, 84, 1476, 1540, 354, 362, 18244, 18308, 18372, 18436, 378, 434, 386, 410, 394, 402, 88, 144, 268, 332, 418, 426, 396, 648, 1604, 1668, 442, 466, 450, 458, 18500, 18564, 18628, 18692, 474, 482, 18756, 18820, 18884, 18948, 498, 562, 506, 538, 514, 530, 522, 17924, 36, 32, 17860, 17796, 546, 554, 17732, 17668, 17604, 17540, 570, 594, 578, 586, 17476, 16392, 1412, 1348, 602, 610, 1284, 1220, 1156, 1092, 626, 706, 634, 682, 642, 666, 650, 658, 1028, 964, 264, 200, 674, 17412, 28, 24, 690, 698, 17348, 17284, 17220, 17156, 714, 738, 722, 730, 17092, 17028, 16964, 900, 746, 754, 836, 136, 76, 20, 770, 826, 778, 802, 786, 794, 16900, 16836, 16772, 16708, 810, 818, 772, 708, 644, 16, 834, 842, 16644, 16580, 16516, 16452, 858, 906, 866, 890, 874, 882, 580, 516, 452, 388, 898, 324, 72, 12, 914, 16388, 260, 196, 4, 930, 68, 938, 132, 8
+];
+
+  procedure start_vld_engine( int index )
+  begin
+    vld_index := index;
+    vld_codeword := 2;
+  end
+
+  function vld_success() --> bool: bitand(vld_codeword,3) = 0 end
+  function vld_continue() --> bool: bitand(vld_codeword,3) = 2 end
+  function vld_failure() --> bool: bitand(vld_codeword,1) = 1 end
+  function vld_result() --> int( size=VLD_DATA_SZ ): rshift(vld_codeword,2) end
+  
+  int(size=7) bits_to_read_count := -1;
+  int(size=33) read_result_in_progress;
+
+  procedure set_bits_to_read( int count )
+  begin
+    bits_to_read_count := count - 1;
+    read_result_in_progress := 0;
+  end
+
+  function done_reading_bits() --> bool : bits_to_read_count < 0 end
+  function read_result() --> int : read_result_in_progress end
+  
+  function inter_max_level( bool last, int run) --> int:
+    if not last then
+      if run = 0 then 12 else
+        if run = 1 then 6 else
+          if run = 2 then 4 else
+            if run < 7 then 3 else
+              if run < 11 then 2 else
+                if run < 27 then 1 else 0 end
+              end
+            end
+          end
+        end
+      end
+    else
+      if run = 0 then 3 else
+        if run = 1 then 2 else
+          if run < 41 then 1 else 0 end
+        end
+      end
+    end
+  end
+
+  function inter_max_run( bool last, int level) --> int:
+    if not last then
+      if level = 1 then 26 else
+        if level = 2 then 10 else
+          if level = 3 then 6 else
+            if level = 4 then 2 else
+              if level = 5 or level = 6 then 1 else 0 end
+            end
+          end
+        end
+      end
+    else
+      if level = 1 then 40 else
+        if level = 2 then 1 else 0 end
+      end
+    end
+  end
+
+  start_VLD: action ==>
+  do
+    start_vld_engine( START_INDEX );
+    //println("start_VLD");
+  end
+
+  read_in_bits: action BITS:[b] ==> FINISH:[f]
+  guard
+    vld_continue()
+  var
+    bool f := false
+  do
+    vld_codeword := vld_table[ vld_index + if b then 1 else 0 end ];
+ 
+    
+    vld_index := rshift(vld_codeword,2)-236;
+  end
+
+  fail_VLD: action ==>
+  guard
+    vld_failure()
+  do
+    println("VLD FAILURE");
+  end
+
+  succeed_VLD: action ==>
+  guard
+    vld_success()
+  end
+  
+  cal_param: action ==>
+  guard
+    vld_success()
+  var
+    int(size=VLD_DATA_SZ) val := vld_result()
+  do
+    escape := (val = ESCAPE_CODE);
+  end
+
+  check_finish: action ==> FINISH:[f]
+  var
+    bool f := if b_last=0 then false else true end
+  end
+
+  coeff_normal: action BITS:[s] ==> RUN:[run], VALUE:[if s then -level else level end], LAST:[if last=1 then true else false end]
+  guard
+    not escape
+  var
+    int(size=SAMPLE_COUNT_SZ) run,
+    int(size=VLD_DATA_SZ) val := vld_result(),
+    int(size=SAMPLE_SZ) level,
+    int(size=1) last
+  do
+    run := bitand( rshift( val, 8), 255);
+    level := bitand( val, 255);
+    last := if bitand( rshift( val, 16), 1) != 0 then 1 else 0 end;
+    b_last := last;
+  end
+  
+  coeff_escape_0: action BITS:[s] ==> FINISH:[f]
+  guard
+    escape,
+    not (if s then true else false end)
+  var
+    bool f := false
+  end
+
+  coeff_escape_1: action BITS:[s] ==> FINISH:[f]
+  guard
+    escape,
+    if s then true else false end
+  var
+    bool f := false
+  end
+
+  coeff_escape_10: action BITS:[s] ==> FINISH:[f]
+  guard
+    escape,
+    not if s then true else false end
+  var
+    bool f := false
+  end
+
+  coeff_escape_11: action BITS:[s] ==>
+  guard
+    escape,
+    if s then true else false end
+  end
+
+  do_level_lookup: action ==>
+  guard
+    vld_success()
+  var
+    int(size=VLD_DATA_SZ-2) val := vld_result()
+  do
+    level_lookup_inter := inter_max_level( bitand( rshift( val, 16), 1) != 0, bitand( rshift( val, 8), 255));
+  end
+  
+  vld_level_lookup: action BITS:[s] ==> RUN:[run], VALUE:[if s then -level else level end], LAST:[if last=1 then true else false end]
+  var
+    int(size=32) val := vld_result(),
+    int(size=SAMPLE_COUNT_SZ) run,
+    int(size=SAMPLE_SZ) level,
+    int(size=1) last
+  do
+    run := bitand( rshift( val, 8), 255);
+    level := bitand( val, 255) + level_lookup_inter;
+    last := if bitand( rshift( val, 16), 1) != 0 then 1 else 0 end;
+    b_last := last;
+  end
+
+  do_run_lookup: action ==>
+  guard
+    vld_success()
+  var
+    int(size=VLD_DATA_SZ-2) val := vld_result()
+  do
+    run_lookup_inter := inter_max_run( bitand( rshift( val, 16), 1) != 0, bitand( val, 255) );
+  end
+  
+  vld_run_lookup: action BITS:[s] ==> RUN:[run], VALUE:[if s then -level else level end], LAST:[if last=1 then true else false end]
+  var
+    int(size=VLD_DATA_SZ-2) val := vld_result(),
+    int(size=SAMPLE_COUNT_SZ) run,
+    int(size=SAMPLE_SZ) level,
+    int(size=1) last
+  do                                      
+    run := bitand( rshift( val, 8), 255) + run_lookup_inter; 
+    level := bitand( val, 255);
+    last := if bitand( rshift( val, 16), 1) != 0 then 1 else 0 end;
+    b_last := last;
+  end
+
+  vld_direct_read: action ==> FINISH:[[false : for int i in 1 .. 21]] repeat 21
+  do
+    set_bits_to_read( 1 + RUN_LENGTH + MARKER_LENGTH + LEVEL_LENGTH + MARKER_LENGTH );
+  end
+  
+  vld_direct_bits: action BITS:[ b ] ==>
+  guard 
+    not done_reading_bits()
+  do
+    read_result_in_progress := bitor( lshift( read_result_in_progress, 1), if b then 1 else 0 end );
+    bits_to_read_count := bits_to_read_count - 1;
+  end
+   
+  vld_direct: action ==> RUN:[run], VALUE:[if s then -level else level end], LAST:[ if last=1 then true else false end ]
+  guard
+    done_reading_bits()
+  var
+    int(size=SAMPLE_COUNT_SZ) run,
+    int(size=SAMPLE_SZ) level,
+    bool s,
+    int(size=1) last
+  do
+    last  := if bitand( rshift( read_result(), RUN_LENGTH + MARKER_LENGTH + LEVEL_LENGTH + MARKER_LENGTH ), 1          ) != 0 then 1 else 0 end;
+    run   := bitand( rshift( read_result(),              MARKER_LENGTH + LEVEL_LENGTH + MARKER_LENGTH ), RUN_MASK   );
+    level := bitand( rshift( read_result(),                                             MARKER_LENGTH ), LEVEL_MASK );
+    if level >= 2048 then
+      s  := true;
+      level := 4096 - level;
+    else
+      s := false;
+    end
+    b_last := last;
+  end
+
+  schedule fsm start_VLD:
+    start_VLD              ( start_VLD       ) --> process;
+    process                ( read_in_bits    ) --> process;
+    process                ( fail_VLD        ) --> start_VLD;
+    process                ( succeed_VLD     ) --> cal_param;
+
+    cal_param              ( cal_param       ) --> cal_coeff;
+    cal_coeff              ( coeff_normal    ) --> check_finish;    
+    cal_coeff              ( coeff_escape_0  ) --> coeff_escape_0_start;
+    cal_coeff              ( coeff_escape_1  ) --> coeff_escape_2;
+
+    coeff_escape_2         ( coeff_escape_10 ) --> coeff_escape_10_start;
+    coeff_escape_2         ( coeff_escape_11 ) --> coeff_escape_11_cal;
+    
+    coeff_escape_0_start   ( start_VLD       ) --> coeff_escape_0_process;
+    coeff_escape_0_process ( read_in_bits    ) --> coeff_escape_0_process;
+    coeff_escape_0_process ( fail_VLD        ) --> start_VLD;
+    coeff_escape_0_process ( succeed_VLD     ) --> do_level_lookup;
+    do_level_lookup        ( do_level_lookup ) --> vld_level_lookup;   
+    vld_level_lookup       ( vld_level_lookup) --> check_finish;
+
+    coeff_escape_10_start  ( start_VLD       ) --> coeff_escape_10_process;
+    coeff_escape_10_process( read_in_bits    ) --> coeff_escape_10_process;
+    coeff_escape_10_process( fail_VLD        ) --> start_VLD;
+    coeff_escape_10_process( succeed_VLD     ) --> do_run_lookup;
+    do_run_lookup          ( do_run_lookup   ) --> vld_run_lookup;
+    vld_run_lookup         ( vld_run_lookup  ) --> check_finish;
+
+    coeff_escape_11_cal    ( vld_direct_read ) --> vld_direct_cal;
+    vld_direct_cal         ( vld_direct_bits ) --> vld_direct_cal;
+    vld_direct_cal         ( vld_direct      ) --> check_finish;
+
+    check_finish           ( check_finish    ) --> start_VLD;
+  end
+end
