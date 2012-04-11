@@ -1,0 +1,147 @@
+/*
+ * Copyright (c) 2011, INSA of Rennes
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the INSA of Rennes nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Jerome Gorin IETR/INSA of Rennes (France)
+
+package org.ietr.motionEstimation.psdf;
+
+actor Search_FS () uint(size=PIX_SZ)  PIX ==>  int(size=32) Frame, int(size=32) Mb, int(size=8) RW, uint(size=PIX_SZ) VAL, int (size=32) Address, int(size=32) Ref, int(size=32) MV:
+	int(size=32) WIDTH = 352;
+	int(size=32) HEIGHT = 288;
+	int(size=32) MB_SZ = 16;
+	int(size=32) MAX_MOTION = 16;
+	int(size=32) dx := -MAX_MOTION;
+	int(size=32) dy:= -MAX_MOTION;
+	uint PIX_SZ = 8;
+	int(size=32) frame_Id := 0;
+	int(size=32) mb_Id := 0;
+	int rx := 0;
+	int ry := 0;
+	int wx := -1;
+	int wy := 0;
+	
+ 	read_ln : action PIX:[pix] ==> RW:[2], VAL:[pix], Address:[wx, wy], Ref:[frame_Id mod 2]		
+ 	do
+ 		wx := wx + 1;
+ 		
+ 		if (wx >= WIDTH) then
+ 			wx := 0;
+ 			wy := wy + 1;
+ 		end
+ 				
+ 		if (wy >= HEIGHT) then
+ 			wx := 0;
+ 			wy := 0;
+ 			frame_Id := frame_Id + 1;
+ 		end	
+ 	end
+ 	
+ 	curMb: action ==> Frame:[frame_Id], RW:[1], Address:[rx, ry, rx + MB_SZ - 1, ry + MB_SZ - 1], Ref:[frame_Id mod 2]
+ 	guard 
+ 		(0 =  wy mod MB_SZ ) && (frame_Id > 0) && ( wy != 0) && (dy < MAX_MOTION)
+ 	end
+ 	
+ 	refWin: action ==> Frame:[frame_Id], RW:[1], Address:[rx + dx, ry + dy, rx + MB_SZ + dx - 1, ry + MB_SZ + dy - 1], MV:[dx, dy], Ref:[frame_Id / 2]
+  	end
+  	
+  	inc: action ==> Mb:[mb_Id]
+  	do
+  		dx := dx + 1;
+ 		
+ 		if ((rx + MB_SZ + dx > WIDTH) || (dx = MAX_MOTION)) then
+ 			dx := - MAX_MOTION;
+ 			dy :=  dy + 1;
+ 		end
+ 		
+ 		if (rx + dx < 0) then
+ 			dx := -rx;
+ 		end 
+ 		
+ 		
+ 		if (ry + dy < 0) then
+ 			dy := -ry;
+ 		end
+  	end
+  	
+  	done : action ==>
+  	guard
+  		(dy = MAX_MOTION) || (ry + MB_SZ + dy > HEIGHT)
+  	do
+  		rx := rx + MB_SZ;
+  		mb_Id := mb_Id + 1;
+  		
+  		if (rx - MAX_MOTION < 0) then
+  			dx := - rx;
+  		else
+  			dx := -MAX_MOTION;
+  		end
+  		
+  		if (ry - MAX_MOTION < 0) then
+  			dy := - ry;
+  		else
+  			dx := ry - MAX_MOTION;
+  		end
+  	end
+  	
+  	cont: action ==>
+  	guard
+  		(rx < WIDTH)
+  	end
+  	
+  	
+  	linedone : action ==>
+  	guard
+  		rx >=  WIDTH
+  	do
+  		rx := 0;
+  		ry := ry + MB_SZ ;
+  		wy := wy + 1;
+  		wx := -1;
+  		
+  		if (ry >= HEIGHT) then
+  			ry := 0;
+  		end
+  	end
+ 	
+ 	schedule fsm read :
+		read      (read_ln ) --> read;
+		read      ( curMb ) --> search;
+		search    ( refWin ) --> up_index;
+		up_index    ( inc ) --> next;
+		next      ( curMb ) --> search;
+		next      ( done ) --> end_MB;
+		end_MB      ( cont ) --> next;
+		end_MB    ( linedone ) --> read;
+	end
+ 	
+ 	priority
+		curMb > read_ln;
+		done > curMb;
+	end
+ end
