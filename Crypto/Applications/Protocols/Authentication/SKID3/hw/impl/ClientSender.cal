@@ -1,0 +1,107 @@
+/**
+ * This FU is part of a RVC-CAL implementation of SKID3 user authentication protocol.
+ * This FU (as part of the client's implementation) initiates the protocol by sending its UID and the nounce rC, authenticates the server by 
+ * comparing the HMAC messages (H1 and H1') and sends its own HMAC on server's nounce (ie., H2) to allow the server to authenticate it.
+ * 
+ * FU ID: Client_Sender
+ * One FU parameter: 
+ * 	 This FU gets its UID as an FU parameter.
+ * 	 1) int clientID: the UID of the client. 
+ * Four input port:
+ * 	 1) uint(size=8) IP1_PRG: the nounce from pseudo random generator (PRG).
+ *   2) uint(size=8) IP2_Hash_Size: the hash size (in bytes) of the Hash operation (e.g. SHA-1, SHA-2 etc.) used in the HMAC.
+ *   3) uint(size=8) IP3_HMAC: the HMAC.
+ *   4) uint(size=8) IP4_Link: the link to exchange data between this FU and the Client_Receiver FU.  
+ * One output port:
+ * 	 1) uint(size=8) OP1_Channel: the communication channel to send its data (the UID, the nounce rC and the HMAC H2).
+ *   
+ * Developer: Junaid Jameel Ahmad, Shujun Li @ Uni-Konstanz 2012
+ * Last modified: 05.04.2012
+ */
+
+package Protocols.Authentication.SKID3.hw.impl;
+
+actor ClientSender(int(size=8) clientID) uint(size=8) IP1_PRG, uint(size=8) IP2_Hash_Size, uint(size=8) IP3_HMAC, uint(size=8) IP4_Link  
+	==> 
+	uint(size=8) OP1_Channel:
+
+
+	uint(size=8) rC := 0; // My nounce.
+	
+	uint(size=8) hashSize := 0; // Number of bytes.	
+	//List(type:uint(size=8),size=32) serverHMAC := [0: for int i in 0 .. 31];
+	int counter := 0;
+	int errors := 0; // Authentication errors.	
+
+	receiveConfigurations:
+	action IP1_PRG:[r], IP2_Hash_Size:[hSize] ==>
+	do
+		rC := r;
+		hashSize := hSize;
+		counter := 0;		
+	end
+	
+	// Sends its UID and the nounce rC to initiate the protocol.
+	initiateProtocol:
+	action ==> OP1_Channel:[clientID, rC] end
+
+	// Authenticate (compare) the HMAC sent by server (H1 received on port IP4_Link) 
+	// with my own copy of the server's HMAC (H1' received on port IP3_HMAC) 
+	authenticateHMAC:
+	action IP3_HMAC:[h1], IP4_Link:[h2] ==> 
+	guard counter < hashSize
+	do
+		if( h1 != h2 ) then
+			errors := errors + 1;
+		end	
+		counter := counter + 1;		
+	end
+	
+	// Report the successful authentication.
+	authenticationSuccess:
+	action ==>
+	guard counter = hashSize and errors = 0
+	do
+		println("Server authenticated!");		
+		counter := 0;		
+	end
+	
+	// Report the failed authentication.
+	authenticationFail:
+	action ==> 
+	guard counter = hashSize and errors > 0
+	do
+		println("Server not authenticated!");		
+	end
+ 
+	// Now send the HMAC computed over server's nouce (i.e., H2) to the server so that server can also authenticate me.
+	sendHMACData:
+	action IP3_HMAC:[h] ==> OP1_Channel:[h]
+	guard counter < hashSize
+	do
+		counter := counter + 1;		
+	end
+	
+	haltloop:
+	action ==> guard counter = hashSize do counter := 0; end
+	
+
+	schedule fsm start:
+		start(receiveConfigurations) --> start;
+		start(initiateProtocol) --> authenticate;
+		
+		authenticate(authenticateHMAC) --> authenticate; 
+		authenticate(authenticationSuccess) --> sendData;
+		
+		authenticate(authenticationFail) --> Halt;
+		Halt(haltloop) --> Halt;
+		
+	 	sendData(sendHMACData) --> sendData;	 	
+	 	sendData(receiveConfigurations) --> start;
+	end
+	
+	priority
+		receiveConfigurations > initiateProtocol > authenticateHMAC > authenticationSuccess > authenticationFail > sendHMACData;
+	end
+
+end

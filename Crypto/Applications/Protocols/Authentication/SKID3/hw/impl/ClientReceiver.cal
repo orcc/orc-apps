@@ -1,0 +1,88 @@
+/**
+ * This FU is part of a RVC-CAL implementation of SKID3 user authentication protocol.
+ * This FU (as part of the client's implementation) receives the server's data (the nounce rS and the HMAC H1) from the communication channel,
+ * prepares data for HMAC operations (H1' and H2) and sends the needed data to its helper FU (Client_Sender).
+ * 
+ * FU ID: Client_Receiver
+ * Two FU parameter: 
+ * 	 This FU gets the UIDs of both the server and its own as FU parameters.
+ * 	 1) int clientID: the UID of the client.
+ *   2) int serverID: the UID of the server.
+ * Three input port:
+ * 	 1) uint(size=8) IP1_PRG: the nounce from pseudo random generator (PRG).
+ *   2) uint(size=8) IP2_Hash_Size: the hash size (in bytes) of the Hash operation (e.g. SHA-1, SHA-2 etc.) used in the HMAC.
+ *   3) uint(size=8) IP3_Channel: the communication channel to receive server's data (the nounce rS and the HMAC H1).  
+ * Four output port:
+ * 	 1) uint(size=8) OP1_Message_Size: the size (in bytes) of the message to be HMACed.
+ *   2) uint(size=8) OP2_Message: the message to be HMACed.
+ *   3) uint(size=8) OP3_Hash_Size: the hash size (in bytes) of the Hash operation (e.g. SHA-1, SHA-2 etc.) used in the HMAC. 
+ *   4) uint(size=8) OP4_Link: the link to exchange data between this FU and the Client_Sender FU.
+ *
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2012
+ * Last modified: 05.04.2012
+ */
+
+package Protocols.Authentication.SKID3.hw.impl;
+
+actor ClientReceiver(int(size=8) clientID, int(size=8) serverID) uint(size=8) IP1_PRG, uint(size=8) IP2_Hash_Size, uint(size=8) IP3_Channel 
+	==> 
+	uint(size=64) OP1_Message_Size, uint(size=8) OP2_Message,  uint(size=8) OP3_Hash_Size,  uint(size=8) OP4_Link:
+
+
+	uint(size=8) rC := 0; // My nounce.
+	uint(size=8) rS := 0; // Server's nounce.
+	
+	uint(size=8) hashSize := 0; // Number of bytes.	
+	int counter := 0;
+	
+
+	receiveConfigurations:
+	action IP1_PRG:[r], IP2_Hash_Size:[hSize] ==>
+	do
+		rC := r;
+		hashSize := hSize;
+		counter := 0;		
+	end
+	
+	// Process server's nounce (rS)
+	processServerNounce:
+	action IP3_Channel:[r] ==>
+	guard counter = 0 
+	do
+		rS := r;
+		counter := counter + 1;
+	end
+
+	// Process (receive and forward) the server's HMAC (H1)
+	processServerHMAC:
+	action IP3_Channel:[h] ==> OP4_Link:[h]
+	guard counter > 0 and counter <= hashSize
+	do
+		counter := counter + 1;		
+	end
+ 
+	// Prepare data to generate our copy of the server's HMAC (i.e., H1'). Client_Sender actor will verify if H1' equals H1.  	
+	sendHMACData1:
+	action ==> OP1_Message_Size:[3], OP2_Message:[rS, rC, serverID], OP3_Hash_Size:[hashSize]
+	guard counter > hashSize end
+
+	// Prepare data to generate the HMAC on server's nounce (i.e., H2), which will be sent to the server for authentication.
+	sendHMACData2:
+	action ==> OP1_Message_Size:[3], OP2_Message:[rC, rS, clientID], OP3_Hash_Size:[hashSize]
+	guard counter > hashSize end
+
+	schedule fsm start:
+		start(receiveConfigurations) --> listenChannel;
+		
+		listenChannel(processServerNounce) --> listenChannel; 
+		listenChannel(processServerHMAC) --> listenChannel;
+		listenChannel(sendHMACData1) --> sendHMACData;
+		
+	 	sendHMACData(sendHMACData2) --> start;
+	end
+	
+	priority
+		processServerHMAC > sendHMACData1 > sendHMACData2;
+	end
+
+end
