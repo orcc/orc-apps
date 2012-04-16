@@ -6,10 +6,10 @@
  * 
  * FU ID: Preprocessor64
  * Two input port:
- * 		1) uint(size=64) IP1_Size: the size of the input message
+ * 		1) int(size=64) IP1_Size: the size of the input message
  * 		2) uint(size=8) IP2_M: the input message (as byte stream) 
  * Two output port:
- * 		1) uint(size=64) OP1_N: the number of input message blocks
+ * 		1) int(size=32) OP1_N: the number of input message blocks
  * 		2) uint(size=8) OP2_M: the message block (16 bytes each)
  *
  * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2010
@@ -18,15 +18,16 @@
 
 package Protocols.Authentication.SKID3.hw.core;
 
-actor Preprocessor64() uint(size=64) IP1_Size, uint(size=8) IP2_M ==> uint(size=64) OP1_N, uint(size=8) OP2_M:
+actor Preprocessor64() int(size=64) IP1_Size, uint(size=8) IP2_M ==> int(size=32) OP1_N, uint(size=8) OP2_M:
 	// State variables:
 	uint BLOCK_SIZE = 64; // Block size of one message in bytes.
-	uint(size=64) messageSize := 0; // Size of the current message in bytes.
-	uint(size=64) messageBitSize := 0;
+	int(size=64) messageSize := 0; // Size of the current message in bytes.
+	int(size=64) messageBitSize := 0;
 	
-	int byteCounter := 0;
-	uint numZeroBytes := 0;
-	uint N;
+	int byteCounter1 := 0;
+	int byteCounter2 := 0;
+	int numZeroBytes := 0;
+	int N;
 	
 	// Receive message size and calculates:
 	// 1) numZeroBytes: Number of zeros bytes to be padded.
@@ -35,7 +36,7 @@ actor Preprocessor64() uint(size=64) IP1_Size, uint(size=8) IP2_M ==> uint(size=
 	receiveSize:
 	action IP1_Size:[mSize] ==> OP1_N:[N]
 	var
-		uint(size=64) temp
+		int(size=64) temp
 	do
 		messageSize := mSize;
 		messageBitSize := mSize << 3;
@@ -48,28 +49,28 @@ actor Preprocessor64() uint(size=64) IP1_Size, uint(size=8) IP2_M ==> uint(size=
 			N := temp / BLOCK_SIZE + 1;
 			numZeroBytes := N * BLOCK_SIZE - temp;
 		end		
-	
-		byteCounter := 0;
+//println("Preprocessor64 > receiveSize: "+N);	
+		byteCounter1 := 0;
+		byteCounter2 := 0;
 	end
 	
 	// Receive and forward input message byte by byte.
-	receiveAndForwardMessage.others:
+	receiveAndForwardMessage:
 	action IP2_M:[b] ==> OP2_M:[b]
+	guard byteCounter1 < messageSize
 	do
-		byteCounter := byteCounter + 1;
-	end
-	
-	receiveAndForwardMessage.last:
-	action IP2_M:[b] ==> OP2_M:[b]
-	guard byteCounter >= messageSize
-	do
-		byteCounter := 0;
+		byteCounter1 := byteCounter1 + 1;
+//println("Preprocessor64 > receiveAndForwardMessage: "+byteCounter1);		
 	end
 	
 	// Once input message is finished, forward byte 0x80 (the most significant bit as 1).
 	forward80Byte:
-	action ==> OP2_M:[0x80]		
-	end	 
+	action ==> OP2_M:[0x80]
+	guard byteCounter1 >= messageSize
+	do
+		byteCounter1 := 0;
+//println("Preprocessor64 > forward80Byte: "+byteCounter1);		
+	end
 	
 	// Forward the number of zeros bytes to be padded to make the message blocks to be of 64 bytes.
 	forwardZeroBytes:
@@ -77,41 +78,49 @@ actor Preprocessor64() uint(size=64) IP1_Size, uint(size=8) IP2_M ==> uint(size=
 	guard numZeroBytes > 0
 	do	
 		numZeroBytes := numZeroBytes - 1;
+//println("Preprocessor64 > forwardZeroBytes: "+numZeroBytes);		
 	end
 
 	// Forward the message size as last 2 dwords of the last message block.
-	forwardSize.others:
-	action ==> OP2_M:[b]
-	var
-		uint(size=8) b := messageBitSize & 0xff
+	List(type:uint(size=8), size=8) b := [0: for int i in 0 .. 7]; // This list represents 2 dwords (i.e., 8 bytes).
+	// First build the contents of this list in this action transfering the size (in the next action).
+	forwardSize.build:
+	action ==> 
+	guard byteCounter1 < 8
 	do
+		b[7-byteCounter1] := messageBitSize & 0xff;
 		messageBitSize := messageBitSize >> 8;
-		byteCounter := byteCounter + 1;
+//println("Preprocessor64 > forwardSize.build: "+byteCounter1+" "+b[7-byteCounter1]);
+		byteCounter1 := byteCounter1 + 1;
+		
+	end
+	 
+	forwardSize.transfer:
+	action ==> OP2_M:[b[byteCounter2-1]]
+	guard byteCounter1 = 8 and byteCounter2 < 8
+	do
+		byteCounter2 := byteCounter2 + 1;
+//println("Preprocessor64 > forwardSize.transfer: "+byteCounter2 +" "+b[byteCounter2-1]);		
 	end
 	
-	forwardSize.last:
-	action ==> OP2_M:[b]
-	guard byteCounter >= 7
-	var
-		uint(size=8) b := messageBitSize & 0xff
-	do
-		messageBitSize := messageBitSize >> 8;
-		byteCounter := 0;
-	end
+	reset:
+	action ==> guard byteCounter1 = 8 and byteCounter2 = 8 end
 	
 	schedule fsm setSize :
-		setSize  ( receiveSize                     ) --> bypass;
-		bypass   ( receiveAndForwardMessage.others ) --> bypass;
-		bypass   ( receiveAndForwardMessage.last   ) --> finished;
-		finished ( forward80Byte                   ) --> padded;
-		padded   ( forwardZeroBytes                ) --> padded;
-		padded   ( forwardSize.others              ) --> padded;
-		padded   ( forwardSize.last                ) --> setSize;
+		setSize  ( receiveSize              ) --> bypass;
+		bypass   ( receiveAndForwardMessage ) --> bypass;
+		bypass   ( forward80Byte            ) --> padded;
+		padded   ( forwardZeroBytes         ) --> padded;
+		padded   ( forwardSize.build        ) --> fwdSize;
+		fwdSize  ( forwardSize.build        ) --> fwdSize;
+		fwdSize  ( forwardSize.transfer     ) --> fwdSize;		
+		fwdSize  ( reset                    ) --> setSize;
 	end
 	
 	priority
-		receiveAndForwardMessage.last > receiveAndForwardMessage.others;
-		forwardZeroBytes > forwardSize.last > forwardSize.others;
+		receiveAndForwardMessage > forward80Byte;
+		forwardZeroBytes > forwardSize.build;
+		forwardSize.build > forwardSize.transfer > reset;
 	end
 	
 end

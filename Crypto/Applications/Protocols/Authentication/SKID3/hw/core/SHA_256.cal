@@ -6,7 +6,7 @@
  * One FU parameter:
  * 	 1) bool IS_SHA256: run in SHA-256 mode? (true = SHA-256, false = SHA-224)
  * Two input port:
- * 		1) uint(size=32) IP1_N: the number of input message blocks
+ * 		1) int(size=32) IP1_N: the number of input message blocks
  * 		2) uint(size=32) IP2_M: the input message (as double word stream)
  * One output port:
  * 		2) uint(size=32) OP2_M: the output (message digest)
@@ -17,7 +17,7 @@
 
 package Protocols.Authentication.SKID3.hw.core;
 
-actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(size=32) OP:
+actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(size=32) OP:
 	// Receive the number of messages to be processed and init hash variables for SHA-224.
 	int N := -1; // Number of messages.
 	int step_index := 0;
@@ -47,7 +47,10 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 			H[6] := 0x1f83d9ab; 
 			H[7] := 0x5be0cd19;
 		end
-		step_index := 1;		
+		step_index := 1;
+
+		messageCounter := 0; // Reset message counter.
+		wordCounter := 0; // Reset word counter.
 	end
 	
 	// State variables:
@@ -62,10 +65,12 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 	];
 	List(type:uint(size=32),size=64) W := [0: for int i in 0 .. 63]; // Message schedule.
+	List(type:uint(size=32),size=16) M := [0: for int i in 0 .. 15]; // Message.
 	List(type:uint(size=32),size=8) H := [  // Initial hash values.
 		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,	0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 	];
-	int messageCounter := 0; // count the number of messaged processed.
+	int messageCounter := 0; // count the number of messages processed.
+	int wordCounter := 0; // count the number of words processed.
 
 	// Rotate right shift of 32 bit numbers.
 	function ROTR32(uint(size=32) x, int n ) --> uint(size=32):
@@ -102,10 +107,19 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 		ROTR32(x,17) ^ ROTR32(x,19) ^ (x >> 10)
 	end
 	
+	// Receive the message.
+	receiveMessage:
+	action IP2_M:[m] ==>
+	guard step_index = 1 and wordCounter < 16
+	do
+		M[wordCounter] := m;
+		wordCounter := wordCounter + 1;
+	end
+	
 	// Hash input messages.
 	hashMessage:
-	action IP2_M:[M] repeat 16 ==>
-	guard step_index = 1 and messageCounter < N
+	action ==>
+	guard step_index = 1 and wordCounter = 16 and messageCounter < N
 	var
 		// Working variables:
 		uint(size=32) a,
@@ -118,15 +132,19 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 		uint(size=32) h,
 		// Temporary variables:
 		uint(size=32) T1,
-		uint(size=32) T2
+		uint(size=32) T2,
+		
+		int t := 0
 	do
 		// Prepare Message schedule.		
-		foreach int t in 0 .. 63 do
+		while(t < 64) do
 			if t <= 15 then
 				W[t] := M[t];			
 			else
 				W[t] := SmallSigma1(W[t-2]) + W[t-7] + SmallSigma0(W[t-15]) + W[t-16];
 			end
+			
+			t := t + 1;
 		end
 		
 		// Initialize working variables.
@@ -138,9 +156,10 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 		f := H[5];
 		g := H[6];
 		h := H[7];
-
+				
 		// 64 Computation cycles.
-		foreach int t in 0 .. 63 do
+		t := 0;
+		while(t < 64) do
 			T1 := h + BigSigma1(e) + Ch(e,f,g) + K[t] + W[t];
 			T2 := BigSigma0(a) + Maj(a,b,c);
 			h := g;
@@ -151,6 +170,8 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 			c := b;
 			b := a;
 			a := T1 + T2;		
+
+			t := t + 1;
 		end
 		
 		// Compute intermediate hash values.
@@ -167,8 +188,10 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 		messageCounter := messageCounter + 1;
 		
 		if (messageCounter = N) then
-		 	step_index := 2; 
-		end		
+		 	step_index := 2;
+		else
+			wordCounter := 0; 	 
+		end
 	end
 
 	// Output the final generated hash (message digest).
@@ -176,7 +199,6 @@ actor SHA_256(bool IS_SHA256) uint(size=32) IP1_N, uint(size=32) IP2_M ==> uint(
 	action ==> OP:[H[0], H[1], H[2], H[3], H[4], H[5], H[6], H[7]]
 	guard step_index = 2
 	do
-		messageCounter := 0; // Reset message counter.
 		step_index := 0;
 	end
 	
