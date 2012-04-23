@@ -163,8 +163,15 @@ actor MPEG2_SP_Parser()
 	uint(size=8)	sub_carrier_phase;
 	
 	// Slice
+	uint(size=8)	slice_vertical_position; // It is given by the start code of the slice !
 	uint(size=3)	slice_vertical_position_extension;
 	uint(size=5)	quantiser_scale_code;
+	uint(size=1)	slice_extension_flag;
+	uint(size=1)	intra_slice;
+	uint(size=1)	slice_picture_id_enable;
+	uint(size=6)	slice_picture_id;
+	uint(size=1)	extra_bit_slice;
+	uint(size=8)	extra_information_slice;
 	
 	// ////////////////////////////////////////////////////////////////////////
 	// Functions / Procedures
@@ -217,6 +224,8 @@ actor MPEG2_SP_Parser()
 	end
 	
 	eat_bit:action Bitstream: [token] ==>	// Eat stuffing bit when not byte aligned
+	guard
+		token = 0
 	end
 	
 	read_start_code: action Bitstream: [token] repeat 8 ==>	// Put start_code into nextbits
@@ -343,9 +352,8 @@ actor MPEG2_SP_Parser()
 		println("Error extension start code - MPEG1!");
 	end
 	
-	// Extension and User Data
-	
 	// User Data
+	
 	ud_user_data: action ==>
 	guard
 		nextbits = USER_DATA_START_CODE
@@ -572,7 +580,6 @@ actor MPEG2_SP_Parser()
 		extra_bit_picture := token;
 	end
 	
-	
 	// Picture Coding Extension
 	
 	pce_picture_coding_extension: action Bitstream: [token] repeat 30 ==>
@@ -638,12 +645,15 @@ actor MPEG2_SP_Parser()
 		composite_display_flag = 0
 	end
 	
+	// Slice
+	
 	sl_big_slice: action Bitstream: [token] repeat 8 ==>
 	guard
 		SLICE_BEGIN_START_CODE <= nextbits,
 		SLICE_END_START_CODE >= nextbits,
 		vertical_size > 2800
 	do
+		slice_vertical_position := nextbits;
 		bit_buffer := [token[i]: for int i in 0 .. 7];
 		compute_nextbits(0, 2);
 		slice_vertical_position_extension := nextbits;
@@ -657,10 +667,47 @@ actor MPEG2_SP_Parser()
 		SLICE_END_START_CODE >= nextbits,
 		vertical_size < 2800
 	do
-	bit_buffer := [token[i]: for int i in 0 .. 4];
+		slice_vertical_position := nextbits;
+		bit_buffer := [token[i]: for int i in 0 .. 4];
 		compute_nextbits(0, 4);
 		quantiser_scale_code := nextbits;
 	end
+	
+	sl_slice_extension: action Bitstream: [token] repeat 9 ==>
+	guard
+		token[0] = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 8];
+		compute_nextbits(0, 0);
+		slice_extension_flag := nextbits;
+		compute_nextbits(1, 1);
+		intra_slice := nextbits;
+		compute_nextbits(2, 2);
+		slice_picture_id_enable := nextbits;
+		compute_nextbits(3, 8);
+		slice_picture_id := nextbits;
+	end
+	
+	sl_extra_information_slice: action Bitstream: [token] repeat 9 ==>
+	guard
+		token[0] = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 8];
+		compute_nextbits(0, 0);
+		extra_bit_slice := nextbits;
+		compute_nextbits(1, 8);
+		extra_information_slice := nextbits;		
+	end
+	
+	sl_slice_end: action Bitstream: [token] ==>
+	guard
+		token = 0
+	do
+		extra_bit_slice := token;
+	end
+	
+	
+	
 	
 	schedule fsm next_start_code :
 	
@@ -725,8 +772,12 @@ actor MPEG2_SP_Parser()
 		pce_composite_display		(pce_not_composite_display)				-->		next_start_code;
 		
 		// Slice
-		go_to_code					(sl_big_slice)							-->		next_start_code;		// to be continued
-		go_to_code					(sl_small_slice)						-->		next_start_code;		// to be continued
+		go_to_code					(sl_big_slice)							-->		sl_slice_extension;	
+		go_to_code					(sl_small_slice)						-->		sl_slice_extension;
+		sl_slice_extension			(sl_slice_extension)					-->		sl_extra_info_slice;
+		sl_slice_extension			(sl_slice_end)							-->		next_start_code;			// To be continued !	==> Macroblock()
+		sl_extra_info_slice			(sl_extra_information_slice)			-->		sl_extra_info_slice;
+		sl_extra_info_slice			(sl_slice_end)							-->		next_start_code;			// To be continued !	==>	Macroblock()
 		
 		// debug						(LOOK_FOLLOWING_BITS)					-->		next_start_code;
 		
