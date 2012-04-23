@@ -45,18 +45,29 @@ actor ServerReceiver(int(size=8) serverID) uint(size=8) IP1_PRG, int(size=8) IP2
 	end
 	
 	// Process clients's ID and nounce (rC)
-	processClientsIDAndNounce:
-	action IP3_Channel:[id, r] ==> 
+	processClientsIDAndNounce_id:
+	action IP3_Channel:[id] ==> 
 	guard counter = 0
 	do
 		clientID := id;
+	end
+	
+	processClientsIDAndNounce_r:
+	action IP3_Channel:[r] ==> 
+	do
 		rC := r;
 		counter := counter + 1;
 	end
 
 	// Prepare data to generate the HMAC on client's nounce (i.e., H1), which will be sent to the client for authentication.
-	sendHMACData1:
-	action ==> OP1_Message_Size:[3], OP2_Message:[rS, rC, serverID], OP3_Hash_Size:[hashSize] end
+	sendHMACData1_rS:
+	action ==> OP1_Message_Size:[3], OP2_Message:[rS], OP3_Hash_Size:[hashSize] end
+	
+	sendHMACData1_rc:
+	action ==> OP2_Message:[rC]end
+	
+	sendHMACData1_idS:
+	action ==> OP2_Message:[serverID] end
 
 	// Process (receive and forward) the client's HMAC (H2) on my nounce.
 	processClientHMAC:
@@ -67,24 +78,39 @@ actor ServerReceiver(int(size=8) serverID) uint(size=8) IP1_PRG, int(size=8) IP2
 	end
 
 	// Prepare data to generate my copy of the client's HMAC (i.e., H2'). Server_Sender actor will verify if H2' equals H2.
-	sendHMACData2:
-	action ==> OP1_Message_Size:[3], OP2_Message:[rC, rS, clientID], OP3_Hash_Size:[hashSize]
+	sendHMACData2_rC:
+	action ==> OP1_Message_Size:[3], OP2_Message:[rC], OP3_Hash_Size:[hashSize]
+	guard counter > hashSize end
+	
+	sendHMACData2_rS:
+	action ==> OP2_Message:[rS]
+	guard counter > hashSize end
+	
+	sendHMACData2_idC:
+	action ==> OP2_Message:[clientID]
 	guard counter > hashSize end
 
 	schedule fsm start:
-		start(receiveConfigurations) --> listenChannel;
+	
+		start(receiveConfigurations) --> listenChannel;		
 		
-		listenChannel(processClientsIDAndNounce) --> sendHMACData1;
-		sendHMACData1(sendHMACData1) --> listenChannel;
-		
+		listenChannel(processClientsIDAndNounce_id) --> processClientsIDAndNounce_r;
 		listenChannel(processClientHMAC) --> listenChannel;
-		listenChannel(sendHMACData2) --> sendHMACData2;
+		listenChannel(sendHMACData2_rC) --> sendHMACData2_rS;
 		
-	 	sendHMACData2(sendHMACData2) --> start;
+		sendHMACData2_rS (sendHMACData2_rS) --> sendHMACData2_idC;
+		sendHMACData2_idC(sendHMACData2_idC) --> start;
+		
+		processClientsIDAndNounce_r (processClientsIDAndNounce_r) -->sendHMACData1_rS;
+		
+		sendHMACData1_rS(sendHMACData1_rS) --> sendHMACData1_rc;
+		sendHMACData1_rc(sendHMACData1_rc) --> sendHMACData1_idS;
+		sendHMACData1_idS(sendHMACData1_idS) --> listenChannel;
+	 	
 	end
 	
-	priority
-		processClientsIDAndNounce > processClientHMAC > sendHMACData2;
-	end
+	/*priority
+		processClientsIDAndNounce_id > processClientHMAC > sendHMACData2;
+	end*/
 
 end
