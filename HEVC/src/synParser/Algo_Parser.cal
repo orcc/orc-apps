@@ -7,7 +7,7 @@ actor Algo_Parser ()
 				uint(size= 8) byte
 				==>
 :
-	bool DEBUG_BITSTREAM = false;
+	bool DEBUG_BITSTREAM = true;
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
 	uint(size= 8) se_idx;
@@ -96,14 +96,20 @@ actor Algo_Parser ()
 		if DEBUG_BITSTREAM then
 			println("=========== NAL_UNIT ===========");
 			flushBits_name( 1, fifo,   "reserved_zero_1bits                     ");
-			vld_u_name(  2, fifo, res, "nal_ref_flag                            "); nalUnit[NAL_REF_FLAG]  := res[0];
-			vld_u_name(  5, fifo, res, "nal_unit_type                           "); nalUnit[NAL_UNIT_TYPE] := res[0];
+			vld_u_name(  1, fifo, res, "nal_ref_flag                            "); nalUnit[NAL_REF_FLAG]  := res[0];
+			vld_u_name(  6, fifo, res, "nal_unit_type                           "); nalUnit[NAL_UNIT_TYPE] := res[0];
 		else
-			flushBits( 1 , fifo );
-			vld_u(  2, fifo, res); nalUnit[NAL_REF_FLAG]  := res[0];
-			vld_u(  5, fifo, res); nalUnit[NAL_UNIT_TYPE] := res[0];
+			flushBits( 1, fifo );
+			vld_u(  1, fifo, res); nalUnit[NAL_REF_FLAG]  := res[0];
+			vld_u(  6, fifo, res); nalUnit[NAL_UNIT_TYPE] := res[0];
 		end
-		nalUnit[TEMPORAL_ID] := 0;
+		if DEBUG_BITSTREAM then
+			vld_u_name(  3, fifo, res, "temporal_id                             "); nalUnit[TEMPORAL_ID]		:= res[0];
+			flushBits_name( 5, fifo,   "reserved_zero_5bits                     ");
+		else
+			vld_u(  3, fifo, res); nalUnit[TEMPORAL_ID] := res[0];
+			flushBits( 5, fifo  );
+		end
 		nalUnit[OUTPUT_FLAG] := 1;
 		se_idx := 1;
 	end
@@ -140,15 +146,6 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		if DEBUG_BITSTREAM then
-			vld_u_name(  3, fifo, res, "temporal_id                             "); nalUnit[TEMPORAL_ID]		:= res[0];
-			vld_u_name(  1, fifo, res, "output_flag                             "); nalUnit[OUTPUT_FLAG]		:= res[0];
-			flushBits_name( 4, fifo,   "reserved_zero_4bits                     ");
-		else
-			vld_u(  3, fifo, res); nalUnit[TEMPORAL_ID] := res[0];
-			vld_u(  1, fifo, res); nalUnit[OUTPUT_FLAG] := res[0];
-			flushBits( 4, fifo  );
-		end
 		if DEBUG_PARSER then
 			println("=========== Slice ===========");
 		end
@@ -175,14 +172,19 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1],
 		uint(size= 8) profile_idc,
-		uint(size= 8) level_idc
+		uint(size= 8) level_idc,
+		uint(size= 8) chroma_idc
 	do
-		vld_u_name(  8, fifo, res, "profile_idc                             "); profile_idc								:= res[0];
-		flushBits_name( 8, fifo,   "reserved_zero_8bits                     ");
-		vld_u_name(  8, fifo, res, "level_idc                               "); level_idc								:= res[0];
-		vld_ue_name(    fifo, res, "seq_parameter_set_id                    "); sps_id									:= res[0]; // getBits(10) max
-		vld_u_name(  3, fifo, res, "max_temporal_layers_minus1              "); sps[sps_id][MAX_TEMPORAL_LAYERS]		:= res[0] + 1;
-		vld_u_name( 16, fifo, res, "pic_width_in_luma_samples               "); sps[sps_id][PIC_WIDTH_IN_LUMA_SAMPLES]	:= res[0];
+		vld_u_name(  8, fifo, res, "profile_idc                                "); profile_idc								:= res[0];
+		flushBits_name( 8, fifo,   "reserved_zero_8bits                        ");
+		vld_u_name(  8, fifo, res, "level_idc                                  "); level_idc								:= res[0];
+		vld_ue_name(    fifo, res, "seq_parameter_set_id                       "); sps_id									:= res[0]; // getBits(10) max
+		vld_ue_name(    fifo, res, "chroma_idc                                 "); chroma_idc								:= res[0];
+		if (chroma_idc = 3) then
+			vld_u_name(  1, fifo, res, "separate_colour_plane_flag                 ");
+		end
+		vld_u_name(  3, fifo, res, "max_temporal_layers_minus1                 "); sps[sps_id][MAX_TEMPORAL_LAYERS]		:= res[0] + 1;
+		vld_ue_name(    fifo, res, "pic_width_in_luma_samples                  "); sps[sps_id][PIC_WIDTH_IN_LUMA_SAMPLES]	:= res[0];
 		sps[sps_id][PROFILE_IDC]	:= profile_idc;
 		sps[sps_id][LEVEL_IDC]		:= level_idc;
 		se_idx := se_idx + 1;
@@ -194,47 +196,70 @@ actor Algo_Parser ()
 	guard
 		se_idx = 2 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		uint(size=1)  pic_cropping_flag
 	do
-		vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              "); sps[sps_id][PIC_HEIGHT_IN_LUMA_SAMPLES]			:= res[0];
-		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   "); sps[sps_id][BIT_DEPTH_LUMA]						:= res[0] + 8; // getBits(5) max
-		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 "); sps[sps_id][BIT_DEPTH_CHROMA]					:= res[0] + 8; // getBits(5) max
-		vld_u_name(  4, fifo, res, "pcm_bit_depth_luma_minus1               "); sps[sps_id][PCM_BIT_DEPTH_LUMA]					:= res[0] + 1;
-		vld_u_name(  4, fifo, res, "pcm_bit_depth_chroma_minus1             "); sps[sps_id][PCM_BIT_DEPTH_CHROMA]				:= res[0] + 1;
-		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4       "); sps[sps_id][LOG2_MAX_PIC_ORDER_CNT_LSB]			:= res[0] + 4;
-		vld_ue_name(    fifo, res, "max_num_ref_pics                        "); sps[sps_id][MAX_NUM_REF_PICS]					:= res[0];
-		vld_ue_name(    fifo, res, "max_num_reorder_pics                    "); sps[sps_id][MAX_NUM_REORDER_PICS]				:= res[0];
-//		vld_u_name(  1, fifo, res, "disableInter4x4                         "); sps[sps_id][DISABLEINTER4X4]					:= res[0];		
-		vld_u(  1, fifo, res); sps[sps_id][DISABLEINTER4X4]                   := res[0];		
+		vld_ue_name(    fifo, res, "pic_height_in_luma_samples                 "); sps[sps_id][PIC_HEIGHT_IN_LUMA_SAMPLES]			:= res[0];
+		vld_u_name(  1, fifo, res, "pic_cropping_flag                          "); pic_cropping_flag                               := res[0];
+		if pic_cropping_flag=1 then
+		vld_ue_name(    fifo, res, "pic_cropping_left_offset                   "); 
+		vld_ue_name(    fifo, res, "pic_cropping_right_offset                  "); 
+		vld_ue_name(    fifo, res, "pic_cropping_top_offset                    "); 
+		vld_ue_name(    fifo, res, "pic_cropping_bottom_offset                 "); 
+		end
+		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                      "); sps[sps_id][BIT_DEPTH_LUMA]						:= res[0] + 8; // getBits(5) max
+		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                    "); sps[sps_id][BIT_DEPTH_CHROMA]					:= res[0] + 8; // getBits(5) max
+		vld_u_name(  1, fifo, res, "pcm_enabled_flag                           ");  sps[sps_id][PCM_ENABLE_FLAG]            		:= res[0];
+		if sps[sps_id][PCM_ENABLE_FLAG] = 1 then
+			vld_u_name(  4, fifo, res, "pcm_bit_depth_luma_minus1                  "); sps[sps_id][PCM_BIT_DEPTH_LUMA]					:= res[0] + 1;
+			vld_u_name(  4, fifo, res, "pcm_bit_depth_chroma_minus1                "); sps[sps_id][PCM_BIT_DEPTH_CHROMA]				:= res[0] + 1;
+		end
+		vld_u_name(  1, fifo, res, "qpprime_y_zero_transquant_bypass_flag      "); 	
+		vld_ue_name(    fifo, res, "log2_max_pic_order_cnt_lsb_minus4          "); sps[sps_id][LOG2_MAX_PIC_ORDER_CNT_LSB]			:= res[0] + 4;
 		se_idx := se_idx + 1;
+		cnt_i := 0;
 	end
+
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_3
 	 *************************************************************************/
-	read_SPS_Header.se_idx_3 : action ==>
+	read_SPS_Header.se_idx_3.loop : action ==>
 	guard
-		se_idx = 3 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+		se_idx = 3 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		cnt_i <= sps[sps_id][MAX_TEMPORAL_LAYERS] - 1
 	var
 		uint(size=32) res[1]
 	do
-		vld_ue_name(    fifo, res, "log2_min_coding_block_size_minus3       "); sps[sps_id][LOG2_MIN_CODING_BLOCK_SIZE]				:= res[0] + 3; // getBits(7) max
-		vld_ue_name(    fifo, res, "log2_diff_max_min_coding_block_size     "); sps[sps_id][LOG2_DIFF_MAX_MIN_CODING_BLOCK_SIZE]	:= res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "log2_min_transform_block_size_minus2    "); sps[sps_id][LOG2_MIN_TRANSFORM_BLOCK_SIZE]			:= res[0] + 2; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "log2_diff_max_min_transform_block_size  "); sps[sps_id][LOG2_DIFF_MAX_MIN_TRANSFORM_BLOCK_SIZE]	:= res[0]; // getBits(32) max ?????
-		se_idx := se_idx + 1;
+		vld_ue_name(    fifo, res, "max_dec_ref_buffering                      "); 
+		vld_ue_name(    fifo, res, "num_reorder_pics                           "); 
+		vld_ue_name(    fifo, res, "max_latency_increase                       "); 
+		cnt_i := cnt_i + 1;
 	end 
+
+	read_SPS_Header.se_idx_3.loopEnd : action ==>
+	guard
+		se_idx = 3 and cnt_i = sps[sps_id][MAX_TEMPORAL_LAYERS]
+	do
+		se_idx := se_idx + 1;
+	end
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_4
-	 *************************************************************************/	
+	 *************************************************************************/
 	read_SPS_Header.se_idx_4 : action ==>
 	guard
 		se_idx = 4 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		uint(size=1)  restricted_ref_pic_lists_flag
 	do
-		vld_ue_name(    fifo, res, "log2_min_pcm_coding_block_size_minus3   "); sps[sps_id][LOG2_MIN_PCM_CODING_BLOCK_SIZE]			:= res[0] + 3; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_inter     "); sps[sps_id][MAX_TRANSFORM_HIERARCHY_DEPTH_INTER]	:= res[0]; // getBits(32) max ?????
-		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_intra     "); sps[sps_id][MAX_TRANSFORM_HIERARCHY_DEPTH_INTRA]	:= res[0]; // getBits(32) max ?????
+		vld_u_name(  1, fifo, res, "restricted_ref_pic_lists_flag              "); restricted_ref_pic_lists_flag					:= res[0];
+		if restricted_ref_pic_lists_flag = 1 then
+			vld_u_name(  1, fifo, res, "list_modification_present_flag             ");
+		end
+		vld_ue_name(    fifo, res, "log2_min_coding_block_size_minus3          "); sps[sps_id][LOG2_MIN_CODING_BLOCK_SIZE]				:= res[0] + 3; // getBits(7) max
+		vld_ue_name(    fifo, res, "log2_diff_max_min_coding_block_size        "); sps[sps_id][LOG2_DIFF_MAX_MIN_CODING_BLOCK_SIZE]	:= res[0]; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "log2_min_transform_block_size_minus2       "); sps[sps_id][LOG2_MIN_TRANSFORM_BLOCK_SIZE]			:= res[0] + 2; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "log2_diff_max_min_transform_block_size     "); sps[sps_id][LOG2_DIFF_MAX_MIN_TRANSFORM_BLOCK_SIZE]	:= res[0]; // getBits(32) max ?????
 		se_idx := se_idx + 1;
 	end 
 	/**************************************************************************
@@ -245,23 +270,51 @@ actor Algo_Parser ()
 		se_idx = 5 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1]
+	do
+		if sps[sps_id][LOG2_MIN_CODING_BLOCK_SIZE] = 3 then
+			vld_u(  1, fifo, res); sps[sps_id][DISABLEINTER4X4]                   := res[0];		
+		end
+		if sps[sps_id][PCM_ENABLE_FLAG] = 1 then
+			vld_ue_name(    fifo, res, "log2_min_pcm_coding_block_size_minus3      "); sps[sps_id][LOG2_MIN_PCM_CODING_BLOCK_SIZE]			:= res[0] + 3; // getBits(32) max ?????
+			vld_ue_name(    fifo, res, "log2_diff_max_min_pcm_coding_block_size    "); 
+		end
+		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_inter        "); sps[sps_id][MAX_TRANSFORM_HIERARCHY_DEPTH_INTER]	:= res[0]; // getBits(32) max ?????
+		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_intra        "); sps[sps_id][MAX_TRANSFORM_HIERARCHY_DEPTH_INTRA]	:= res[0]; // getBits(32) max ?????
+		se_idx := se_idx + 1;
+	end 
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_6
+	 *************************************************************************/	
+	read_SPS_Header.se_idx_6 : action ==>
+	guard
+		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+	var
+		uint(size=32) res[1]
    	do
-		vld_u_name(  1, fifo, res, "chroma_pred_from_luma_enabled_flag      "); sps[sps_id][CHROMA_PRED_FROM_LUMA_ENABLED_FLAG]		:= res[0];
-		vld_u_name(  1, fifo, res, "loop_filter_across_slice_flag           "); sps[sps_id][LOOP_FILTER_ACROSS_SLICE_FLAG]			:= res[0];
-		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag     "); sps[sps_id][SAMPLE_ADAPTIVE_OFFSET_ENABLED_FLAG]	:= res[0];
-		vld_u_name(  1, fifo, res, "adaptive_loop_filter_enabled_flag       "); sps[sps_id][ADAPTIVE_LOOP_FILTER_ENABLED_FLAG]		:= res[0];
-		vld_u_name(  1, fifo, res, "pcm_loop_filter_disable_flag            "); sps[sps_id][PCM_LOOP_FILTER_DISABLE_FLAG]			:= res[0];
-		vld_u_name(  1, fifo, res, "cu_qp_delta_enabled_flag                "); sps[sps_id][CU_QP_DELTA_ENABLED_FLAG]				:= res[0];
-		vld_u_name(  1, fifo, res, "temporal_id_nesting_flag                "); sps[sps_id][TEMPORAL_ID_NESTING_FLAG]				:= res[0];
+		vld_u_name(  1, fifo, res, "scaling_list_enable_flag                   ");
+		vld_u_name(  1, fifo, res, "chroma_pred_from_luma_enabled_flag         "); sps[sps_id][CHROMA_PRED_FROM_LUMA_ENABLED_FLAG]		:= res[0];
+		vld_u_name(  1, fifo, res, "deblocking_filter_in_aps_enabled_flag      "); 
+		vld_u_name(  1, fifo, res, "seq_loop_filter_across_slices_enabled_flag "); 
+		vld_u_name(  1, fifo, res, "asymmetric_motion_partitions_enabled_flag  "); 
+		vld_u_name(  1, fifo, res, "non_square_quadtree_enabled_flag           "); 
+		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag        "); sps[sps_id][SAMPLE_ADAPTIVE_OFFSET_ENABLED_FLAG]	:= res[0];
+		vld_u_name(  1, fifo, res, "adaptive_loop_filter_enabled_flag          "); sps[sps_id][ADAPTIVE_LOOP_FILTER_ENABLED_FLAG]		:= res[0];
+		if sps[sps_id][ADAPTIVE_LOOP_FILTER_ENABLED_FLAG] = 1 then
+			vld_u_name(  1, fifo, res, "alf_coef_in_slice_flag                     ");
+		end
+		if sps[sps_id][PCM_ENABLE_FLAG] = 1 then
+		vld_u_name(  1, fifo, res, "pcm_loop_filter_disable_flag               "); sps[sps_id][PCM_LOOP_FILTER_DISABLE_FLAG]			:= res[0];
+		end
+		vld_u_name(  1, fifo, res, "temporal_id_nesting_flag                   "); sps[sps_id][TEMPORAL_ID_NESTING_FLAG]				:= res[0];
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
 	/**************************************************************************
-	 * read_SPS_Header.se_idx_6
+	 * read_SPS_Header.se_idx_7
 	 *************************************************************************/
-	read_SPS_Header.se_idx_6 : action ==>
+	read_SPS_Header.se_idx_7 : action ==>
 	guard
-		se_idx = 6 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+		se_idx = 7 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		uint(size=32) res[1],
 		uint(size= 8) uiAddCUDepth := 0
@@ -286,9 +339,9 @@ actor Algo_Parser ()
 		se_idx := se_idx + 1;
 	end 
 	/**************************************************************************
-	 * read_SPS_Header.se_idx_7
+	 * read_SPS_Header.se_idx_8
 	 *************************************************************************/	
-	read_SPS_Header.se_idx_7 : action ==>
+	read_SPS_Header.se_idx_8 : action ==>
 	guard
 		se_idx = 7 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
@@ -302,11 +355,11 @@ actor Algo_Parser ()
 		cnt_i  := 0;
 	end 
 	/**************************************************************************
-	 * read_SPS_Header.se_idx_8
+	 * read_SPS_Header.se_idx_9
 	 *************************************************************************/	
-	read_SPS_Header.se_idx_8.loop : action ==>
+	read_SPS_Header.se_idx_9.loop : action ==>
 	guard
-		se_idx = 8  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
+		se_idx = 9  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and 
 		sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i <= sps[sps_id][NUM_TILE_COLUMNS]-1
 	var
 		uint(size=32) res[1]
@@ -314,25 +367,25 @@ actor Algo_Parser ()
 		vld_ue_name(    fifo, res, "column_width[ ]                         "); sps[sps_id][COLUMN_WIDTH+cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
-	read_SPS_Header.se_idx_8.loopEnd : action ==>
+	read_SPS_Header.se_idx_9.loopEnd : action ==>
 	guard
-		se_idx = 8 and sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > sps[sps_id][NUM_TILE_COLUMNS] - 1
+		se_idx = 9 and sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > sps[sps_id][NUM_TILE_COLUMNS] - 1
    	do
 		se_idx := se_idx + 1;
 		cnt_i  := 0;
 	end 
-	read_SPS_Header.se_idx_8.noLoop : action ==>
+	read_SPS_Header.se_idx_9.noLoop : action ==>
 	guard
-		se_idx = 8 and sps[sps_id][UNIFORM_SPACING_IDC] = 0
+		se_idx = 9 and sps[sps_id][UNIFORM_SPACING_IDC] = 0
    	do
 		se_idx := se_idx + 2;
 	end 
 	/**************************************************************************
-	 * read_SPS_Header.se_idx_9
+	 * read_SPS_Header.se_idx_10
 	 *************************************************************************/	
-	read_SPS_Header.se_idx_9.loop : action ==>
+	read_SPS_Header.se_idx_10.loop : action ==>
 	guard
-		se_idx = 9  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
+		se_idx = 10  and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3 and
 		sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i <= sps[sps_id][NUM_TILE_ROWS] - 1
 	var
 		uint(size=32) res[1]
@@ -340,9 +393,9 @@ actor Algo_Parser ()
 		vld_ue_name(    fifo, res, "row_height[ ]                           "); sps[sps_id][ROW_HEIGHT+cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end 
-	read_SPS_Header.se_idx_9.loopEnd : action ==>
+	read_SPS_Header.se_idx_10.loopEnd : action ==>
 	guard
-		se_idx = 9 and sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > sps[sps_id][NUM_TILE_ROWS] - 1
+		se_idx = 10 and sps[sps_id][UNIFORM_SPACING_IDC] = 1 and cnt_i > sps[sps_id][NUM_TILE_ROWS] - 1
    	do
 		se_idx := se_idx + 1;
 	end 
@@ -351,7 +404,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SPS_Header_done : action ==>
 	guard
-		se_idx = 10
+		se_idx = 11
 	var
 		uint(size=32) res[1]
 	do
