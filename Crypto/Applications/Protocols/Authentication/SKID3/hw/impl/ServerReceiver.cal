@@ -28,6 +28,9 @@ actor ServerReceiver(int(size=8) serverID) uint(size=8) IP1_PRG, int(size=8) IP2
 	==> 
 	int(size=64) OP1_Message_Size, uint(size=8) OP2_Message,  int(size=64) OP3_Hash_Size,  uint(size=8) OP4_Link:
 
+	// used global var for working around a bug of HDL (casting pb??)
+	uint(size=8) param_serverID := 0;
+
 	int(size=8) clientID := 0;
 	uint(size=8) rS := 0; // My nounce
 	uint(size=8) rC := 0; // Client's nounce.
@@ -35,19 +38,22 @@ actor ServerReceiver(int(size=8) serverID) uint(size=8) IP1_PRG, int(size=8) IP2
 	int(size=8) hashSize := 0; // Number of bytes.	
 	int counter := 0;
 	
+	initialize ==> 
+	do
+		param_serverID := serverID;
+	end
 
 	receiveConfigurations:
 	action IP1_PRG:[r], IP2_Hash_Size:[hSize] ==>
 	do
 		rS := r;
 		hashSize := hSize;
-		counter := 0;		
+		counter := 1;
 	end
 	
 	// Process clients's ID and nounce (rC)
 	processClientsIDAndNounce_id:
 	action IP3_Channel:[id] ==> 
-	guard counter = 0
 	do
 		clientID := id;
 	end
@@ -56,61 +62,70 @@ actor ServerReceiver(int(size=8) serverID) uint(size=8) IP1_PRG, int(size=8) IP2
 	action IP3_Channel:[r] ==> 
 	do
 		rC := r;
-		counter := counter + 1;
 	end
 
 	// Prepare data to generate the HMAC on client's nounce (i.e., H1), which will be sent to the client for authentication.
-	sendHMACData1_rS:
-	action ==> OP1_Message_Size:[3], OP2_Message:[rS], OP3_Hash_Size:[hashSize] end
+	sendHMACData1.rS:
+	action ==> OP1_Message_Size:[3], OP2_Message:[rS], OP3_Hash_Size:[hashSize]
+	end
 	
-	sendHMACData1_rc:
-	action ==> OP2_Message:[rC]end
+	sendHMACData1.rc:
+	action ==> OP2_Message:[rC]
+	end
 	
-	sendHMACData1_idS:
-	action ==> OP2_Message:[serverID] end
+	sendHMACData1.idS:
+	action ==> OP2_Message:[param_serverID]
+	end
 
 	// Process (receive and forward) the client's HMAC (H2) on my nounce.
-	processClientHMAC:
+	processClientHMAC.recv:
 	action IP3_Channel:[h] ==> OP4_Link:[h]
-	guard counter >= 1 and counter <= hashSize
 	do
 		counter := counter + 1;	
 	end
+	
+	processClientHMAC.done :
+	action ==>
+	guard counter > hashSize
+	end
 
 	// Prepare data to generate my copy of the client's HMAC (i.e., H2'). Server_Sender actor will verify if H2' equals H2.
-	sendHMACData2_rC:
+	sendHMACData2.rC:
 	action ==> OP1_Message_Size:[3], OP2_Message:[rC], OP3_Hash_Size:[hashSize]
-	guard counter > hashSize end
+	end
 	
-	sendHMACData2_rS:
+	sendHMACData2.rS:
 	action ==> OP2_Message:[rS]
-	guard counter > hashSize end
+	guard counter > hashSize
+	end
 	
-	sendHMACData2_idC:
+	sendHMACData2.idC:
 	action ==> OP2_Message:[clientID]
-	guard counter > hashSize end
+	guard counter > hashSize
+	end
 
 	schedule fsm start:
 	
-		start(receiveConfigurations) --> listenChannel;		
+		start(receiveConfigurations) --> processClientsIDAndNounce_id;
 		
-		listenChannel(processClientsIDAndNounce_id) --> processClientsIDAndNounce_r;
-		listenChannel(processClientHMAC) --> listenChannel;
-		listenChannel(sendHMACData2_rC) --> sendHMACData2_rS;
+		processClientsIDAndNounce_id(processClientsIDAndNounce_id) --> processClientsIDAndNounce_r;
+		processClientsIDAndNounce_r(processClientsIDAndNounce_r) --> sendHMACData1_rS;
+
+		sendHMACData1_rS(sendHMACData1.rS) --> sendHMACData1_rc;
+		sendHMACData1_rc(sendHMACData1.rc) --> sendHMACData1_idS;
+		sendHMACData1_idS(sendHMACData1.idS) --> listenChannel;
 		
-		sendHMACData2_rS (sendHMACData2_rS) --> sendHMACData2_idC;
-		sendHMACData2_idC(sendHMACData2_idC) --> start;
+		listenChannel(processClientHMAC.recv) --> listenChannel;
+		listenChannel(processClientHMAC.done) --> sendHMACData2_rC;
 		
-		processClientsIDAndNounce_r (processClientsIDAndNounce_r) -->sendHMACData1_rS;
+		sendHMACData2_rC (sendHMACData2.rC) --> sendHMACData2_rS;
+		sendHMACData2_rS (sendHMACData2.rS) --> sendHMACData2_idC;
+		sendHMACData2_idC(sendHMACData2.idC) --> start;
 		
-		sendHMACData1_rS(sendHMACData1_rS) --> sendHMACData1_rc;
-		sendHMACData1_rc(sendHMACData1_rc) --> sendHMACData1_idS;
-		sendHMACData1_idS(sendHMACData1_idS) --> listenChannel;
-	 	
 	end
 	
-	/*priority
-		processClientsIDAndNounce_id > processClientHMAC > sendHMACData2;
-	end*/
+	priority
+		processClientHMAC.done > processClientHMAC.recv; 
+	end
 
 end

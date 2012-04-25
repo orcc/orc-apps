@@ -23,9 +23,8 @@ package Protocols.Authentication.SKID3.hw.impl;
 
 actor ClientSender(int(size=8) clientID) uint(size=8) IP1_PRG, int(size=8) IP2_Hash_Size, uint(size=8) IP3_HMAC, uint(size=8) IP4_Link  
 	==> 
-	uint(size=8) OP1_Channel:
-
-
+	
+	uint(size=8) OP1_Channel, bool OP2_Success:
 	uint(size=8) rC := 0; // My nounce.
 	
 	int(size=8) hashSize := 0; // Number of bytes.	
@@ -38,77 +37,77 @@ actor ClientSender(int(size=8) clientID) uint(size=8) IP1_PRG, int(size=8) IP2_H
 	do
 		rC := r;
 		hashSize := hSize;
-		counter := 0;		
+		counter := 1;
 	end
 	
 	// Sends its UID and the nounce rC to initiate the protocol.
-	initiateProtocol_idC:
-	action ==> OP1_Channel:[clientID] end
+	initiateProtocol.idC:
+	action ==> OP1_Channel:[clientID]
+	end
 	
-	initiateProtocol_rC:
-	action ==> OP1_Channel:[rC] end
+	initiateProtocol.rC:
+	action ==> OP1_Channel:[rC]
+	end
 
 	// Authenticate (compare) the HMAC sent by server (H1 received on port IP4_Link) 
 	// with my own copy of the server's HMAC (H1' received on port IP3_HMAC) 
 	authenticateHMAC:
 	action IP3_HMAC:[h1], IP4_Link:[h2] ==> 
-	guard counter < hashSize
 	do
 		if( h1 != h2 ) then
 			errors := errors + 1;
 		end	
-		counter := counter + 1;		
+		counter := counter + 1;
 	end
 	
 	// Report the successful authentication.
 	authenticationSuccess:
-	action ==>
-	guard counter = hashSize and errors = 0
-	do
-		println("Server authenticated!");		
-		counter := 0;		
+	action ==> OP2_Success:[true]
+	guard errors = 0
 	end
 	
 	// Report the failed authentication.
 	authenticationFail:
-	action ==> 
-	guard counter = hashSize and errors > 0
-	do
-		println("Server not authenticated!");		
+	action ==> OP2_Success:[false]
 	end
  
 	// Now send the HMAC computed over server's nouce (i.e., H2) to the server so that server can also authenticate me.
 	sendHMACData:
 	action IP3_HMAC:[h] ==> OP1_Channel:[h]
-	guard counter < hashSize
 	do
-		counter := counter + 1;		
+		counter := counter + 1;
 	end
 	
-	haltloop:
-	action ==> guard counter = hashSize do counter := 0; end
+	done:
+	action ==> 
+	guard counter > hashSize
+	do
+		counter := 1;
+	end
 	
 
 	schedule fsm start:
-		start(receiveConfigurations) --> start;
-		start(initiateProtocol_idC) --> initiateProtocol_rC;
+		start(receiveConfigurations) --> initiateProtocol_idC;
 		
-		initiateProtocol_rC(initiateProtocol_rC) --> authenticate;
+		initiateProtocol_idC(initiateProtocol.idC) --> initiateProtocol_rC;
+		initiateProtocol_rC(initiateProtocol.rC) --> authenticateHMAC_state;
 		
-		authenticate(authenticateHMAC) --> authenticate; 
-		authenticate(authenticationSuccess) --> sendData;
+		authenticateHMAC_state(authenticateHMAC) --> authenticateHMAC_state;
+		authenticateHMAC_state(done) --> authenticate;
+		 
+		authenticate(authenticationSuccess) --> sendData_state;
 		authenticate(authenticationFail) --> Halt;
 		
-		Halt(haltloop) --> Halt;
+		Halt(done) --> Halt;
 		
-	 	sendData(sendHMACData) --> sendData;	 	
-	 	sendData(receiveConfigurations) --> start;
+	 	sendData_state(sendHMACData) --> sendData_state;	 	
+	 	sendData_state(done) --> start;
 	end
 	
 	priority
-		receiveConfigurations > initiateProtocol_idC;
-		authenticateHMAC > authenticationSuccess > authenticationFail;
-		receiveConfigurations > sendHMACData;
+		done > authenticateHMAC;
+		done > sendHMACData;
+		authenticationSuccess > authenticationFail;
 	end
 
 end

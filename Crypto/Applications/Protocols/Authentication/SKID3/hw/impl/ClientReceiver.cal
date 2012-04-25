@@ -29,12 +29,22 @@ actor ClientReceiver(int(size=8) clientID, int(size=8) serverID) uint(size=8) IP
 	==> 
 	int(size=64) OP1_Message_Size, uint(size=8) OP2_Message,  int(size=64) OP3_Hash_Size,  uint(size=8) OP4_Link:
 
-
+	// used global var for working around a bug of HDL (casting pb??)
+	uint(size=8) param_clientID := 0;
+	uint(size=8) param_serverID := 0;
+	
+	
 	uint(size=8) rC := 0; // My nounce.
 	uint(size=8) rS := 0; // Server's nounce.
 	
 	int(size=8) hashSize := 0; // Number of bytes.	
 	int counter := 0;
+	
+	initialize ==>
+	do
+		param_clientID := clientID;
+		param_serverID := serverID;
+	end
 	
 
 	receiveConfigurations:
@@ -42,68 +52,73 @@ actor ClientReceiver(int(size=8) clientID, int(size=8) serverID) uint(size=8) IP
 	do
 		rC := r;
 		hashSize := hSize;
-		counter := 0;		
+		counter := 1;
 	end
 	
 	// Process server's nounce (rS)
 	processServerNounce:
 	action IP3_Channel:[r] ==>
-	guard counter = 0 
 	do
 		rS := r;
-		counter := counter + 1;
 	end
 
 	// Process (receive and forward) the server's HMAC (H1)
-	processServerHMAC:
+	processServerHMAC.recv:
 	action IP3_Channel:[h] ==> OP4_Link:[h]
-	guard counter > 0 and counter <= hashSize
 	do
-		counter := counter + 1;		
+		counter := counter + 1;
+	end
+	
+	processServerHMAC.done:
+	action ==>
+	guard counter > hashSize
 	end
  
 	// Prepare data to generate our copy of the server's HMAC (i.e., H1'). Client_Sender actor will verify if H1' equals H1.  	
-	sendHMACData1_rS:
+	sendHMACData1.rS:
 	action ==> OP1_Message_Size:[3], OP2_Message:[rS], OP3_Hash_Size:[hashSize]
-	guard counter > hashSize end
+	end
 	
-	sendHMACData1_rC:
+	sendHMACData1.rC:
 	action ==> OP2_Message:[rC]
 	end
 	
-	sendHMACData1_idS:
-	action ==> OP2_Message:[serverID]
+	sendHMACData1.idS:
+	action ==> OP2_Message:[param_serverID]
 	end
 
 	// Prepare data to generate the HMAC on server's nounce (i.e., H2), which will be sent to the server for authentication.
-	sendHMACData2_rC:
+	sendHMACData2.rC:
 	action ==> OP1_Message_Size:[3], OP2_Message:[rC], OP3_Hash_Size:[hashSize]
 	end
 	
-	sendHMACData2_rS:
+	sendHMACData2.rS:
 	action ==>OP2_Message:[rS]
 	end
 	
-	sendHMACData2_idC:
-	action ==> OP2_Message:[clientID]
+	sendHMACData2.idC:
+	action ==> OP2_Message:[param_clientID]
 	end
 
 	schedule fsm start:
-		start(receiveConfigurations) --> listenChannel;
+		start(receiveConfigurations) --> processServerNounce;
 		
-		listenChannel (processServerNounce) --> listenChannel; 
-		listenChannel (processServerHMAC) --> listenChannel;
-		listenChannel (sendHMACData1_rS) --> sendHMACData1_rC;
+		processServerNounce (processServerNounce) --> processServerHMAC;
 		
-		sendHMACData1_rC (sendHMACData1_rC) --> sendHMACData1_ID;
+		processServerHMAC (processServerHMAC.recv) --> processServerHMAC;
+		processServerHMAC (processServerHMAC.done) --> sendHMACData1_rS;
 		
-		sendHMACData1_ID (sendHMACData1_idS) --> sendHMACData2_rC;
+		sendHMACData1_rS (sendHMACData1.rS) --> sendHMACData1_rC;
+		sendHMACData1_rC (sendHMACData1.rC) --> sendHMACData1_ID;
+		sendHMACData1_ID (sendHMACData1.idS) --> sendHMACData2_rC;
 		
-	 	sendHMACData2_rC  (sendHMACData2_rC) --> sendHMACData2_rS;
-	 	
-	 	sendHMACData2_rS ( sendHMACData2_rS ) --> sendHMACData2_cID;
-	 	
-	 	sendHMACData2_cID( sendHMACData2_idC) --> start;
+	 	sendHMACData2_rC  (sendHMACData2.rC) --> sendHMACData2_rS;
+	 	sendHMACData2_rS ( sendHMACData2.rS ) --> sendHMACData2_cID;
+	 	sendHMACData2_cID( sendHMACData2.idC) --> start;
+	end
+	
+	priority
+		processServerHMAC.done > processServerHMAC.recv;
 	end
 
 end
