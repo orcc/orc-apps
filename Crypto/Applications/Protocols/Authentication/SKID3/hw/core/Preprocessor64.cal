@@ -13,117 +13,94 @@
  * 		2) uint(size=8) OP2_M: the message block (16 bytes each)
  *
  * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2010
- * Last modified: 04.04.2012
+ * 			  Richard Thavot @ EFPL
+ * Last modified: 26.04.2012
  */
 
 package Protocols.Authentication.SKID3.hw.core;
 
-actor Preprocessor64() int(size=64) IP1_Size, uint(size=8) IP2_M ==> int(size=32) OP1_N, uint(size=8) OP2_M:
+actor Preprocessor64() uint(size=64) IP1_Size, uint(size=8) IP2_M ==> int(size=32) OP1_N, uint(size=8) OP2_M:
 	// State variables:
-	int BLOCK_SIZE = 64; // Block size of one message in bytes.
-	int BLOCK_SIZE_1 = BLOCK_SIZE - 1; // Used for modulo operation. Note: x mod 64 <==> x & 63.
-	
+	uint BLOCK_SIZE_MOD = 63; // Used for modulo operation. Note: x mod 64 <==> x & 63.
 	int(size=64) messageSize := 0; // Size of the current message in bytes.
-	int(size=64) messageBitSize := 0;
-	
-	int byteCounter1 := 0;
-	int byteCounter2 := 0;
-	int numZBytes := 0;
-	int N;
+	int(size=64) messageSizeBit := 0;
+
+	int byteCounter := 0;
 	
 	// Receive message size and calculates:
-	// 1) numZBytes: Number of zeros bytes to be padded.
+	// 1) numZeroBytes: Number of zeros bytes to be padded.
 	// 2) N: Number of 64 byte (512 bits) message blocks including 
 	//    the padding, 0x80 byte and message size.
+	// number 41 = 1 (80Byte) + 8 (sizeByte) + 32 (Round Half Up With BLOCK_SIZE)
+	// >> 6 = div by BLOCK_SIZE thus / 64
+	// << 3 = mul by Byte to Bit thus * 8
 	receiveSize:
-	action IP1_Size:[mSize] ==> OP1_N:[N]
-	var
-		int(size=64) temp
+	action IP1_Size:[mSize] ==> OP1_N:[(mSize + 41) >> 6]
 	do
 		messageSize := mSize;
-		messageBitSize := mSize << 3;
-		
-		temp := messageSize + 9;
-		if (temp & BLOCK_SIZE_1) = 0 then
-			N := (temp / BLOCK_SIZE) & 0xFFFFFFFF; // Masking it because this statement is creating problem in OpenForge.
-			numZBytes := 0;
-		else
-			N := (temp / BLOCK_SIZE + 1) & 0xFFFFFFFF; // Masking it because this statement is creating problem in OpenForge.
-			numZBytes := (N * BLOCK_SIZE - temp) & 0xFFFFFFFF; // Masking it because this statement is creating problem in OpenForge.
-		end		
-//println("Preprocessor64 > receiveSize: "+N);	
-		byteCounter1 := 0;
-		byteCounter2 := 0;
+		messageSizeBit := mSize << 3;
+		byteCounter := 0;
 	end
 	
 	// Receive and forward input message byte by byte.
-	receiveAndForwardMessage:
+	send.receiveAndForwardMessage:
 	action IP2_M:[b] ==> OP2_M:[b]
-	guard byteCounter1 < messageSize
 	do
-		byteCounter1 := byteCounter1 + 1;
-//println("Preprocessor64 > receiveAndForwardMessage: "+byteCounter1);		
+		byteCounter := byteCounter + 1;
 	end
 	
 	// Once input message is finished, forward byte 0x80 (the most significant bit as 1).
-	forward80Byte:
+	done.forward80Byte:
 	action ==> OP2_M:[0x80]
-	guard byteCounter1 >= messageSize
-	do
-		byteCounter1 := 0;
-//println("Preprocessor64 > forward80Byte: "+byteCounter1);		
-	end
+	guard byteCounter >= messageSize
+	end	 
 	
 	// Forward the number of zeros bytes to be padded to make the message blocks to be of 64 bytes.
-	forwardZeroBytes:
+	send.forwardZeroBytes:
 	action ==> OP2_M:[0x00]
-	guard numZBytes > 0
 	do	
-		numZBytes := numZBytes - 1;
-//println("Preprocessor64 > forwardZeroBytes: "+numZBytes);		
+		byteCounter := byteCounter + 1;
+	end
+	
+	// only when (BLOCK_SIZE_MOD - 8) is reached
+	done.forwardZeroBytes:
+	action ==> OP2_M:[0x00]
+	guard (byteCounter & BLOCK_SIZE_MOD) = (BLOCK_SIZE_MOD - 8)
+	do	
+		byteCounter := 0;
 	end
 
 	// Forward the message size as last 2 dwords of the last message block.
-	List(type:uint(size=8), size=8) b := [0: for int i in 0 .. 7]; // This list represents 2 dwords (i.e., 8 bytes).
-	// First build the contents of this list in this action transfering the size (in the next action).
-	forwardSize.build:
-	action ==> 
-	guard byteCounter1 < 8
+	// >> 8 : for selecting next byte
+	send.forwardSize.send:
+	action ==> OP2_M:[messageSizeBit & 0xff]
 	do
-		b[7-byteCounter1] := messageBitSize & 0xff;
-		messageBitSize := messageBitSize >> 8;
-//println("Preprocessor64 > forwardSize.build: "+byteCounter1+" "+b[7-byteCounter1]);
-		byteCounter1 := byteCounter1 + 1;
+		messageSizeBit := messageSizeBit >> 8;
+		byteCounter := byteCounter + 1;
+	end
+	
+	done.forwardSize :
+	action ==>
+	guard byteCounter >= 8
+	end
+	
+
+	schedule fsm start :
+		start ( receiveSize ) --> message;
 		
-	end
-	 
-	forwardSize.transfer:
-	action ==> OP2_M:[b[byteCounter2-1]]
-	guard byteCounter1 = 8 and byteCounter2 < 8
-	do
-		byteCounter2 := byteCounter2 + 1;
-//println("Preprocessor64 > forwardSize.transfer: "+byteCounter2 +" "+b[byteCounter2-1]);		
-	end
-
-	reset:
-	action ==> guard byteCounter1 = 8 and byteCounter2 = 8 end
-	
-	schedule fsm setSize :
-		setSize  ( receiveSize              ) --> bypass;
-		bypass   ( receiveAndForwardMessage ) --> bypass;
-		bypass   ( forward80Byte            ) --> padded;
-		padded   ( forwardZeroBytes         ) --> padded;
-		padded   ( forwardSize.build        ) --> fwdSize;
-		fwdSize  ( forwardSize.build        ) --> fwdSize;
-		fwdSize  ( forwardSize.transfer     ) --> fwdSize;		
-		fwdSize  ( reset                    ) --> setSize;
-
+		message ( send.receiveAndForwardMessage ) --> message;
+		message ( done.forward80Byte ) --> forward;
+		
+		forward ( send.forwardZeroBytes ) --> forward;
+		forward ( done.forwardZeroBytes ) --> fsize;
+		
+		fsize ( send.forwardSize) --> fsize;
+		fsize ( done.forwardSize) --> start;
 	end
 	
+	//All done actions have a higher priority than send actions
 	priority
-		receiveAndForwardMessage > forward80Byte;
-		forwardZeroBytes > forwardSize.build;
-		forwardSize.build > forwardSize.transfer > reset;
+		done > send;
 	end
 	
 end
