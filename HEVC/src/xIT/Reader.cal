@@ -1,0 +1,258 @@
+// Author: Herve Yvique <herve.yviquel@irisa.fr>
+// Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
+// Modified by Jerome Gorin IETR/INSA of Rennes (France)
+
+// Original code: Source.cal actor of the org.ietr.stdio package
+// Modified by Eduardo Juarez, Wei Jianguo and Ren Rong <eduardo.juarez@upm.es> of UPM (Spain) 
+
+package xIT;
+
+
+actor Reader () ==> int(size=16)  Coef, 
+                    uint(size=16) Mode, 
+                    int(size=7)   Size, 
+                    uint(size=7)  Stride, 
+                    bool          EOF
+                    : 
+
+	bool  	DEBUG_L1 := true;
+	bool    DEBUG_L2 := true;
+	
+	@native procedure source_init()
+	end
+	@native procedure source_readNBytes(uint(size=8) outTable[MAX_NB_BYTE_TO_SEND], uint(size=13) nbByteToRead)
+	end		
+	@native function source_sizeOfFile() --> int(size=32)
+	end	
+	@native procedure source_close()
+	end
+
+	uint(size=13) MAX_NB_BYTE_TO_SEND = 4096;	// LCU = 64x64 (HM 5.1)
+	uint(size=3)  NB_HEADER_BYTE = 4;			// Mode (2 bytes), Size (1 byte) and Stride (1 byte)
+
+	uint(size=8) bytesRead[MAX_NB_BYTE_TO_SEND];	
+	uint(size=32) nbByte          := 0;  				// file size
+	uint(size=32) nbByteLeft      := 0;
+	uint(size=13) nbByteToSend    := NB_HEADER_BYTE;  	// initially, read Mode, Size and Stride
+	uint(size=13) nbByteSent      := 0;
+	uint(size=32) nbTransformUnit := 0;  				// number of TU read
+
+	bool          endOfFile  := false;
+	bool          fileClosed := false;
+	bool		  headerCoef := true;
+
+	initialize ==>
+	do
+		source_init();
+		
+		if (DEBUG_L1) then
+			println("Source ACTION: initialize");
+			println("Source  STATE: ReadInit");
+			println("-------------------------");
+		end
+	end
+	
+	getFileSize: action ==> EOF:[ endOfFile ]
+	guard
+		source_sizeOfFile() > 0
+	do
+		nbByte     := source_sizeOfFile();
+		nbByteLeft := nbByte;
+		endOfFile  := (NB_HEADER_BYTE > nbByteLeft);
+		
+		if (DEBUG_L1) then
+			println("Source ACTION: getFileSize");
+			println("Source  STATE: ReadFile");
+			println("-------------------------");
+			if (DEBUG_L2) then
+			  println("nbByte     = " + nbByte);
+			  println("nbByteLeft = " + nbByteLeft);
+			  println("endOfFile  = " + endOfFile);			  
+			  println("-------------------------");			  
+			end
+		end
+	end
+	
+	readHeader: action ==> 
+	guard
+	  (nbByteToSend > 0) and (nbByteToSend <= nbByteLeft) and (headerCoef = true)
+	do
+	  
+	  source_readNBytes(bytesRead, nbByteToSend);	  
+	  nbByteLeft  := nbByteLeft - nbByteToSend;  
+	  nbByteSent  := 0;          
+	  
+	  if (DEBUG_L1) then
+			println("Source ACTION: readHeader");
+			println("Source  STATE: SendHeader");
+			println("-------------------------");
+			if (DEBUG_L2) then			
+			  println("nbByteLeft      = " + nbByteLeft);			  
+			  println("nbByteSent      = " + nbByteSent);
+			  println("-------------------------");			  	  		  
+			end
+	  end	
+	end
+	
+	readCoef: action ==>
+	guard 
+	  (nbByteToSend > 0) and (nbByteToSend <= nbByteLeft) and (headerCoef = false)	
+	do
+
+	  source_readNBytes(bytesRead, nbByteToSend);	  
+	  nbByteLeft  := nbByteLeft - nbByteToSend;	 		  
+	  nbByteSent  := 0;
+	                 	  	  
+	  if (DEBUG_L1) then
+			println("Source ACTION: readCoef");
+			println("Source  STATE: SendCoef");
+			println("-------------------------");
+			if (DEBUG_L2) then
+			  println("nbByteLeft      = " + nbByteLeft);				  
+			  println("nbByteSent      = " + nbByteSent);
+			  println("-------------------------");			  
+			end
+	  end	
+	end
+		
+	readEndOfFile: action ==> 
+	guard
+		(nbByteLeft > 0) and (nbByteToSend > nbByteLeft) 
+	do
+		source_readNBytes(bytesRead, nbByteLeft);
+		nbByteLeft := 0;
+		// nothing else is done
+		
+		if (DEBUG_L1) then
+			println("Source ACTION: readEndOfFile");
+			println("Source  STATE: ReadFile");
+			println("-------------------------");
+			if (DEBUG_L2) then
+			  println("nbByteLeft      = " + nbByteLeft);	
+			  println("-------------------------");			  
+			end			
+		end		
+	end
+
+	closeFile: action ==> 
+	guard
+		(nbByteLeft = 0) and (fileClosed = false)
+	do	
+		
+		source_close();
+		fileClosed := true;		
+        	
+        if (DEBUG_L1) then
+			println("Source ACTION: closeFile");
+			println("Source  STATE: ReadFile");
+			println("-------------------------");
+		end		
+	end
+	
+    sendHeader.launch: action ==> Mode:[ mode ], Size:[ bytesRead[2] ], Stride:[ bytesRead[3] ]	
+	guard
+		(headerCoef = true) and (nbByteToSend > nbByteSent)
+	var
+		uint(size=16) mode
+	do
+	
+	    mode       := bytesRead[1];
+		mode       := (mode << 8) + bytesRead[0];  // bytesRead[0] is LSB and bytesRead[1] is MSB
+		nbByteSent := NB_HEADER_BYTE;  // header tokens sent at once
+			
+		if (DEBUG_L1) then
+			println("Source ACTION: sendHeader.launch");
+			println("Source  STATE: SendHeader");
+			println("-------------------------");
+			if (DEBUG_L2) then
+			  println("mode        = " + mode);			
+			  println("nbByteSent  = " + nbByteSent);	
+			  println("-------------------------");			  		  
+			end			
+		end
+	end
+
+   sendHeader.done: action ==> EOF:[ endOfFile ]
+	guard
+	  (headerCoef = true) and (nbByteToSend = nbByteSent)
+	do	
+		nbByteToSend    := bytesRead[2]*bytesRead[3]*2;   // size * stride 16-bit coefficients to read	
+	    endOfFile       := (nbByteLeft = 0) or (nbByteToSend > nbByteLeft);			
+	    headerCoef      := false;
+	    
+		if (DEBUG_L1) then
+			println("Source ACTION: sendHeader.done");
+			println("Source  STATE: ReadFile");
+			println("-------------------------");
+			if (DEBUG_L2) then
+			  println("nbByteToSend  = " + nbByteToSend);
+			  println("endOfFile     = " + endOfFile);				  
+			  println("headerCoef    = " + headerCoef);
+			  println("-------------------------");			  			  
+			end			
+		end	    
+	end
+	
+	sendCoef.launch: action ==> Coef:[ coef ]
+	guard
+      (headerCoef = false) and (nbByteToSend > nbByteSent)
+	var
+	  int(size=16) coef	  
+	do
+	  coef       := bytesRead[nbByteSent + 1];
+	  coef       := (coef << 8) + bytesRead[nbByteSent];
+	  nbByteSent := nbByteSent + 2;  // two bytes sent at once
+	  
+      if (DEBUG_L1) then
+        println("Source ACTION: sendCoef.launch");
+        println("Source  STATE: SendCoef");
+        println("-------------------------");
+        if (DEBUG_L2) then
+          println("coef        = " + coef);			
+          println("nbByteSent  = " + nbByteSent);        
+	      println("-------------------------");          			  
+        end			
+      end  	  
+	end
+
+	sendCoef.done: action ==>  EOF:[ [endOfFile, endOfFile] ] repeat (if endOfFile then 2 else 1 end) // two endOfFile = true tokens sent
+	guard
+	  (headerCoef = false) and (nbByteToSend = nbByteSent)
+	do
+	  	nbByteToSend    := NB_HEADER_BYTE;
+	    endOfFile       := (nbByteLeft = 0) or (nbByteToSend > nbByteLeft);	  	
+      	headerCoef      := true;
+     	nbTransformUnit := nbTransformUnit + 1;	
+	    
+		if (DEBUG_L1) then
+			println("Source ACTION: sendCoef.done");
+			println("Source  STATE: ReadFile");
+			println("-------------------------");
+			if (DEBUG_L2) then		
+			  println("nbByteToSend    = " + nbByteToSend);	
+			  println("endOfFile       = " + endOfFile);				  		
+			  println("headerCoef      = " + headerCoef);	
+			  println("nbTransformUnit = " + nbTransformUnit);
+			  println("-------------------------");			  				  		  
+			end			
+		end	    
+	end
+	
+	schedule fsm ReadInit :
+
+		ReadInit (getFileSize  ) --> ReadFile;
+		
+		ReadFile (readHeader   ) --> SendHeader;
+		ReadFile (readCoef     ) --> SendCoef;
+		ReadFile (readEndOfFile) --> ReadFile;
+		ReadFile (closeFile    ) --> ReadFile;
+		
+		SendHeader (sendHeader.launch) --> SendHeader;
+		SendHeader (sendHeader.done  ) --> ReadFile;
+		
+		SendCoef (sendCoef.launch ) --> SendCoef;
+		SendCoef (sendCoef.done   ) --> ReadFile;
+			
+	end
+	
+end
