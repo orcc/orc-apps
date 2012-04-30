@@ -1,0 +1,343 @@
+package avs.P;
+
+actor Mgnt_DPB_CHROMA ()
+	int(size=32)  PicWidthInMb,
+	int(size=32) CurrMbAddr, 
+	int(size=32) PicSizeInMb, 
+	int(size=32) PicWidth,
+	int(size=32) Refidx,
+	int(size=32)  WD,
+	int(size=12) ReadAddress,
+	
+	int(size=ADDR_SZ) RA, 
+	int(size=ADDR_SZ) WA, 
+	int(size=PIX_SZ) WD_Intra,
+	
+	int (size=32) Is_IntraMb,
+	
+	bool Picture_done
+		==> 
+	int(size=32) RD, 
+	//bool         Write_Done,
+	int(size=32)  Display,
+	
+	int(size=PIX_SZ) RD_Intra
+		: 
+    
+ int ADDR_SZ = 24;
+ int PIX_SZ = 32;
+ int(size=32) picWidth;
+/*
+*
+* CONSTANTS
+*
+*/
+
+
+	uint(size=32) SZ_NBPIC        = 6; /* >= log2(NB_PIC) */
+
+    List(type :List(type: List( type:uint(size=8), size=352), size=288), size=3) flag := [ [ [0 : for int i in 0 .. 352-1] : for int j in 0 .. 288-1] : for int k in 0 .. 3-1 ];
+    
+	List(type :List(type: List( type:uint(size=8), size=352), size=288), size=3) pic;
+
+	int (size=32) pic_curr_idx     := -1;
+	uint(size=7)  PicWidthInMacroB := 0;
+	uint(size=7)  PicHeightInMacroB := 0;
+	uint(size=13) PicSizeInMacroB  := 0;
+
+	/*Write information*/
+	bool          write_done       := true;
+	uint(size=16) currmbaddr       := 0;
+	uint(size=21) wa_x_offset      := 0;
+	uint(size=21) wa_y_offset      := 0;
+	uint(size=11) wa_x             := 0;
+	uint(size=11) wa_y             := 0;
+
+	/*Read Information*/
+	bool                read_done  := true;
+	uint(size=11)       ra_W       := 0;
+	uint(size=11)       ra_H       := 0;
+	uint(size=11)       ra_x       := 0;
+	uint(size=11)       ra_y       := 0;
+	int (size=12)       ra_off_x   := 0;
+	int (size=12)       ra_off_y   := 0;
+	uint(size=SZ_NBPIC) Ref_idx    := 0;
+
+	/*Display Information*/
+	int(size=14)          nbMBdisplayForXaxis := 0;
+	int(size=14)          nbMBdisplayForYaxis := 0;
+	
+	bool                  DisplayReady         := false;
+	int (size=32)                  is_IntraMb;
+
+   function max(int a,int b)
+				-->
+			int
+		:
+			if(a > b)then
+				a
+			else
+				b
+			end
+		end
+		
+    function min(int a,int b)
+				-->
+			int
+		:
+			if(a < b)then
+				a
+			else
+				b
+			end
+		end
+
+	get_writeAddr: action
+			PicWidthInMb    :[PICwidthInMb],
+			PicSizeInMb     :[PICSizeInMb],
+			CurrMbAddr   :[CurrMacroBAddr]
+				==>
+		guard
+		    is_IntraMb=0,
+			write_done = true
+		var
+			uint(size=16) MbLocxInPic,
+			uint(size=16) MbLocyInPic
+		do
+			PicWidthInMacroB := PICwidthInMb;
+			PicSizeInMacroB  := PICSizeInMb;
+			currmbaddr       := CurrMacroBAddr;
+			MbLocxInPic      := CurrMacroBAddr mod PicWidthInMacroB;
+			MbLocyInPic      := CurrMacroBAddr  /  PicWidthInMacroB;
+			wa_x_offset := MbLocxInPic * 8;
+			wa_y_offset := MbLocyInPic * 8;
+			wa_x       := 0;
+			wa_y       := 0;
+			write_done := false;
+		end
+
+
+	//Write_data: 
+	write_data : action
+			WD :[wd]
+				==>
+		guard 
+		    is_IntraMb=0,
+			write_done = false
+		do
+			pic[pic_curr_idx][wa_x_offset + wa_x][wa_y_offset + wa_y] := wd;
+			wa_x := wa_x +1;
+			if(wa_x = 8) then
+				wa_y := wa_y +1;
+				wa_x := 0;
+				write_done := (wa_y = 8);
+			end
+		end
+
+
+	get_readAddr: action
+			ReadAddress :[Ra_off_x , Ra_off_y , RAWidth , RAHeight],
+			Refidx :[refidx]
+				==>
+		guard
+		    is_IntraMb=0,
+			read_done  = true
+		var
+			bool found := false
+		do
+			ra_off_x  := Ra_off_x;
+			ra_off_y  := Ra_off_y;
+			ra_W      := RAWidth;
+			ra_H      := RAHeight;
+			ra_x      := 0;
+			ra_y      := 0;
+			read_done := false;
+			Ref_idx   := 0;
+			foreach int i in 0 .. 3-1
+			do
+				if(refidx=0) then
+					Ref_idx:=(pic_curr_idx+2) mod 3;
+					found := true;
+				end
+				
+				if(refidx=1) then
+					Ref_idx:=(pic_curr_idx+1) mod 3;
+					found := true;
+				end
+			end
+			if(not found)then
+				//println("\nCurrent Poc : "+ListPOC[pic_curr_idx]+" ; Current FrameNum : ");
+				//println("POC not found :"+poc2read+" ; FrameNum : "+"\n");
+					//foreach int i in 0 .. 3-1
+					//do
+						//println("Idx n"+i+"; PocVal:"+ListPOC[i]+ " ; Frame Num:"+" ; is a ref:"+IsAReference[i]);
+					//end
+				//while(true)
+				//do
+				//end
+			end
+		end
+
+
+	// Read data
+	read_data: action
+				==>
+			RD :[rd]
+		guard 
+		    is_IntraMb=0,
+			read_done = false
+		var 
+			uint(size=8) rd,
+			uint(size=11) Read_addr_x,
+			uint(size=11) Read_addr_y
+		do
+			Read_addr_x := min( max(ra_off_x + ra_x , 0) , PicWidthInMacroB  * 8 - 1);
+			Read_addr_y := min( max(ra_off_y + ra_y , 0) , PicHeightInMacroB * 8 - 1);
+			rd   := pic[Ref_idx][Read_addr_x][Read_addr_y];
+			ra_x := ra_x +1;
+			if(ra_x = ra_W) then
+				ra_y := ra_y +1;
+				if(ra_y != ra_H) then
+					ra_x := 0; 
+				else 
+					ra_x := 0;
+					ra_y := 0; 
+					read_done := true;
+				end
+			end
+		end
+
+	write_picture_done: action
+				==>
+			//Write_Done:[true]
+		guard 
+		    is_IntraMb=0,
+			write_done = true,
+			currmbaddr = PicSizeInMacroB - 1
+		do
+			wa_x        := 0;
+			wa_y        := 0;
+			currmbaddr  :=0;
+			DisplayReady := true;
+			PicHeightInMacroB := PicSizeInMacroB / PicWidthInMacroB;
+		end
+
+	read_ref_parameters: action
+			Is_IntraMb:[Is_IntraMb],
+			PicWidth:[PicWidth]
+				==>
+		do
+			pic_curr_idx :=(pic_curr_idx+1) mod 3;	
+			is_IntraMb:=Is_IntraMb;
+			picWidth:=PicWidth;
+		end
+
+
+	//write MB on the output display
+
+	//write MB on the output display
+	Display.luma:action ==>
+			Display:[ [buff[s] :for int s in 0 .. 8 * 8-1] ] repeat 8 * 8
+		var
+			uint         CurrAddrInPix,
+			uint         CurrAddrYaxis,
+			List(type:int(size=16),size = 8 * 8 + 1) buff := [ 0 :for int t in 0 .. 8*8 ] 
+		do
+			CurrAddrInPix := nbMBdisplayForXaxis * 8 + nbMBdisplayForYaxis * 8 * (picWidth/2);
+			CurrAddrYaxis := 0;
+			foreach int y in 0 .. (8-1)
+			do
+				foreach int x in 0 .. (8-1)
+				do
+					buff[x + y * 8] := pic[pic_curr_idx][nbMBdisplayForXaxis * 8 + x][nbMBdisplayForYaxis * 8 + y];
+				end
+				CurrAddrYaxis := CurrAddrYaxis + (picWidth/2);
+			end
+			nbMBdisplayForXaxis := nbMBdisplayForXaxis + 1;
+			if(nbMBdisplayForXaxis = (picWidth/16)) then
+				nbMBdisplayForXaxis := 0;
+				nbMBdisplayForYaxis := nbMBdisplayForYaxis + 1;
+			end
+		end
+
+	Display.done: action ==>
+		guard
+			nbMBdisplayForYaxis = PicHeightInMacroB
+		do
+			nbMBdisplayForXaxis := 0;
+			nbMBdisplayForYaxis := 0;
+		end
+
+	getidxdisplay.launch: action ==>
+		guard
+			DisplayReady = true
+		do
+			DisplayReady := false;
+	    end
+
+	getidxdisplay.skip: action ==>
+		end
+		
+    RA_:action RA:[a] ==> RD:[ rd ]
+         guard 
+              flag[pic_curr_idx][a mod (picWidth/2)][a / (picWidth/2)]=1,
+              is_IntraMb=1
+         var 
+			int(size=32) rd,
+			int(size=32) x,
+			int(size=32) y
+		do
+			x :=a mod (picWidth/2);
+            y :=a / (picWidth/2);
+			rd   := pic[pic_curr_idx][x][y];
+		end
+    
+    WA_:action WA:[a], WD_Intra:[ d ],Picture_done:[picture_done]==>
+    guard    
+        is_IntraMb=1,
+        not picture_done
+    var
+        int (size=32) x,
+        int (size=32) y
+    do
+        x :=a mod (picWidth/2);
+        y :=a / (picWidth/2);
+        pic[pic_curr_idx][x][y] := d;
+        flag[pic_curr_idx][x][y]:= 1;
+    end
+    
+    write_I_picture_done : action Picture_done:[picture_done]==>
+    guard
+        is_IntraMb=1,
+        picture_done
+    do
+    
+    end
+    
+	schedule fsm  read_ref_parameters:
+
+		read_ref_parameters (read_ref_parameters      )--> getidxdisplay;
+
+
+		read_write          (write_data               )--> read_write;
+		read_write          (read_data                )--> read_write;
+		read_write          (get_writeAddr            )--> read_write;
+		read_write          (get_readAddr             )--> read_write;
+		read_write          (RA_                      )--> read_write;
+		read_write          (WA_                      )--> read_write;
+		read_write          (write_picture_done       )--> read_ref_parameters;
+		read_write          (write_I_picture_done     )--> read_ref_parameters;
+
+		getidxdisplay       (getidxdisplay.launch     )--> Display;
+		getidxdisplay       (getidxdisplay.skip       )--> read_write;
+
+		Display             (Display.luma             )--> Display;
+		Display             (Display.done             )--> getidxdisplay;
+	end
+
+  priority
+    write_data                 > read_data                > write_picture_done  > get_writeAddr > get_readAddr ;
+  	Display.done             > Display.luma;
+  	getidxdisplay.launch       > getidxdisplay.skip;
+  end
+end
