@@ -31,6 +31,8 @@
 
 package ch.epfl.mpeg2.parser;
 
+import ch.epfl.mpeg2.parser.MPEG2_Tables.macroblock_address_increment_table;
+
 actor MPEG2_SP_Parser()
 	uint(size=1) Bitstream
 		==>
@@ -64,8 +66,8 @@ actor MPEG2_SP_Parser()
 	uint(size=4) ITUT_EXTENSION_ID 						= 0xC;
 	
 	// Nextbits and Buffer
-	uint(size=32) nextbits := 0;
-	uint(size=1) bit_buffer[1024];
+	uint(size=32)	nextbits := 0;
+	uint(size=1)	bit_buffer[1024];
 	
 	// Check if MPEG2 or ISO/IEC 11172-2 (MPEG1)
 	bool	check_MPEG2 := false;
@@ -111,7 +113,7 @@ actor MPEG2_SP_Parser()
 	uint(size=1) eud_i;				// the i in extension_and_user_data(i). This variable is set in the action before any extension_and_user_data(i)
 	uint(size=8) user_data[512];
 	uint(size=1) ud_counter := 0;
-	uint(size=1) ud_buffer[16];
+	// uint(size=1) ud_buffer[16];
 	
 	// Copyright Extension
 	uint(size=1) copyright_flag;
@@ -173,6 +175,12 @@ actor MPEG2_SP_Parser()
 	uint(size=1)	extra_bit_slice;
 	uint(size=8)	extra_information_slice;
 	
+	// Macroblock
+	uint(size=8)	mb_macroblock_escape_counter := 0;	// To count the number of macroblock escape !
+	uint(size=8)	mb_address_increment_vld_counter := 0; // To count the number of time we do the action
+	uint(size=8)	macroblock_address_increment;
+	uint(size=1)	mb_address_increment_flag := 0;	// Flag is set to 1 when the vlc is decoded
+	
 	// ////////////////////////////////////////////////////////////////////////
 	// Functions / Procedures
 
@@ -186,19 +194,28 @@ actor MPEG2_SP_Parser()
 		nextbits := res;
 	end
 	
+	function test23zeros(uint(size=1) bit[24]) --> bool:
+		bit[0]  = 0 and bit[1]  = 0 and bit[2]  = 0 and bit[3]  = 0 and
+		bit[4]  = 0 and bit[5]  = 0 and bit[6]  = 0 and bit[7]  = 0 and
+		bit[8]  = 0 and bit[9]  = 0 and bit[10] = 0 and bit[11] = 0 and
+		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
+		bit[16] = 0 and bit[17] = 0 and bit[18] = 0 and bit[19] = 0 and
+		bit[20] = 0 and bit[21] = 0 and bit[22] = 0
+	end
+	
 	function testStartCodePrefix24(uint(size=1) bit[24]) --> bool:
-		bit[0] = 0 and bit[1] = 0 and bit[2] = 0 and bit[3] = 0 and
-		bit[4] = 0 and bit[5] = 0 and bit[6] = 0 and bit[7] = 0 and
-		bit[8] = 0 and bit[9] = 0 and bit[10] = 0 and bit[11] = 0 and
+		bit[0]  = 0 and bit[1]  = 0 and bit[2]  = 0 and bit[3]  = 0 and
+		bit[4]  = 0 and bit[5]  = 0 and bit[6]  = 0 and bit[7]  = 0 and
+		bit[8]  = 0 and bit[9]  = 0 and bit[10] = 0 and bit[11] = 0 and
 		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
 		bit[16] = 0 and bit[17] = 0 and bit[18] = 0 and bit[19] = 0 and
 		bit[20] = 0 and bit[21] = 0 and bit[22] = 0 and bit[23] = 1
 	end
 	
 	function testStartCodePrefix16(uint(size=1) bit[16]) --> bool:
-		bit[0] = 0 and bit[1] = 0 and bit[2] = 0 and bit[3] = 0 and
-		bit[4] = 0 and bit[5] = 0 and bit[6] = 0 and bit[7] = 0 and
-		bit[8] = 0 and bit[9] = 0 and bit[10] = 0 and bit[11] = 0 and
+		bit[0]  = 0 and bit[1]  = 0 and bit[2]  = 0 and bit[3]  = 0 and
+		bit[4]  = 0 and bit[5]  = 0 and bit[6]  = 0 and bit[7]  = 0 and
+		bit[8]  = 0 and bit[9]  = 0 and bit[10] = 0 and bit[11] = 0 and
 		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
 		bit[16] = 1
 	end
@@ -218,17 +235,25 @@ actor MPEG2_SP_Parser()
 	
 	// Start Code Actions
 	
-	start_code_prefix: action Bitstream: [token] repeat 24 ==>	// Peak the 0x001 pre-start code
+	
+	
+	start_code_prefix: action Bitstream: [token] repeat 24 ==>	// Check the 23 zeros of the start code prefix and put the 24th bit into nextbits
 	guard
-		testStartCodePrefix24(token)
+		test23zeros(token)
+	do
+		nextbits := token[23];
 	end
 	
-	eat_bit:action Bitstream: [token] ==>	// Eat stuffing bit when not byte aligned
+	eat_stuffing_bit:action Bitstream: [token] ==>	// Eat stuffing bit when not byte aligned
 	guard
-		token = 0
+		nextbits = 0
+	do
+		nextbits := token;
 	end
 	
 	read_start_code: action Bitstream: [token] repeat 8 ==>	// Put start_code into nextbits
+	guard
+		nextbits = 1
 	do
 		bit_buffer := [token[i]: for int i in 0 .. 7];
 		compute_nextbits(0, 7);
@@ -359,46 +384,14 @@ actor MPEG2_SP_Parser()
 		nextbits = USER_DATA_START_CODE
 	end
 	
-	ud_some_user_data: action Bitstream: [token] repeat 24 ==>
-	guard
-		not testStartCodePrefix24(token)
+	ud_read_user_data: action Bitstream: [token] repeat 8 ==>
 	do
-		uint(size=1) j := 0;
 		bit_buffer := [token[i]: for int i in 0 .. 7];
 		compute_nextbits(0, 7);
 		user_data[ud_counter] := nextbits;
 		ud_counter := ud_counter + 1;
-		while j != 16 do
-			ud_buffer[j] := token[j+8];
-			j := j + 1;
-		end
 	end
-	
-	ud_no_user_data: action Bitstream: [token] repeat 24 ==>
-	guard
-		testStartCodePrefix24(token)
-	end
-	
-	ud_more_user_data: action Bitstream: [token] repeat 8 ==>
-	guard
-		testByteZero(token) and testStartCodePrefix16(ud_buffer)	
-	end
-	
-	ud_no_more_user_data: action Bitstream: [token] repeat 8 ==>
-	guard
-		not testStartCodePrefix16(ud_buffer)
-	do
-		bit_buffer := [ud_buffer[i]: for int i in 0 .. 7];	// Translate from buffer to user_data
-		compute_nextbits(0, 7);
-		user_data[ud_counter] := nextbits;
-		foreach int j in 0 .. 7 do							// Shift datas in the buffer
-			ud_buffer[j] := ud_buffer[j + 8];
-		end
-		foreach int k in 0 .. 7 do							// Store token into buffer
-			ud_buffer[k + 8] := token[k];
-		end
-	end
-		
+
 	// Sequence Display Extension
 	
 	sde_sequence_display_extension: action Bitstream: [token] repeat 4 ==>
@@ -706,14 +699,39 @@ actor MPEG2_SP_Parser()
 		extra_bit_slice := token;
 	end
 	
+	// Macroblocks
+/*	
+	macroblock_escape: action Bitstream: [token] repeat 11 ==>
+	guard
+		// Nextbits = 0000 0001 000 -> Macroblock escape
+		token[0] = 0, token[1] = 0, token[2] = 0, token[3] = 0,
+		token[4] = 0, token[5] = 0, token[6] = 0, token[7] = 1,
+		token[8] = 0, token[9] = 0, token[10] = 0
+	do
+		mb_macroblock_escape_counter := mb_macroblock_escape_counter + 1;
+	end
 	
-	
-	
+	mb_address_increment: action Bitstream: [token] ==>
+	guard
+		mb_address_increment_flag = 0
+	do
+		uint(size=7) mb_addr_inc_val;
+		bit_buffer[mb_address_increment_vld_counter] := token; 						// Place the new token into bit_buffer
+		compute_nextbits(0, mb_address_increment_vld_counter);						// Compute the tokens into nextbits
+		mb_addr_inc_val := macroblock_address_increment_table[mb_address_increment_vld_counter][nextbits];
+		if mb_addr_inc_val != -1 then
+			macroblock_address_increment := 33*mb_macroblock_escape_counter + mb_addr_inc_val;
+			mb_address_increment_flag := 1;
+		end
+		mb_address_increment_vld_counter := mb_address_increment_vld_counter + 1;
+		
+	end
+*/
 	schedule fsm next_start_code :
 	
 		// Read the next start code
 		next_start_code				(start_code_prefix)						-->		read_start_code;
-		next_start_code				(eat_bit)								-->		next_start_code;
+		read_start_code				(eat_stuffing_bit)						-->		read_start_code;
 		read_start_code				(read_start_code)						-->		go_to_code;
 		
 		// Read the next extension start code
@@ -746,12 +764,9 @@ actor MPEG2_SP_Parser()
 		go_to_extension_code		(ITUT_extension)						-->		next_start_code;
 	
 		// User Data
-		go_to_code					(ud_user_data)							-->		begin_user_data;
-		begin_user_data				(ud_some_user_data)						-->		read_user_data;
-		begin_user_data				(ud_no_user_data)						-->		end_user_data;
-		read_user_data				(ud_more_user_data)						-->		read_user_data;
-		read_user_data				(ud_no_more_user_data)					-->		end_user_data;
-		end_user_data				(read_start_code)						-->		go_to_code;		
+		go_to_code					(ud_user_data)							-->		read_user_data;
+		read_user_data				(ud_read_user_data)						-->		read_user_data;
+		read_user_data				(start_code_prefix)						-->		read_start_code;
 		
 		// Group of Pictures Header
 		go_to_code					(group_of_pictures_header)				-->		next_start_code;
@@ -784,7 +799,7 @@ actor MPEG2_SP_Parser()
 	end
 	
 	priority
-		start_code_prefix	>	eat_bit;
+		start_code_prefix	>	ud_read_user_data;
 	end	
 	
 end
