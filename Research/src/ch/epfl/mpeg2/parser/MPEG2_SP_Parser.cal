@@ -202,31 +202,7 @@ actor MPEG2_SP_Parser()
 		bit[16] = 0 and bit[17] = 0 and bit[18] = 0 and bit[19] = 0 and
 		bit[20] = 0 and bit[21] = 0 and bit[22] = 0
 	end
-	
-	function testStartCodePrefix24(uint(size=1) bit[24]) --> bool:
-		bit[0]  = 0 and bit[1]  = 0 and bit[2]  = 0 and bit[3]  = 0 and
-		bit[4]  = 0 and bit[5]  = 0 and bit[6]  = 0 and bit[7]  = 0 and
-		bit[8]  = 0 and bit[9]  = 0 and bit[10] = 0 and bit[11] = 0 and
-		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
-		bit[16] = 0 and bit[17] = 0 and bit[18] = 0 and bit[19] = 0 and
-		bit[20] = 0 and bit[21] = 0 and bit[22] = 0 and bit[23] = 1
-	end
-	
-	function testStartCodePrefix16(uint(size=1) bit[16]) --> bool:
-		bit[0]  = 0 and bit[1]  = 0 and bit[2]  = 0 and bit[3]  = 0 and
-		bit[4]  = 0 and bit[5]  = 0 and bit[6]  = 0 and bit[7]  = 0 and
-		bit[8]  = 0 and bit[9]  = 0 and bit[10] = 0 and bit[11] = 0 and
-		bit[12] = 0 and bit[13] = 0 and bit[14] = 0 and bit[15] = 0 and
-		bit[16] = 1
-	end
-	
-	function testByteZero(uint(size=1) bit[8]) --> bool:
-		bit[0] = 0 and bit[1] = 0 and bit[2] = 0 and bit[3] = 0 and
-		bit[4] = 0 and bit[5] = 0 and bit[6] = 0 and bit[7] = 0 and
-		bit[8] = 0
-	end
-	 
-	
+		
 	// ////////////////////////////////////////////////////////////////////////
 	// Untagged Actions
 
@@ -700,7 +676,15 @@ actor MPEG2_SP_Parser()
 	end
 	
 	// Macroblocks
-/*	
+	
+	begin_macroblock: action ==>
+	do
+		mb_macroblock_escape_counter := 0;		// To count the number of macroblock escape !
+		mb_address_increment_vld_counter := 0;	// To count the number of time we do the action
+		macroblock_address_increment := 0;
+		mb_address_increment_flag := 0;			// Flag is set to 1 when the vlc is decoded		
+	end
+
 	macroblock_escape: action Bitstream: [token] repeat 11 ==>
 	guard
 		// Nextbits = 0000 0001 000 -> Macroblock escape
@@ -715,18 +699,17 @@ actor MPEG2_SP_Parser()
 	guard
 		mb_address_increment_flag = 0
 	do
-		uint(size=7) mb_addr_inc_val;
-		bit_buffer[mb_address_increment_vld_counter] := token; 						// Place the new token into bit_buffer
-		compute_nextbits(0, mb_address_increment_vld_counter);						// Compute the tokens into nextbits
-		mb_addr_inc_val := macroblock_address_increment_table[mb_address_increment_vld_counter][nextbits];
+		int(size=8) mb_addr_inc_val;
+		bit_buffer[mb_address_increment_vld_counter] := token; 													// Place the new token into bit_buffer
+		compute_nextbits(0, mb_address_increment_vld_counter);													// Compute the tokens into nextbits
+		mb_addr_inc_val := macroblock_address_increment_table[mb_address_increment_vld_counter][nextbits - 1];	// Look in the VLC table
 		if mb_addr_inc_val != -1 then
-			macroblock_address_increment := 33*mb_macroblock_escape_counter + mb_addr_inc_val;
-			mb_address_increment_flag := 1;
+			macroblock_address_increment := 33*mb_macroblock_escape_counter + mb_addr_inc_val;					// Calculate the address increment
+			mb_address_increment_flag := 1;																		// Set the end flag to 1
 		end
-		mb_address_increment_vld_counter := mb_address_increment_vld_counter + 1;
-		
+		mb_address_increment_vld_counter := mb_address_increment_vld_counter + 1;								// Update the counter
 	end
-*/
+
 	schedule fsm next_start_code :
 	
 		// Read the next start code
@@ -788,18 +771,26 @@ actor MPEG2_SP_Parser()
 		go_to_code					(sl_big_slice)							-->		sl_slice_extension;	
 		go_to_code					(sl_small_slice)						-->		sl_slice_extension;
 		sl_slice_extension			(sl_slice_extension)					-->		sl_extra_info_slice;
-		sl_slice_extension			(sl_slice_end)							-->		next_start_code;			// To be continued !	==> Macroblock()
+		sl_slice_extension			(sl_slice_end)							-->		begin_macroblock;
 		sl_extra_info_slice			(sl_extra_information_slice)			-->		sl_extra_info_slice;
-		sl_extra_info_slice			(sl_slice_end)							-->		next_start_code;			// To be continued !	==>	Macroblock()
+		sl_extra_info_slice			(sl_slice_end)							-->		begin_macroblock;
+		
+		// Macorblock
+		begin_macroblock			(begin_macroblock)						-->		macroblock_escape;
+		begin_macroblock			(start_code_prefix)						-->		read_start_code;
+		macroblock_escape			(macroblock_escape)						-->		macroblock_escape;
+		macroblock_escape			(mb_address_increment)					-->		macroblock_addr_inc;
+		macroblock_addr_inc			(mb_address_increment)					-->		macroblock_addr_inc;
+		macroblock_addr_in			(LOOK_FOLLOWING_BITS)					-->		next_start_code;		// To be continued;
+		
 		
 		// debug						(LOOK_FOLLOWING_BITS)					-->		next_start_code;
-		
-		// Picture Data
 		
 	end
 	
 	priority
 		start_code_prefix	>	ud_read_user_data;
+		start_code_prefix	>	begin_macroblock;
 	end	
 	
 end
