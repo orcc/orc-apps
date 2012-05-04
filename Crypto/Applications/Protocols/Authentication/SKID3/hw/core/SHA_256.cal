@@ -33,8 +33,8 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 		0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
 		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 	];
-	List(type:uint(size=32),size=64) W := [0: for int i in 0 .. 63]; // Message schedule.
-	List(type:uint(size=32),size=16) M := [0: for int i in 0 .. 15]; // Message.
+	List(type:uint(size=32),size=64) W; // Message schedule.
+	//List(type:uint(size=32),size=16) M := [0: for int i in 0 .. 15]; // Message.
 	
 	// replace the list(size=8) by 8 vars to be more efficient in hardware
 	uint(size=32) H0;
@@ -45,6 +45,15 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 	uint(size=32) H5;
 	uint(size=32) H6;
 	uint(size=32) H7;
+	
+	uint(size=32) a;
+	uint(size=32) b;
+	uint(size=32) c;
+	uint(size=32) d;
+	uint(size=32) e;
+	uint(size=32) f;
+	uint(size=32) g;
+	uint(size=32) h;
 	
 	int messageCounter := 0; // count the number of messages processed.
 	int wordCounter := 0; // count the number of words processed.
@@ -110,7 +119,6 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 		end
 
 		messageCounter := 0; // Reset message counter.
-		wordCounter := 0; // Reset word counter.
 	end
 	
 	
@@ -118,42 +126,23 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 	receiveMessage.recv:
 	action IP2_M:[m] ==>
 	do
-		M[wordCounter] := m;
+		W[wordCounter] := m;
 		wordCounter := wordCounter + 1;
 	end
 	
-	// Hash input messages.
-	hashMessage:
+	receiveMessage.prepare:
 	action ==>
 	guard wordCounter >= 16
-	var
-		// Working variables:
-		uint(size=32) a,
-		uint(size=32) b,
-		uint(size=32) c,
-		uint(size=32) d,
-		uint(size=32) e,
-		uint(size=32) f,
-		uint(size=32) g,
-		uint(size=32) h,
-		// Temporary variables:
-		uint(size=32) T1,
-		uint(size=32) T2,
-		
-		int t := 0
+	var int t := wordCounter
 	do
-		// Prepare Message schedule.		
-		while(t < 64) do
-			if t <= 15 then
-				W[t] := M[t];			
-			else
-				W[t] := SmallSigma1(W[t-2]) + W[t-7] + SmallSigma0(W[t-15]) + W[t-16];
-			end
-			
-			t := t + 1;
-		end
-		
-		// Initialize working variables.
+		W[t] := SmallSigma1(W[t-2]) + W[t-7] + SmallSigma0(W[t-15]) + W[t-16];
+		wordCounter := wordCounter + 1;
+	end
+	
+	receiveMessage.done:
+	action ==>
+	guard wordCounter >= 64
+	do
 		a := H0;
 		b := H1;
 		c := H2;
@@ -162,25 +151,37 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 		f := H5;
 		g := H6;
 		h := H7;
-				
-		// 64 Computation cycles.
-		t := 0;
-		while(t < 64) do
-			T1 := h + BigSigma1(e) + Ch(e,f,g) + K[t] + W[t];
-			T2 := BigSigma0(a) + Maj(a,b,c);
-			h := g;
-			g := f;
-			f := e;
-			e := d + T1;
-			d := c;
-			c := b;
-			b := a;
-			a := T1 + T2;		
-
-			t := t + 1;
-		end
-		
-		// Compute intermediate hash values.
+		wordCounter := 0;
+	end
+	
+	// Hash input messages.
+	hashMessage.compute:
+	action ==>
+	var
+		uint(size=32) T1,
+		uint(size=32) T2,
+		int t := wordCounter
+	do	
+		// compute 64 cycles
+		T1 := h + BigSigma1(e) + Ch(e,f,g) + K[t] + W[t];
+		T2 := BigSigma0(a) + Maj(a,b,c);
+		h := g;
+		g := f;
+		f := e;
+		e := d + T1;
+		d := c;
+		c := b;
+		b := a;
+		a := T1 + T2;
+		wordCounter := wordCounter + 1;
+	end
+	
+	
+	hashMessage.done:
+	action ==>
+	guard wordCounter >= 64
+	do
+		// Compute intermediate hash values.	
 		H0 := a + H0;
 		H1 := b + H1;
 		H2 := c + H2;
@@ -189,7 +190,6 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 		H5 := f + H5;
 		H6 := g + H6;
 		H7 := h + H7;
-
 		wordCounter := 0;
 	end
 	
@@ -197,6 +197,7 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 	handleMessage.new : action ==>
 	do
 		messageCounter := messageCounter + 1;
+		wordCounter := 0; // Reset word counter.
 	end
 	
 	handleMessage.done : action ==>
@@ -204,7 +205,7 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 	end
 
 	// Output the final generated hash (message digest).
-	outputHash.h0: action ==> OP:[H0] end
+	outputHash.h0: action ==> OP:[H0] do println("----------------->H0:="+H0); end
 	outputHash.h1: action ==> OP:[H1] end
 	outputHash.h2: action ==> OP:[H2] end
 	outputHash.h3: action ==> OP:[H3] end
@@ -219,8 +220,12 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 		handleMessage ( handleMessage.new ) --> receiveMessage;
 		handleMessage ( handleMessage.done ) --> outputHash_h0;
 		
-		receiveMessage ( receiveMessage ) --> receiveMessage;
-		receiveMessage ( hashMessage ) --> handleMessage;
+		receiveMessage ( receiveMessage.recv ) --> receiveMessage;
+		receiveMessage ( receiveMessage.prepare ) --> receiveMessage;
+		receiveMessage ( receiveMessage.done ) --> hashMessage;
+		
+		hashMessage ( hashMessage.compute ) --> hashMessage;
+		hashMessage ( hashMessage.done ) --> handleMessage;
 		
 		outputHash_h0 ( outputHash.h0 ) --> outputHash_h1;
 		outputHash_h1 ( outputHash.h1 ) --> outputHash_h2;
@@ -234,8 +239,9 @@ actor SHA_256(bool IS_SHA256) int(size=32) IP1_N, uint(size=32) IP2_M ==> uint(s
 	
 	
 	priority 
-		hashMessage > receiveMessage.recv;
+		receiveMessage.done > receiveMessage.prepare  > receiveMessage.recv;
 		handleMessage.done > handleMessage.new;
+		hashMessage.done > hashMessage.compute;
 	end
 	
 end
