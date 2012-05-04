@@ -125,9 +125,9 @@ unit CabacDecodeBinFunction :
 		1,  1,  1,  1
 	];
 	/*************************************************************************
-	 * decodeInit
+	 * decodeStart
 	 *************************************************************************/
-	procedure decodeInit(
+	procedure decodeStart(
 		uint(size= 9) codIRange[1],
 		uint(size=16) codIOffset[1],
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
@@ -137,9 +137,21 @@ unit CabacDecodeBinFunction :
 	begin
 		byte_align(fifo);
 		codIRange[0] := 0x1FE;
-		byte_align(fifo);
 		getBits(16, fifo, res);
 		codIOffset[0] := res[0];
+	end
+	/*************************************************************************
+	 * decodeFlush
+	 *************************************************************************/
+	procedure decodeFlush(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1]
+	begin
+		
 	end
 	/*************************************************************************
 	 * decodeBin
@@ -177,7 +189,6 @@ unit CabacDecodeBinFunction :
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
 	)
 	var
-		uint(size=32) res[1],
 		uint(size=3) qCodIRangeIdx = (codIRange[0]>>6) - 4,
 		uint(size=9) codIRangeLPS  = rangeTabLPS[state[0]][qCodIRangeIdx],
 		uint(size=3) numBits
@@ -186,16 +197,7 @@ unit CabacDecodeBinFunction :
 		if codIOffset[0] < (codIRange[0] << 7) then // MPS path
 			binVal[0]       := mps[0]; 
 			state[0]		:= transIdxMPS[state[0]];
-			if codIRange[0] < 256 then
-				codIRange[0]  := codIRange[0] << 1;
-    			codIOffset[0] := codIOffset[0] << 1;
-//    			println("MPS : codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);		
-       			if (fifo[FIFO_CPT_BITS] & 7) = 0 then
-					vld_u(  8, fifo, res);
-    				codIOffset[0] := codIOffset[0] + res[0];
-//    				println("MPS getBits(8) = "+res[0]+ " codIOffset := " +codIOffset[0]);		
-    			end
-			end
+			renormD(codIRange, codIOffset, fifo);
 		else  // LPS path
 			numBits 		:= renormTable[codIRangeLPS>>3];
 			codIOffset[0]	:= (codIOffset[0] - (codIRange[0]<<7)) << numBits;
@@ -205,39 +207,6 @@ unit CabacDecodeBinFunction :
 				mps[0]		:= 1 - mps[0];
 			end
 			state[0]		:= transIdxLPS[state[0]];
-//   			println("LPS : codIRangeLPS := "+codIRangeLPS+" codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" numBits := "+numBits+" m_bitsNeeded := "+(fifo[FIFO_CPT_BITS] & 7));		
-   			if (fifo[FIFO_CPT_BITS] & 7) + numBits >= 8 then
-				vld_u(  8, fifo, res);
-   				codIOffset[0] := codIOffset[0] + res[0];
-//   				println("LPS getBits(8) = "+res[0]+ " codIOffset := " +codIOffset[0]);		
-   			end 
-		end
-		//renormD(codIRange, codIOffset, fifo);
-	end
-	procedure decodeDecision_old(
-		uint(size= 9) codIRange[1],
-		uint(size=16) codIOffset[1],
-		uint(size= 7) state[1],
-		uint(size= 1) mps[1],
-		uint(size= 1) binVal[1],
-		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
-	)
-	var
-		uint(size=3) qCodIRangeIdx = (codIRange[0]>>6) & 3,
-		uint(size=9) codIRangeLPS  = rangeTabLPS[state[0]][qCodIRangeIdx]
-	begin	
-		codIRange[0] := codIRange[0] - codIRangeLPS;	
-		if codIOffset[0] >= codIRange[0] then
-			binVal[0]		:= 1 - mps[0];
-			codIOffset[0]	:= codIOffset[0] - codIRange[0];
-			codIRange[0]	:= codIRangeLPS;
-			if state[0] = 0 then
-				mps[0]		:= 1 - mps[0];
-			end
-			state[0]		:= transIdxLPS[state[0]];
-		else
-			binVal[0]       := mps[0]; 
-			state[0]		:= transIdxMPS[state[0]];
 		end
 		renormD(codIRange, codIOffset, fifo);
 	end
@@ -250,10 +219,12 @@ unit CabacDecodeBinFunction :
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
 	)
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1] := [0]
 	begin
-		while codIRange[0] < 256 do
-			vld_u(  1, fifo, res);
+		if codIRange[0] < 256 then
+			if (fifo[FIFO_CPT_BITS] & 7) = 0 then
+				getBits(  8, fifo, res);
+			end
 			codIRange[0]	:=  codIRange[0]  << 1;
 			codIOffset[0]	:= (codIOffset[0] << 1) + res[0];
 		end
@@ -268,13 +239,15 @@ unit CabacDecodeBinFunction :
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
 	)
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1] := [0]
 	begin
-		vld_u(  1, fifo, res);
-		codIOffset[0]		:= (codIOffset[0] << 1) + res[0];
-		if codIOffset[0] >= codIRange[0] then
+		if (fifo[FIFO_CPT_BITS] & 7) = 0 then
+			getBits(  8, fifo, res);
+		end
+		codIOffset[0]	:= (codIOffset[0] << 1) + res[0];
+		if codIOffset[0] >= (codIRange[0]<<7) then
 			binVal[0]		:= 1;
-			codIOffset[0]	:= codIOffset[0] - codIRange[0];
+			codIOffset[0]	:= codIOffset[0] - (codIRange[0]<<7);
 		else
 			binVal[0]       := 0; 
 		end
@@ -283,17 +256,17 @@ unit CabacDecodeBinFunction :
 	 * decodeTerminate
 	 *************************************************************************/
 	procedure decodeTerminate(
-		uint(size=9) codIRange[1],
-		uint(size=9) codIOffset[1],
-		uint(size=1) binVal[1],
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 1) binVal[1],
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
 	)
 	begin
-		codIRange[0] 		:= codIRange[0] - 2;		
-		if codIOffset[0] >= codIRange[0] then
-			binVal[0]		:= 1;
+		codIRange[0] := codIRange[0] - 2;
+		if codIOffset[0] >= (codIRange[0] << 7) then
+			binVal[0] := 1;
 		else
-			binVal[0]       := 0;
+			binVal[0] := 0;
 			renormD(codIRange, codIOffset, fifo);
 		end
 	end
