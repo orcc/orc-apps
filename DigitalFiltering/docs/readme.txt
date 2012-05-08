@@ -1,9 +1,14 @@
 The DigitalFiltering project -- a gentle introduction to RVC-CAL
 
-Author: 
+
+Authors: 
 Jani Boutellier (jani.boutellier@ee.oulu.fi)
 Department of Computer Science and Engineering
 University of Oulu, Finland
+
+Karol Desnos (karol.desnos@insa-rennes.fr)
+IETR, INSA Rennes, France
+
 
 Description:
 This project contains descriptions of a 4-tap FIR filter and
@@ -18,9 +23,15 @@ The lib-folder contains also input sample sequences and
 reference outputs. An example compilation command can
 be found in the 'compile' script that needs some editing
 though.
+As an update, a single-precision floating point version
+of the FIR filter was added.
+
 
 Changelog:
-- initial version 08/03/2012
+- initial version 08/03/2012 (jboutell)
+- simplification of some actors 11/04/2012 (kdesnos)
+- floating point FIR 08/05/2012 (jboutell)
+
 
 Known issues:
 - The low-level version of the IIR filter stops execution

@@ -21,12 +21,17 @@ getPortName(port) ::= <<
 ///////////////////////////////////////////////////////////////////////////////
 
 Constant(constant) ::= <<
-<if (constant.booleanExpr)><printBool(constant)><
-elseif (constant.intExpr)><printInt(constant)><
-elseif (constant.floatExpr)><printFloat(constant)><
-elseif (constant.listExpr)><printList(constant)><
-elseif (constant.stringExpr)><printString(constant)><
+<if (constant.exprBool)><printBool(constant)><
+elseif (constant.exprInt)><printInt(constant)><
+elseif (constant.exprFloat)><printFloat(constant)><
+elseif (constant.exprList)><printList(constant)><
+elseif (constant.exprString)><printString(constant)><
+elseif (constant.exprVar)><printVar(constant)><
 endif>
+>>
+
+printVar(var) ::= <<
+<var.use.variable.name>
 >>
 
 printBool(constant) ::= <<
@@ -34,7 +39,7 @@ printBool(constant) ::= <<
 >>
 
 printInt(number) ::= <<
-<number><if (number.long)>L<endif>
+<number>
 >>
 
 printFloat(number) ::= <<
@@ -54,7 +59,7 @@ printString(constant) ::= <<
 // State variables
 ///////////////////////////////////////////////////////////////////////////////
 stateVar(variable) ::= <<
-<if(variable.initialized)>
+<printAttributes(variable)><if(variable.initialized)>
 <if(!variable.assignable)>
 <if(!variable.type.list)>
 #define <variable.name> <Constant(variable.initialValue)>
@@ -131,6 +136,16 @@ initializeFifoId(port) ::= <<
 ///////////////////////////////////////////////////////////////////////////////
 // Instructions
 ///////////////////////////////////////////////////////////////////////////////
+printInstructions(instructions) ::= <<
+<instructions: {instr | <printAttributes(instr)> <
+if (instr.assign)><printAssign(assign=instr)><
+elseif (instr.call)><printCall(call=instr)><
+elseif (instr.load)><printLoad(load=instr)><
+elseif (instr.return)><printReturn(return=instr)><
+elseif (instr.store)><printStore(store=instr)><
+elseif (instr.instSpecific)><printInstSpecific(instr)><
+endif>}>
+>>
 
 printAssign(assign) ::= <<
 
@@ -156,7 +171,7 @@ endif>
 >>
 
 printFormat(parameter) ::= <<
-<if (parameter.value.stringExpr)
+<if (parameter.value.exprString)
 ><parameter.value><
 else
 > "%<printFormatType(parameter.value.type)>" <
@@ -164,7 +179,7 @@ endif>
 >>
 
 printPrintfParam(parameter) ::= <<
-<if (!parameter.value.stringExpr)>, <parameter.value><endif>
+<if (!parameter.value.exprString)>, <parameter.value><endif>
 >>
 
 printCall(call) ::= <<
@@ -249,24 +264,18 @@ printWriteEnd(port, numTokens) ::= <<
 index_<port.name> += <numTokens>;
 >>
 
+// specific instruction
+printInstSpecific(instSpecific) ::= <<>>
+
 ///////////////////////////////////////////////////////////////////////////////
 // Nodes
 ///////////////////////////////////////////////////////////////////////////////
 
-printInstructions(instructions) ::= <<
-<instructions: {instr | <
-if (instr.assign)><printAssign(assign=instr)><
-elseif (instr.call)><printCall(call=instr)><
-elseif (instr.load)><printLoad(load=instr)><
-elseif (instr.return)><printReturn(return=instr)><
-elseif (instr.store)><printStore(store=instr)><
-endif>}>
->>
-
 printNodes(nodes) ::= <<
-<nodes: {node | <if (node.blockNode)><printBlockNode(node)><
-elseif (node.ifNode)><printIfNode(node)><
-elseif (node.whileNode)><printWhileNode(node)><
+<nodes: {node | <printAttributes(node)> <if (node.nodeBlock)><printBlockNode(node)><
+elseif (node.nodeIf)><printIfNode(node)><
+elseif (node.nodeWhile)><printWhileNode(node)><
+elseif (node.nodeSpecific)><printNodeSpecific(node)><
 endif>}>
 >>
 
@@ -295,6 +304,9 @@ while (<whileNode.condition>) {
 <printBlockNode(whileNode.joinNode)>
 >>
 
+// specific node
+printNodeSpecific(nodeSpecific) ::= <<>>
+
 ///////////////////////////////////////////////////////////////////////////////
 // Procedure
 ///////////////////////////////////////////////////////////////////////////////
@@ -306,6 +318,7 @@ printProcedureDeclaration(procedure,action="") ::= <<
 >>
 
 printProcedure(procedure,action="") ::= <<
+<printAttributes(procedure)>
 <if(!procedure.native)>
 static <procedure.returnType> <procedure.name>(<
   procedure.parameters: {param | <varDecl(param.variable)>}; wrap, anchor, separator=", ">) {
@@ -345,6 +358,9 @@ if (<pattern.numTokensMap.(port)> \> SIZE_<port.name> - index_<port.name> + <get
 	<if(options.newScheduler)>
 	if(!<instance.name>.sched-\>round_robin || i \> 0) {
 		sched_add_schedulable(<instance.name>.sched, &<successor.target.name>, RING_TOPOLOGY);
+#ifdef PRINT_FIRINGS
+		printf("\tFull port: <port.name>\n");
+#endif
 	}
 	<endif>
 }
@@ -361,7 +377,7 @@ if (stop != 0) {
 >>
 
 checkInputPattern(pattern) ::= <<
-<pattern.ports: { port | index_<port.name> + <pattern.numTokensMap.(port)> - numTokens_<port.name> - 1 \> SIZE_<port.name> && }>
+<pattern.ports: { port | numTokens_<port.name> - index_<port.name> \>= <pattern.numTokensMap.(port)> && }>
 >>
 
 printReadTokensFunction(port) ::= <<
@@ -483,11 +499,14 @@ if (<checkInputPattern(transition.action.inputPattern)>isSchedulable_<transition
 >>
 
 printInputPatternPort(port) ::= <<
-if (index_<port.name> + <pattern.numTokensMap.(port)> - numTokens_<port.name> - 1 \<= SIZE_<port.name>) {
+if (numTokens_<port.name> - index_<port.name> \< <pattern.numTokensMap.(port)>) {
 	if(!<instance.name>.sched-\>round_robin || i \> 0) {
 		<if(instance.incomingPortMap.(port))>
 		sched_add_schedulable(<instance.name>.sched, &<instance.incomingPortMap.(port).source.name>, RING_TOPOLOGY);
 		<endif>
+#ifdef PRINT_FIRINGS
+		printf("\tEmpty port: <port.name>\n");
+#endif
 	}
 }
 >>
@@ -519,9 +538,9 @@ l_<state.name>:
 	i += si-\>num_firings;
 	<endif>
 	<if (state.outgoing.empty)>
-	//printf("stuck in state \"<state.name>\" in the instance <instance.name>\n");
-	//wait_for_key();
-	//exit(1);
+	printf("stuck in state \"<state.name>\" in the instance <instance.name>\n");
+	wait_for_key();
+	exit(1);
 	<else>
 	<schedulingStates(state, state.outgoing)>
 	<endif>
@@ -533,10 +552,9 @@ switch (_FSM_state) {
 case my_state_<state.name>:
 	goto l_<state.name>;<\n>}>
 default:
-	while(1);
-	//printf("unknown state in <instance.name>.c : %s\n", stateNames[_FSM_state]);
-	//wait_for_key();
-	//exit(1);
+	printf("unknown state in <instance.name>.c : %s\n", stateNames[_FSM_state]);
+	wait_for_key();
+	exit(1);
 }
 >>
 
@@ -594,7 +612,7 @@ parameters(arguments) ::= <<
 >>
 
 printInstanceParameter(name, value) ::= <<
-<if (value.listExpr)>
+<if (value.exprList)>
 static <if (value.innermostType.uintType)>unsigned <endif>int <name><listSize(value.type.dimensions)> = <Constant(value)>;
 <else>
 #define <name> <Constant(value)>
@@ -642,8 +660,20 @@ printInstance(instance, options) ::= <<
 #include "orcc_types.h"
 #include "orcc_fifo.h"
 #include "orcc_util.h"
+#include "orcc_scheduler.h"
 
 #define SIZE <options.("fifoSize")>
+<printAttributes(instance)>
+
+<if(options.newScheduler)>
+#define RING_TOPOLOGY <if(options.ringTopology)>1<else>0<endif>
+<endif>
+
+// #define PRINT_FIRINGS
+
+////////////////////////////////////////////////////////////////////////////////
+// Instance
+extern struct actor_s <instance.name>;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Input FIFOs
@@ -725,4 +755,11 @@ finished:
 }
 <endif>
 
+>>
+
+///////////////////////////////////////////////////////////////////////////////
+// Annotations
+///////////////////////////////////////////////////////////////////////////////
+
+printAttributes(attributeable) ::= <<
 >>
