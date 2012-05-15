@@ -31,6 +31,7 @@ Changelog:
 - initial version 08/03/2012 (jboutell)
 - simplification of some actors 11/04/2012 (kdesnos)
 - floating point FIR 08/05/2012 (jboutell)
+- half-precision floating point FIR 15/05/2012 (jboutell)
 
 
 Known issues:
@@ -45,3 +46,4 @@ Known issues:
   to emulate the presence of an initial token in the
   feedback loop. A cleaner alternative would be to 
   allow initial tokens in the XDF
+- The half-precision floating point FIR is work-in-progress

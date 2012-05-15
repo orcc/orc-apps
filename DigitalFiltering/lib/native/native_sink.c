@@ -30,3 +30,9 @@ void native_sink_consume_sf(float data)
 {
 	fputc((int)data, sink_file);
 }
+
+void native_sink_consume_hf(float data)
+{
+	fputc((int)data, sink_file);
+}
+

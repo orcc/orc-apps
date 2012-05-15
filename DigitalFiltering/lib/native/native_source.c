@@ -61,3 +61,19 @@ float native_source_produce_sf()
 
 	return (float) data;
 }
+
+float native_source_produce_hf()
+{
+	float data;
+
+	data = fgetc(source_file);
+
+	if(feof(source_file))
+	{
+		fclose(source_file);
+		end_program = 1;
+	}
+
+	return (float) data;
+}
+
