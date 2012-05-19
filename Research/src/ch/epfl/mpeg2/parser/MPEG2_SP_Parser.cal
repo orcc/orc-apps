@@ -34,6 +34,7 @@ package ch.epfl.mpeg2.parser;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.macroblock_address_increment_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.macroblock_type_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.motion_code_table;
+import ch.epfl.mpeg2.parser.MPEG2_Tables.codded_block_pattern_table;
 
 actor MPEG2_SP_Parser()
 	uint(size=1) Bitstream
@@ -211,6 +212,11 @@ actor MPEG2_SP_Parser()
 	uint(size=1)	mv_dmvector_flag;			// VLD flag
 	uint(size=4)	mv_dmvector_vld_counter;
 	uint(size=2)	mv_transition_flag;
+	
+	// Codded Block Pattern
+	uint(size=1)	cbp_flag;					// VLD flag
+	uint(size=5)	cbp_vld_counter;
+	uint(size=6)	codded_block_pattern_420;
 	
 	
 	
@@ -722,6 +728,9 @@ actor MPEG2_SP_Parser()
 		
 		mb_type_vld_counter := 0;
 		mb_type_flag := 0;
+		
+		cbp_flag := 0;
+		cbp_vld_counter := 0;
 	end
 
 	macroblock_escape: action Bitstream: [token] repeat 11 ==>
@@ -993,12 +1002,42 @@ actor MPEG2_SP_Parser()
 	
 	// Eat marker bit
 	
-	eat_marker_bit: action Bitstream: [token] ==>
+	mb_eat_marker_bit: action Bitstream: [token] ==>
 	guard
 		macroblock_intra = 1,
 		concealment_motion_vectors = 1
 	end
-
+	
+	mb_not_eat_marker_bit: action ==>
+	guard
+		macroblock_intra != 1 or
+		concealment_motion_vectors != 1
+	end
+	
+	mb_codded_block_pattern: action Bitstream: [token] ==>
+	guard
+		macroblock_pattern = 1,
+		cbp_flag = 0
+	do
+		int(size=7) mb_cbp;
+		bit_buffer[cbp_vld_counter] := token;
+		if cbp_vld_counter > 1 then
+			compute_nextbits(0, cbp_vld_counter);
+			mb_cbp := codded_block_pattern_table[cbp_vld_counter - 2][nextbits - 1];
+			if mb_cbp != -1 then
+				codded_block_pattern_420 := mb_cbp;
+				cbp_flag := 1;
+			end
+		end
+		cbp_vld_counter := cbp_vld_counter + 1;
+	end
+	
+	mb_not_or_end_codded_block_pattern: action ==>
+	guard
+		macroblock_pattern != 1 or
+		cbp_flag = 1
+	end
+	
 	schedule fsm next_start_code :
 	
 		// Read the next start code
@@ -1080,9 +1119,8 @@ actor MPEG2_SP_Parser()
 		dct_type					(mb_not_dct_type)						-->		begin_motion_vector_0;
 
 		// Motion Vectors --> NOT TESTED YET
-		
 		begin_motion_vector_0		(mv_begin_motion_vector_0)				-->		vertical_field_select;
-		begin_motion_vector_0		(mv_not_begin_motion_vector_0)			-->		next_start_code; // to be continued
+		begin_motion_vector_0		(mv_not_begin_motion_vector_0)			-->		eat_marker_bit;
 		vertical_field_select		(mv_motion_vertical_field_select)		-->		motion_code;
 		vertical_field_select		(mv_not_motion_vertical_field_select)	-->		motion_code;
 		motion_code					(mv_motion_code)						-->		motion_code;
@@ -1096,7 +1134,13 @@ actor MPEG2_SP_Parser()
 		dmvector					(mv_transition)							-->		transition;
 		transition					(mv_transition_to_motion_code)			-->		motion_code;
 		transition					(mv_transition_to_begin)				-->		vertical_field_select;
-		transition					(mv_transition_to_end)					-->		next_start_code; // to be continued
+		transition					(mv_transition_to_end)					-->		eat_marker_bit;
+		
+		// Codded Block Pattern
+		eat_marker_bit				(mb_eat_marker_bit)						-->		codded_block_pattern;
+		eat_marker_bit				(mb_not_eat_marker_bit)					-->		codded_block_pattern;
+		codded_block_pattern		(mb_codded_block_pattern)				-->		codded_block_pattern;
+		codded_block_pattern		(mb_not_or_end_codded_block_pattern)	-->		next_start_code;
 			
 		// debug						(LOOK_FOLLOWING_BITS)					-->		next_start_code;
 		
