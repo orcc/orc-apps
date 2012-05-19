@@ -33,21 +33,87 @@ unit CabacParserFunctionHEVC :
 	begin
 		if bypassFlag = true then
 			decodeBypass(codIRange, codIOffset, binVal, fifo);			
+			println("codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" binVal := "+binVal[0]);		
 		else
 			if se = SE_DUMMY and ctxIdx = 0 then
 				decodeTerminate(codIRange, codIOffset, binVal, fifo);
+				println("codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" state := "+state[0]+" mps := "+mps[0]+" binVal := "+binVal[0]);		
 			else
 				state[0]  := ctxTable[se][ctxIdx] >> 1;
 				mps[0]    := ctxTable[se][ctxIdx]  & 1;
-				println("ctxIdx := "+ctxIdx+" codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" state := "+state[0]+" mps := "+mps[0]);			
+				println("codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" state := "+state[0]+" mps := "+mps[0]);		
 				decodeDecision(codIRange, codIOffset, state, mps, binVal, fifo);
 				ctxTable[se][ctxIdx] := (state[0] << 1) + mps[0];
+				println("codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" state := "+state[0]+" mps := "+mps[0]+" binVal := "+binVal[0]);		
 			end
 		end
 		binString[0] := (binString[0] << 1) + binVal[0];
-		println("ctxIdx := "+ctxIdx+" codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" state := "+state[0]+" mps := "+mps[0]+" binVal := "+binVal[0]);		
 	end
-
+	/*************************************************************************
+	 * get_SAO_Uflc
+	 *************************************************************************/
+	procedure get_SAO_Uflc(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	var
+		uint(size=32) binString[1]
+	begin
+		if DEBUG_CABAC then
+			println(" SAO_Uflc ==>");
+		end
+		debinValue[0] := 0;
+		foreach int i in 0 .. 4 do
+			binString[0] := 0;
+			decodeBinTop(0, true, binString, codIRange, codIOffset, ctxTable, SE_SAO_UVLC, fifo);
+			debinValue[0] := debinValue[0] | (binString[0] << i);
+		end
+		if DEBUG_CABAC then
+			println(" SAO_Uflc = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_SAO_Sflc
+	 *************************************************************************/
+	procedure get_SAO_Sflc(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		 int(size=32) debinValue[1]
+	)
+	var
+		uint(size= 8) binIdx := 0, 
+		uint(size=32) binString[1] := [0],
+		uint(size=32) iSign[1] := [0]
+	begin
+		if DEBUG_CABAC then
+			println(" SAO_Sflc ==>");
+		end
+		debinValue[0] := 0;
+		decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, SE_SAO_SVLC, fifo);
+		if binString[0] != 0 then
+			decodeBinTop(1, false, iSign, codIRange, codIOffset, ctxTable, SE_SAO_SVLC, fifo);
+			binString[0] := 1;
+			while binString[0] != 0  do
+				decodeBinTop(2, false, binString, codIRange, codIOffset, ctxTable, SE_SAO_SVLC, fifo);
+				binString[0] := 0;
+				binIdx := binIdx + 1;
+			end
+			if iSign[0] = 0 then
+				debinValue[0] :=  binIdx;
+			else
+				debinValue[0] := -binIdx;
+			end
+		end
+			
+		if DEBUG_CABAC then
+			println(" SAO_Sflc = "+debinValue[0]);
+		end
+	end
 	/*************************************************************************
 	 * get_SAO_MERGE_LEFT_FLAG
 	 *************************************************************************/
@@ -100,20 +166,19 @@ unit CabacParserFunctionHEVC :
 		uint(size=32) debinValue[1]
 	)
 	var
-		uint(size= 9) ctxIdx := 0,
 		uint(size= 8) binIdx := 0, 
-		uint(size=32) binString[1] := [0],
-		uint(size= 1) debinCompleted[1]
+		uint(size=32) binString[1] := [0]
 	begin
 		if DEBUG_CABAC then
 			println(" SAO_TYPE_IDX ==>");
 		end
-		while debinCompleted[0] = 0  do
-			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, SE_SAO_TYPE_IDX, fifo);
-			debinFL(binString[0], binIdx, DEBIN_FL3, debinCompleted, debinValue);
-			ctxIdx := 1;
+		decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, SE_SAO_TYPE_IDX, fifo);
+		while binString[0] != 0  do
+			binString[0] := 0;
+			decodeBinTop(1, false, binString, codIRange, codIOffset, ctxTable, SE_SAO_TYPE_IDX, fifo);
 			binIdx := binIdx + 1;
 		end
+		debinValue[0] := binIdx;
 		if DEBUG_CABAC then
 			println(" SAO_TYPE_IDX = "+debinValue[0]);
 		end
@@ -128,19 +193,8 @@ unit CabacParserFunctionHEVC :
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
 		uint(size=32) debinValue[1]
 	)
-	var
-		uint(size= 8) binIdx := 0, 
-		uint(size=32) binString[1] := [0],
-		uint(size= 1) debinCompleted[1]
 	begin
-		while debinCompleted[0] = 0  do
-			decodeBinTop(0, true, binString, codIRange, codIOffset, ctxTable, SE_SAO_BAND_POSITION, fifo);
-			debinFL(binString[0], binIdx, DEBIN_FL5, debinCompleted, debinValue);
-			binIdx := binIdx + 1;
-		end
-		if DEBUG_CABAC then
-			println(" SAO_BAND_POSITION = "+debinValue[0]);
-		end
+		get_SAO_Uflc(codIRange, codIOffset, ctxTable, fifo, debinValue);
 	end
 	/*************************************************************************
 	 * get_SAO_OFFSET
@@ -149,23 +203,34 @@ unit CabacParserFunctionHEVC :
 		uint(size= 9) codIRange[1],
 		uint(size=16) codIOffset[1],
 		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
-		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		uint(size=32) debinValue[1]
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
 	)
 	var
-		uint(size= 9) ctxIdx := 0,
-		uint(size= 8) binIdx := 0, 
-		uint(size=32) binString[1] := [0],
-		uint(size= 1) debinCompleted[1]
+		uint(size= 8) typeIdx[1] := [0],
+		 int(size=32) binString[1] := [0]
 	begin
-		while debinCompleted[0] = 0  do
-			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, SE_SAO_OFFSET, fifo);
-			debinEG0(binString[0], binIdx, 0, debinCompleted, debinValue);
-			ctxIdx := if binIdx = 0 then 1 else 2 end;
-			binIdx := binIdx + 1;
-		end
 		if DEBUG_CABAC then
-			println(" SAO_OFFSET = "+debinValue[0]);
+			println(" SAO_OFFSET ==>");
+		end
+		get_SAO_TYPE_IDX(codIRange, codIOffset, ctxTable, fifo, binString);
+		if binString[0] != 0 then
+			typeIdx[0] := binString[0] - 1;
+			if typeIdx[0] = SAO_B0 then
+				get_SAO_BAND_POSITION(codIRange, codIOffset, ctxTable, fifo, binString);
+				foreach int i in 0 .. 3 do
+					binString[0] := 0;
+					get_SAO_Sflc(codIRange, codIOffset, ctxTable, fifo, binString);
+				end
+			else
+				binString[0] := 0;
+				get_SAO_Uflc(codIRange, codIOffset, ctxTable, fifo, binString);
+				binString[0] := 0;
+				get_SAO_Uflc(codIRange, codIOffset, ctxTable, fifo, binString);
+				binString[0] := 0;
+				get_SAO_Uflc(codIRange, codIOffset, ctxTable, fifo, binString);
+				binString[0] := 0;
+				get_SAO_Uflc(codIRange, codIOffset, ctxTable, fifo, binString);
+			end
 		end
 	end
 	/*************************************************************************
@@ -190,10 +255,13 @@ unit CabacParserFunctionHEVC :
 		uint(size= 1) debinCompleted[1]
 	begin
 		ctxIdx	  := getCtx_SPLIT_CODING_UNIT_FLAG(depthSubPart, availableA, depthSubPartA, availableB, depthSubPartB);
+		if DEBUG_CABAC then
+			println(" SPLIT_CODING_UNIT_FLAG ==> ctxIdx := "+ctxIdx);
+		end
 		decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, SE_SPLIT_CODING_UNIT_FLAG, fifo);
 		debinFL(binString[0], 0, DEBIN_FL1, debinCompleted, debinValue);
 		if DEBUG_CABAC then
-			println(" SPLIT_CODING_UNIT_FLAG = "+(depthSubPart+debinValue[0]));
+//			println(" SPLIT_CODING_UNIT_FLAG = "+(depthSubPart+debinValue[0]));
 		end
 	end
 end
