@@ -37,20 +37,12 @@ actor Mgnt_Buffer()
       int (size=32) block_X,
       int (size=32) block_Y,
       
-      bool pic_end//,
-      
-//mrl      int (size=32) Current_mb_nr,
-//mrl      int (size=32) Img_MbSize,
-//mrl      int (size=32) Location,
-//mrl      int (size=32) PicWidthInMb
-            
+      bool pic_end
       :
       int (size=32) Img_Type;
       int (size=32) Img_Mb_X;
       int (size=32) Img_Mb_Y;
       int (size=32) Img_Width;
-      int (size=32) Img_Block_X;
-      int (size=32) Img_Block_Y;
       int (size=32) Block_X;
       int (size=32) Block_Y;
       int (size=32) Blockshape_X;
@@ -71,7 +63,6 @@ actor Mgnt_Buffer()
 	  
 	  bool mb_available_up;
 	  bool mb_available_left;
-	  bool mb_available_upleft;
 	  bool mb_available_upright;
 	  bool block_available_up;
 	  bool block_available_left;
@@ -80,8 +71,8 @@ actor Mgnt_Buffer()
 	  
 	  bool Pic_End;
       
-      List(type: List(type:List(type:int(size=32), size=2), size=136), size=240) tmp_mv:= [ [[0, 0] : for int i in 0 .. 135 ]: for int j in 0 .. 239 ];
-      List(type: List(type:int(size=32), size=240), size=136) refFrArr:=[[-1 : for int i in 0 .. 239]: for int j in 0 .. 135 ];
+      int(size=32) mv_tab[240][136][2]:= [ [[0, 0] : for int i in 0 .. 135 ]: for int j in 0 .. 239 ];
+      int(size=32) refFrArr[136][240]:=[[-1 : for int i in 0 .. 239]: for int j in 0 .. 135 ];
       
       Get_newvop : action MbType:[cmd] ==>
       guard
@@ -110,6 +101,9 @@ actor Mgnt_Buffer()
       do
          Img_Mb_X:=img_Mb_X;
          Img_Mb_Y:=img_Mb_Y;
+	  	 mb_available_up:=(Img_Mb_Y>0);
+	     mb_available_left:=(Img_Mb_X>0);
+	     mb_available_upright:=(mb_available_up)&&(Img_Mb_X<MB_WIDTH);
       end
       
       IntraMb : action 
@@ -120,10 +114,10 @@ actor Mgnt_Buffer()
       guard
          isIntraMb=1
       do
-          tmp_mv[2*Img_Mb_X][2*Img_Mb_Y]:=[0,0];
-          tmp_mv[2*Img_Mb_X+1][2*Img_Mb_Y]:=[0,0];
-          tmp_mv[2*Img_Mb_X][2*Img_Mb_Y+1]:=[0,0];
-          tmp_mv[2*Img_Mb_X+1][2*Img_Mb_Y+1]:=[0,0];
+          mv_tab[2*Img_Mb_X][2*Img_Mb_Y]:=[0,0];
+          mv_tab[2*Img_Mb_X+1][2*Img_Mb_Y]:=[0,0];
+          mv_tab[2*Img_Mb_X][2*Img_Mb_Y+1]:=[0,0];
+          mv_tab[2*Img_Mb_X+1][2*Img_Mb_Y+1]:=[0,0];
       end
       
       Set_Count : action 
@@ -136,13 +130,7 @@ actor Mgnt_Buffer()
          Block_X:=0;
          Block_Y:=0;
       end
-      
-      Get_Img_Block_pos : action ==>
-      do
-         Img_Block_X:=2*Img_Mb_X;
-         Img_Block_Y:=2*Img_Mb_Y;
-      end
-      
+            
       Get_Blockshape : action 
       	blockshape_X:[blockshape_X], 
       	blockshape_Y:[blockshape_Y]==>
@@ -151,7 +139,7 @@ actor Mgnt_Buffer()
          Blockshape_Y:=blockshape_Y;
       end
       
-      Get_Img_Current_mb_nr : action ==>//mrl Current_mb_nr:[current_mb_nr]
+      Get_Img_Current_mb_nr : action ==>
       do
          Img_Current_mb_nr:=Img_Mb_Y*Img_Width/16+Img_Mb_X;
       end
@@ -161,12 +149,45 @@ actor Mgnt_Buffer()
       do 
          mb_x :=8*Block_X;
          mb_y :=8*Block_Y;
+	     block_available_up:=(mb_available_up || (mb_y > 0));
+	     block_available_left:=(mb_available_left || (mb_x > 0));
+	     block_available_upleft:=block_available_up&&block_available_left;
+// FIXME block_available_upright; to be simplified
+         if(mb_y>0)then
+         	if(mb_x<8)then
+         		if(mb_y=8)then
+         			if(Blockshape_X = 16)then
+         			   block_available_upright := false;
+         			else
+         			   block_available_upright := true; 
+         			end
+         		else
+         			if(mb_x+Blockshape_X !=8)then
+         			   block_available_upright := true;
+         			else
+         			   block_available_upright := false; 
+         			end
+         		end
+         	else
+         		if(mb_x+Blockshape_X != 16)then
+         		   block_available_upright := true;
+         		else
+         		   block_available_upright := false;
+         		end
+         	end
+         else
+             if(mb_x+Blockshape_X != 16)then
+                block_available_upright := block_available_up;
+             else
+                block_available_upright := mb_available_upright;
+             end
+         end  
       end
       
       Get_Pic_Block_pos : action  ==>
       do
-         Pic_Block_X:=Img_Block_X+Block_X;
-         Pic_Block_Y:=Img_Block_Y+Block_Y;
+         Pic_Block_X:=2*Img_Mb_X+Block_X;
+         Pic_Block_Y:=2*Img_Mb_Y+Block_Y;
       end
       
       get_refFr_16x16 : action 
@@ -218,121 +239,16 @@ actor Mgnt_Buffer()
          refFrArr[Pic_Block_Y][Pic_Block_X]:=ref_Frame;
       end
       
-      Get_mb_available_up : action 
+      Get_block_available : action 
       	==>
-      		mb_available_up:[mb_available_up]
-      do
-          if(Img_Mb_Y=0) then
-             mb_available_up:=false; 
-          else
-             mb_available_up:=true; 
-          end 
+      		mb_available_up:[mb_available_up],
+      		mb_available_left:[mb_available_left],
+      		block_available_up:[block_available_up],
+      		block_available_left:[block_available_left],
+      		block_available_upleft:[block_available_upleft],
+      		block_available_upright:[block_available_upright]
       end
     
-      Get_mb_available_left : action 
-      	==>
-      		mb_available_left:[mb_available_left]
-      do
-          if(Img_Mb_X=0) then
-             mb_available_left:=false; 
-          else
-             mb_available_left:=true; 
-          end     
-      end
-    
-    Get_mb_available_upleft : action ==>
-    do
-        if(Img_Mb_X=0) then
-           mb_available_upleft:=false; 
-        else
-        if(Img_Mb_Y=0) then
-           mb_available_upleft:=false;
-        else
-           mb_available_upleft:=true; 
-        end
-        end     
-    end
-    
-    Get_mb_available_upright : action ==>
-    do
-        if(Img_Mb_Y=0) then
-           mb_available_upright:=false; 
-        else
-        if(Img_Mb_X>=MB_WIDTH-1) then
-           mb_available_upright:=false;
-        else
-           mb_available_upright:=true; 
-        end
-        end     
-    end
-    
-    Get_block_available_up : action 
-    	==>
-    		block_available_up:[block_available_up]
-    do
-         block_available_up:= (mb_available_up || (mb_y > 0));   
-    end
-    
-    Get_block_available_left : action 
-    	==>
-    		block_available_left:[block_available_left]
-    do
-         block_available_left:= (mb_available_left || (mb_x > 0));    
-    end
-    
-    Get_block_available_upleft : action 
-    	==>
-    		block_available_upleft:[block_available_upleft]
-    do
-         if(mb_x > 0) then
-            if(mb_y>0) then
-               block_available_upleft:=true;
-            else
-               block_available_upleft:=mb_available_up; 
-            end
-         else
-            if(mb_y > 0) then
-               block_available_upleft := mb_available_left;
-            else
-               block_available_upleft := mb_available_upleft;
-            end
-         end
-    end
-    
-    Get_block_available_upright : action 
-    	==>
-    		block_available_upright:[block_available_upright]
-    do
-         if(mb_y>0)then
-         	if(mb_x<8)then
-         		if(mb_y=8)then
-         			if(Blockshape_X = 16)then
-         			   block_available_upright := false;
-         			else
-         			   block_available_upright := true; 
-         			end
-         		else
-         			if(mb_x+Blockshape_X !=8)then
-         			   block_available_upright := true;
-         			else
-         			   block_available_upright := false; 
-         			end
-         		end
-         	else
-         		if(mb_x+Blockshape_X != 16)then
-         		   block_available_upright := true;
-         		else
-         		   block_available_upright := false;
-         		end
-         	end
-         else
-             if(mb_x+Blockshape_X != 16)then
-                block_available_upright := block_available_up;
-             else
-                block_available_upright := mb_available_upright;
-             end
-         end  
-    end
       
       Get_refFr_L : action ==>refFr_L : [if(block_available_left=true)then
       	                                    refFrArr[Pic_Block_Y][Pic_Block_X-1]
@@ -371,7 +287,7 @@ actor Mgnt_Buffer()
       end
       
       Get_tmp_Mv_L_X : action ==>tmp_Mv_L_X : [if(block_available_left=true)then
-      	                                          tmp_mv[Pic_Block_X-1][Pic_Block_Y][0]
+      	                                          mv_tab[Pic_Block_X-1][Pic_Block_Y][0]
       	                                       else
       	                                          0
       	                                       end
@@ -379,7 +295,7 @@ actor Mgnt_Buffer()
       end
       
       Get_tmp_Mv_U_X : action ==>tmp_Mv_U_X : [if(block_available_up=true)then
-      	                                          tmp_mv[Pic_Block_X][Pic_Block_Y-1][0]
+      	                                          mv_tab[Pic_Block_X][Pic_Block_Y-1][0]
       	                                       else
       	                                          0
       	                                       end
@@ -388,21 +304,21 @@ actor Mgnt_Buffer()
       end
       
       Get_tmp_Mv_UL_X : action ==>tmp_Mv_UL_X : [if(block_available_upleft=true)then
-      	                                            tmp_mv[Pic_Block_X-1][Pic_Block_Y-1][0]
+      	                                            mv_tab[Pic_Block_X-1][Pic_Block_Y-1][0]
       	                                         else
       	                                            0
       	                                         end
                                                  ]
       do
          if(block_available_upleft=true)then
-      	    mv_d:=tmp_mv[Pic_Block_X-1][Pic_Block_Y-1][0];
+      	    mv_d:=mv_tab[Pic_Block_X-1][Pic_Block_Y-1][0];
       	 else
       	    mv_d:=0;
       	 end
       end
       
       Get_tmp_Mv_UR_X : action ==>tmp_Mv_UR_X : [if(block_available_upright=true)then
-      	                                            tmp_mv[Pic_Block_X+Blockshape_X/8][Pic_Block_Y-1][0]
+      	                                            mv_tab[Pic_Block_X+Blockshape_X/8][Pic_Block_Y-1][0]
       	                                         else
       	                                            mv_d
       	                                         end
@@ -410,7 +326,7 @@ actor Mgnt_Buffer()
       end
       
       Get_tmp_Mv_L_Y : action ==>tmp_Mv_L_Y : [if(block_available_left=true)then
-      	                                         tmp_mv[Pic_Block_X-1][Pic_Block_Y][1]
+      	                                         mv_tab[Pic_Block_X-1][Pic_Block_Y][1]
       	                                       else
       	                                         0
       	                                       end
@@ -419,7 +335,7 @@ actor Mgnt_Buffer()
       end
       
       Get_tmp_Mv_U_Y : action ==>tmp_Mv_U_Y : [if(block_available_up=true)then
-      	                                          tmp_mv[Pic_Block_X][Pic_Block_Y-1][1]
+      	                                          mv_tab[Pic_Block_X][Pic_Block_Y-1][1]
       	                                       else
       	                                          0
       	                                       end
@@ -428,21 +344,21 @@ actor Mgnt_Buffer()
       end
       
       Get_tmp_Mv_UL_Y : action ==>tmp_Mv_UL_Y : [if(block_available_upleft=true)then
-      	                                            tmp_mv[Pic_Block_X-1][Pic_Block_Y-1][1]
+      	                                            mv_tab[Pic_Block_X-1][Pic_Block_Y-1][1]
       	                                         else
       	                                            0
       	                                         end
                                                  ]
       do
          if(block_available_upleft=true)then
-      	     mv_d:=tmp_mv[Pic_Block_X-1][Pic_Block_Y-1][1];
+      	     mv_d:=mv_tab[Pic_Block_X-1][Pic_Block_Y-1][1];
       	 else
       	     mv_d:=0;
       	 end
       end
       
       Get_tmp_Mv_UR_Y : action ==>tmp_Mv_UR_Y : [if(block_available_upright=true)then
-      	                                            tmp_mv[Pic_Block_X+Blockshape_X/8][Pic_Block_Y-1][1]
+      	                                            mv_tab[Pic_Block_X+Blockshape_X/8][Pic_Block_Y-1][1]
       	                                         else
       	                                            mv_d
       	                                         end
@@ -459,10 +375,10 @@ actor Mgnt_Buffer()
          Blockshape_X=16,
          Blockshape_Y=16
       do
-         tmp_mv[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
-         tmp_mv[Pic_Block_X+1][Pic_Block_Y]:=[mv_X,mv_Y];
-         tmp_mv[Pic_Block_X][Pic_Block_Y+1]:=[mv_X,mv_Y];
-         tmp_mv[Pic_Block_X+1][Pic_Block_Y+1]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X+1][Pic_Block_Y]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X][Pic_Block_Y+1]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X+1][Pic_Block_Y+1]:=[mv_X,mv_Y];
       end
       
       get_Mv_16x8 : action Mv_X:[mv_X],Mv_Y:[mv_Y]==>
@@ -470,8 +386,8 @@ actor Mgnt_Buffer()
          Blockshape_X=16,
          Blockshape_Y=8
       do
-         tmp_mv[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
-         tmp_mv[Pic_Block_X+1][Pic_Block_Y]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X+1][Pic_Block_Y]:=[mv_X,mv_Y];
       end
       
       get_Mv_8x16 : action Mv_X:[mv_X],Mv_Y:[mv_Y]==>
@@ -479,8 +395,8 @@ actor Mgnt_Buffer()
          Blockshape_X=8,
          Blockshape_Y=16
       do
-         tmp_mv[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
-         tmp_mv[Pic_Block_X][Pic_Block_Y+1]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X][Pic_Block_Y+1]:=[mv_X,mv_Y];
       end
       
       get_Mv_8x8 : action Mv_X:[mv_X],Mv_Y:[mv_Y]==>
@@ -488,7 +404,7 @@ actor Mgnt_Buffer()
          Blockshape_X=8,
          Blockshape_Y=8
       do
-         tmp_mv[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
+         mv_tab[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
       end
       
       
@@ -576,26 +492,18 @@ actor Mgnt_Buffer()
           
           
           Is_I8MB (IntraMb)-->Get_Loc;
-          Is_I8MB (Set_Count)-->Get_Img_Block_pos;
-          Get_Img_Block_pos(Get_Img_Block_pos)-->Get_Blockshape;
+          Is_I8MB (Set_Count)-->Get_Blockshape;
           Get_Blockshape(Get_Blockshape)-->Get_Img_Current_mb_nr;
           Get_Img_Current_mb_nr(Get_Img_Current_mb_nr)-->Get_Mb_pos;
           Get_Mb_pos (Get_Mb_pos) -->Get_Pic_Block_pos;
           Get_Pic_Block_pos (Get_Pic_Block_pos) -->Get_refFr;
           
-          Get_refFr (get_refFr_16x16) -->Get_mb_available_up;
-          Get_refFr (get_refFr_16x8) -->Get_mb_available_up;
-          Get_refFr (get_refFr_8x16) -->Get_mb_available_up;
-          Get_refFr (get_refFr_8x8) -->Get_mb_available_up;
+          Get_refFr (get_refFr_16x16) -->Get_block_available;
+          Get_refFr (get_refFr_16x8) -->Get_block_available;
+          Get_refFr (get_refFr_8x16) -->Get_block_available;
+          Get_refFr (get_refFr_8x8) -->Get_block_available;
           
-          Get_mb_available_up (Get_mb_available_up) -->Get_mb_available_left;
-          Get_mb_available_left (Get_mb_available_left) -->Get_mb_available_upleft;
-          Get_mb_available_upleft (Get_mb_available_upleft) -->Get_mb_available_upright;
-          Get_mb_available_upright (Get_mb_available_upright) -->Get_block_available_up;
-          Get_block_available_up (Get_block_available_up) -->Get_block_available_left;
-          Get_block_available_left (Get_block_available_left) -->Get_block_available_upleft;
-          Get_block_available_upleft (Get_block_available_upleft) -->Get_block_available_upright;
-          Get_block_available_upright (Get_block_available_upright) -->Get_refFr_L;
+          Get_block_available (Get_block_available) -->Get_refFr_L;
           Get_refFr_L (Get_refFr_L) -->Get_refFr_U;
           Get_refFr_U (Get_refFr_U) -->Get_refFr_UR;
           Get_refFr_UR (Get_refFr_UR) -->Get_refFr_UL;
