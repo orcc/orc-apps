@@ -37,7 +37,7 @@ actor Mgnt_Buffer()
       int (size=32) blockshape_X_Out,
       int (size=32) blockshape_Y_Out,
       
-      bool pic_end
+	  int(size=32) MbTypeP
       :
       int (size=32) Img_Type;
       int (size=32) Img_Mb_X;
@@ -47,10 +47,8 @@ actor Mgnt_Buffer()
       int (size=32) Block_Y;
       int (size=32) Blockshape_X;
       int (size=32) Blockshape_Y;
-      int(size=32) Img_Current_mb_nr;
       
       int (size=32) MB_WIDTH; //number of MB per lines
-	  int (size=32) MB_HEIGHT; //number of MB per columns
 	  
 	  int (size=32) Pic_Block_X;
 	  int (size=32) Pic_Block_Y;
@@ -68,24 +66,31 @@ actor Mgnt_Buffer()
 	  bool block_available_upleft;
 	  bool block_available_upright;
 	  
-	  bool Pic_End;
+	  int cnt:=0;
+	  
       
       int(size=32) mv_tab[240][136][2]:= [ [[0, 0] : for int i in 0 .. 135 ]: for int j in 0 .. 239 ];
       int(size=32) refFrArr[136][240]:=[[-1 : for int i in 0 .. 239]: for int j in 0 .. 135 ];
       
       int(size=32) p_skip;
       
-      Get_newvop : action MbType:[cmd] ==>
+      Get_newvop : action MbType:[cmd] ==> MbTypeP:[cmd]
       guard
       	(cmd & NEWVOP)!=0
+      do
+      	println(" --- new vop --- " + cnt);
+      	cnt := 0;
       end
 
-      Get_Img_Type : action MbType:[picture_type, w, h] ==>
+      Get_Img_Type : action MbType:[picture_type, w, h] ==> MbTypeP:[picture_type]
       do
          Img_Type:=picture_type;
          Img_Width:=w*16;
          MB_WIDTH := w;
-         MB_HEIGHT := h;
+         count:=0;
+         Block_X:=0;
+         Block_Y:=0;
+         println("picture_type " +picture_type);
       end
       
       I_Picture : action ==>
@@ -139,9 +144,7 @@ actor Mgnt_Buffer()
       guard
          not isIntra
       do
-         count:=0;
-         Block_X:=0;
-         Block_Y:=0;
+         cnt := cnt + 1;
          p_skip := skip;
       end
             
@@ -152,12 +155,7 @@ actor Mgnt_Buffer()
          Blockshape_X:=blockshape_X;
          Blockshape_Y:=blockshape_Y;
       end
-      
-      Get_Img_Current_mb_nr : action ==>
-      do
-         Img_Current_mb_nr:=Img_Mb_Y*Img_Width/16+Img_Mb_X;
-      end
-      
+            
       
       Get_Mb_pos : action  ==> 
       do 
@@ -298,7 +296,8 @@ actor Mgnt_Buffer()
       		tmp_Mv_UL : [mv_up_left] repeat 2,
       		tmp_Mv_UR : [mv_up_right] repeat 2,
       		blockshape_X_Out:[Blockshape_X],
-      		blockshape_Y_Out:[Blockshape_Y]
+      		blockshape_Y_Out:[Blockshape_Y],
+      		MbTypeP:[Mb_Type]
       var 
       	 int(size=32) mv_up[2],
       	 int(size=32) mv_left[2],
@@ -306,7 +305,6 @@ actor Mgnt_Buffer()
       	 int(size=32) mv_up_right[2],
       	 int (size=32) mv_d[2]
       do
-      	 println("wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww p_skip " + p_skip);
       	 mv_up:= if block_available_left then 
       				[mv_tab[Pic_Block_X-1][Pic_Block_Y][0], mv_tab[Pic_Block_X-1][Pic_Block_Y][1]] 
       	        else [0,0] end;                                       
@@ -366,11 +364,12 @@ actor Mgnt_Buffer()
          mv_tab[Pic_Block_X][Pic_Block_Y]:=[mv_X,mv_Y];
       end
       
-      Get_count : action ==>pic_end:[Pic_End]
+      Get_count : action ==>
       guard
           count+(Blockshape_Y>>3)*(Blockshape_X>>3)<4
       do
          count:=count+(Blockshape_Y>>3)*(Blockshape_X>>3);
+         println("---- count " + count);
          if(Block_X=0 and Block_Y=0) then 
          
             if(Blockshape_X=8 and Blockshape_Y=8) then
@@ -412,31 +411,17 @@ actor Mgnt_Buffer()
          
          end
          
-         Pic_End:=false;  
       end
  
-      Macro_End : action ==>pic_end:[Pic_End]
+      Macro_End : action ==>
       guard
-          Img_Current_mb_nr<MB_WIDTH*MB_HEIGHT-1,
           count+(Blockshape_Y>>3)*(Blockshape_X>>3)>3
       do
-          Pic_End:=false; 
           count:=0;
           Block_X:=0;
           Block_Y:=0;
       end
-      
-      Picture_End : action ==>pic_end:[Pic_End]
-      guard 
-         Img_Current_mb_nr>=MB_WIDTH*MB_HEIGHT-1,
-         count+(Blockshape_Y>>3)*(Blockshape_X>>3)>3
-      do
-         Pic_End:=true;
-         count:=0;
-         Block_X:=0;
-         Block_Y:=0;
-      end
-      
+            
             
       schedule fsm Get_Mb_type :
           //Picture
@@ -451,8 +436,7 @@ actor Mgnt_Buffer()
           
           Is_I8MB (IntraMb)-->Get_Mb_type;
           Is_I8MB (Set_Count)-->Get_Blockshape;
-          Get_Blockshape(Get_Blockshape)-->Get_Img_Current_mb_nr;
-          Get_Img_Current_mb_nr(Get_Img_Current_mb_nr)-->Get_Mb_pos;
+          Get_Blockshape(Get_Blockshape) --> Get_Mb_pos;
           Get_Mb_pos (Get_Mb_pos) -->Get_Pic_Block_pos;
           Get_Pic_Block_pos (Get_Pic_Block_pos) -->Get_refFr;
           
@@ -473,8 +457,6 @@ actor Mgnt_Buffer()
           
           Get_count (Get_count) -->Get_Mb_type;
           Get_count (Macro_End) -->Get_Mb_type;
-          
-          Get_count(Picture_End) -->Get_Mb_type;
       end
       
       priority
