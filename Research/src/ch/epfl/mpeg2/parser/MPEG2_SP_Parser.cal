@@ -35,6 +35,7 @@ import ch.epfl.mpeg2.parser.MPEG2_Tables.macroblock_address_increment_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.macroblock_type_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.motion_code_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.codded_block_pattern_table;
+import ch.epfl.mpeg2.parser.MPEG2_Tables.DCT_coefficients_table;
 
 actor MPEG2_SP_Parser()
 	uint(size=1) Bitstream
@@ -216,8 +217,33 @@ actor MPEG2_SP_Parser()
 	// Codded Block Pattern
 	uint(size=1)	cbp_flag;					// VLD flag
 	uint(size=5)	cbp_vld_counter;
-	uint(size=6)	codded_block_pattern_420;
+	uint(size=9)	codded_block_pattern_420;
+	uint(size=6)	cbp;
 	
+	// Block
+	uint(size=3)	bk_i;
+	uint(size=3)	block_count = 6; // because 4:2:0
+	uint(size=1)	bk_DCT_coef_table_to_use;
+	uint(size=9)	dct_dc_size_luminance;
+	uint(size=11)	dct_dc_differential;
+	uint(size=10)	dct_dc_size_chrominance;
+	uint(size=1)	bk_lum_flag;
+	uint(size=5)	bk_lum_vld_counter;
+	uint(size=1)	bk_chrom_flag;
+	uint(size=5)	bk_chrom_vld_counter;
+	uint(size=1)	bk_diff_flag;
+	uint(size=5)	bk_diff_vld_counter;
+	uint(size=1)	pattern_code[12];
+	
+	uint(size=1) 	bk_coef_flag;
+	uint(size=5)	bk_coef_vld_counter;
+	int(size=8)		bk_coef_vld;
+	
+	uint(size=1)	bk_end_of_block_flag;
+	uint(size=1)	bk_escape_flag;
+	uint(size=6)	run;
+	int(size=12)	signed_level;
+	uint(size=11)	level;
 	
 	
 	
@@ -776,6 +802,8 @@ actor MPEG2_SP_Parser()
 			macroblock_intra							:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][4];
 			spatial_temporal_weight_code_flag			:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][5];
 			mb_type_flag := 1;
+			// Choosing the VLD table to use for DCT coefficients
+			bk_DCT_coef_table_to_use := macroblock_intra * intra_vlc_format;
 		end
 		mb_type_vld_counter := mb_type_vld_counter + 1;
 	end
@@ -1019,13 +1047,12 @@ actor MPEG2_SP_Parser()
 		macroblock_pattern = 1,
 		cbp_flag = 0
 	do
-		int(size=7) mb_cbp;
 		bit_buffer[cbp_vld_counter] := token;
 		if cbp_vld_counter > 1 then
 			compute_nextbits(0, cbp_vld_counter);
-			mb_cbp := codded_block_pattern_table[cbp_vld_counter - 2][nextbits - 1];
-			if mb_cbp != -1 then
-				codded_block_pattern_420 := mb_cbp;
+			codded_block_pattern_420 := codded_block_pattern_table[cbp_vld_counter - 2][nextbits - 1];
+			if codded_block_pattern_420 != -1 then
+				cbp := codded_block_pattern_420;
 				cbp_flag := 1;
 			end
 		end
@@ -1036,6 +1063,260 @@ actor MPEG2_SP_Parser()
 	guard
 		macroblock_pattern != 1 or
 		cbp_flag = 1
+	end
+	
+	// Block
+	
+	bk_begin_block: action ==>
+	do
+		// Setting the "i" (bk_i) to 0
+		bk_i := 0;
+		// Calculating pattern_code[i]
+		foreach int i in 0 .. 11 do
+			if macroblock_intra = 1 then
+				pattern_code[i] := 1;
+			else
+				pattern_code[i] := 0;
+			end
+		end
+		if macroblock_pattern = 1 then
+			foreach int j in 0 .. 5 do
+				if (cbp & (1 << (5-j))) = 1 then
+					pattern_code[j] := 1; 
+				end
+			end
+		end
+	end
+	
+	bk_pattern_code_0: action  ==>
+	guard
+		pattern_code[bk_i] = 0
+	do
+		bk_i := bk_i + 1;
+	end
+	
+	bk_pattern_code_1_small_intra: action ==>
+	guard
+		pattern_code[bk_i] = 1,
+		macroblock_intra = 1,
+		bk_i < 4
+	end
+	
+	bk_pattern_code_1_i_big_intra: action ==>
+	guard
+		pattern_code[bk_i] = 1,
+		macroblock_intra = 1,
+		bk_i >= 4
+	end
+	
+	bk_pattern_code_1_non_intra: action ==>
+	guard
+		macroblock_intra != 1
+	end
+	
+	bk_dct_dc_size_luminance: action Bitstream: [token] ==>
+	guard
+		bk_lum_flag = 0
+	do
+		bit_buffer[bk_lum_vld_counter] := token;
+		compute_nextbits(0, bk_lum_vld_counter);
+		if bk_lum_vld_counter = 1 and nextbits = 0 then
+			dct_dc_size_luminance := 1;
+			bk_lum_flag := 1;
+		else
+			if bk_lum_vld_counter = 1 and nextbits = 1 then
+				dct_dc_size_luminance := 2;
+				bk_lum_flag := 1;
+			else
+				if bk_lum_vld_counter = 2 and nextbits = 4 then
+					dct_dc_size_luminance := 0;
+					bk_lum_flag := 1;
+				else
+					if bk_lum_vld_counter = 2 and nextbits = 5 then
+						dct_dc_size_luminance := 3;
+						bk_lum_flag := 1;
+					else
+						if bk_lum_vld_counter = 2 and nextbits = 6 then
+							dct_dc_size_luminance := 4;
+							bk_lum_flag := 1;
+						else
+							if bk_lum_vld_counter = 3 and nextbits = 14 then
+								dct_dc_size_luminance := 5;
+								bk_lum_flag := 1;
+							else
+								if bk_lum_vld_counter = 4 and nextbits = 30 then
+									dct_dc_size_luminance := 6;
+									bk_lum_flag := 1;
+								else
+									if bk_lum_vld_counter = 5 and nextbits = 62 then
+										dct_dc_size_luminance := 7;
+										bk_lum_flag := 1;
+									else
+										if bk_lum_vld_counter = 6 and nextbits = 126 then
+											dct_dc_size_luminance := 8;
+											bk_lum_flag := 1;
+										else
+											if bk_lum_vld_counter = 7 and nextbits = 254 then
+												dct_dc_size_luminance := 9;
+												bk_lum_flag := 1;
+											else
+												if bk_lum_vld_counter = 8 and nextbits = 510 then
+													dct_dc_size_luminance :=10;
+													bk_lum_flag := 1;
+												else
+													if bk_lum_vld_counter = 8 and nextbits = 511 then
+														dct_dc_size_luminance := 11;
+														bk_lum_flag := 1;
+													end
+												end
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+				end			 
+			end
+		end
+		bk_lum_vld_counter := bk_lum_vld_counter + 1;
+	end
+	
+	bk_dct_dc_size_chrominance: action Bitstream: [token] ==>
+	guard
+		bk_chrom_flag = 0
+	do
+		bit_buffer[bk_chrom_vld_counter] := token;
+		compute_nextbits(0, bk_chrom_vld_counter);
+		if bk_chrom_vld_counter = 1 and nextbits = 0 then
+			dct_dc_size_chrominance := 0;
+			bk_chrom_flag := 1;
+		else
+			if bk_chrom_vld_counter = 1 and nextbits = 1 then
+				dct_dc_size_chrominance := 1;
+				bk_chrom_flag := 1;
+			else
+				if bk_chrom_vld_counter = 1 and nextbits = 2 then
+					dct_dc_size_chrominance := 2;
+					bk_chrom_flag := 1;
+				else
+					if bk_chrom_vld_counter = 2 and nextbits = 6 then
+						dct_dc_size_chrominance := 3;
+						bk_chrom_flag := 1;
+					else
+						if bk_chrom_vld_counter = 3 and nextbits = 14 then
+							dct_dc_size_chrominance := 4;
+							bk_chrom_flag := 1;
+						else
+							if bk_chrom_vld_counter = 4 and nextbits = 30 then
+								dct_dc_size_chrominance := 5;
+								bk_chrom_flag := 1;
+							else
+								if bk_chrom_vld_counter = 5 and nextbits = 62 then
+									dct_dc_size_chrominance := 6;
+									bk_chrom_flag := 1;
+								else
+									if bk_chrom_vld_counter = 6 and nextbits = 126 then
+										dct_dc_size_chrominance := 7;
+										bk_chrom_flag := 1;
+									else
+										if bk_chrom_vld_counter = 7 and nextbits = 254 then
+											dct_dc_size_chrominance := 8;
+											bk_chrom_flag := 1;
+										else
+											if bk_chrom_vld_counter = 8 and nextbits = 510 then
+												dct_dc_size_chrominance := 9;
+												bk_chrom_flag := 1;
+											else
+												if bk_chrom_vld_counter = 9 and nextbits = 1022 then
+													dct_dc_size_chrominance :=10;
+													bk_chrom_flag := 1;
+												else
+													if bk_chrom_vld_counter = 9 and nextbits = 1023 then
+														dct_dc_size_chrominance := 11;
+														bk_chrom_flag := 1;
+													end
+												end
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+				end			 
+			end
+		end
+		bk_chrom_vld_counter := bk_chrom_vld_counter + 1;
+	end
+	
+	bk_dct_dc_differential: action Bitstream: [token] ==>
+	guard
+		((bk_lum_flag = 1 and dct_dc_size_luminance != 0) or
+		(bk_chrom_flag = 1 and dct_dc_size_chrominance != 0)) and
+		bk_diff_flag = 0
+	do
+		bit_buffer[bk_diff_vld_counter] := token;
+		if bk_i < 4 then
+			if bk_diff_vld_counter + 1 = dct_dc_size_luminance then
+				compute_nextbits(0, bk_diff_vld_counter);
+				dct_dc_differential := nextbits;
+				bk_diff_flag := 1;
+			end
+		else
+			if bk_diff_vld_counter + 1 = dct_dc_size_chrominance then
+				compute_nextbits(0, bk_diff_vld_counter);
+				dct_dc_differential := nextbits;
+				bk_diff_flag := 1;
+			end
+		end
+		bk_diff_vld_counter := bk_diff_vld_counter + 1;
+	end
+	
+	bk_dct_coefficients: action Bitstream: [token] ==>
+	guard
+		bk_coef_flag = 0
+	do
+		bit_buffer[bk_coef_vld_counter] := token;
+		compute_nextbits(0, bk_coef_vld_counter);
+		bk_coef_vld := DCT_coefficients_table[bk_DCT_coef_table_to_use][bk_coef_vld_counter][nextbits - 1][0];
+		if bk_coef_vld != -1 then
+			if bk_coef_vld = -2 then	// End of block
+				bk_end_of_block_flag := 1;
+				bk_coef_flag := 1;
+			end
+			else
+				if bk_coef_vld = -3 then // Escape
+					bk_escape_flag := 1;
+					bk_coef_flag := 1;
+				else
+					run := bk_coef_vld;
+					level := DCT_coefficients_table[bk_DCT_coef_table_to_use][bk_coef_vld_counter][nextbits - 1][1];
+				end			
+			end
+		bk_coef_vld_counter := bk_coef_vld_counter + 1;
+	end
+	
+	bk_signe_level: action Bitstream: [token] ==>
+	guard
+		bk_coef_flag = 1
+	do
+		if token = 1 then 
+			signed_level := - level;
+		end
+		bk_coef_flag := 0;
+	end
+	
+	bk_escape: action Bitstream: [token] repeat 18 ==>
+	guard
+		bk_coef_flag = 1,
+		bk_escape_flag = 1
+	do
+		// TO CONTINUE
+		// bit_buffer ...
+		// run :=
+		// signed_level :=
+		// Flags to 0
 	end
 	
 	schedule fsm next_start_code :
