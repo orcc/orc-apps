@@ -1063,14 +1063,19 @@ actor MPEG2_SP_Parser()
 	guard
 		macroblock_pattern != 1 or
 		cbp_flag = 1
-	end
-	
-	// Block
-	
-	bk_begin_block: action ==>
 	do
+		// Preparing for blocks !
 		// Setting the "i" (bk_i) to 0
 		bk_i := 0;
+		// Setting the flags and vld counters to 0
+		bk_escape_flag := 0;
+		bk_end_of_block_flag := 0;
+		bk_coef_flag := 0;
+		bk_coef_vld_counter := 0;
+		bk_lum_flag := 0;
+		bk_lum_vld_counter := 0;
+		bk_chrom_flag := 0;
+		bk_chrom_vld_counter := 0;
 		// Calculating pattern_code[i]
 		foreach int i in 0 .. 11 do
 			if macroblock_intra = 1 then
@@ -1088,6 +1093,18 @@ actor MPEG2_SP_Parser()
 		end
 	end
 	
+	// Block
+	
+	bk_begin_block: action ==>
+	guard
+		bk_i < block_count
+	end
+	
+	bk_not_begin_block: action ==>
+	guard
+		bk_i >= block_count
+	end
+	
 	bk_pattern_code_0: action  ==>
 	guard
 		pattern_code[bk_i] = 0
@@ -1101,8 +1118,8 @@ actor MPEG2_SP_Parser()
 		macroblock_intra = 1,
 		bk_i < 4
 	end
-	
-	bk_pattern_code_1_i_big_intra: action ==>
+
+	bk_pattern_code_1_big_intra: action ==>
 	guard
 		pattern_code[bk_i] = 1,
 		macroblock_intra = 1,
@@ -1120,6 +1137,7 @@ actor MPEG2_SP_Parser()
 	do
 		bit_buffer[bk_lum_vld_counter] := token;
 		compute_nextbits(0, bk_lum_vld_counter);
+		// This is table B.12
 		if bk_lum_vld_counter = 1 and nextbits = 0 then
 			dct_dc_size_luminance := 1;
 			bk_lum_flag := 1;
@@ -1188,6 +1206,7 @@ actor MPEG2_SP_Parser()
 	do
 		bit_buffer[bk_chrom_vld_counter] := token;
 		compute_nextbits(0, bk_chrom_vld_counter);
+		// This is table B.13
 		if bk_chrom_vld_counter = 1 and nextbits = 0 then
 			dct_dc_size_chrominance := 0;
 			bk_chrom_flag := 1;
@@ -1273,6 +1292,13 @@ actor MPEG2_SP_Parser()
 		bk_diff_vld_counter := bk_diff_vld_counter + 1;
 	end
 	
+	bk_no_dct_dc_differential: action ==>
+	guard
+		(bk_lum_flag != 1 or dct_dc_size_luminance = 0) and
+		(bk_chrom_flag != 1 or dct_dc_size_chrominance = 0) or
+		bk_diff_flag = 1
+	end
+	
 	bk_dct_coefficients: action Bitstream: [token] ==>
 	guard
 		bk_coef_flag = 0
@@ -1312,11 +1338,28 @@ actor MPEG2_SP_Parser()
 		bk_coef_flag = 1,
 		bk_escape_flag = 1
 	do
-		// TO CONTINUE
-		// bit_buffer ...
-		// run :=
-		// signed_level :=
-		// Flags to 0
+		bit_buffer := [token[i]: for int i in 0 .. 17];
+		compute_nextbits(0, 5);
+		run := nextbits;
+		compute_nextbits(6, 17);
+		signed_level := nextbits; // To check
+		bk_coef_flag := 0;
+		bk_escape_flag := 0;
+	end
+	
+	bk_end_of_block: action ==>
+	guard
+		bk_end_of_block_flag = 1
+	do
+		bk_i := bk_i + 1;
+		bk_escape_flag := 0;
+		bk_end_of_block_flag := 0;
+		bk_coef_flag := 0;
+		bk_coef_vld_counter := 0;
+		bk_lum_flag := 0;
+		bk_lum_vld_counter := 0;
+		bk_chrom_flag := 0;
+		bk_chrom_vld_counter := 0;
 	end
 	
 	schedule fsm next_start_code :
@@ -1421,7 +1464,27 @@ actor MPEG2_SP_Parser()
 		eat_marker_bit				(mb_eat_marker_bit)						-->		codded_block_pattern;
 		eat_marker_bit				(mb_not_eat_marker_bit)					-->		codded_block_pattern;
 		codded_block_pattern		(mb_codded_block_pattern)				-->		codded_block_pattern;
-		codded_block_pattern		(mb_not_or_end_codded_block_pattern)	-->		next_start_code;
+		codded_block_pattern		(mb_not_or_end_codded_block_pattern)	-->		begin_block;
+		
+		// Block
+		begin_block					(bk_begin_block)						-->		block;
+		begin_block					(bk_not_begin_block)					-->		begin_macroblock;
+		block						(bk_pattern_code_0)						-->		block;
+		block						(bk_pattern_code_1_non_intra)			-->		dct_coefficients;
+		block						(bk_pattern_code_1_big_intra)			-->		dct_dc_chrominance;
+		block						(bk_pattern_code_1_small_intra)			-->		dct_dc_luminance;
+		dct_dc_luminance			(bk_dct_dc_size_luminance)				-->		dct_dc_luminance;
+		dct_dc_luminance			(bk_dct_dc_differential)				-->		dct_dc_differential;
+		dct_dc_luminance			(bk_no_dct_dc_differential)				-->		dct_coefficients;
+		dct_dc_chrominance			(bk_dct_dc_size_chrominance)			-->		dct_dc_chrominance;
+		dct_dc_chrominance			(bk_dct_dc_differential)				-->		dct_dc_differential;
+		dct_dc_chrominance			(bk_no_dct_dc_differential)				-->		dct_coefficients;
+		dct_dc_differential			(bk_dct_dc_differential)				-->		dct_dc_differential;
+		dct_dc_differential			(bk_no_dct_dc_differential)				-->		dct_coefficients;
+		dct_coefficients			(bk_dct_coefficients)					-->		dct_coefficients;
+		dct_coefficients			(bk_signe_level)						-->		dct_coefficients;
+		dct_coefficients			(bk_escape)								-->		dct_coefficients;
+		dct_coefficients			(bk_end_of_block)						-->		block;
 			
 		// debug						(LOOK_FOLLOWING_BITS)					-->		next_start_code;
 		
