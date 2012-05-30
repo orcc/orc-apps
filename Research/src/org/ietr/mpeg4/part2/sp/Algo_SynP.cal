@@ -14,6 +14,17 @@ actor Algo_SynP()
 		==> 
 		:
 
+procedure log2bin(uint(size=32) value, uint(size=32) res[1])
+var
+	int invalue
+begin 
+  invalue := value;
+  while (invalue!=0) do
+	invalue := invalue >> 1;
+	res[0] := res + 1;
+  end
+  
+end
 	bool DEBUG_BITSTREAM = false;
 	/**************************************************************************
 	 * search_start_code or getByte
@@ -71,6 +82,11 @@ actor Algo_SynP()
 	*************************************************************
 	*************************************************************/
 
+	int VOP_START_CODE                  = 182;
+	int VOL_START_CODE                  = 32; //0x20
+ 
+
+
 	look_for_Sequence_Header: action ==>
 	end
 	uint(size=8) start_code;
@@ -90,117 +106,144 @@ actor Algo_SynP()
 
 
 
-	look_for.picture_start_code: action ==>
+	look_for.vol: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		start_code = picture_start_code
+		start_code = VOL_START_CODE
+	do
+		println("VOL");
 	end
 
-	look_for.slice_start_code: action ==>
+	look_for.vop: action ==>
 	guard
-		start_code >= slice_start_code_begin && start_code <= slice_start_code_end 
+		start_code = VOP_START_CODE 
+	do
+		println("VOP");
 	end
  
-	look_for.sequence_header_code: action ==>
-	guard
-		start_code = sequence_header_code
-	do
-		println("look_for.sequence_header_code");
-	end
-
-	uint(size=4) extension_start_code_identifier;
-	look_for.extension_start_code: action ==>
-	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		start_code = extension_start_code
-	var
-		int(size=32) res[1]
-	do
-		println("look_for.extension_start_code");
-		vld_u_name(  4, fifo, res, "extension_start_code_identifier                           ");
-		extension_start_code_identifier:=res[0];
-	end
-
 	/**************************************************************************
 	 * sequence_header_start_code
 	 *************************************************************************/
-	read_sequence_header : action ==>
+	bool vol_control_parameters;
+	bool vbv_parameters;
+
+	read_vol.start : action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+	var
+		int(size=32) res[1],
+		bool is_object_layer_identifier
+	do
+		vld_u_name(  1, fifo, res, "random_accessible_vol                           ");
+		vld_u_name(  8, fifo, res, "video_object_type_indication                           ");
+		vld_u_name(  1, fifo, res, "is_object_layer_identifier                           ");
+		is_object_layer_identifier := res[0] = 1;
+		if (is_object_layer_identifier) then	
+			vld_u_name(  4, fifo, res, "video_object_layer_verid                           ");	
+			vld_u_name(  3, fifo, res, "video_object_layer_priority                           ");
+		end	
+		vld_u_name(  4, fifo, res, "aspect_ratio_info                           ");	
+		/*if (aspect_ratio_info == Òextended_PARÓ) {	
+			par_width	8
+			par_height	8
+		}*/
+		vld_u_name(  1, fifo, res, "vol_control_parameters                           ");
+		vol_control_parameters := res[0] = 1;
+		if (vol_control_parameters) then	
+			vld_u_name(  2, fifo, res, "chroma_format                           ");
+			vld_u_name(  1, fifo, res, "low_delay                           ");
+			vld_u_name(  1, fifo, res, "vbv_parameters                           ");
+			vbv_parameters := res[0] = 1;
+			if (vbv_parameters) then	
+				vld_u_name(  15, fifo, res, "first_half_bit_rate                           ");
+				vld_u_name(  1, fifo, res, "marker_bit                           ");
+			end
+		end
+	end
+
+	read_vol.vbv_parameters1: action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		int(size=32) res[1]
 	do
-		vld_u_name(  12, fifo, res, "horizontal_size_value                           ");
-		vld_u_name(  12, fifo, res, "vertical_size_value                           ");
-		vld_u_name(  4, fifo, res, "aspect_ratio_information                           ");
-		vld_u_name(  4, fifo, res, "frame_rate_code                           ");
-		vld_u_name(  18, fifo, res, "bit_rate_value                           ");
-		vld_u_name(  1, fifo, res, "marker_bit                           ");
-		vld_u_name(  10, fifo, res, "vbv_buffer_size_value                           ");
-		vld_u_name(  1, fifo, res, "constrained_parameters_flag                           ");
-		vld_u_name(  1, fifo, res, "load_intra_quantiser_matrix                           ");
+		if (vol_control_parameters) then	
+			if (vbv_parameters) then	
+				vld_u_name(  15, fifo, res, "latter_half_bit_rate                           ");
+				vld_u_name(  1, fifo, res, "marker_bit                           ");
+				vld_u_name(  15, fifo, res, "first_half_vbv_buffer_size                           ");
+				vld_u_name(  1, fifo, res, "marker_bit                           ");
+				vld_u_name(  3, fifo, res, "latter_half_vbv_buffer_size                           ");
+				vld_u_name(  11, fifo, res, "first_half_vbv_occupancy                           ");
+				vld_u_name(  1, fifo, res, "marker_bit                           ");
+			end
+		end
 	end
 
-	/**************************************************************************
-	 * sequence extension_start_code
-	 *************************************************************************/
-	read_sequence_extension_start_code : action ==>
+
+
+
+	read_vol.vbv_parameters2: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		extension_start_code_identifier = 1
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		int(size=32) res[1]
 	do
-		vld_u_name(  8, fifo, res, "profile_and_level_indication                           ");
-		vld_u_name(  1, fifo, res, "progressive_sequence                           ");
-		vld_u_name(  2, fifo, res, "chroma_format                           ");
-		vld_u_name(  2, fifo, res, "horizontal_size_extension                           ");
-		vld_u_name(  2, fifo, res, "vertical_size_extension                           ");
-		vld_u_name(  12, fifo, res, "bit_rate_extension                           ");
-		vld_u_name(  1, fifo, res, "marker_bit                           ");
-		vld_u_name(  8, fifo, res, "vbv_buffer_size_extension                           ");
-		vld_u_name(  1, fifo, res, "low_delay                           ");
-		vld_u_name(  2, fifo, res, "frame_rate_extension_n                           ");
-		vld_u_name(  5, fifo, res, "frame_rate_extension_d                           ");
+		if (vol_control_parameters) then	
+			if (vbv_parameters) then	
+				vld_u_name(  15, fifo, res, "latter_half_vbv_occupancy                           ");
+				vld_u_name(  1, fifo, res, "marker_bit                           ");
+			end
+		end	
 	end
-	
-	/**************************************************************************
-	 * Picture Coding extension_start_code
-	 *************************************************************************/
-	read_picture_coding_extension_start_code : action ==>
+
+	read_vol.video_object_layer_shape: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		extension_start_code_identifier = 8
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
 		int(size=32) res[1],
-		bool composite_display_flag
+		bool fixed_vop_rate,
+	    uint(size=16) vop_time_increment_resolution,
+	    uint(size=8) fixed_vop_time_increment
 	do
-		println("todo read_picture_coding_extension_start_code");
-		vld_u_name(  4, fifo, res, "f_code[0][0] /* forward horizontal */                           ");
-		vld_u_name(  4, fifo, res, "f_code[0][1] /* forward vertical */                           ");
-		vld_u_name(  4, fifo, res, "f_code[1][0] /* backward horizontal */                           ");
-		vld_u_name(  4, fifo, res, "f_code[1][1] /* backward vertical */                           ");
-		vld_u_name(  2, fifo, res, "intra_dc_precision                           ");
-		vld_u_name(  2, fifo, res, "picture_structure                           ");
-		vld_u_name(  1, fifo, res, "top_field_first                           ");
-		vld_u_name(  1, fifo, res, "frame_pred_frame_dct                           ");
-		vld_u_name(  1, fifo, res, "concealment_motion_vectors                           ");
-		vld_u_name(  1, fifo, res, "q_scale_type                           ");
-		vld_u_name(  1, fifo, res, "intra_vlc_format                           ");
-		vld_u_name(  1, fifo, res, "alternate_scan                           ");
-		vld_u_name(  1, fifo, res, "repeat_first_field                           ");
-		vld_u_name(  1, fifo, res, "chroma_420_type                           ");
-		vld_u_name(  1, fifo, res, "progressive_frame                           ");
-		vld_u_name(  1, fifo, res, "composite_display_flag                           ");
-		composite_display_flag := res[0] = 1;
-		if ( composite_display_flag ) then
-			vld_u_name(  1, fifo, res, "v_axis                           ");
-			vld_u_name(  3, fifo, res, "field_sequence                           ");
-			vld_u_name(  1, fifo, res, "sub_carrier                           ");
-			vld_u_name(  7, fifo, res, "burst_amplitude                           ");
-			vld_u_name(  8, fifo, res, "sub_carrier_phase                           ");
+		vld_u_name(  2, fifo, res, "video_object_layer_shape                           ");
+		vld_u_name(  1, fifo, res, "marker_bit                           ");
+		vld_u_name(  16, fifo, res, "vop_time_increment_resolution                           ");
+		vop_time_increment_resolution := res[0]; 
+		vld_u_name(  1, fifo, res, "marker_bit                           ");
+		vld_u_name(  1, fifo, res, "fixed_vop_rate                           ");
+		fixed_vop_rate := res[0]=1;
+		if (fixed_vop_rate) then	
+		    log2bin(vop_time_increment_resolution-1, res);
+		    fixed_vop_time_increment :=  if res[0] > 1 then res[0] else 1 end; 
 		end
+		vld_u_name(  1, fifo, res, "marker_bit                           ");
+		vld_u_name(  13, fifo, res, "video_object_layer_width                           ");
+		vld_u_name(  1, fifo, res, "marker_bit                           ");
+		vld_u_name(  13, fifo, res, "video_object_layer_height                           ");
+		vld_u_name(  1, fifo, res, "interlaced                           ");
+		vld_u_name(  1, fifo, res, "obmc_disable                           ");
+		vld_u_name(  1, fifo, res, "sprite_enable                           ");
+		vld_u_name(  1, fifo, res, "not_8_bit                           ");
+		vld_u_name(  1, fifo, res, "quant_type                           ");
+		vld_u_name(  1, fifo, res, "complexity_estimation_disable                           ");
+		vld_u_name(  1, fifo, res, "resync_marker_disable                           ");
+		vld_u_name(  1, fifo, res, "data_partitioned                           ");
+		vld_u_name(  1, fifo, res, "scalability                           ");
 	end
+
+	/**************************************************************************
+	 * VOP
+	 *************************************************************************/
+	read_vop : action ==>
+	guard
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+	var
+		int(size=32) res[1]
+	do
+		vld_u_name(  2, fifo, res, "marker_bit                           ");
+	end
+	
 
 	/**************************************************************************
 	 * search_start_code
@@ -268,18 +311,18 @@ actor Algo_SynP()
 		// read start code
 		read_start_code							( read_start_code								) --> find_header;
 		//
-		find_header	  									( look_for_other_header								) --> look_for_Sequence_Header;
-		find_header	  									( look_for.picture_start_code	  							) --> look_for_Sequence_Header;
-		find_header	  									( look_for.slice_start_code	  							) --> look_for_Sequence_Header;
-		find_header	  									( look_for.sequence_header_code	  							) --> read_sequence_header;
-		find_header	  									( look_for.extension_start_code	  							) --> read_extension_start_code;
+		find_header	  									( look_for_other_header						) --> look_for_Sequence_Header;
+		find_header	  									( look_for.vol	  							) --> read_vol;
+		find_header	  									( look_for.vop	  							) --> read_vop;
 
-		// sequence header
-		read_sequence_header ( read_sequence_header ) --> look_for_Sequence_Header;
+		// vol
+		read_vol ( read_vol.start ) --> read_vol_vbv_parameters;
+		read_vol_vbv_parameters ( read_vol.vbv_parameters1 ) --> read_vol_vbv_parameters2;
+		read_vol_vbv_parameters2 ( read_vol.vbv_parameters2 ) --> read_vol_video_object_layer_shape;
+		read_vol_video_object_layer_shape ( read_vol.video_object_layer_shape ) --> look_for_Sequence_Header;
 
-		// extension_start_code
-		read_extension_start_code ( read_sequence_extension_start_code ) --> look_for_Sequence_Header;
-		read_extension_start_code ( read_picture_coding_extension_start_code ) --> look_for_Sequence_Header;
+		// vop
+		read_vop ( read_vop ) --> look_for_Sequence_Header;
 		
 		// undefined
 		undefined	  					( undefined		    				) --> undefined;
