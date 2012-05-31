@@ -1,5 +1,7 @@
 package synParser;
 
+import  std.util.Math.*;
+
 import  org.sc29.wg11.common.BitstreamReadUtils.*;
 import  synParser.Algo_ParserUtils.*;
 import  common.CabacDecodeBinFunction.*;
@@ -105,6 +107,7 @@ actor Algo_Parser ()
 	 * read_nal_unit_header
 	 *************************************************************************/	
 	uint(size= 6) nal_unit_type;
+	uint(size= 8) chroma_format_idc;
 	uint(size= 2) tile_or_entropy_coding_sync_idc[NB_MAX_SPS];
 	uint(size= 8) num_tile_columns_minus1;
 	uint(size= 8) num_tile_rows_minus1;
@@ -217,8 +220,7 @@ actor Algo_Parser ()
 	guard
 		se_idx = 1 and fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var
-		uint(size=32) res[1],
-		uint(size= 8) chroma_idc
+		uint(size=32) res[1]
 	do
 		vld_u_name(  8, fifo, res, "profile_idc                             "); 
 		flushBits_name( 8, fifo,   "reserved_zero_8bits                     ");
@@ -226,8 +228,8 @@ actor Algo_Parser ()
 		vld_ue_name(    fifo, res, "seq_parameter_set_id                    ");
 		sps_id := res[0];
 		vld_ue_name(    fifo, res, "chroma_format_idc                       ");
-		chroma_idc := res[0];
-		if (chroma_idc = 3) then
+		chroma_format_idc := res[0];
+		if (chroma_format_idc = 3) then
 			vld_u_name(  1, fifo, res, "separate_colour_plane_flag              ");
 			separate_colour_plane_flag[sps_id]:=res[0];
 		end
@@ -511,6 +513,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	 uint(size= 8) pps_sps_id[NB_MAX_PPS];
 	 uint(size= 1) output_flag_present_flag[NB_MAX_PPS];
+	 uint(size=16) max_cu_qp_delta_depth;
 	 uint(size= 1) tile_control_present_flag;
 	 uint(size= 1) cabac_init_present_flag[NB_MAX_PPS];
 	 uint(size= 1) deblocking_filter_control_present_flag[NB_MAX_PPS];
@@ -562,6 +565,7 @@ actor Algo_Parser ()
 		vld_u_name(  2, fifo, res, "slice_granularity                       ");
 		SliceGranularity[pps_id] := res[0] * 2;
 		vld_ue_name(    fifo, res, "max_cu_qp_delta_depth                   ");
+		max_cu_qp_delta_depth := res[0];
 		vld_se_name(    fifo, res, "chroma_qp_offset                        ");
 		vld_se_name(    fifo, res, "chroma_qp_offset_2nd                    ");
 		vld_u_name(  1, fifo, res, "weighted_pred_flag                      ");
@@ -1021,6 +1025,7 @@ actor Algo_Parser ()
 	uint(size=16) PicHeightInMinCbs;
 	uint(size= 8) Log2MinTrafoSize;
 	uint(size= 8) Log2MaxTrafoSize;
+	uint(size= 8) Log2MinTrafoSizeC;
 	uint(size=16) ColumnWidth[COLUMN_WIDTH_MAX];
 	uint(size=16) RowHeight[COLUMN_WIDTH_MAX];
 	uint(size=16) ColBd[COLUMN_WIDTH_MAX];
@@ -1064,6 +1069,7 @@ actor Algo_Parser ()
 		PicHeightInMinCbs := pic_height_in_luma_samples >> Log2MinCbSize;
 		Log2MinTrafoSize  := log2_min_transform_block_size_minus2 + 2;
 		Log2MaxTrafoSize  := Log2MinTrafoSize + log2_diff_max_min_transform_block_size;
+		Log2MinTrafoSizeC := if chroma_format_idc = 1 or chroma_format_idc = 2 then max(Log2MinTrafoSize-1, 2) else Log2MinTrafoSize end;
 		
 		skip_flag		  := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];	
 		inter_pred_flag   := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
@@ -1181,11 +1187,11 @@ actor Algo_Parser ()
 			end
 		end
 		sliceData_idx         := 3;
-		codingTree_x0         := xCtb;
-		codingTree_y0         := yCtb;
-		codingTree_log2CbSize := Log2CtbSize;
-		codingTree_cbDepth    := 0;
-		codingTree_idx        := 1;
+		ct_x0         := xCtb;
+		ct_y0         := yCtb;
+		ct_log2CbSize := Log2CtbSize;
+		ct_cbDepth    := 0;
+		ct_idx        := 1;
 	end
 	read_SliceData_end: action ==>
 	guard
@@ -1217,162 +1223,164 @@ actor Algo_Parser ()
 	 ********        Coding Tree                          *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 8) codingTree_idx;	 
-	uint(size= 8) codingTree_x0;
-	uint(size= 8) codingTree_y0;
-	uint(size= 8) codingTree_x1;
-	uint(size= 8) codingTree_y1;
-	uint(size= 8) codingTree_log2CbSize;
-	uint(size= 8) codingTree_cbDepth;
+	uint(size= 8) ct_idx;	 
+	uint(size= 8) ct_x0;
+	uint(size= 8) ct_y0;
+	uint(size= 8) ct_x1;
+	uint(size= 8) ct_y1;
+	uint(size= 8) ct_log2CbSize;
+	uint(size= 8) ct_cbDepth;
 	uint(size= 1) split_coding_unit;
+	uint(size= 1) IsCuQpDeltaCoded;
 	
 	read_CodingTree.start : action ==>
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		codingTree_idx = 1
+		ct_idx = 1
 	var
 		uint(size=32) res[1]
 	do
 		split_coding_unit := 0;
-		if	codingTree_x0 + ( 1 << codingTree_log2CbSize ) <= pic_width_in_luma_samples and
-			codingTree_y0 + ( 1 << codingTree_log2CbSize ) <= pic_height_in_luma_samples and
-			MinCbAddrZS[ codingTree_x0 >> Log2MinCbSize ][ codingTree_y0 >> Log2MinCbSize ] >= SliceCbAddrZS and
-			codingTree_log2CbSize > Log2MinCbSize and
+		if	ct_x0 + ( 1 << ct_log2CbSize ) <= pic_width_in_luma_samples and
+			ct_y0 + ( 1 << ct_log2CbSize ) <= pic_height_in_luma_samples and
+			MinCbAddrZS[ ct_x0 >> Log2MinCbSize ][ ct_y0 >> Log2MinCbSize ] >= SliceCbAddrZS and
+			ct_log2CbSize > Log2MinCbSize and
 			NumPCMBlock = 0 then
 			get_SPLIT_CODING_UNIT_FLAG(codIRange, codIOffset, ctxTable, fifo, res,
 										0, false, 0, false, 0);
 			split_coding_unit := res[0];
 		end
+		IsCuQpDeltaCoded := 1;
 /*
-		if( adaptive_loop_filter_flag && alf_cu_control_flag &&
-			cbDepth <= alf_cu_control_max_depth &&
-			( cbDepth = = alf_cu_control_max_depth | |
-				split_coding_unit_flag[ x0 ][ y0 ] = = 0 ) ) {
+		if( adaptive_loop_filter_flag and alf_cu_control_flag and
+			cbDepth <= alf_cu_control_max_depth and
+			( cbDepth = = alf_cu_control_max_depth or
+				split_coding_unit_flag[ x0 ][ y0 ] =0 ) ) {
 			AlfCuFlagIdx++
 		if( (max_cu_qp_delta_depth > 0 ) && log2CbSize >= log2MinCUDQPSize )
-			IsCuQpDeltaCoded = 0
+			IsCuQpDeltaCoded := 0
 */		
 		if split_coding_unit = 1 then
-			codingTree_x1 := codingTree_x0 + ( ( 1 << codingTree_log2CbSize ) >> 1 );
-			codingTree_y1 := codingTree_y0 + ( ( 1 << codingTree_log2CbSize ) >> 1 );
-			codingTree_idx := 2;
+			ct_x1 := ct_x0 + ( ( 1 << ct_log2CbSize ) >> 1 );
+			ct_y1 := ct_y0 + ( ( 1 << ct_log2CbSize ) >> 1 );
+			ct_idx := 2;
 		else
-			codingTree_idx := 6;
+			ct_idx := 6;
 //			if(adaptive_loop_filter_flag && alf_cu_control_flag )
 //				AlfCuFlag[ x0 ][ y0 ] = alf_cu_flag[ AlfCuFlagIdx ]		
 		end
 	end
 	read_CodingTree_case.case1 : action ==>
 	guard
-		codingTree_idx = 2,
-		MinCbAddrZS[codingTree_x1>>Log2MinCbSize][codingTree_y0>>Log2MinCbSize] > SliceCbAddrZS 
+		ct_idx = 2,
+		MinCbAddrZS[ct_x1>>Log2MinCbSize][ct_y0>>Log2MinCbSize] > SliceCbAddrZS 
 	do
-		codingTree_x0         := codingTree_x0;
-		codingTree_y0         := codingTree_y0;
-		codingTree_log2CbSize := codingTree_log2CbSize - 1;
-		codingTree_cbDepth    := codingTree_cbDepth + 1;
-		codingTree_idx        := 3;
+		ct_x0         := ct_x0;
+		ct_y0         := ct_y0;
+		ct_log2CbSize := ct_log2CbSize - 1;
+		ct_cbDepth    := ct_cbDepth + 1;
+		ct_idx        := 3;
 	end
 	read_CodingTree.noCase1 : action ==>
 	guard
-		codingTree_idx = 2,
-		MinCbAddrZS[codingTree_x1>>Log2MinCbSize][codingTree_y0>>Log2MinCbSize] <= SliceCbAddrZS 
+		ct_idx = 2,
+		MinCbAddrZS[ct_x1>>Log2MinCbSize][ct_y0>>Log2MinCbSize] <= SliceCbAddrZS 
 	do
-		codingTree_idx := 3;
+		ct_idx := 3;
 	end
 	read_CodingTree_case.case2 : action ==>
 	guard
-		codingTree_idx = 3,
+		ct_idx = 3,
 		moreDataFlag   = 1 and
-		MinCbAddrZS[ codingTree_x0 >> Log2MinCbSize ][ codingTree_y1 >> Log2MinCbSize ] > SliceCbAddrZS and
-		codingTree_x1 < pic_width_in_luma_samples
+		MinCbAddrZS[ ct_x0 >> Log2MinCbSize ][ ct_y1 >> Log2MinCbSize ] > SliceCbAddrZS and
+		ct_x1 < pic_width_in_luma_samples
 	do
-		codingTree_x0         := codingTree_x1;
-		codingTree_y0         := codingTree_y0;
-		codingTree_log2CbSize := codingTree_log2CbSize - 1;
-		codingTree_cbDepth    := codingTree_cbDepth + 1;
-		codingTree_idx        := 4;
+		ct_x0         := ct_x1;
+		ct_y0         := ct_y0;
+		ct_log2CbSize := ct_log2CbSize - 1;
+		ct_cbDepth    := ct_cbDepth + 1;
+		ct_idx        := 4;
 	end
 	read_CodingTree.noCase2 : action ==>
 	guard
-		codingTree_idx = 3,
+		ct_idx = 3,
 		moreDataFlag   = 0 or
-		MinCbAddrZS[ codingTree_x0 >> Log2MinCbSize ][ codingTree_y1 >> Log2MinCbSize ] <= SliceCbAddrZS or
-		codingTree_x1 >= pic_width_in_luma_samples
+		MinCbAddrZS[ ct_x0 >> Log2MinCbSize ][ ct_y1 >> Log2MinCbSize ] <= SliceCbAddrZS or
+		ct_x1 >= pic_width_in_luma_samples
 	do
-		codingTree_idx := 4;
+		ct_idx := 4;
 	end
 	read_CodingTree_case.case3 : action ==>
 	guard
-		codingTree_idx = 4,
+		ct_idx = 4,
 		moreDataFlag   = 1 and
-		MinCbAddrZS[ codingTree_x1 >> Log2MinCbSize ][ codingTree_y1 >> Log2MinCbSize ] > SliceCbAddrZS and
-		codingTree_y1 < pic_height_in_luma_samples
+		MinCbAddrZS[ ct_x1 >> Log2MinCbSize ][ ct_y1 >> Log2MinCbSize ] > SliceCbAddrZS and
+		ct_y1 < pic_height_in_luma_samples
 	do
-		codingTree_x0         := codingTree_x0;
-		codingTree_y0         := codingTree_y1;
-		codingTree_log2CbSize := codingTree_log2CbSize - 1;
-		codingTree_cbDepth    := codingTree_cbDepth + 1;
-		codingTree_idx        := 5;
+		ct_x0         := ct_x0;
+		ct_y0         := ct_y1;
+		ct_log2CbSize := ct_log2CbSize - 1;
+		ct_cbDepth    := ct_cbDepth + 1;
+		ct_idx        := 5;
 	end
 	read_CodingTree.noCase3 : action ==>
 	guard
-		codingTree_idx = 4,
+		ct_idx = 4,
 		moreDataFlag   = 0 or
-		MinCbAddrZS[ codingTree_x1 >> Log2MinCbSize ][ codingTree_y1 >> Log2MinCbSize ] <= SliceCbAddrZS or
-		codingTree_y1 >= pic_height_in_luma_samples
+		MinCbAddrZS[ ct_x1 >> Log2MinCbSize ][ ct_y1 >> Log2MinCbSize ] <= SliceCbAddrZS or
+		ct_y1 >= pic_height_in_luma_samples
 	do
-		codingTree_idx := 5;
+		ct_idx := 5;
 	end
 	read_CodingTree_case.case4 : action ==>
 	guard
-		codingTree_idx = 5,
+		ct_idx = 5,
 		moreDataFlag   = 1 and
-		codingTree_x1 < pic_width_in_luma_samples and
-		codingTree_y1 < pic_height_in_luma_samples
+		ct_x1 < pic_width_in_luma_samples and
+		ct_y1 < pic_height_in_luma_samples
 	do
-		codingTree_x0         := codingTree_x1;
-		codingTree_y0         := codingTree_y1;
-		codingTree_log2CbSize := codingTree_log2CbSize - 1;
-		codingTree_cbDepth    := codingTree_cbDepth + 1;
-		codingTree_idx        := 7;
+		ct_x0         := ct_x1;
+		ct_y0         := ct_y1;
+		ct_log2CbSize := ct_log2CbSize - 1;
+		ct_cbDepth    := ct_cbDepth + 1;
+		ct_idx        := 7;
 	end
 	read_CodingTree.noCase4 : action ==>
 	guard
-		codingTree_idx = 5,
+		ct_idx = 5,
 		moreDataFlag   = 0 or
-		codingTree_x1 >= pic_width_in_luma_samples or
-		codingTree_y1 >= pic_height_in_luma_samples
+		ct_x1 >= pic_width_in_luma_samples or
+		ct_y1 >= pic_height_in_luma_samples
 	do
-		codingTree_idx := 7;
+		ct_idx := 7;
 	end
 	read_CodingTree_gotoCodingUnit : action ==>
 	guard
-		codingTree_idx = 6,
+		ct_idx = 6,
 		NumPCMBlock = 0
 	do
-		codingTree_idx			:= 7;
-		codingUnit_idx			:= 1;
-		codingUnit_x0			:= codingTree_x0;
-		codingUnit_y0			:= codingTree_y0;
-		codingUnit_log2CbSize	:= codingTree_log2CbSize;
+		ct_idx			:= 7;
+		cu_idx			:= 1;
+		cu_x0			:= ct_x0;
+		cu_y0			:= ct_y0;
+		cu_log2CbSize	:= ct_log2CbSize;
 	end
 	read_CodingTree_gotoPCMSample : action ==>
 	guard
-		codingTree_idx = 6,
+		ct_idx = 6,
 		NumPCMBlock   != 0
 	do
-		codingTree_idx := 7;
+		ct_idx := 7;
 	end
 	read_CodingTree_end : action ==>
 	guard
-		codingTree_idx = 7
+		ct_idx = 7
 	var
 		uint(size=32) res[1]
 	do
 		if split_coding_unit = 1 then
- 			if	( (codingTree_x0 + (1<<codingTree_log2CbSize) ) & (1<<SliceGranularity[pps_id]) ) != 0 and
-				( (codingTree_y0 + (1<<codingTree_log2CbSize) ) & (1<<SliceGranularity[pps_id]) ) != 0 and
+ 			if	( (ct_x0 + (1<<ct_log2CbSize) ) & (1<<SliceGranularity[pps_id]) ) != 0 and
+				( (ct_y0 + (1<<ct_log2CbSize) ) & (1<<SliceGranularity[pps_id]) ) != 0 and
 				NumPCMBlock = 0 then
 //				end_of_slice_flag
 				moreDataFlag := 1 - res[0];
@@ -1385,46 +1393,46 @@ actor Algo_Parser ()
 	 ********        Coding Unit                          *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 8) codingUnit_idx;
-	uint(size= 8) codingUnit_x0;
-	uint(size= 8) codingUnit_y0;
-	uint(size= 8) codingUnit_x1;
-	uint(size= 8) codingUnit_y1;
-	uint(size= 8) codingUnit_x2;
-	uint(size= 8) codingUnit_y2;
-	uint(size= 8) codingUnit_x3;
-	uint(size= 8) codingUnit_y3;
-	uint(size= 8) codingUnit_log2CbSize;
+	uint(size= 8) cu_idx;
+	uint(size= 8) cu_x0;
+	uint(size= 8) cu_y0;
+	uint(size= 8) cu_x1;
+	uint(size= 8) cu_y1;
+	uint(size= 8) cu_x2;
+	uint(size= 8) cu_y2;
+	uint(size= 8) cu_x3;
+	uint(size= 8) cu_y3;
+	uint(size= 8) cu_log2CbSize;
 	uint(size= 8) predMode;
 	uint(size= 8) partMode;
 	read_CodingUnit.start : action ==>
 	guard 
-		codingUnit_idx = 1
+		cu_idx = 1
 	do
 		predMode := MODE_INTRA;
 		if slice_type != I_SLICE then
 			// get skip_flag
 		end
-		codingUnit_idx := 2; 
+		cu_idx := 2; 
 	end
 	read_CodingUnit_gotoPredictionUnit.goto1 : action ==>
 	guard 
-		codingUnit_idx = 2,
-		skip_flag[codingTree_x0][codingTree_y0] != 0
+		cu_idx = 2,
+		skip_flag[ct_x0][ct_y0] != 0
 	do
-		codingUnit_idx				:= 8; 
-		predictionUnit_idx			:= 1;
-		predictionUnit_x0			:= codingUnit_x0;
-		predictionUnit_y0			:= codingUnit_y0;
-		predictionUnit_log2CbSize	:= codingUnit_log2CbSize;
-		predMode					:= MODE_SKIP;
+		cu_idx			:= 8; 
+		pu_idx			:= 1;
+		pu_x0			:= cu_x0;
+		pu_y0			:= cu_y0;
+		pu_log2CbSize	:= cu_log2CbSize;
+		predMode		:= MODE_SKIP;
 	end
 	read_CodingUnit.noGoto1 : action ==>
 	guard 
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
-		codingUnit_idx = 2,
-		skip_flag[codingTree_x0][codingTree_y0] = 0//,
-		//slice_type != I_SLICE or codingUnit_log2CbSize = Log2MinCbSize
+		cu_idx = 2,
+		skip_flag[ct_x0][ct_y0] = 0//,
+		//slice_type != I_SLICE or cu_log2CbSize = Log2MinCbSize
 	var
 		uint(size=32) res[1]
 	do
@@ -1433,148 +1441,149 @@ actor Algo_Parser ()
 			get_PRED_MODE_FLAG(codIRange, codIOffset, ctxTable, fifo, res, slice_type = I_SLICE);
 			predMode := res[0];
 		end
-		if predMode != MODE_INTRA or codingUnit_log2CbSize = Log2MinCbSize then
+		if predMode != MODE_INTRA or cu_log2CbSize = Log2MinCbSize then
 			get_PART_SIZE(codIRange, codIOffset, ctxTable, fifo, res);
 			partMode := res[0];
 		end
-		codingUnit_x1  := codingUnit_x0 + ( ( 1 << codingUnit_log2CbSize ) >> 1 );
-		codingUnit_y1  := codingUnit_y0 + ( ( 1 << codingUnit_log2CbSize ) >> 1 );
-		codingUnit_x2  := codingUnit_x1 - ( ( 1 << codingUnit_log2CbSize ) >> 2 );
-		codingUnit_y2  := codingUnit_y1 - ( ( 1 << codingUnit_log2CbSize ) >> 2 );
-		codingUnit_x3  := codingUnit_x1 + ( ( 1 << codingUnit_log2CbSize ) >> 2 );
-		codingUnit_y3  := codingUnit_y1 + ( ( 1 << codingUnit_log2CbSize ) >> 2 );
-		codingUnit_idx := 3;
+		cu_x1  := cu_x0 + ( ( 1 << cu_log2CbSize ) >> 1 );
+		cu_y1  := cu_y0 + ( ( 1 << cu_log2CbSize ) >> 1 );
+		cu_x2  := cu_x1 - ( ( 1 << cu_log2CbSize ) >> 2 );
+		cu_y2  := cu_y1 - ( ( 1 << cu_log2CbSize ) >> 2 );
+		cu_x3  := cu_x1 + ( ( 1 << cu_log2CbSize ) >> 2 );
+		cu_y3  := cu_y1 + ( ( 1 << cu_log2CbSize ) >> 2 );
+		cu_idx := 3;
 	end
 	read_CodingUnit_gotoPredictionUnit.goto2 : action ==>
 	guard 
-		codingUnit_idx = 3 or codingUnit_idx = 4 or
-		codingUnit_idx = 5 or codingUnit_idx = 6
+		cu_idx = 3 or cu_idx = 4 or
+		cu_idx = 5 or cu_idx = 6
 	do
-		predictionUnit_idx			:= 1;
-		predictionUnit_x0			:= codingUnit_x0;
-		predictionUnit_y0			:= codingUnit_y0;
-		predictionUnit_log2CbSize	:= codingUnit_log2CbSize;
-		if codingUnit_idx = 3 then
-			codingUnit_idx    := 4;
+		pu_idx		  := 1;
+		pu_x0		  := cu_x0;
+		pu_y0		  := cu_y0;
+		pu_log2CbSize := cu_log2CbSize;
+		if cu_idx = 3 then
+			cu_idx    := 4;
 			if partMode = PART_2Nx2N then
-				codingUnit_idx := 7;
+				cu_idx := 7;
 			end
-		elsif codingUnit_idx = 4 then
-			codingUnit_idx    := 7;
+		elsif cu_idx = 4 then
+			cu_idx := 7;
 			if partMode = PART_2NxN then
-				predictionUnit_y0 := codingUnit_y1;
+				pu_y0 := cu_y1;
 			elsif partMode = PART_Nx2N then
-				predictionUnit_x0 := codingUnit_x1;
+				pu_x0 := cu_x1;
 			elsif partMode = PART_2NxnU then
-				predictionUnit_y0 := codingUnit_y2;
+				pu_y0 := cu_y2;
 			elsif partMode = PART_2NxnD then
-				predictionUnit_y0 := codingUnit_y3;
+				pu_y0 := cu_y3;
 			elsif partMode = PART_nLx2N then
-				predictionUnit_x0 := codingUnit_x2;
+				pu_x0 := cu_x2;
 			elsif partMode = PART_nRx2N then
-				predictionUnit_x0 := codingUnit_x3;
+				pu_x0 := cu_x3;
 			else /* PART_NxN */
-				codingUnit_idx    := 5;
-				predictionUnit_x0 := codingUnit_x1;
+				cu_idx := 5;
+				pu_x0  := cu_x1;
 			end
-		elsif codingUnit_idx = 5 then
-			codingUnit_idx    := 6;
-			predictionUnit_y0 := codingUnit_y1;
+		elsif cu_idx = 5 then
+			cu_idx := 6;
+			pu_y0  := cu_y1;
 		else
-			codingUnit_idx    := 7;
-			predictionUnit_x0 := codingUnit_x1;
-			predictionUnit_y0 := codingUnit_y1;
+			cu_idx := 7;
+			pu_x0  := cu_x1;
+			pu_y0  := cu_y1;
 		end
 	end
 	read_CodingUnit_gotoTransformTree : action ==>
 	guard 
-		codingUnit_idx   = 7 and pcm_enabled_flag = 0
+		cu_idx = 7 and pcm_enabled_flag = 0
 	do
-		codingUnit_idx					:= 8;
+		cu_idx							:= 8;
 		ttStack_idx						:= 0;
 		ttStack[0][TT_idx]				:= 1;
-		ttStack[0][TT_x0]				:= codingUnit_x0;
-		ttStack[0][TT_y0]				:= codingUnit_y0;
-		ttStack[0][TT_xC]				:= codingUnit_x0;
-		ttStack[0][TT_yC]				:= codingUnit_y0;
-		ttStack[0][TT_log2CbSize]		:= codingUnit_log2CbSize;
-		ttStack[0][TT_log2TrafoWidth]	:= codingUnit_log2CbSize;
-		ttStack[0][TT_log2TrafoHeight]	:= codingUnit_log2CbSize;
+		ttStack[0][TT_x0]				:= cu_x0;
+		ttStack[0][TT_y0]				:= cu_y0;
+		ttStack[0][TT_xC]				:= cu_x0;
+		ttStack[0][TT_yC]				:= cu_y0;
+		ttStack[0][TT_log2CbSize]		:= cu_log2CbSize;
+		ttStack[0][TT_log2TrafoWidth]	:= cu_log2CbSize;
+		ttStack[0][TT_log2TrafoHeight]	:= cu_log2CbSize;
 		ttStack[0][TT_trafoDepth]		:= 0;
 		ttStack[0][TT_blkIdx]			:= 0;
 	end
 	read_CodingUnit_end : action ==>
 	guard 
-		(codingUnit_idx   = 7 and pcm_enabled_flag = 1) or
-		 codingUnit_idx   = 8
+		(cu_idx = 7 and pcm_enabled_flag = 1) or
+		 cu_idx = 8
 	end
 	/**************************************************************************
 	 **************************************************************************
 	 ********        Prediction Unit                      *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 8) predictionUnit_idx;
-	uint(size= 8) predictionUnit_x0;
-	uint(size= 8) predictionUnit_y0;
-	uint(size= 8) predictionUnit_log2CbSize;
+	uint(size= 8) pu_idx;
+	uint(size= 8) pu_x0;
+	uint(size= 8) pu_y0;
+	uint(size= 8) pu_log2CbSize;
 	uint(size= 1) pcm_flag;
 	
 	read_PredictionUnit.start : action ==>
 	guard 
-		predictionUnit_idx = 1
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		pu_idx = 1
 	var
 		uint(size=32) res[1],
 		uint(size= 8) Log2MinIPCMCUSize = log2_min_coding_block_size_minus3 + 3,
 		uint(size= 8) Log2MaxIPCMCUSize = log2_min_coding_block_size_minus3 + 3
 	do
-		predictionUnit_idx := 7;
-		if ( skip_flag[predictionUnit_x0][predictionUnit_y0] = 1) then
+		pu_idx := 7;
+		if ( skip_flag[pu_x0][pu_y0] = 1) then
 			if( MaxNumMergeCand > 1 ) then
 				//merge_idx[ x0 ][ y0 ]
 			end
-			predictionUnit_idx := 7;
+			pu_idx := 7;
 		elsif( predMode = MODE_INTRA ) then
  			pcm_flag := 0;
 			if( partMode = PART_2Nx2N && pcm_enabled_flag = 1 &&
-				predictionUnit_log2CbSize >= Log2MinIPCMCUSize &&
-				predictionUnit_log2CbSize <= Log2MaxIPCMCUSize ) then
+				pu_log2CbSize >= Log2MinIPCMCUSize &&
+				pu_log2CbSize <= Log2MaxIPCMCUSize ) then
 				//pcm_flag := res[0]
 			end
 			if( pcm_flag = 1) then
 				//num_subsequent_pcm
 				// NumPCMBlock = res[0] + 1
 				byte_align(fifo);
-				predictionUnit_idx := 2;
+				pu_idx := 2;
 			else 
 				get_PREV_INTRA_LUMA_PRED_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
-				//prev_intra_luma_pred_flag[predictionUnit_x0][predictionUnit_y0] := res[0];
+				//prev_intra_luma_pred_flag[pu_x0][pu_y0] := res[0];
 				if res[0] = 1 then
 					get_MPM_IDX(codIRange, codIOffset, ctxTable, fifo, res);
 				else
 					get_PREV_INTRA_LUMA_PRED(codIRange, codIOffset, ctxTable, fifo, res);
 				end
 				get_INTRA_CHROMA_PRED_MODE(codIRange, codIOffset, ctxTable, fifo, res, chroma_pred_from_luma_enabled_flag[sps_id]);
-				//intra_chroma_pred_mode[predictionUnit_x0][predictionUnit_y0] := res[0]
+				//intra_chroma_pred_mode[pu_x0][pu_y0] := res[0]
 /*
  				SignalledAsChromaDC = ( chroma_pred_from_luma_enabled_flag ?
-						intra_chroma_pred_mode[predictionUnit_x0][predictionUnit_y0] = 3 :
-						intra_chroma_pred_mode[predictionUnit_x0][predictionUnit_y0] = 2 )
+						intra_chroma_pred_mode[pu_x0][pu_y0] = 3 :
+						intra_chroma_pred_mode[pu_x0][pu_y0] = 2 )
 */
-				predictionUnit_idx := 7;
+				pu_idx := 7;
 			end
 		else /* MODE_INTER */
-			//merge_flag[predictionUnit_x0][predictionUnit_y0] := res[0]
+			//merge_flag[pu_x0][pu_y0] := res[0]
 			if res[0] = 1 then
 				if MaxNumMergeCand > 1 then
-					//merge_idx[predictionUnit_x0][predictionUnit_y0] := res[0]
+					//merge_idx[pu_x0][pu_y0] := res[0]
 				end
-				predictionUnit_idx := 7;
+				pu_idx := 7;
 			else
-				inter_pred_flag[predictionUnit_x0][predictionUnit_y0] := Pred_L0;
+				inter_pred_flag[pu_x0][pu_y0] := Pred_L0;
 				if( slice_type = B_SLICE ) then
-					//inter_pred_flag[predictionUnit_x0][predictionUnit_y0] := res[0];
+					//inter_pred_flag[pu_x0][pu_y0] := res[0];
 				end
-				if( inter_pred_flag[predictionUnit_x0][predictionUnit_y0] = Pred_LC ) then
+				if( inter_pred_flag[pu_x0][pu_y0] = Pred_LC ) then
 					if( num_ref_idx_lc_active_minus1 > 0 ) then
 						//ref_idx_lc[ x0 ][ y0 ]
 					end
@@ -1583,63 +1592,68 @@ actor Algo_Parser ()
 						//ref_idx_l0[ x0 ][ y0 ]
 					end
 				end	
-				predictionUnit_idx := 3;
+				pu_idx := 3;
 			end
 		end
 	end
 	read_PredictionUnit_gotoPCMSample: action ==>
 	guard 
-		predictionUnit_idx = 2
+		pu_idx = 2
 	do
-		PCMSample_x0       := predictionUnit_x0;
-		PCMSample_y0       := predictionUnit_y0;
-		predictionUnit_idx := 7;
-	end
-	read_PredictionUnit_gotoMVDcoding.goto1: action ==>
-	guard 
-		predictionUnit_idx = 3
-	do
-		predictionUnit_idx := 4;
+		PCMSample_x0	:= pu_x0;
+		PCMSample_y0	:= pu_y0;
+		pu_idx			:= 7;
 	end
 	read_PredictionUnit.retMVDcoding_goto1: action ==>
 	guard 
-		predictionUnit_idx = 4
+		pu_idx = 4
 	do
-		if( inter_pred_flag[predictionUnit_x0][predictionUnit_y0] = Pred_LC ) then
+		if( inter_pred_flag[pu_x0][pu_y0] = Pred_LC ) then
 			//mvp_lc_flag[ x0 ][ y0 ];
 		else // Pred_L0 or Pred_BI
 			//mvp_l0_flag[ x0 ][ y0 ]
 		end	
-		predictionUnit_idx := 7;
-		if( inter_pred_flag[predictionUnit_x0][predictionUnit_y0] = Pred_BI ) then
+		pu_idx := 7;
+		if( inter_pred_flag[pu_x0][pu_y0] = Pred_BI ) then
 			if( num_ref_idx_l1_active_minus1 > 0 ) then
 				//ref_idx_l1[ x0 ][ y0 ]
 			end
 			if( /*mvd_l1_zero_flag*/ true ) then
 				//mvd_l1[ x0 ][ y0 ][ 0 ] = 0
 				//mvd_l1[ x0 ][ y0 ][ 1 ] = 0
-				predictionUnit_idx := 6;
+				pu_idx := 6;
 			else
-				predictionUnit_idx := 5;
+				pu_idx := 5;
 			end
 		end
 	end
-	read_PredictionUnit_gotoMVDcoding.goto2: action ==>
+	read_PredictionUnit_gotoMVDCoding: action ==>
 	guard 
-		predictionUnit_idx = 5
+		pu_idx = 3 or pu_idx = 5
 	do
-		predictionUnit_idx := 6;
+		pu_idx := pu_idx + 1;
 	end
 	read_PredictionUnit.retMVDcoding_goto2: action ==>
 	guard 
-		predictionUnit_idx = 6
+		pu_idx = 6
 	do
 		//mvp_l1_flag[ x0 ][ y0 ]
-		predictionUnit_idx := 7;
+		pu_idx := 7;
 	end
 	read_PredictionUnit_end: action ==>
 	guard 
-		predictionUnit_idx = 7
+		pu_idx = 7
+	end
+	/**************************************************************************
+	 **************************************************************************
+	 ********        MVD Coding                           *********************
+	 **************************************************************************
+	 *************************************************************************/
+	uint(size= 8) mvd_x;
+	uint(size= 8) mvd_y;
+	read_MVDCoding.start : action ==>		
+	do
+		println("read_MVDCoding");
 	end
 	/**************************************************************************
 	 **************************************************************************
@@ -1649,8 +1663,12 @@ actor Algo_Parser ()
 	uint(size= 8) PCMSample_x0;
 	uint(size= 8) PCMSample_y0;
 	read_PCMSample.start : action ==>		
+	do
+		println("read_PCMSample");
 	end
 	read_PCMSample2.start : action ==>		
+	do
+		println("read_PCMSample2");
 	end
 	/**************************************************************************
 	 **************************************************************************
@@ -1684,6 +1702,7 @@ actor Algo_Parser ()
 	end
 	read_TransformTree.start : action ==>
 	guard 
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		ttStack[ttStack_idx][TT_idx] = 1
 	var
 		uint(size=32) res[1] := [0],
@@ -1696,7 +1715,7 @@ actor Algo_Parser ()
 		uint(size= 8) yBase,
 		uint(size= 1) firstChromaCbf,
 		bool 		   readCbf,
-		uint(size=3) InterTUSplitDirection
+		uint(size=3)  InterTUSplitDirection
 	do
 		println("==================== read_TransformTree.start : "+ttStack_idx+" : "+ttStack[ttStack_idx][TT_blkIdx]+" ====================");
 		ttStack[ttStack_idx][TT_idx] := 7;
@@ -1723,7 +1742,7 @@ actor Algo_Parser ()
 			   ttStack[ttStack_idx][TT_trafoDepth] < maxDepth and intraSplitFlag = 0 and interSplitFlag = 0 then
 */
 			if ttStack_idx = 0 then
-				get_SPLIT_TRANSFORM_FLAG(codIRange, codIOffset, ctxTable, fifo, res, 1);
+				get_SPLIT_TRANSFORM_FLAG(codIRange, codIOffset, ctxTable, fifo, res, 1 /*ct_cbDepth + ttStack[ttStack_idx][TT_trafoDepth]*/ );
 				split_transform_flag[ttStack[ttStack_idx][TT_x0]][ttStack[ttStack_idx][TT_y0]][ttStack[ttStack_idx][TT_trafoDepth]] := res[0];				
 			end
 			if log2TrafoSize <= Log2MaxTrafoSize  then
@@ -1740,7 +1759,7 @@ actor Algo_Parser ()
 							cbf_cb[ ttStack[ttStack_idx][TT_x0] ][ ttStack[ttStack_idx][TT_y0] ][ ttStack[ttStack_idx][TT_trafoDepth] ] := 1;
 						else
 							get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, ttStack[ttStack_idx][TT_trafoDepth]);
-							cbf_cb[ ttStack[ttStack_idx][TT_x0] ][ ttStack[ttStack_idx][TT_y0] ][ ttStack[ttStack_idx][TT_trafoDepth] ] := 1;
+							cbf_cb[ ttStack[ttStack_idx][TT_x0] ][ ttStack[ttStack_idx][TT_y0] ][ ttStack[ttStack_idx][TT_trafoDepth] ] := res[0];
 						end
 					end
 					if firstChromaCbf = 1 or cbf_cr[ xBase ][ yBase ][ ttStack[ttStack_idx][TT_trafoDepth] - 1 ] = 1 then
@@ -1849,15 +1868,15 @@ actor Algo_Parser ()
 		ttStack[ttStack_idx][TT_idx] = 6
 	do
 		ttStack[ttStack_idx][TT_idx]	:= 7;
-		transformUnit_idx				:= 1;
-		transformUnit_x0				:= ttStack[ttStack_idx][TT_x0];
-		transformUnit_y0				:= ttStack[ttStack_idx][TT_y0];
-		transformUnit_xC				:= ttStack[ttStack_idx][TT_xC];
-		transformUnit_yC				:= ttStack[ttStack_idx][TT_yC];
-		transformUnit_log2TrafoWidth	:= ttStack[ttStack_idx][TT_log2TrafoWidth]  - 1;
-		transformUnit_log2TrafoHeight	:= ttStack[ttStack_idx][TT_log2TrafoHeight] - 1;
-		transformUnit_trafoDepth		:= ttStack[ttStack_idx][TT_trafoDepth] + 1;
-		transformUnit_blkIdx			:= ttStack[ttStack_idx][TT_blkIdx];
+		tu_idx							:= 1;
+		tu_x0							:= ttStack[ttStack_idx][TT_x0];
+		tu_y0							:= ttStack[ttStack_idx][TT_y0];
+		tu_xC							:= ttStack[ttStack_idx][TT_xC];
+		tu_yC							:= ttStack[ttStack_idx][TT_yC];
+		tu_log2TrafoWidth				:= ttStack[ttStack_idx][TT_log2TrafoWidth];
+		tu_log2TrafoHeight				:= ttStack[ttStack_idx][TT_log2TrafoHeight];
+		tu_trafoDepth					:= ttStack[ttStack_idx][TT_trafoDepth];
+		tu_blkIdx						:= ttStack[ttStack_idx][TT_blkIdx];
 	end
 	read_TransformTree_end : action ==>
 	guard
@@ -1875,19 +1894,206 @@ actor Algo_Parser ()
 	 ********        Transform Unit                       *********************
 	 **************************************************************************
 	 *************************************************************************/
-	uint(size= 8) transformUnit_idx;
-	uint(size= 8) transformUnit_x0;
-	uint(size= 8) transformUnit_y0;
-	uint(size= 8) transformUnit_xC;
-	uint(size= 8) transformUnit_yC;
-	uint(size= 8) transformUnit_log2TrafoWidth;
-	uint(size= 8) transformUnit_log2TrafoHeight;
-	uint(size= 8) transformUnit_trafoDepth;
-	uint(size= 8) transformUnit_blkIdx;
+	uint(size= 8) tu_idx;
+	uint(size= 8) tu_x0;
+	uint(size= 8) tu_y0;
+	uint(size= 8) tu_xC;
+	uint(size= 8) tu_yC;
+	uint(size= 8) tu_log2TrafoWidth;
+	uint(size= 8) tu_log2TrafoHeight;
+	uint(size= 8) tu_trafoDepth;
+	uint(size= 8) tu_blkIdx;
+	uint(size= 2) scanIdx;
+	uint(size= 2) scanIdxC;
 	
 	read_TransformUnit.start : action ==>
 	guard 
-		transformUnit_idx = 1
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		tu_idx = 1
+	var
+		uint(size=32) res[1],
+		uint(size= 8) log2TrafoSize
+	do
+		tu_idx := 7;
+		if  cbf_luma[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 or
+			cbf_cb[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 or
+			cbf_cr[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+			if max_cu_qp_delta_depth > 0  and IsCuQpDeltaCoded = 0 then
+				//cu_qp_delta
+				IsCuQpDeltaCoded := 1;
+			end
+			log2TrafoSize  := ( tu_log2TrafoWidth + tu_log2TrafoHeight ) >> 1;
+			if predMode = MODE_INTRA then
+				scanIdx  := ScanType[ log2TrafoSize - 2 ][ 0/*IntraPredMode*/ ];
+				scanIdxC := ScanType[ log2TrafoSize - 2 ][ 0/*IntraPredModeC*/ ];
+			else
+				scanIdx  := 0;
+				scanIdxC := 0;
+			end
+			tu_idx := 3;
+			if cbf_luma[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+				tu_idx 				:= 2;
+				rc_idx 				:= 1;
+				rc_x0 				:= tu_x0;
+				rc_y0 				:= tu_y0;
+				rc_log2TrafoWidth	:= tu_log2TrafoWidth;
+				rc_log2TrafoHeight	:= tu_log2TrafoHeight;
+				rc_scanIdx			:= scanIdx;
+				rc_cIdx				:= 0;
+			end
+		end
+	end
+	read_TransformUnit.retLuma : action ==>
+	guard 
+		tu_idx = 3
+	var
+		uint(size= 8) log2TrafoSize  = ( tu_log2TrafoWidth + tu_log2TrafoHeight ) >> 1,
+		uint(size= 8) log2TrafoSizeC = if log2TrafoSize = Log2MinTrafoSizeC then log2TrafoSize else log2TrafoSize - 1 end
+	do
+		tu_idx 				:= 7;
+		rc_idx 				:= 1;
+		rc_log2TrafoWidth	:= log2TrafoSizeC;
+		rc_log2TrafoHeight	:= tu_trafoDepth;
+		rc_scanIdx			:= scanIdxC;
+		rc_cIdx				:= 1;
+		if log2TrafoSize > Log2MinTrafoSize then
+			tu_idx := 5;
+			if cbf_cb[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+				tu_idx 	:= 4;
+				rc_x0 	:= tu_x0;
+				rc_y0 	:= tu_y0;
+			end
+		elsif tu_blkIdx = 3 then
+			tu_idx := 5;
+			if cbf_cb[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+				tu_idx 	:= 4;
+				rc_x0 	:= tu_xC;
+				rc_y0 	:= tu_yC;
+			end
+		end
+	end
+	read_TransformUnit.retCb : action ==>
+	guard 
+		tu_idx = 5
+	var
+		uint(size= 8) log2TrafoSize  = ( tu_log2TrafoWidth + tu_log2TrafoHeight ) >> 1
+	do	
+		tu_idx	:= 7;
+		rc_idx 	:= 1;
+		rc_cIdx	:= 2;
+		if log2TrafoSize > Log2MinTrafoSize then
+			if cbf_cr[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+				tu_idx := 6;
+			end
+		elsif tu_blkIdx = 3 then
+			if cbf_cr[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+				tu_idx := 6;
+			end
+		end
+	end
+	read_TransformUnit_gotoResidualCoding : action ==>
+	guard 
+		tu_idx = 2 or tu_idx = 4 or tu_idx = 6
+	do	
+		tu_idx := tu_idx + 1;
+	end
+	read_TransformUnit_end : action ==>
+	guard 
+		tu_idx = 7	
+	end
+	/**************************************************************************
+	 **************************************************************************
+	 ********        Residual Coding                      *********************
+	 **************************************************************************
+	 *************************************************************************/
+	uint(size= 8) rc_idx;
+	uint(size= 8) rc_x0;
+	uint(size= 8) rc_y0;
+	uint(size= 8) rc_log2TrafoWidth;
+	uint(size= 8) rc_log2TrafoHeight;
+	uint(size= 8) rc_scanIdx;
+	uint(size= 8) rc_cIdx;
+	
+	uint(size= 8) DiagScan[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
+	uint(size= 8) ScanOrder[3][BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
+	uint(size= 1) significant_coeff_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
+	uint(size= 1) significant_coeff_group_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
+	
+	read_ResidualCoding.start : action ==>
+	guard 
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		rc_idx = 1
+	var
+		uint(size=32) res[1],
+		uint(size= 8) LastSignificantCoeffX,
+		uint(size= 8) LastSignificantCoeffY,
+		uint(size= 8) xC		:= 0,
+		uint(size= 8) yC		:= 0,
+		uint(size= 8) numCoeff := 0,
+		uint(size= 8) numLastSubset,
+		uint(size= 8) xCG,
+		uint(size= 8) yCG,
+		uint(size= 1) implicitNonZeroCoeff,
+		uint(size= 8) offset,
+		uint(size= 8) ctxCG := 0
+	do	
+		get_LAST_SIGNIFICANT_COEFF_X_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoWidth, rc_cIdx);
+		LastSignificantCoeffX := res[0];
+		get_LAST_SIGNIFICANT_COEFF_Y_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoHeight, rc_cIdx);
+		LastSignificantCoeffY := res[0];
+		if LastSignificantCoeffX > 3 then
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, ctxTable, fifo, res, LastSignificantCoeffX);
+			LastSignificantCoeffX := (1 << ((LastSignificantCoeffX >> 1) - 1)) *
+									 (2  +  (LastSignificantCoeffX & 1 )) + res[0];			
+		end
+		if LastSignificantCoeffY > 3 then 
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, ctxTable, fifo, res, LastSignificantCoeffY);
+			LastSignificantCoeffY := (1 << ((LastSignificantCoeffY >> 1) - 1)) *
+									 (2  +  (LastSignificantCoeffY & 1 )) + res[0];
+		end
+		if rc_scanIdx = 2 then
+			res[0] 				  := LastSignificantCoeffX;
+			LastSignificantCoeffX := LastSignificantCoeffY;
+			LastSignificantCoeffY := res[0];
+		end
+		InitScanningArray(1<<rc_log2TrafoWidth, 1<<rc_log2TrafoHeight, DiagScan, ScanOrder);
+		while  xC != LastSignificantCoeffX or yC != LastSignificantCoeffY do
+			xC := ScanOrder[ rc_scanIdx ][ numCoeff ][ 0 ]; 
+			yC := ScanOrder[ rc_scanIdx ][ numCoeff ][ 1 ]; 
+			numCoeff := numCoeff + 1;
+		end 
+		numLastSubset := (numCoeff - 1) >> 4;
+  		foreach int i in 0 .. numLastSubset do 
+      		offset := (numLastSubset-i) << 4;
+      		if rc_scanIdx = 1 and rc_log2TrafoWidth = 3 and rc_log2TrafoHeight = 3 then 
+      			xCG := 0;
+      			yCG := (numLastSubset-i);
+      		elsif rc_scanIdx = 2 and rc_log2TrafoWidth = 3 and rc_log2TrafoHeight = 3 then 
+      			xCG := (numLastSubset-i);
+      			yCG := 0;
+      		else 
+				InitScanningArray(1<<(rc_log2TrafoWidth-2), 1<<(rc_log2TrafoHeight-2), DiagScan, ScanOrder);
+      			xCG := ScanOrder[ rc_scanIdx ][ (numLastSubset-i) ][ 0 ];
+          		yCG := ScanOrder[ rc_scanIdx ][ (numLastSubset-i) ][ 1 ]; 
+			end
+            implicitNonZeroCoeff := 0; 
+            if i < numLastSubset and i > 0 then 
+            	//significant_coeff_group_flag[ xCG ][ yCG ] := res[0]; 
+              	implicitNonZeroCoeff := 1; 
+            end
+			InitScanningArray(1<<rc_log2TrafoWidth, 1<<rc_log2TrafoHeight, DiagScan, ScanOrder);
+  			foreach int n in 0 .. 15 do  
+				xC := ScanOrder[ rc_scanIdx ][ (15-n) + offset ][ 0 ]; 
+				yC := ScanOrder[ rc_scanIdx ][ (15-n) + offset ][ 1 ];
+				if  (15-n + offset) < (numCoeff - 1) and significant_coeff_group_flag[ xCG ][ yCG ] = 1 and 
+					( 15-n > 0 or implicitNonZeroCoeff = 0 ) then
+                    //significant_coeff_flag[ xC ][ yC ] := res[0];
+					if significant_coeff_flag[ xC ][ yC ] = 1 then 
+                    	implicitNonZeroCoeff := 0;
+                 	end
+				end
+			end
+		end
 	end
 	/**************************************************************************
 	 **************************************************************************
@@ -1945,21 +2151,26 @@ actor Algo_Parser ()
 		read_CodingUnit				    ( read_CodingUnit_gotoPredictionUnit) --> read_PredictionUnit;
 		read_CodingUnit				    ( read_CodingUnit_gotoTransformTree ) --> read_TransformTree;
 		read_CodingUnit				    ( read_CodingUnit_end				) --> read_CodingTree;
-		// read_PCMSample
-		read_PCMSample				    ( read_PCMSample	  				) --> read_CodingTree;
-		read_PCMSample2				    ( read_PCMSample2	  				) --> read_PredictionUnit;
 		// read_PredictionUnit
 		read_PredictionUnit			    ( read_PredictionUnit	  			) --> read_PredictionUnit;
 		read_PredictionUnit			    ( read_PredictionUnit_gotoPCMSample ) --> read_PCMSample2;
-		read_PredictionUnit			    ( read_PredictionUnit_gotoMVDcoding ) --> undefined;
+		read_PredictionUnit			    ( read_PredictionUnit_gotoMVDCoding ) --> read_MVDCoding;
 		read_PredictionUnit			    ( read_PredictionUnit_end			) --> read_CodingUnit;
+		// read_MVDCoding
+		read_MVDCoding				    ( read_MVDCoding	  				) --> undefined;//read_PredictionUnit;
+		// read_PCMSample
+		read_PCMSample				    ( read_PCMSample	  				) --> undefined;//read_CodingTree;
+		read_PCMSample2				    ( read_PCMSample2	  				) --> undefined;//read_PredictionUnit;
 		// read_TransformTree
 		read_TransformTree			    ( read_TransformTree	  			) --> read_TransformTree;
 		read_TransformTree			    ( read_TransformTree_gotoTransformUnit) --> read_TransformUnit;
 		read_TransformTree			    ( read_TransformTree_end	  		) --> read_CodingUnit;
 		// read_TransformUnit
-		read_TransformUnit			    ( read_TransformUnit	  			) --> read_TransformTree;
-
+		read_TransformUnit			    ( read_TransformUnit	  			) --> read_TransformUnit;
+		read_TransformUnit			    ( read_TransformUnit_gotoResidualCoding) --> read_ResidualCoding;
+		read_TransformUnit			    ( read_TransformUnit_end			) --> read_TransformTree;
+		// read_ResidualCoding
+		read_ResidualCoding				( read_ResidualCoding				) --> read_TransformUnit;
 		// read_APS_Header
 		read_APS_Header				    ( read_APS_Header					) --> read_APS_Header;
 		read_APS_Header				    ( read_APS_Header_done				) --> byte_align;
