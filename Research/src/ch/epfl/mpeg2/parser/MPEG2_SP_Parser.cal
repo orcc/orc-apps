@@ -36,11 +36,19 @@ import ch.epfl.mpeg2.parser.MPEG2_Tables.macroblock_type_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.motion_code_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.codded_block_pattern_table;
 import ch.epfl.mpeg2.parser.MPEG2_Tables.DCT_coefficients_table;
+import ch.epfl.mpeg2.parser.MPEG2_Tables.quantiser_scale_table;
+import ch.epfl.mpeg2.parser.MPEG2_Tables.quantiser_matrix_default;
 
 actor MPEG2_SP_Parser()
 	uint(size=1) Bitstream
-		==>
-			:
+		==> 
+			int(size=13) QFS, 
+			uint(size=2) ALTERNATE_SCAN, 
+			int(size=16) SIZE,
+			uint(size=1) MB_INTRA,
+			uint(size=8) QUANTISER_SCALE,
+			uint(size=8) INTRA_QUANTISER_MATRIX,
+			uint(size=8) NON_INTRA_QUANTISER_MATRIX:
 			
 	// ////////////////////////////////////////////////////////////////////////
 	// State Variables
@@ -54,7 +62,7 @@ actor MPEG2_SP_Parser()
 	uint(size=8)	SEQUENCE_ERROR_CODE 	= 0xB4;
 	uint(size=8)	EXTENSION_START_CODE 	= 0xB5;
 	uint(size=8)	SEQUENCE_END_CODE 		= 0xB7;
-	uint(size=8)	 GROUP_START_CODE		= 0xB8;
+	uint(size=8)	GROUP_START_CODE		= 0xB8;
 	
 	// Extension Start Code Identifier Values :
 	uint(size=4)	SEQUENCE_EXTENSION_ID 					= 0x1;
@@ -97,6 +105,7 @@ actor MPEG2_SP_Parser()
 		// Calculated values
 		uint(size=14)	horizontal_size;
 		uint(size=14)	vertical_size;
+	uint(size=12)	mb_width;
 	
 	// Sequence Display Extension
 	uint(size=3)	video_format;
@@ -167,6 +176,8 @@ actor MPEG2_SP_Parser()
 	// Slice
 	uint(size=8)	slice_vertical_position; // It is given by the start code of the slice !
 	uint(size=3)	slice_vertical_position_extension;
+	uint(size=12)	mb_row;
+	uint(size=24)	previous_macroblock_address;
 	uint(size=5)	quantiser_scale_code;
 	uint(size=1)	slice_extension_flag;
 	uint(size=1)	intra_slice;
@@ -174,12 +185,15 @@ actor MPEG2_SP_Parser()
 	uint(size=6)	slice_picture_id;
 	uint(size=1)	extra_bit_slice;
 	uint(size=8)	extra_information_slice;
+	uint(size=8)	quantiser_scale;
 	
 	// Macroblock
 	uint(size=8)	mb_macroblock_escape_counter := 0;	// To count the number of macroblock escape !
-	uint(size=8)	mb_address_increment_vld_counter := 0; // To count the number of time we do the action
+	int(size=9)		mb_address_increment_vld_counter := 0; // To count the number of time we do the action
 	uint(size=8)	macroblock_address_increment;
-	uint(size=1)	mb_address_increment_flag := 0;	// Flag is set to 1 when the vlc is decoded
+	uint(size=1)	mb_address_increment_flag := 0;	// Flag set to 1 when the vlc is decoded
+	uint(size=1)	mb_start_code_flag := 0;		// Flag set to 1 if we are in fact decoding a start_code into address increment.
+	uint(size=24)	macroblock_address;
 	
 	uint(size=1)	mb_type_flag := 0;
 	uint(size=8)	mb_type_vld_counter := 0;
@@ -221,11 +235,15 @@ actor MPEG2_SP_Parser()
 	uint(size=6)	cbp;
 	
 	// Block
+	int(size=13) qfs[64];
+	uint qfs_counter := 0;
 	uint(size=3)	bk_i;
 	uint(size=3)	block_count = 6; // because 4:2:0
 	uint(size=1)	bk_DCT_coef_table_to_use;
 	uint(size=9)	dct_dc_size_luminance;
 	uint(size=11)	dct_dc_differential;
+	int(size=12)	dct_diff;
+	uint(size=9)	half_range;
 	uint(size=10)	dct_dc_size_chrominance;
 	uint(size=1)	bk_lum_flag;
 	uint(size=5)	bk_lum_vld_counter;
@@ -242,10 +260,13 @@ actor MPEG2_SP_Parser()
 	uint(size=1)	bk_end_of_block_flag;
 	uint(size=1)	bk_escape_flag;
 	uint(size=6)	run;
-	int(size=12)	signed_level;
 	uint(size=11)	level;
+	int(size=12)	signed_level;
+	uint(size=1)	bk_DC_coef_flag; // 0 = DC coef., 1 = other coef.
+	uint(size=16)	dct_dc_pred[3];
 	
-	
+	// DEBUG
+	uint(size=16)	currentMB := 0;
 	
 	// ////////////////////////////////////////////////////////////////////////
 	// Functions / Procedures
@@ -337,13 +358,13 @@ actor MPEG2_SP_Parser()
 		load_intra_quantiser_matrix := token[62];
 	end
 	
-	sh_read_intra_quantiser_matrix: action Bitstream: [token] repeat 513 ==>
+	sh_read_intra_quantiser_matrix: action Bitstream: [token] repeat 513 ==> INTRA_QUANTISER_MATRIX: [intra_quantiser_matrix] repeat 64
 	guard
 		load_intra_quantiser_matrix = 1
 	do
 		bit_buffer := [token[i]: for int i in 0 .. 511];
 		foreach int i in 0 .. 63 do
-			compute_nextbits(8*i, 8*i + 8);
+			compute_nextbits(8*i, 8*i + 7);
 			intra_quantiser_matrix[i] := nextbits;
 		end
 		load_non_intra_quantiser_matrix := token[512];
@@ -356,13 +377,13 @@ actor MPEG2_SP_Parser()
 		load_non_intra_quantiser_matrix := token;
 	end
 	
-	sh_read_non_intra_quantiser_matrix: action Bitstream: [token] repeat 512 ==>
+	sh_read_non_intra_quantiser_matrix: action Bitstream: [token] repeat 512 ==> NON_INTRA_QUANTISER_MATRIX: [non_intra_quantiser_matrix] repeat 64
 	guard
 		load_non_intra_quantiser_matrix = 1
 	do
 		bit_buffer := [token[i]: for int i in 0 .. 511];
 		foreach int i in 0 .. 63 do
-			compute_nextbits(8*i, 8*i + 8);
+			compute_nextbits(8*i, 8*i + 7);
 			non_intra_quantiser_matrix[i] := nextbits;
 		end
 	end
@@ -374,7 +395,7 @@ actor MPEG2_SP_Parser()
 	
 	// Sequence Extension
 	
-	se_sequence_extension: action Bitstream: [token] repeat 44 ==>
+	se_sequence_extension: action Bitstream: [token] repeat 44 ==> SIZE: [horizontal_size, vertical_size]
 	guard
 		nextbits = SEQUENCE_EXTENSION_ID
 	do
@@ -404,6 +425,7 @@ actor MPEG2_SP_Parser()
 		// Calculating horizontal_size and vertical_size
 		horizontal_size := horizontal_size_extension*12 + horizontal_size_value;
 		vertical_size := vertical_size_extension*12 + vertical_size_value; 		
+		mb_width := (horizontal_size + 15)/16;
 		
 		eud_i := 0;	// Set the i for extension_and_user_data(0)
 		check_MPEG2 := true;
@@ -546,7 +568,6 @@ actor MPEG2_SP_Parser()
 		closed_gop := nextbits;
 		compute_nextbits(26, 26);
 		broken_link := nextbits;
-		
 		eud_i := 1;	// Set the i for extension_and_user_data(1)
 	end
 	
@@ -562,7 +583,7 @@ actor MPEG2_SP_Parser()
 		compute_nextbits(10, 12);
 		picture_coding_type := nextbits;
 		compute_nextbits(13, 18);
-		vbv_delay := nextbits;
+		vbv_delay := nextbits;	
 	end
 	
 	ph_picture_coding_type_2: action Bitstream: [token] repeat 4 ==>
@@ -692,6 +713,7 @@ actor MPEG2_SP_Parser()
 		bit_buffer := [token[i]: for int i in 0 .. 7];
 		compute_nextbits(0, 2);
 		slice_vertical_position_extension := nextbits;
+		mb_row := (slice_vertical_position_extension << 7) + slice_vertical_position - 1;
 		compute_nextbits(3, 7);
 		quantiser_scale_code := nextbits;
 	end
@@ -703,6 +725,7 @@ actor MPEG2_SP_Parser()
 		vertical_size < 2800
 	do
 		slice_vertical_position := nextbits;
+		mb_row := slice_vertical_position - 1;
 		bit_buffer := [token[i]: for int i in 0 .. 4];
 		compute_nextbits(0, 4);
 		quantiser_scale_code := nextbits;
@@ -739,72 +762,111 @@ actor MPEG2_SP_Parser()
 		token = 0
 	do
 		extra_bit_slice := token;
+		// Exporting the quantiser_scale
+		if q_scale_type = 0 then
+			quantiser_scale := 2*quantiser_scale_code;
+		else
+			quantiser_scale := quantiser_scale_table[quantiser_scale_code];		
+		end
+		// Calculating prev_mb_addr
+		previous_macroblock_address := (mb_row * mb_width) - 1;
+		// Reset the dct_dc_pred[cc]
+		dct_dc_pred[0] := 128*(1 << intra_dc_precision);
+		dct_dc_pred[1] := dct_dc_pred[0];
+		dct_dc_pred[2] := dct_dc_pred[0];
+		// DEBUG
+		// println("MB : " + currentMB);
 	end
 	
 	// Macroblocks
 	
 	begin_macroblock: action ==>
 	do
-	// !!! SET ALL THE VLC VARIABLES TO 0 !!!
+		// !!! SET ALL THE VLC VARIABLES TO 0 !!!
 		mb_macroblock_escape_counter := 0;		// To count the number of macroblock escape !
-		
 		mb_address_increment_vld_counter := 0;	// To count the number of time we do the action
 		macroblock_address_increment := 0;
-		mb_address_increment_flag := 0;			// Flag is set to 1 when the vlc is decoded		
-		
+		mb_address_increment_flag := 0;			// Flag is set to 1 when the vlc is decoded	
+		mb_start_code_flag := 0;				// In case of start code prefix
 		mb_type_vld_counter := 0;
 		mb_type_flag := 0;
-		
 		cbp_flag := 0;
 		cbp_vld_counter := 0;
 	end
-
-	macroblock_escape: action Bitstream: [token] repeat 11 ==>
-	guard
-		// Nextbits = 0000 0001 000 -> Macroblock escape
-		token[0] = 0, token[1] = 0, token[2] = 0, token[3] = 0,
-		token[4] = 0, token[5] = 0, token[6] = 0, token[7] = 1,
-		token[8] = 0, token[9] = 0, token[10] = 0
-	do
-		mb_macroblock_escape_counter := mb_macroblock_escape_counter + 1;
-	end
 	
-	mb_address_increment: action Bitstream: [token] ==>
+	/* If we are reading 8 times 0, that means we are reading the begining of the start code prefix, 0x001. 
+	 * (see ISO/IEC 13818-2 : 2000 p.32, the contition at the bottom of the page "while 
+	 * (nextbits() != '000 0000 0000 0000 0000 0000')"
+	 * In this case, we go to mb_reading_start_code_prefix to read the others 0 and then go to read_start_code.*/
+	mb_macroblock_address: action Bitstream: [token] ==>
 	guard
-		mb_address_increment_flag = 0
+		mb_address_increment_flag = 0 and
+		mb_start_code_flag = 0
+	var
+		int(size=8) mb_addr_inc_val
 	do
-		int(size=8) mb_addr_inc_val;
-		bit_buffer[mb_address_increment_vld_counter] := token; 													// Place the new token into bit_buffer
-		compute_nextbits(0, mb_address_increment_vld_counter);													// Compute the tokens into nextbits
-		mb_addr_inc_val := macroblock_address_increment_table[mb_address_increment_vld_counter][nextbits];		// Look in the VLC table
+		bit_buffer[mb_address_increment_vld_counter] := token; 													
+		compute_nextbits(0, mb_address_increment_vld_counter);													
+		mb_addr_inc_val := macroblock_address_increment_table[mb_address_increment_vld_counter][nextbits];		
 		if mb_addr_inc_val != -1 then
-			macroblock_address_increment := 33*mb_macroblock_escape_counter + mb_addr_inc_val;					// Calculate the address increment
-			mb_address_increment_flag := 1;																		// Set the end flag to 1
+			if mb_addr_inc_val = -2 then		// macroblock_escape
+				mb_macroblock_escape_counter := mb_macroblock_escape_counter + 1;
+				mb_address_increment_vld_counter := -1;
+			else
+				if mb_addr_inc_val = -3 then	// this means we are reading a start code !
+					mb_start_code_flag := 1;
+				else	
+					macroblock_address_increment := 33*mb_macroblock_escape_counter + mb_addr_inc_val;					
+					mb_address_increment_flag := 1;																		
+					macroblock_address := previous_macroblock_address + macroblock_address_increment;
+					if macroblock_address_increment > 1 then // This means some macroblock are skipped
+						// Reset the dct_dc_pred[cc]
+						dct_dc_pred[0] := 128*(1 << intra_dc_precision);
+						dct_dc_pred[1] := dct_dc_pred[0];
+						dct_dc_pred[2] := dct_dc_pred[0];
+					end
+				end
+			end
 		end
-		mb_address_increment_vld_counter := mb_address_increment_vld_counter + 1;								// Update the counter
+		mb_address_increment_vld_counter := mb_address_increment_vld_counter + 1;	
+	end
 
+	mb_reading_start_code_prefix: action Bitstream: [token] repeat 15 ==>
+	guard
+		mb_start_code_flag = 1
+	do
+		foreach int i in 0 .. 14 do
+			if token[i] != 0 then
+			println("START CODE ERROR IN MACROBLOCK");
+			end
+		end
+		nextbits := token[14];
 	end
 
 	mb_type: action Bitstream: [token] ==>
 	guard
-		mb_address_increment_flag = 1,
+		mb_address_increment_flag = 1 and
 		mb_type_flag = 0
+	var
+		int(size=8) macroblock_type
 	do
-		int(size=2) macroblock_type;
 		bit_buffer[mb_type_vld_counter] := token;
 		compute_nextbits(0, mb_type_vld_counter);
-		macroblock_type := macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][0];
+		macroblock_type := macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits][0];
 		if macroblock_type != -1 then
 			macroblock_quant 							:= macroblock_type;
-			macroblock_motion_forward					:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][1];
-			macroblock_motion_backward					:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][2];
-			macroblock_pattern							:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][3];
-			macroblock_intra							:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][4];
-			spatial_temporal_weight_code_flag			:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits -1][5];
+			macroblock_motion_forward					:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits][1];
+			macroblock_motion_backward					:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits][2];
+			macroblock_pattern							:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits][3];
+			macroblock_intra							:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits][4];
+			spatial_temporal_weight_code_flag			:= macroblock_type_table[picture_coding_type -1][mb_type_vld_counter][nextbits][5];
 			mb_type_flag := 1;
 			// Choosing the VLD table to use for DCT coefficients
 			bk_DCT_coef_table_to_use := macroblock_intra * intra_vlc_format;
 		end
+		// AFFICHAGE DEBUG
+		// println("MB_TYPE_ERROR : nextbits = " + nextbits + ", counter = " + mb_type_vld_counter + ", picture_coding_type = " + picture_coding_type);
+		
 		mb_type_vld_counter := mb_type_vld_counter + 1;
 	end
 	
@@ -839,7 +901,7 @@ actor MPEG2_SP_Parser()
 	
 	mb_not_frame_motion_type: action ==>
 	guard
-		mb_type_flag = 1 or
+		mb_type_flag = 1 and
 		(macroblock_motion_forward != 1 and macroblock_motion_backward != 1) or
 		picture_structure != 11 or
 		frame_pred_frame_dct != 0
@@ -893,7 +955,27 @@ actor MPEG2_SP_Parser()
 		frame_pred_frame_dct != 0 or
 		(macroblock_intra != 1 and macroblock_pattern != 1)
 	end
-
+	
+	mb_macroblock_quant: action Bitstream: [token] repeat 5 ==>
+	guard
+		macroblock_quant = 1
+	do
+		bit_buffer := [token[i]: for int i in 0 .. 4];
+		compute_nextbits(0, 4);
+		quantiser_scale_code := nextbits;
+		if q_scale_type = 0 then
+			quantiser_scale := 2*quantiser_scale_code;
+		else
+			quantiser_scale := quantiser_scale_table[quantiser_scale_code];		
+		end
+		
+	end
+	
+	mb_not_macroblock_quant: action ==>
+	guard
+		macroblock_quant = 0
+	end
+	
 	// Motion Vectors
 
 	mv_begin_motion_vector_0: action ==>
@@ -940,7 +1022,7 @@ actor MPEG2_SP_Parser()
 		int(size=8)	mv_mc;
 		bit_buffer[mv_motion_code_vld_counter] := token;
 		compute_nextbits(0, mv_motion_code_vld_counter);
-		mv_mc := motion_code_table[mv_motion_code_vld_counter][nextbits-1];
+		mv_mc := motion_code_table[mv_motion_code_vld_counter][nextbits];
 		if mv_mc != -1 then
 			motion_code[mv_r][mv_s][mv_t] := mv_mc;
 			mv_motion_code_flag := 1;
@@ -1067,15 +1149,6 @@ actor MPEG2_SP_Parser()
 		// Preparing for blocks !
 		// Setting the "i" (bk_i) to 0
 		bk_i := 0;
-		// Setting the flags and vld counters to 0
-		bk_escape_flag := 0;
-		bk_end_of_block_flag := 0;
-		bk_coef_flag := 0;
-		bk_coef_vld_counter := 0;
-		bk_lum_flag := 0;
-		bk_lum_vld_counter := 0;
-		bk_chrom_flag := 0;
-		bk_chrom_vld_counter := 0;
 		// Calculating pattern_code[i]
 		foreach int i in 0 .. 11 do
 			if macroblock_intra = 1 then
@@ -1098,6 +1171,23 @@ actor MPEG2_SP_Parser()
 	bk_begin_block: action ==>
 	guard
 		bk_i < block_count
+	do
+		// Setting the flags and vld counters to 0
+		bk_escape_flag := 0;
+		bk_end_of_block_flag := 0;
+		bk_coef_flag := 0;
+		bk_coef_vld_counter := 0;
+		bk_lum_flag := 0;
+		bk_lum_vld_counter := 0;
+		bk_chrom_flag := 0;
+		bk_chrom_vld_counter := 0;
+		bk_DC_coef_flag := 0;
+		bk_diff_flag := 0;
+		bk_diff_vld_counter := 0;
+		qfs := [0 : for int i in 0 .. 63];
+		qfs_counter := 0; 
+		// AFFICHAGE DEBUG
+		println("Block " + bk_i);
 	end
 	
 	bk_not_begin_block: action ==>
@@ -1110,6 +1200,8 @@ actor MPEG2_SP_Parser()
 		pattern_code[bk_i] = 0
 	do
 		bk_i := bk_i + 1;
+		// AFFICHAGE DEBUG
+		println("PATTERN_CODE_0");
 	end
 	
 	bk_pattern_code_1_small_intra: action ==>
@@ -1117,6 +1209,8 @@ actor MPEG2_SP_Parser()
 		pattern_code[bk_i] = 1,
 		macroblock_intra = 1,
 		bk_i < 4
+	do
+		bk_DC_coef_flag := 1;
 	end
 
 	bk_pattern_code_1_big_intra: action ==>
@@ -1124,11 +1218,18 @@ actor MPEG2_SP_Parser()
 		pattern_code[bk_i] = 1,
 		macroblock_intra = 1,
 		bk_i >= 4
+	do
+		bk_DC_coef_flag := 1;
 	end
 	
 	bk_pattern_code_1_non_intra: action ==>
 	guard
 		macroblock_intra != 1
+	do
+		// Reset the dct_dc_pred[cc]
+		dct_dc_pred[0] := 128*(1 << intra_dc_precision);
+		dct_dc_pred[1] := dct_dc_pred[0];
+		dct_dc_pred[2] := dct_dc_pred[0];
 	end
 	
 	bk_dct_dc_size_luminance: action Bitstream: [token] ==>
@@ -1148,7 +1249,10 @@ actor MPEG2_SP_Parser()
 			else
 				if bk_lum_vld_counter = 2 and nextbits = 4 then
 					dct_dc_size_luminance := 0;
+					dct_diff := 0;
 					bk_lum_flag := 1;
+					// AFFICHAGE DEBUG
+					println("luma_DC : 0");
 				else
 					if bk_lum_vld_counter = 2 and nextbits = 5 then
 						dct_dc_size_luminance := 3;
@@ -1209,7 +1313,10 @@ actor MPEG2_SP_Parser()
 		// This is table B.13
 		if bk_chrom_vld_counter = 1 and nextbits = 0 then
 			dct_dc_size_chrominance := 0;
+			dct_diff := 0;
 			bk_chrom_flag := 1;
+			// AFFICHAGE DEBUG
+			println("chroma_DC : 0");	
 		else
 			if bk_chrom_vld_counter = 1 and nextbits = 1 then
 				dct_dc_size_chrominance := 1;
@@ -1274,29 +1381,59 @@ actor MPEG2_SP_Parser()
 		((bk_lum_flag = 1 and dct_dc_size_luminance != 0) or
 		(bk_chrom_flag = 1 and dct_dc_size_chrominance != 0)) and
 		bk_diff_flag = 0
+	var
+		uint(size=10) dct_dc_size
 	do
 		bit_buffer[bk_diff_vld_counter] := token;
 		if bk_i < 4 then
-			if bk_diff_vld_counter + 1 = dct_dc_size_luminance then
-				compute_nextbits(0, bk_diff_vld_counter);
-				dct_dc_differential := nextbits;
-				bk_diff_flag := 1;
-			end
+			dct_dc_size := dct_dc_size_luminance;
 		else
-			if bk_diff_vld_counter + 1 = dct_dc_size_chrominance then
-				compute_nextbits(0, bk_diff_vld_counter);
-				dct_dc_differential := nextbits;
-				bk_diff_flag := 1;
+			dct_dc_size := dct_dc_size_chrominance;
+		end
+		if bk_diff_vld_counter + 1 = dct_dc_size then
+			compute_nextbits(0, bk_diff_vld_counter);
+			dct_dc_differential := nextbits;
+			bk_diff_flag := 1;
+			// Calculus of dct_diff
+			half_range := 1 << (dct_dc_size - 1);
+			if dct_dc_differential >= half_range then
+				dct_diff := dct_dc_differential;
+			else
+				dct_diff := (dct_dc_differential + 1) - 2*half_range;
+			end
+			if bk_i < 4 then
+				signed_level := dct_dc_pred[0] + dct_diff;
+				dct_dc_pred[0] := signed_level;
+			else
+				if bk_i = 4 then
+					signed_level := dct_dc_pred[1] + dct_diff;
+					dct_dc_pred[1] := signed_level;
+				else
+					signed_level := dct_dc_pred[2] + dct_diff;
+					dct_dc_pred[2] := signed_level;
+				end
+			end
+			signed_level := signed_level * 8/(1 << intra_dc_precision);
+			// AFFICHAGE DEBUG
+			if bk_i < 4 then println("luma_DC : " + dct_diff);
+			else			 println("chroma_DC : " + dct_diff);
 			end
 		end
 		bk_diff_vld_counter := bk_diff_vld_counter + 1;
+	end	
+	
+	bk_end_dct_dc_differential: action ==>
+	guard
+		bk_diff_flag = 1
+	do
+		qfs[0] := signed_level;
+		qfs_counter := qfs_counter + 1;
 	end
 	
 	bk_no_dct_dc_differential: action ==>
 	guard
-		(bk_lum_flag != 1 or dct_dc_size_luminance = 0) and
-		(bk_chrom_flag != 1 or dct_dc_size_chrominance = 0) or
-		bk_diff_flag = 1
+		((bk_lum_flag = 1 and dct_dc_size_luminance = 0) or
+		(bk_chrom_flag = 1 and dct_dc_size_chrominance = 0))
 	end
 	
 	bk_dct_coefficients: action Bitstream: [token] ==>
@@ -1307,59 +1444,94 @@ actor MPEG2_SP_Parser()
 		compute_nextbits(0, bk_coef_vld_counter);
 		bk_coef_vld := DCT_coefficients_table[bk_DCT_coef_table_to_use][bk_coef_vld_counter][nextbits][0];
 		if bk_coef_vld != -1 then
-			if bk_coef_vld = -2 then	// End of block
-				bk_end_of_block_flag := 1;
-				bk_coef_flag := 1;
-			end
-			else
-				if bk_coef_vld = -3 then // Escape
-					bk_escape_flag := 1;
+			if bk_coef_vld = -4 then 		// See Notes 3 and 4 of table B.14
+				if bk_DC_coef_flag = 0 then
+					run :=  0;
+					level := 1;
 					bk_coef_flag := 1;
+					bk_DC_coef_flag := 1;
 				else
-					run := bk_coef_vld;
-					level := DCT_coefficients_table[bk_DCT_coef_table_to_use][bk_coef_vld_counter][nextbits][1];
-				end			
+					bk_coef_vld_counter := bk_coef_vld_counter + 1;	
+				end
+			else
+				if bk_coef_vld = -2 then	// End of block
+					bk_end_of_block_flag := 1;
+					bk_coef_flag := 1;
+					bk_DC_coef_flag := 1;
+				else
+					if bk_coef_vld = -3 then // Escape
+						bk_escape_flag := 1;
+						bk_coef_flag := 1;
+						bk_DC_coef_flag := 1;
+					else
+						run := bk_coef_vld;
+						level := DCT_coefficients_table[bk_DCT_coef_table_to_use][bk_coef_vld_counter][nextbits][1];
+						bk_coef_flag := 1;
+						bk_DC_coef_flag := 1;
+					end			
+				end
 			end
-		bk_coef_vld_counter := bk_coef_vld_counter + 1;
+		else
+			bk_coef_vld_counter := bk_coef_vld_counter + 1;
+		end			
 	end
 	
 	bk_signe_level: action Bitstream: [token] ==>
 	guard
-		bk_coef_flag = 1
+		bk_coef_flag = 1,
+		bk_end_of_block_flag = 0,
+		bk_escape_flag = 0
 	do
 		if token = 1 then 
 			signed_level := - level;
+		else
+			signed_level := level;
 		end
 		bk_coef_flag := 0;
+		bk_coef_vld_counter := 0;
+		bk_DC_coef_flag := 1;
+		qfs[qfs_counter + run] := signed_level;
+		qfs_counter := qfs_counter + run + 1;
+		// AFFICHAGE DEBUG
+		println("run : " + run + " level : " + signed_level);	
 	end
 	
 	bk_escape: action Bitstream: [token] repeat 18 ==>
 	guard
-		bk_coef_flag = 1,
 		bk_escape_flag = 1
 	do
 		bit_buffer := [token[i]: for int i in 0 .. 17];
 		compute_nextbits(0, 5);
 		run := nextbits;
 		compute_nextbits(6, 17);
-		signed_level := nextbits; // To check
+		signed_level := nextbits;
+		if signed_level >= 2048 then
+			signed_level := signed_level - 4096;
+		end
 		bk_coef_flag := 0;
 		bk_escape_flag := 0;
+		bk_coef_vld_counter := 0;
+		bk_DC_coef_flag := 1;
+		qfs[qfs_counter + run] := signed_level;
+		qfs_counter := qfs_counter + run + 1;
+		// AFFICHAGE DEBUG
+		println("run : " + run + " level : " + signed_level);
 	end
 	
-	bk_end_of_block: action ==>
+	bk_end_of_block: action ==> QFS: [qfs] repeat 64, MB_INTRA: [macroblock_intra],  QUANTISER_SCALE: [quantiser_scale], ALTERNATE_SCAN: [alternate_scan]
 	guard
 		bk_end_of_block_flag = 1
 	do
 		bk_i := bk_i + 1;
-		bk_escape_flag := 0;
-		bk_end_of_block_flag := 0;
-		bk_coef_flag := 0;
-		bk_coef_vld_counter := 0;
-		bk_lum_flag := 0;
-		bk_lum_vld_counter := 0;
-		bk_chrom_flag := 0;
-		bk_chrom_vld_counter := 0;
+		// AFFICHAGE DEBUG
+		println("EOB");
+		// DEBUG
+		/*
+		if bk_i = 6 then 
+			currentMB := currentMB + 1;
+			println("MB : " + currentMB);
+		end
+		*/
 	end
 	
 	schedule fsm next_start_code :
@@ -1428,19 +1600,20 @@ actor MPEG2_SP_Parser()
 		sl_extra_info_slice			(sl_slice_end)							-->		begin_macroblock;
 		
 		// Macorblock
-		begin_macroblock			(begin_macroblock)						-->		macroblock_escape;
-		begin_macroblock			(start_code_prefix)						-->		read_start_code;
-		macroblock_escape			(macroblock_escape)						-->		macroblock_escape;
-		macroblock_escape			(mb_address_increment)					-->		macroblock_addr_inc;
-		macroblock_addr_inc			(mb_address_increment)					-->		macroblock_addr_inc;
-		macroblock_addr_inc			(mb_type)								-->		macroblock_type;
+		begin_macroblock			(begin_macroblock)						-->		macroblock_address;
+		macroblock_address			(mb_macroblock_address)					-->		macroblock_address;
+		macroblock_address			(mb_type)								-->		macroblock_type;
+		macroblock_address			(mb_reading_start_code_prefix)			-->		read_start_code;
+		
 		macroblock_type				(mb_type)								-->		macroblock_type;
 		macroblock_type				(mb_frame_motion_type)					-->		field_motion_type;
 		macroblock_type				(mb_not_frame_motion_type)				-->		field_motion_type;
 		field_motion_type			(mb_field_motion_type)					-->		dct_type;
 		field_motion_type			(mb_not_field_motion_type)				-->		dct_type;
-		dct_type					(mb_dct_type)							-->		begin_motion_vector_0;
-		dct_type					(mb_not_dct_type)						-->		begin_motion_vector_0;
+		dct_type					(mb_dct_type)							-->		quantiser_scale;
+		dct_type					(mb_not_dct_type)						-->		quantiser_scale;
+		quantiser_scale				(mb_macroblock_quant)					-->		begin_motion_vector_0;
+		quantiser_scale				(mb_not_macroblock_quant)				-->		begin_motion_vector_0;
 
 		// Motion Vectors --> NOT TESTED YET
 		begin_motion_vector_0		(mv_begin_motion_vector_0)				-->		vertical_field_select;
@@ -1469,7 +1642,7 @@ actor MPEG2_SP_Parser()
 		// Block
 		begin_block					(bk_begin_block)						-->		block;
 		begin_block					(bk_not_begin_block)					-->		begin_macroblock;
-		block						(bk_pattern_code_0)						-->		block;
+		block						(bk_pattern_code_0)						-->		begin_block;
 		block						(bk_pattern_code_1_non_intra)			-->		dct_coefficients;
 		block						(bk_pattern_code_1_big_intra)			-->		dct_dc_chrominance;
 		block						(bk_pattern_code_1_small_intra)			-->		dct_dc_luminance;
@@ -1480,11 +1653,11 @@ actor MPEG2_SP_Parser()
 		dct_dc_chrominance			(bk_dct_dc_differential)				-->		dct_dc_differential;
 		dct_dc_chrominance			(bk_no_dct_dc_differential)				-->		dct_coefficients;
 		dct_dc_differential			(bk_dct_dc_differential)				-->		dct_dc_differential;
-		dct_dc_differential			(bk_no_dct_dc_differential)				-->		dct_coefficients;
+		dct_dc_differential			(bk_end_dct_dc_differential)			-->		dct_coefficients;
 		dct_coefficients			(bk_dct_coefficients)					-->		dct_coefficients;
 		dct_coefficients			(bk_signe_level)						-->		dct_coefficients;
 		dct_coefficients			(bk_escape)								-->		dct_coefficients;
-		dct_coefficients			(bk_end_of_block)						-->		block;
+		dct_coefficients			(bk_end_of_block)						-->		begin_block;
 			
 		// debug						(LOOK_FOLLOWING_BITS)					-->		next_start_code;
 		
