@@ -384,6 +384,7 @@ actor Algo_SynP()
 	end
 	
 	int(size=3) dquant_table[4] = [ -1, -2, 1, 2 ];
+	int(size=7) cbp;
 	
 	read_mb.start: action ==>
 	guard
@@ -410,6 +411,9 @@ actor Algo_SynP()
 				vld_u_name(  1, fifo, res, "ac_pred_flag                           ");
 			end
 			get_cbpy( fifo, res, "cbpy                           ", is_intra);
+			cbp := (res[0] << 2) | cbpc;
+			println("cbp " +cbp);
+			
 			prev_quant:=vop_quant;	
 			if  (btype_is_Q) then
 				vld_u_name(  2, fifo, res, "dquant                           ");
@@ -526,7 +530,7 @@ actor Algo_SynP()
 	end
 
 	read_block_done: action ==>
-	guard cmp=5
+	guard cmp=6
 	do
 		more_rbsp_data();
 		mb_cnt := mb_cnt + 1;
@@ -544,7 +548,6 @@ actor Algo_SynP()
 		last:=false;
 		if is_intra then
 			if prev_quant < intra_dc_vlc_thr then
-				println("comp "+ cmp);
 				if cmp < 4  then 
 					get_dc_size_lum( fifo, res,"dc_size                ");
 					dc_size := res[0];
@@ -566,6 +569,16 @@ actor Algo_SynP()
 			
 	end
 	
+	read_block_coeff_ac: action ==>
+	end
+
+	read_block_coeff_noac: action ==>
+	guard
+ 	   (cbp & (1 << (5 - cmp))) = 0
+	do
+		cmp := cmp + 1;
+	end
+
 	function GET_BITS(int cache, int n) --> int : ((cache)>>(32-(n))) end
 	read_block_coeff: action ==>
 	guard
@@ -580,7 +593,6 @@ actor Algo_SynP()
 	guard last
 	do
 		cmp := cmp + 1;
-		println("block_done "+cmp);
 	end
 
 	procedure get_coeff(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
@@ -724,7 +736,9 @@ actor Algo_SynP()
 		// start block
 		read_block (read_block.start) --> read_block_dc;
 		read_block (read_block_done) --> read_mb;
-		read_block_dc (read_block_dc) --> read_block_coeff;
+		read_block_dc (read_block_dc) --> read_block_coeff_ac;
+		read_block_coeff_ac (read_block_coeff_ac) --> read_block_coeff;
+		read_block_coeff_ac (read_block_coeff_noac) --> read_block;
 		read_block_coeff (read_block_coeff) --> read_block_coeff;
 		read_block_coeff (read_block_coeff_done) --> read_block;
 		// undefined
@@ -737,6 +751,7 @@ actor Algo_SynP()
 		read_block_coeff_done > read_block_coeff;
 		read_block_done > read_block;
 		read_mb_done > read_mb;
+		read_block_coeff_noac > read_block_coeff_ac;
 	end
 
 end
