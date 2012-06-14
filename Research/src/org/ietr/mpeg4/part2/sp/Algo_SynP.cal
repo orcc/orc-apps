@@ -58,6 +58,21 @@ actor Algo_SynP()
 		end
 	end
 	
+	uint(size=1) moreDataFlag;
+ 	procedure more_rbsp_data()   
+  	var 
+  		uint(size=4) cptBits = (fifo[FIFO_CPT_BITS] - 1) & 7,
+		int(size=32) res[1],
+ 		uint(size=9) idx     = getFifoIdx(fifo[FIFO_CPT_BITS], fifo)
+	begin
+		if (fifo[(idx + 1) & 7]) != 0 or ( (fifo[(idx + 3) & 7] & 0x100) = 0 and (fifo[(idx + 4) & 7] & 0x100) = 0 ) then 
+				moreDataFlag:=1; 
+			else 
+				showBits ((cptBits + 1), fifo, res);
+				moreDataFlag:=if(res[0] = 1<< cptBits) then 0 else 1 end;
+			end
+	end
+
 	/*************************************************************
 	*************************************************************
 	********              NAL Unit HEADER                ********
@@ -225,6 +240,7 @@ actor Algo_SynP()
 	int(size=7) intra_dc_vlc_thr;
 	int VOP_FCODE_FOR_LENGTH            = 3;
 	int(size=VOP_FCODE_FOR_LENGTH+1) fcode;
+	int mb_cnt;
 	
 
 	read_vop : action ==>
@@ -233,6 +249,8 @@ actor Algo_SynP()
 	var
 		int(size=32) res[1]
 	do
+		moreDataFlag := 1;
+		mb_cnt := 0;
 		vld_u_name(  2, fifo, res, "vop_coding_type                           ");
 		vop_coding_type := res[0];
 	end
@@ -369,11 +387,13 @@ actor Algo_SynP()
 	
 	read_mb.start: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
+		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
+		moreDataFlag = 1
 	var
 		bool not_coded,
 		int(size=32) res[1]
 	do
+		cmp:=0;
 		if (vop_coding_type != I_VOP) then
 			vld_u_name(  1, fifo, res, "not_coded                           ");
 			not_coded := res[0] = 1;
@@ -403,6 +423,12 @@ actor Algo_SynP()
 			end
 		end
 	end
+
+	read_mb_done: action ==>
+	guard
+		moreDataFlag = 0
+	end
+
 	/**************************************************************************
 	 * Block
 	 *************************************************************************/
@@ -431,26 +457,28 @@ actor Algo_SynP()
 		end
 	end
 	
+
 	procedure get_dc_size_lum(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
 		 						  int(size=32) res[1],String name)
 	var 
 		int code,
-		int val
+		int val,
+		bool valEnd := false
 	begin
 		showBits(11, fifo, res);
 		code := res[0];
 		val := 11;
-		while (val > 3) do
-			if (res[0] = 1) then
+		while (val > 3 and not valEnd) do
+			if (code = 1) then
 				flushBits(val, fifo); 
-				val := 0;
+				valEnd := true;
 			else
 				code := code >> 1;
 				val := val - 1;
 			end
 		end
 	
-		if val = 0 then
+		if valEnd then
 			res[0] := val + 1; 
 		else
 			flushBits(dc_lum_tab[code][1], fifo); 
@@ -462,10 +490,47 @@ actor Algo_SynP()
 	
 	end
 
+	procedure get_dc_size_chrom(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		 						  int(size=32) res[1],String name)
+	var 
+		int code,
+		int val,
+		bool valEnd := false
+	begin
+		showBits(12, fifo, res);
+		code := res[0];
+		val := 12;
+		while (val > 2 and not valEnd) do
+			if (code = 1) then
+				flushBits(val, fifo); 
+				valEnd := true;
+			else
+				code := code >> 1;
+				val := val - 1;
+			end
+		end
+	
+		if valEnd then
+			res[0] := val; 
+		else
+			getBits(2, fifo, res); 
+			res[0] := 3 - res[0];
+		end
+		if DEBUG_PARSER then
+			println("          "+name+" vld : "+res[0]);
+		end
+	
+	end
 
 	read_block.start: action ==>
+	end
+
+	read_block_done: action ==>
+	guard cmp=5
 	do
-		cmp:=0;
+		more_rbsp_data();
+		mb_cnt := mb_cnt + 1;
+		println("****************************** " + mb_cnt + " " + moreDataFlag);
 	end
 
 	read_block_dc: action ==>
@@ -479,12 +544,13 @@ actor Algo_SynP()
 		last:=false;
 		if is_intra then
 			if prev_quant < intra_dc_vlc_thr then
+				println("comp "+ cmp);
 				if cmp < 4  then 
 					get_dc_size_lum( fifo, res,"dc_size                ");
 					dc_size := res[0];
 				else
-					//get_dc_size_chrom( fifo, res,"dc_size                ");
-					//dc_size := res[0];
+					get_dc_size_chrom( fifo, res,"dc_size                ");
+					dc_size := res[0];
 				end
 	      		if dc_size > 0  then 
 	      			get_dc_dif( fifo, res,"dc_dif                ", dc_size);
@@ -511,7 +577,10 @@ actor Algo_SynP()
 	end
 
 	read_block_coeff_done: action ==>
-	guard last	
+	guard last
+	do
+		cmp := cmp + 1;
+		println("block_done "+cmp);
 	end
 
 	procedure get_coeff(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
@@ -520,7 +589,8 @@ actor Algo_SynP()
 		uint cache,
 		uint(size=1) intra = if is_intra then 1 else 0 end,
 		int skip[3] = [1, 1, 2],
-		int mode
+		int mode,
+		int len
 	begin
 		showBits(32, fifo, res);
 		cache := res[0];
@@ -544,10 +614,11 @@ actor Algo_SynP()
 				else
 					run := run +  max_run[intra][if last then 1 else 0 end][level] + 1;
 				end
+				len:= DCT3D[intra][GET_BITS(cache, 12)][0];
 				
-				flushBits(DCT3D[intra][7 + skip[mode] + GET_BITS(cache, 12)][0] + 1, fifo);
+				flushBits(7 + skip[mode] + len + 1, fifo);
 		
-				level := if ((GET_BITS(cache, DCT3D[intra][GET_BITS(cache, 12)][0] + 1) & 1) = 1) then -level else level end;
+				level := if ((GET_BITS(cache, len + 1) & 1) = 1) then -level else level end;
 			else
 		
 				cache := cache << 2;
@@ -648,12 +719,14 @@ actor Algo_SynP()
 		
 		// start MB
 		read_mb (read_mb.start) --> read_block;
+		read_mb (read_mb_done) --> look_for_Sequence_Header;
 		
 		// start block
 		read_block (read_block.start) --> read_block_dc;
+		read_block (read_block_done) --> read_mb;
 		read_block_dc (read_block_dc) --> read_block_coeff;
 		read_block_coeff (read_block_coeff) --> read_block_coeff;
-		read_block_coeff (read_block_coeff_done) --> look_for_Sequence_Header;
+		read_block_coeff (read_block_coeff_done) --> read_block;
 		// undefined
 		undefined	  					( undefined		    				) --> undefined;
 
@@ -662,6 +735,8 @@ actor Algo_SynP()
 	priority
 		look_for > look_for_other_header;
 		read_block_coeff_done > read_block_coeff;
+		read_block_done > read_block;
+		read_mb_done > read_mb;
 	end
 
 end
