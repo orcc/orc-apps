@@ -333,6 +333,7 @@ actor Algo_SynP()
 	 int(size=3) cbpc;
 	 bool is_intra;
 	 bool btype_is_Q;
+	 bool fourmvflag;
 
 
 	procedure get_mcbpc(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
@@ -403,8 +404,9 @@ actor Algo_SynP()
 		if  not not_coded or vop_coding_type = I_VOP then
 			get_mcbpc( fifo, res, "mcbpc                           ");
 			derived_mb_type := res[0] & 7;
-			println(derived_mb_type);
+			
 			cbpc := (res[0] >> 4);
+			fourmvflag := (res[0] = 2);
 			is_intra := (derived_mb_type = 3 || derived_mb_type = 4);
 			btype_is_Q := (derived_mb_type = 1 || derived_mb_type = 4);
 			if (is_intra) then
@@ -579,9 +581,11 @@ actor Algo_SynP()
 		    cmd := cmd | if ac_pred_flag then ACPRED else 0 end;
 			println("INTRA " + cmd);
 		else
-			
+		    ac_coded := (cbp & (1 << (5 - cmp))) != 0;
+		    cmd := INTER | if ac_coded then ACCODED else 0 end;
+			cmd:=((cmd) | (MOTION | if fourmvflag then FOURMV else 0 end));		
+			println("INTER " + cmd);
 		end
-			
 	end
 	
 	read_block_coeff_ac: action ==>
@@ -671,30 +675,37 @@ actor Algo_SynP()
 	guard
 		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3
 	var 
-		uint res[1]
+		int res[1]
 	do
 		get_mv(fifo, res, "horizontal_mv_data            ");
+    	println("mvval " + res[0]);
 		if (fcode <= 1 or (res[0] = 0)) then
+		    println("get_residual_x " + 0);
 		else
 			vld_u_name(  (fcode - 1), fifo, res, "horizontal_mv_residual            ");
+		    println("get_residual_x " + res[0]);
 		end
 		get_mv(fifo, res, "vertical_mv_data            ");
+    	println("mvval " + res[0]);
 		if (fcode <= 1 or (res[0] = 0)) then
+		    println("get_residual_y " + 0);
 		else
 			vld_u_name(  (fcode - 1), fifo, res, "vertical_mv_residual            ");
+		    println("get_residual_y " + res[0]);
 		end
 	end
 	
 	procedure get_mv(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		 						  uint(size=32) res[1],String name)
+		 						  int(size=32) res[1],String name)
 	var
 		int index
 	begin
 		vld_u(  1, fifo, res);
  		
- 		if res[0] =1  then
+ 		if res[0] = 0  then
 			showBits(12, fifo, res);
  			index := res[0];
+ 			println("index " + index);
  			if index >= 512 then
 				index := (index >> 8) - 2;
 				flushBits(TMNMVtab0[index][1], fifo); 
@@ -712,7 +723,7 @@ actor Algo_SynP()
 	 			end
  			end
  		else
- 		
+ 			res[0] := 0;
  		end
  		
 		if DEBUG_PARSER then
@@ -801,7 +812,7 @@ actor Algo_SynP()
 		read_vop_coded (read_vop_coded.uncoded ) --> look_for_Sequence_Header;
 		
 		// start MB
-		read_mb (read_mb.start) --> read_block;
+		read_mb (read_mb.start) --> read_mv;
 		read_mb (read_mb_done) --> look_for_Sequence_Header;
 		
 		// start mv
