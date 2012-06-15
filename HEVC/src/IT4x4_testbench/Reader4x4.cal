@@ -1,0 +1,182 @@
+// Author: Herve Yvique <herve.yviquel@irisa.fr>
+// Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
+// Modified by Jerome Gorin IETR/INSA of Rennes (France)
+
+// Original code: Source.cal actor of the org.ietr.stdio package
+// Modified by Eduardo Juarez, Wei Jianguo and Ren Rong <eduardo.juarez@upm.es> of UPM (Spain) 
+
+package IT4x4_testbench;
+
+
+actor Reader4x4 () ==> 
+                   int(size=16)  Coeff, 
+                   bool          EOF
+                   : 
+
+	bool  	DEBUG_L1 := false; 
+	bool    DEBUG_L2 := false;
+	
+	@native procedure source_init()
+	end
+	@native procedure source_readNBytes(uint(size=8) outTable[NB_BYTE_TO_SEND], uint(size=13) nbByteToRead)
+	end		
+	@native function source_sizeOfFile() --> int(size=32)
+	end	
+	@native procedure source_close()
+	end
+
+	uint(size=13) NB_BYTE_TO_SEND = 32;	// 4x4 TU = 16 16-bit coefficients = 32 bytes 
+
+	uint(size=8)  bytesRead[NB_BYTE_TO_SEND];	
+	uint(size=32) nbByte                      := 0;  				// file size
+	uint(size=32) nbByteLeft                  := 0;
+	uint(size=13) nbByteSent                  := 0;
+	uint(size=32) nbTransformUnit             := 0;  				// number of TU read
+
+	bool          endOfFile  := false;
+	bool          fileClosed := false;
+
+	initialize ==>
+	do
+	  source_init();
+		
+	  if (DEBUG_L1) then
+	    println("Reader4x4 ACTION: initialize");
+	    println("Reader4x4  STATE: ReadInit");
+	    println("-------------------------");
+      end
+	end
+	
+	getFileSize: action ==> 
+	                    EOF:[ endOfFile ]
+	guard
+	  source_sizeOfFile() > 0
+	do
+	  nbByte     := source_sizeOfFile();
+	  nbByteLeft := nbByte;
+	  endOfFile  := (NB_BYTE_TO_SEND > nbByteLeft);
+		
+	  if (DEBUG_L1) then
+	    println("Reader4x4 ACTION: getFileSize");
+		println("Reader4x4  STATE: ReadFile");
+		println("-------------------------");
+	    if (DEBUG_L2) then
+	      println("nbByte     = " + nbByte);
+		  println("nbByteLeft = " + nbByteLeft);
+		  println("endOfFile  = " + endOfFile);			  
+		  println("-------------------------");			  
+		end
+	  end	  
+	end
+	
+	readCoeff: action ==>
+	guard 
+      NB_BYTE_TO_SEND <= nbByteLeft
+	do
+
+	  source_readNBytes(bytesRead, NB_BYTE_TO_SEND);	  
+	  nbByteLeft  := nbByteLeft - NB_BYTE_TO_SEND;	 		  
+	  nbByteSent  := 0;
+	                 	  	  
+	  if (DEBUG_L1) then
+		println("Reader4x4 ACTION: readCoeff");
+		println("Reader4x4  STATE: SendCoeff");
+		println("-------------------------");
+		if (DEBUG_L2) then
+		  println("nbByteLeft      = " + nbByteLeft);				  
+		  println("nbByteSent      = " + nbByteSent);
+		  println("-------------------------");			  
+		end
+	  end	
+	end
+		
+	readEndOfFile: action ==> 
+	guard
+	  (nbByteLeft > 0) and (NB_BYTE_TO_SEND > nbByteLeft) 
+	do
+	  source_readNBytes(bytesRead, nbByteLeft);
+	  nbByteLeft := 0;
+	  // nothing else is done in case less than 32 bytes are found
+		
+	  if (DEBUG_L1) then
+		println("Reader4x4 ACTION: readEndOfFile");
+		println("Reader4x4  STATE: ReadFile");
+		println("-------------------------");
+		if (DEBUG_L2) then
+		  println("nbByteLeft      = " + nbByteLeft);	
+		  println("-------------------------");			  
+		end			
+	  end		
+	end
+
+	closeFile: action ==> 
+	guard
+	  (nbByteLeft = 0) and (fileClosed = false)
+	do			
+	  source_close();
+	  fileClosed := true;		
+        	
+      if (DEBUG_L1) then
+		println("Reader4x4 ACTION: closeFile");
+	    println("Reader4x4  STATE: ReadFile");
+		println("-------------------------");
+	  end		
+	end
+	
+	sendCoeff.launch: action ==> 
+	                         Coeff:[ coeff ]
+	guard
+      (NB_BYTE_TO_SEND > nbByteSent)
+	var
+	  int(size=16) coeff	  
+	do
+	  coeff       := bytesRead[nbByteSent + 1];
+	  coeff       := (coeff << 8) + bytesRead[nbByteSent]; // least significant byte first
+	  nbByteSent  := nbByteSent + 2; 					   // two bytes sent at once
+	  
+      if (DEBUG_L1) then
+        println("Reader4x4 ACTION: sendCoeff.launch");
+        println("Reader4x4  STATE: SendCoeff");
+        println("-------------------------");
+        if (DEBUG_L2) then
+          println("coeff        = " + coeff);			
+          println("nbByteSent   = " + nbByteSent);        
+	      println("-------------------------");          			  
+        end			
+      end  	  
+	end
+
+	sendCoeff.done: action ==>  
+	                       EOF:[ endOfFile ] 
+	guard
+	  (nbByteSent = NB_BYTE_TO_SEND)
+	do
+	  endOfFile       := (nbByteLeft = 0) or (NB_BYTE_TO_SEND > nbByteLeft);	  	
+      nbTransformUnit := nbTransformUnit + 1;	
+	    
+	  if (DEBUG_L1) then
+	    println("Reader4x4 ACTION: sendCoeff.done");
+	    println("Reader4x4  STATE: ReadFile");
+		println("-------------------------");
+		if (DEBUG_L2) then		
+		  println("endOfFile       = " + endOfFile);				  		
+		  println("nbTransformUnit = " + nbTransformUnit);
+		  println("-------------------------");			  				  		  
+		end			
+	  end	    
+	end
+	
+	schedule fsm ReadInit :
+
+	  ReadInit (getFileSize  ) --> ReadFile;
+		
+	  ReadFile (readCoeff     ) --> SendCoeff;
+	  ReadFile (readEndOfFile)  --> ReadFile;
+	  ReadFile (closeFile    )  --> ReadFile;
+		
+	  SendCoeff (sendCoeff.launch ) --> SendCoeff;
+	  SendCoeff (sendCoeff.done   ) --> ReadFile;
+	  			
+	end
+	
+end
