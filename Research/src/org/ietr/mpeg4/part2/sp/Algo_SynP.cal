@@ -11,6 +11,7 @@ import org.sc29.wg11.common.BitstreamReadUtils.*;
 import org.ietr.mpeg4.part2.sp.vldTables.*;
 import org.ietr.mpeg4.part2.sp.ConstantsBtype.*;
 import org.sc29.wg11.mpeg4.part2.Constants.*;
+import org.ietr.mpeg4.part2.sp.vldFunctions.*;
 
 actor Algo_SynP()
 		uint(size=8) BYTE 
@@ -250,10 +251,6 @@ actor Algo_SynP()
 		vld_u_name(  2, fifo, res, "vop_coding_type                           ");
 		vop_coding_type := res[0];
 	end
-
-	int B_VOP                           = 2;
-	int P_VOP                           = 1;
-	int I_VOP                           = 0;
 	
 	read_vop_coding_type.supported : action ==>
 	guard
@@ -340,52 +337,6 @@ actor Algo_SynP()
 	 bool not_coded;
 
 
-	procedure get_mcbpc(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-	 						  int(size=32) res[1],String name)
-	var 
-		int index
-	begin
-	  	if (vop_coding_type = I_VOP) then
-		  	showBits(9, fifo, res);  		
-		
-			index := res[0];
-			index := index >> 3;
-			flushBits(mcbpc_intra_table[index][1], fifo); 
-			
-		
-			res[0] := mcbpc_intra_table[index][0];
-		
-			if DEBUG_PARSER then
-				println("          "+name+" vld : "+res[0]);
-			end
-		else
-			showBits(9, fifo, res);
-			index := if res[0] < 256 then res[0] else 256 end;
-			flushBits(mcbpc_inter_table[index][1], fifo); 
-			res[0] := mcbpc_inter_table[index][0];
-			if DEBUG_PARSER then
-				println("          "+name+" vld : "+res[0]);
-			end
-		end
-	end
-	
-	procedure get_cbpy(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-	 						  int(size=32) res[1],String name, bool intra)
-	var 
-		int index
-	begin
-		showBits(6, fifo, res);
-		index := res[0];
-		flushBits(cbpy_table[index][1], fifo); 
-		res[0] := cbpy_table[index][0];
-
-		if (not intra) then
-			res[0] := 15 - res[0];
-		end
-		if DEBUG_PARSER then
-			println("          "+name+" vld : "+res[0]);
-		end
-	end
 	
 	int(size=3) dquant_table[4] = [ -1, -2, 1, 2 ];
 	int(size=7) cbp;
@@ -397,7 +348,7 @@ actor Algo_SynP()
 	var
 		int(size=32) res[1]
 	do
-		cmp:=0;
+		comp:=0;
 		if (vop_coding_type != I_VOP) then
 			vld_u_name(  1, fifo, res, "not_coded                           ");
 			not_coded := res[0] = 1;
@@ -405,7 +356,7 @@ actor Algo_SynP()
 			not_coded := false;
 		end
 		if  not not_coded or vop_coding_type = I_VOP then
-			get_mcbpc( fifo, res, "mcbpc                           ");
+			get_mcbpc( fifo, res, "mcbpc                           ", vop_coding_type);
 			derived_mb_type := res[0] & 7;
 			
 			cbpc := (res[0] >> 4);
@@ -443,101 +394,17 @@ actor Algo_SynP()
 	/**************************************************************************
 	 * Block
 	 *************************************************************************/
-	int (size=4) cmp;
+	int (size=4) comp;
 	bool last;
 	int(size=8) run;
 	int(size=8) level;
+    bool ac_coded;
 	
-	int(size=3) dc_lum_tab[8][2] :=[	[0, 0], [4, 3], [3, 3], [0, 3],
-		[2, 2], [2, 2], [1, 2], [1, 2]
-	];
-	
-	procedure get_dc_dif(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		 						  int(size=32) res[1],String name, int(size=16) dc_size)
-	var
-		int msb
-	begin
-		vld_u(  dc_size, fifo, res);
-		msb := res[0] >> (dc_size - 1);
-	
-		if (msb = 0) then
-			res[0] := -1 * (res[0] ^ ((1 << dc_size) - 1));
-		end
-		if DEBUG_PARSER then
-			println("          "+name+" vld : "+res[0]);
-		end
-	end
-	
-
-	procedure get_dc_size_lum(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		 						  int(size=32) res[1],String name)
-	var 
-		int code,
-		int val,
-		bool valEnd := false
-	begin
-		showBits(11, fifo, res);
-		code := res[0];
-		val := 11;
-		while (val > 3 and not valEnd) do
-			if (code = 1) then
-				flushBits(val, fifo); 
-				valEnd := true;
-			else
-				code := code >> 1;
-				val := val - 1;
-			end
-		end
-	
-		if valEnd then
-			res[0] := val + 1; 
-		else
-			flushBits(dc_lum_tab[code][1], fifo); 
-			res[0] := dc_lum_tab[code][0];
-		end
-		if DEBUG_PARSER then
-			println("          "+name+" vld : "+res[0]);
-		end
-	
-	end
-
-	procedure get_dc_size_chrom(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		 						  int(size=32) res[1],String name)
-	var 
-		int code,
-		int val,
-		bool valEnd := false
-	begin
-		showBits(12, fifo, res);
-		code := res[0];
-		val := 12;
-		while (val > 2 and not valEnd) do
-			if (code = 1) then
-				flushBits(val, fifo); 
-				valEnd := true;
-			else
-				code := code >> 1;
-				val := val - 1;
-			end
-		end
-	
-		if valEnd then
-			res[0] := val; 
-		else
-			getBits(2, fifo, res); 
-			res[0] := 3 - res[0];
-		end
-		if DEBUG_PARSER then
-			println("          "+name+" vld : "+res[0]);
-		end
-	
-	end
-
 	read_block.start: action ==>
 	end
 
 	read_block_done: action ==>
-	guard cmp=6
+	guard comp=6
 	do
 		mb_cnt := mb_cnt + 1;
 	end
@@ -549,12 +416,11 @@ actor Algo_SynP()
 		int(size=32) res[1],
 		int dc_size,
 		int dc_dif,
-	    int(size=BTYPE_SZ) cmd,
-	    bool ac_coded
+	    int(size=BTYPE_SZ) cmd
 	do
 		last:=false;
 		if prev_quant < intra_dc_vlc_thr then
-			if cmp < 4  then 
+			if comp < 4  then 
 				get_dc_size_lum( fifo, res,"dc_size                ");
 				dc_size := res[0];
 			else
@@ -571,7 +437,7 @@ actor Algo_SynP()
 				vld_u_name(  1, fifo, res, "marker_bit                           ");
   			end
 		end
-	    ac_coded := (cbp & (1 << (5 - cmp))) != 0;
+	    ac_coded := (cbp & (1 << (5 - comp))) != 0;
 	    cmd := INTRA | if ac_coded then ACCODED else 0 end;
 	    cmd := cmd | if ac_pred_flag then ACPRED else 0 end;
 		if DEBUG_PARSER then
@@ -583,23 +449,22 @@ actor Algo_SynP()
 	guard 
 		not is_intra
 	var
-		int(size=BTYPE_SZ) cmd,
-	    bool ac_coded
+		int(size=BTYPE_SZ) cmd
 	do
 		last:=false;
-	    ac_coded := (cbp & (1 << (5 - cmp))) != 0;
+	    ac_coded := (cbp & (1 << (5 - comp))) != 0;
 	    cmd := INTER | if ac_coded then ACCODED else 0 end;
 		cmd:=((cmd) | (MOTION | if fourmvflag then FOURMV else 0 end));	
 	end
 
 	read_block_coeff_ac: action ==>
 	guard
- 	   (cbp & (1 << (5 - cmp))) != 0
+ 	   ac_coded
 	end
 
 	read_block_coeff_noac: action ==>
 	do
-		cmp := cmp + 1;
+		comp := comp + 1;
 	end
 
 	function GET_BITS(uint cache, int n) --> uint : ((cache)>>(32-(n))) end
@@ -616,7 +481,7 @@ actor Algo_SynP()
 	read_block_coeff_done: action ==>
 	guard last
 	do
-		cmp := cmp + 1;
+		comp := comp + 1;
 	end
 
 	procedure get_coeff(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
@@ -676,19 +541,22 @@ actor Algo_SynP()
 	/**************************************************************************
 	 * motion vectors
 	 *************************************************************************/
+	uint(size=3) mvcomp;
 	read_uncoded: action  ==> 
 		BTYPE:[[INTER : for int i in 0 ..5 ]] repeat 6, 
 		QP:[[vop_quant : for int i in 0 ..5 ]] repeat 6
 	guard
 		not_coded
 	do
-	    cmp:=6;
+	    comp:=6;
 	    mb_cnt := mb_cnt + 1;
 	end
 
 	read_mv.start: action ==>
 	guard
 		derived_mb_type = 0 or derived_mb_type = 1
+	do 
+		mvcomp:=0;
 	end
 
 	read_mv_data: action ==> MV:[mv] repeat 4
@@ -714,42 +582,14 @@ actor Algo_SynP()
 			vld_u_name(  (fcode - 1), fifo, res, "vertical_mv_residual            ");
 	    	mv[3] := res[0];
 		end
+		mvcomp := mvcomp + 1;
 	end
 	
-	procedure get_mv(int(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		 						  int(size=32) res[1],String name)
-	var
-		int index
-	begin
-		vld_u(  1, fifo, res);
- 		
- 		if res[0] = 0  then
-			showBits(12, fifo, res);
- 			index := res[0];
- 			if index >= 512 then
-				index := (index >> 8) - 2;
-				flushBits(TMNMVtab0[index][1], fifo); 
-				res[0] := TMNMVtab0[index][0];
- 			else 
- 				if index >=128 then
-					index := (index >> 2) - 32;
-					flushBits(TMNMVtab1[index][1], fifo); 
-					res[0] := TMNMVtab1[index][0];
-					
-	 			else
-					index := index - 4;
-					flushBits(TMNMVtab2[index][1], fifo); 
-					res[0] := TMNMVtab2[index][0];
-	 			end
- 			end
- 		else
- 			res[0] := 0;
- 		end
- 		
-		if DEBUG_PARSER then
-			println("          "+name+" vld :" + res[0]);
-		end
-	end
+	read_mv_data_done: action ==>
+	guard
+			mvcomp = 4 or (mvcomp = 1 and not fourmvflag )
+	end	
+	
 
 	/**************************************************************************
 	 * search_start_code
@@ -839,7 +679,8 @@ actor Algo_SynP()
 		read_mv (read_uncoded) --> read_mb;
 		read_mv (read_mv.start) --> read_mv_data;
 		read_mv (read_block.start) --> read_block_dc;
-		read_mv_data (read_mv_data) --> read_block;
+		read_mv_data (read_mv_data) --> read_mv_data;
+		read_mv_data (read_mv_data_done) --> read_block;
 
 		// start block
 		read_block (read_block.start) --> read_block_dc;
@@ -863,6 +704,7 @@ actor Algo_SynP()
 		read_mb_done > read_mb;
 		read_block_coeff_ac > read_block_coeff_noac;
 		read_block_nodc > read_block_dc;
+		read_mv_data_done > read_mv_data;
 	end
 
 end
