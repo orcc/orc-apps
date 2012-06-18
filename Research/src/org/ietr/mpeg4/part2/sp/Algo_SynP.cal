@@ -48,18 +48,16 @@ actor Algo_SynP()
 	var
 		uint(size=4) fifo_idx  =  fifo[FIFO_IDX]
 	do
-		if zeroByte != 3 or b != EPR_VALUE then
-			if b = START_CODE_VALUE and zeroByte = 3 then
-				fifo[fifo_idx]      := b + START_CODE_FLAG;
-			else
-				fifo[fifo_idx]      := b;
-			end
-			fifo[FIFO_CPT_BITS] := fifo[FIFO_CPT_BITS] + 8;
-			if DEBUG_BITSTREAM then
-				println("fifo["+fifo_idx+"] := "+b+" \t "+fifo[FIFO_CPT_BITS]);
-			end
-			fifo[FIFO_IDX]      := (fifo_idx+1) & (FIFO_SIZE-1);
+		if b = START_CODE_VALUE and zeroByte = 3 then
+			fifo[fifo_idx]      := b + START_CODE_FLAG;
+		else
+			fifo[fifo_idx]      := b;
 		end
+		fifo[FIFO_CPT_BITS] := fifo[FIFO_CPT_BITS] + 8;
+		if DEBUG_BITSTREAM then
+			println("fifo["+fifo_idx+"] := "+b+" \t "+fifo[FIFO_CPT_BITS]);
+		end
+		fifo[FIFO_IDX]      := (fifo_idx+1) & (FIFO_SIZE-1);
 		if b = 0 then
 			zeroByte := ((zeroByte << 1) + 1) & 0x3;
 		else
@@ -99,7 +97,6 @@ actor Algo_SynP()
 
 	look_for.vol: action ==>
 	guard
-		fifo[FIFO_CPT_BITS] >= (FIFO_SIZE-1)<<3,
 		start_code = VOL_START_CODE
 	do
 		//println("VOL");
@@ -577,6 +574,9 @@ actor Algo_SynP()
 	    ac_coded := (cbp & (1 << (5 - cmp))) != 0;
 	    cmd := INTRA | if ac_coded then ACCODED else 0 end;
 	    cmd := cmd | if ac_pred_flag then ACPRED else 0 end;
+		if DEBUG_PARSER then
+			println("          get_coeff             run : "+ 0+" level : "+ dc_dif+" last : "+ (if not ac_coded then 1 else 0 end));
+		end
 	end
 	
 	read_block_nodc: action ==> BTYPE:[cmd], QP:[vop_quant]
@@ -586,17 +586,18 @@ actor Algo_SynP()
 		int(size=BTYPE_SZ) cmd,
 	    bool ac_coded
 	do
-		    ac_coded := (cbp & (1 << (5 - cmp))) != 0;
-		    cmd := INTER | if ac_coded then ACCODED else 0 end;
-			cmd:=((cmd) | (MOTION | if fourmvflag then FOURMV else 0 end));		
+		last:=false;
+	    ac_coded := (cbp & (1 << (5 - cmp))) != 0;
+	    cmd := INTER | if ac_coded then ACCODED else 0 end;
+		cmd:=((cmd) | (MOTION | if fourmvflag then FOURMV else 0 end));	
 	end
 
 	read_block_coeff_ac: action ==>
+	guard
+ 	   (cbp & (1 << (5 - cmp))) != 0
 	end
 
 	read_block_coeff_noac: action ==>
-	guard
- 	   (cbp & (1 << (5 - cmp))) = 0
 	do
 		cmp := cmp + 1;
 	end
@@ -675,7 +676,9 @@ actor Algo_SynP()
 	/**************************************************************************
 	 * motion vectors
 	 *************************************************************************/
-	read_uncoded: action  ==> BTYPE:[[INTER : for int i in 0 ..5 ]] repeat 6, QP:[[vop_quant : for int i in 0 ..5 ]] repeat 6
+	read_uncoded: action  ==> 
+		BTYPE:[[INTER : for int i in 0 ..5 ]] repeat 6, 
+		QP:[[vop_quant : for int i in 0 ..5 ]] repeat 6
 	guard
 		not_coded
 	do
@@ -723,7 +726,6 @@ actor Algo_SynP()
  		if res[0] = 0  then
 			showBits(12, fifo, res);
  			index := res[0];
- 			println("index " + index);
  			if index >= 512 then
 				index := (index >> 8) - 2;
 				flushBits(TMNMVtab0[index][1], fifo); 
@@ -859,7 +861,7 @@ actor Algo_SynP()
 		read_uncoded > read_mv > read_block;
 		read_block_done > read_block;
 		read_mb_done > read_mb;
-		read_block_coeff_noac > read_block_coeff_ac;
+		read_block_coeff_ac > read_block_coeff_noac;
 		read_block_nodc > read_block_dc;
 	end
 
