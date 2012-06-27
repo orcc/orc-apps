@@ -1,0 +1,248 @@
+/*
+ * Copyright (c) 2012, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/**
+ * This actor generates the poc of the reference lists.
+ *
+ * @input RefPoc : list of poc from the reference picture sets.
+ * 
+ * @input NumRefIdxLXAct : Size of reference list 0 and reference list 1.
+ * 
+ * @input SyntElem : contains the syntax elements from short_term_ref_pic_set.
+ * 
+ * @output RefPicListModif : Indicates if we have to reorder each reference
+ *         list.
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
+
+package interPrediction;
+
+import interPrediction.NaluType.*;
+import std.util.Math.*;
+
+actor GenerateRefList()
+	int (size=16) RefPoc,
+	uint(size=5)  NumRefIdxLXAct,
+	uint(size=4)  RefPicListModif
+		==>
+	int(size=16) RefList
+		:
+
+	uint(size=3)  numListRemain;
+	uint(size=4)  numRefIdxLxAct[2];
+	uint(size=32) iLoop;
+	uint(size=1)  listIdx;
+	int refPicListX[2][16];
+
+	int  numPic[5];
+	int  pocTables[5][8];
+
+	/* Initialization of the reference list. With listIdx we can know if we
+	 * have to generate refList0 or refList1. NumRefIdxLXAct is the size of the
+	 * list
+	 */
+	procedure refListXInit(uint(size=1) listIdx, uint(size=32) numRefIdxLXAct)
+	var
+		uint cIdx,
+		uint numPocTotalCurr,
+		uint numRpsCurrLX,
+		uint firstList,
+		uint secList
+	begin
+		/* The order of the elements is
+		 * ST_CURR_BEF - ST_CURR_AFT - LT_CURR for the RefList0 and
+		 * ST_CURR_AFT - ST_CURR_BEF - LT_CURR for the RefList1
+		 */
+		firstList :=
+			if(listIdx=0) then
+				ST_CURR_BEF
+			else
+				ST_CURR_AFT
+			end;
+		secList :=
+			if(listIdx=0) then
+				ST_CURR_AFT
+			else
+				ST_CURR_BEF
+			end;
+
+		/* even if numRefIdxLXAct is inferior to numPocTotalCurr we fill in
+		 * all the element from the Rps because we might reorder the list. If
+		 * we reorder the list might need a reference picture located after
+		 * numRefIdxLXAct.
+		 */
+		numPocTotalCurr := numPic[ST_CURR_BEF] + numPic[ST_CURR_AFT]
+			+ numPic[LT_CURR];
+		numRpsCurrLX := max(numPocTotalCurr,numRefIdxLXAct);
+		cIdx := 0;
+		while(cIdx < numRpsCurrLX)
+		do
+			foreach int i in 0 .. numPic[firstList]-1
+			do
+				refPicListX[listIdx][cIdx] := pocTables[firstList][i];
+				cIdx := cIdx + 1;
+			end
+			foreach int i in 0 .. numPic[secList]-1
+			do
+				refPicListX[listIdx][cIdx] := pocTables[secList][i];
+				cIdx := cIdx + 1;
+			end
+			foreach int i in 0 .. numPic[LT_CURR]-1
+			do
+				refPicListX[listIdx][cIdx] := pocTables[LT_CURR][i];
+				cIdx := cIdx + 1;
+			end
+		end
+	end
+
+	/* Getting the lists' size */
+	getNumRefIdxLX: action NumRefIdxLXAct:[numRefIdxAct] repeat 2 ==>
+	do
+		//We will get the 5 lists of the reference picture set :
+		// ST_CURR_BEF; ST_CURR_AFT; ST_FOLL; LT_CURR; LT_FOLL
+		numListRemain := 5;
+
+		numRefIdxLxAct[0] := numRefIdxAct[0];
+		numRefIdxLxAct[1] := numRefIdxAct[1];
+	end
+
+	/* Getting the size of one of the Rps list */
+	getSizeList.launch: action RefPoc:[szList] ==>
+	guard
+		numListRemain > 0
+	do
+		numPic[5-numListRemain] := szList;
+		iLoop := 0;
+	end
+
+	/* We got the 5 Rps' list */
+	getSizeList.done: action ==>
+	guard
+		numListRemain = 0
+	do
+		if(numRefIdxLxAct[0] > 0) then
+			refListXInit(0, numRefIdxLxAct[0]);
+		end
+		if(numRefIdxLxAct[1] > 0) then
+			refListXInit(1, numRefIdxLxAct[1]);
+		end
+		listIdx := 0;
+	end
+
+	/*** Getting the content of each Rps' list ***/
+	getRefPocContent.launch: action RefPoc:[pocVal] ==>
+	guard
+		iLoop < numPic[5-numListRemain]
+	do
+		pocTables[5-numListRemain][iLoop] := pocVal;
+		iLoop := iLoop + 1;
+	end
+
+	getRefPocContent.done: action ==>
+	guard
+		iLoop = numPic[5-numListRemain]
+	do
+		numListRemain := numListRemain - 1;
+	end
+
+	getListModif.isFalse: action RefPicListModif:[listModif] ==>
+		RefList:[numRefIdxLxAct[listIdx]]
+	guard
+		listIdx < 2 and listModif = 0
+	do
+		iLoop := 0;
+	end
+
+	/*** RefListX is not modified and we send all the elements ***/
+	sendingUnmodifiedList.launch: action ==>
+		RefList:[refPicListX[listIdx][iLoop-1]]
+	guard
+		iLoop < numRefIdxLxAct[listIdx]
+	do
+		iLoop := iLoop + 1;
+	end
+
+	sendingUnmodifiedList.done: action ==>
+	guard
+		iLoop = numRefIdxLxAct[listIdx]
+	do
+		listIdx := listIdx + 1;
+	end
+
+	/*** RefListX is modified and we send the elements with the index listEntry ***/
+	getListModif.isTrue: action RefPicListModif:[listModif]==>
+		RefList:[numRefIdxLxAct[listIdx]]
+	guard
+		listIdx < 2 and listModif = 1
+	end
+
+	sendingModifiedList.launch: action RefPicListModif:[listEntry] ==>
+		RefList:[refPicListX[listIdx][listEntry]]
+	guard
+		iLoop < numRefIdxLxAct[listIdx]
+	do
+		iLoop := iLoop + 1;
+	end
+
+	sendingModifiedList.done: action ==>
+	guard
+		iLoop = numRefIdxLxAct[listIdx]
+	do
+		listIdx := listIdx + 1;
+	end
+
+	/* The lists have been sent */
+	getListModif.done: action ==>
+	guard
+		listIdx = 2
+	do
+		iLoop := 0;
+	end
+
+	schedule fsm GetNumRefIdxLX:
+		GetNumRefIdxLX (getNumRefIdxLX    )--> GetSizeList;
+		
+		GetSizeList (getSizeList.launch )--> GetRefPocContent;
+		GetSizeList (getSizeList.done   )--> GetListModif;
+
+		GetRefPocContent (getRefPocContent.launch )--> GetRefPocContent;
+		GetRefPocContent (getRefPocContent.done   )--> GetSizeList;
+
+		GetListModif (getListModif.isFalse )--> SendingUnmodifiedList;
+		GetListModif (getListModif.isTrue  )--> SendingModifiedList;
+		GetListModif (getListModif.done    )--> GetNumRefIdxLX;
+
+		SendingUnmodifiedList (sendingUnmodifiedList.launch )--> SendingUnmodifiedList;
+		SendingUnmodifiedList (sendingUnmodifiedList.done   )--> GetListModif;
+
+		SendingModifiedList (sendingModifiedList.launch )--> SendingModifiedList;
+		SendingModifiedList (sendingModifiedList.done   )--> GetListModif;
+	end
+end
