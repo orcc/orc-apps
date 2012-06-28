@@ -26,6 +26,31 @@
  * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+
+/**
+ * This actor is a picture buffer containing all reference pictures. It sends samples needed for the inter prediction
+ * 
+ * @input IsBiPred : Indicates when the current Cu is using Bi-prediction.
+ * 
+ * @input IsReadOrNewSlc : Indicates if samples are asked from the current Rps or if there is a new picture.
+ * 
+ * @input Mv : movement vectors of the current Cu.
+ * 
+ * @input PicSize : size of the current picture.
+ * 
+ * @input Poc : Picture Order Count of the current slice.
+ * 
+ * @output PocRef : Poc used for the prediction of the current Cu.
+ * 
+ * @input PredCuSize : Size of the largest side of the current Cu.
+ * 
+ * @input Sample : Samples from the Inloop filter. It represents the pixels which will be displayed.
+ * 
+ * @output Sample : Samples needed for the inter prediction.
+ * 
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
 package interPrediction;
 
 import std.util.Math.*;
@@ -64,6 +89,7 @@ actor DecodingPictureBuffer ()
 	bool          isNewPicture;
 	uint(size=8)  RefCu[(64+7)*(64+7)+(32+3)*(32+3)*2];
 
+	/** Getting informations from new slice/picture. Updating these informations **/
 	isNewSlice: action IsReadOrNewSlc:[isRead], Poc:[poc] ==>
 	guard
 		/* Fix me : We should know when there is a new picture */
@@ -74,7 +100,8 @@ actor DecodingPictureBuffer ()
 		isStillRef := [false: for int i in 0 .. 6];
 	end
 
-	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix, picHeightInPix], Poc:[poc] ==>
+	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
+		picHeightInPix], Poc:[poc] ==>
 	guard
 		isRead = 0 and not(currIdx != -1 and poc = pocRef[currIdx])
 	do
@@ -97,6 +124,9 @@ actor DecodingPictureBuffer ()
 		isStillRef := [false: for int i in 0 .. 6];
 	end
 
+	/** We get all the references from the 5 lists of the Rps
+	 * (StCurrentBefore, StCurrentAfter, StFollowing, LtCurrent, LtFollowing)
+	 **/
 	getRps.launch: action RpsPoc:[numPic]==>
 	guard
 		nbList < 5
@@ -108,6 +138,9 @@ actor DecodingPictureBuffer ()
 	guard
 		nbList = 5
 	do
+		/* We remove from the Dpb all the pictures who are not in the Rps of
+		 * the current picture
+		 */
 		foreach int i in 0 .. 6
 		do
 			isRef[i] := isRef[i] and isStillRef[i];
@@ -115,6 +148,9 @@ actor DecodingPictureBuffer ()
 		isRef[currIdx] := true;
 	end
 
+	/** For each we check the index of the reference poc
+	 * (in order to not remove them from the Dpb).
+	 **/
 	getRpsPoc.launch: action RpsPoc:[pocVal] ==>
 	guard
 		sizeOfList > 0
@@ -135,12 +171,16 @@ actor DecodingPictureBuffer ()
 		nbList := nbList + 1;
 	end
 
+	/* We get the whole Cu decoded (luma and chroma components) and we save
+	 * it in the Dpb (pictureBuffer).
+	 */
 	getCuPix.launch: action Sample:[samp] repeat 64*64 + 32*32*2==>
 	guard
 		yIdx < picSizeInCu[1]
 	var
 		uint(size=16) xPixIdx,
-		uint(size=16) yPixIdx
+		uint(size=16) yPixIdx,
+		uint tokenOffset
 	do
 		xPixIdx := BORDER_SIZE + xIdx*64;
 		yPixIdx := BORDER_SIZE + yIdx*64;
@@ -156,12 +196,13 @@ actor DecodingPictureBuffer ()
 		yPixIdx := (BORDER_SIZE + yIdx*64)>>1;
 		foreach uint component in 1 .. 2
 		do
+			tokenOffset:= 64*64 + 32*32*(component-1);
 			foreach uint y in 0 .. 32
 			do
 				foreach uint x in 0 .. 32
 				do
 					pictureBuffer[currIdx][component][xPixIdx+x][yPixIdx+y] :=
-						samp[x+y*32 + 64*64 + 32*32*(component-1)];
+						samp[x+y*32 + tokenOffset];
 				end
 			end
 		end
@@ -173,6 +214,9 @@ actor DecodingPictureBuffer ()
 		end
 	end
 
+	/* When we get the picture we add the border (in order to be able to give a
+	 * reference pixels which can be outside of the picture).
+	 */
 	getCuPix.done: action ==>
 	guard
 		yIdx = picSizeInCu[1]
@@ -180,7 +224,7 @@ actor DecodingPictureBuffer ()
 		uint xSize := picSize[0],
 		uint ySize := picSize[1]
 	do
-		/* Fill in luma borders */
+		/* Fill in luma border */
 		foreach uint x in BORDER_SIZE .. xSize-1 + BORDER_SIZE
 		do
 			foreach uint y in 0 .. BORDER_SIZE - 1
@@ -202,7 +246,7 @@ actor DecodingPictureBuffer ()
 			end
 		end
 
-		/* Fill in chroma borders */
+		/* Fill in chroma border */
 		foreach uint comp in 1 .. 2
 		do
 			foreach uint x in BORDER_SIZE/2 .. xSize/2-1 + BORDER_SIZE/2
@@ -240,42 +284,62 @@ actor DecodingPictureBuffer ()
 			end;
 	end
 
-	getMvInfo.launch: action PocRef:[poc], PredCuSize:[predCuSize], Mv:[mvX, mvY] ==>
+	/* We get all the informations needed for sending the reference Cu. We save
+	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
+	 */
+	getMvInfo.launch: action PocRef:[poc], PredCuSize:[predCuSize],
+		Mv:[mvX, mvY] ==>
 	guard
 		numPocRef != 0
 	var
 		uint(size=3) idx := 0,
 		uint(size=16) xOffset,
-		uint(size=16) yOffset,
-		uint(size=16) sideMaxTemp //delete me!!!
+		uint(size=16) yOffset
 	do
 		sideMax := predCuSize;
-		sideMaxTemp := max(sideMax,4);
 		foreach uint i in 0 .. 6
 		do
 			if(pocRef[i] = poc and isRef[i]) then
 				idx := i;
 			end
 		end
+		/* The mv components correspond to the absolute movement vector, that's
+		 * why we don't need to add the address of the current Cu
+		 */
+
+		/* We remove 3 for each coordinate component, because for the luma
+		 * prediction we need the 3 previous pixels
+		 */
 		xOffset := (mvX >> 2) +BORDER_SIZE-3;
 		yOffset := (mvY >> 2) +BORDER_SIZE-3;
+		/* We also need the 2 next pixels for the prediction, that's why we
+		 * add 7 to sideMax
+		 */
 		foreach int y in 0 .. sideMax+7 -1
 		do
 			foreach int x in 0 .. sideMax+7 -1
 			do
-				RefCu[x+y*(sideMaxTemp+7)] := pictureBuffer[idx][0][x+xOffset][y+yOffset];
+				RefCu[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
+					[y+yOffset];
 			end
 		end
+
+		/* We remove 1 for each coordinate component, because for the chroma
+		 * prediction we need the previous pixel
+		 */
 		xOffset := (mvX >> 3) +BORDER_SIZE/2-1;
 		yOffset := (mvY >> 3) +BORDER_SIZE/2-1;
+		/* We also need the 2 next pixels for the prediction, that's why we
+		 * add 3 to sideMax
+		 */
 		foreach int comp in 1 .. 2
 		do
 			foreach int y in 0 .. sideMax/2+3 -1
 			do
 				foreach int x in 0 .. sideMax/2+3 -1
 				do
-					RefCu[x+y*(sideMaxTemp/2+3) + (sideMaxTemp+7)*(sideMaxTemp+7)
-						+ (comp-1)*(sideMaxTemp/2+3)*(sideMaxTemp/2+3)]
+					RefCu[x+y*(sideMax/2+3) + (sideMax+7)*(sideMax+7) +
+						(comp-1)*(sideMax/2+3)*(sideMax/2+3)]
 						:= pictureBuffer[idx][comp][x+xOffset][y+yOffset];
 				end
 			end
@@ -283,17 +347,21 @@ actor DecodingPictureBuffer ()
 		numPocRef := numPocRef - 1;
 	end
 
-	sendCu.is64x64: action ==> RefSample:[RefCu] repeat (64+7)*(64+7)+(32+3)*(32+3)*2
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.is64x64: action ==> RefSample:[RefCu] repeat (64+7)*(64+7)+
+		(32+3)*(32+3)*2
 	guard
 		sideMax = 64
 	end
 
-	sendCu.is32x32: action ==> RefSample:[RefCu] repeat (32+7)*(32+7)+(16+3)*(16+3)*2
+	sendCu.is32x32: action ==> RefSample:[RefCu] repeat (32+7)*(32+7)+
+		(16+3)*(16+3)*2
 	guard
 		sideMax = 32
 	end
 
-	sendCu.is16x16: action ==> RefSample:[RefCu] repeat (16+7)*(16+7)+(8+3)*(8+3)*2
+	sendCu.is16x16: action ==> RefSample:[RefCu] repeat (16+7)*(16+7)+
+		(8+3)*(8+3)*2
 	guard
 		sideMax = 16
 	end
