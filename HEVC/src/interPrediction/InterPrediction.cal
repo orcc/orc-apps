@@ -110,6 +110,9 @@ actor InterPrediction()
 	uint(size=2)  numList;
 	int(size=32)  pixVal;
 	uint(size=7)  predCuSize;
+	int logWDTab[8][8][3];
+	int weightCuTab[8][8][3][2];
+	int offsetCuTab[8][8][3][2];
 
 	int(size=16) refSamples[3][64+7][64+7];
 	int(size=16) predSamples[3][64][64];
@@ -143,13 +146,11 @@ int(size=8) interPredCoeff[3][8][8] =
 	[-2, 16, 54, -4],
 	[-2, 10, 58, -2]]
 ];
-	/* We can compute all the cases at the begining of the slice
-	 * It will avoid to compute couple of times the same weights.
-	 */
+
 	/* Computing the weighted prediction coefficients (logWd, w0, w1, o0, o1),
 	 * according to the picture(s) used for the prediction.
 	 */
-	procedure computeWeights()
+	procedure computeWeights(int refIdxL0, int refIdxL1)
 	var
 		int(size=16) pocL0,
 		int(size=16) pocL1,
@@ -158,19 +159,20 @@ int(size=8) interPredCoeff[3][8][8] =
 		int          tx,
 		int          weightScalFact,
 		int          w0,
-		int          w1
+		int          w1,
+		uint(size=3) idxL0 = (refIdxL0+1)&7,
+		uint(size=3) idxL1 = (refIdxL1+1)&7
 	begin
-	
 		/*Implicit weighted prediction : we compute the weights thanks the the
 		 * poc value of the reference pictures
 		 */
 		if(wpIdc = 2) then
-			if(refIdxLx[0] >=0 && refIdxLx[1] >= 0) then
-				if(refIdxLx[0]>=0 && refIdxLx[0]<6) then
-					pocL0 := refListX[0][refIdxLx[0]];
+			if(refIdxL0 >=0 && refIdxL1 >= 0) then
+				if(refIdxL0>=0) then
+					pocL0 := refListX[0][refIdxL0];
 				end
-				if(refIdxLx[1]>=0 && refIdxLx[1]<6) then
-					pocL1 := refListX[1][refIdxLx[1]];
+				if(refIdxL1>=0) then
+					pocL1 := refListX[1][refIdxL1];
 				end
 				tb := clip_i32(currPoc- pocL0, -128, 127);
 				td := clip_i32(pocL1-pocL0, -128, 127);
@@ -188,20 +190,20 @@ int(size=8) interPredCoeff[3][8][8] =
 				end
 				foreach int component in 0 .. 2
 				do
-					logWD[component] := 5+shift1;
-					offsetCu[component][0] := 0;
-					offsetCu[component][1] := 0;
-					weightCu[component][0] := w0;
-					weightCu[component][1] := w1;
+					logWDTab[idxL0][idxL1][component] := 5+shift1;
+					offsetCuTab[idxL0][idxL1][component][0] := 0;
+					offsetCuTab[idxL0][idxL1][component][1] := 0;
+					weightCuTab[idxL0][idxL1][component][0] := w0;
+					weightCuTab[idxL0][idxL1][component][1] := w1;
 				end
 			else
 				foreach int component in 0 .. 2
 				do
-					logWD[component] := shift1;
-					offsetCu[component][0] := 0;
-					offsetCu[component][1] := 0;
-					weightCu[component][0] := 1;
-					weightCu[component][1] := 1;
+					logWDTab[idxL0][idxL1][component] := shift1;
+					offsetCuTab[idxL0][idxL1][component][0] := 0;
+					offsetCuTab[idxL0][idxL1][component][1] := 0;
+					weightCuTab[idxL0][idxL1][component][0] := 1;
+					weightCuTab[idxL0][idxL1][component][1] := 1;
 				end
 			end
 		/*Explicit weighted prediction : we get the coefficients thanks to the
@@ -210,14 +212,14 @@ int(size=8) interPredCoeff[3][8][8] =
 		else if (wpIdc = 1) then
 			foreach int component in 0 .. 2
 			do
-				logWD[component] := log2WeightDenom[component] + shift1;
-				if(refIdxLx[0] >=0) then
-					weightCu[component][0] := weight[refIdxLx[0]][0][component];
-					offsetCu[component][0] := offset[refIdxLx[0]][0][component];
+				logWDTab[idxL0][idxL1][component] := log2WeightDenom[component] + shift1;
+				if(refIdxL0 >=0) then
+					weightCuTab[idxL0][idxL1][component][0] := weight[refIdxL0][0][component];
+					offsetCuTab[idxL0][idxL1][component][0] := offset[refIdxL0][0][component];
 				end
-				if(refIdxLx[1] >=0) then
-					weightCu[component][1] := weight[refIdxLx[1]][1][component];
-					offsetCu[component][1] := offset[refIdxLx[1]][1][component];
+				if(refIdxL1 >=0) then
+					weightCuTab[idxL0][idxL1][component][1] := weight[refIdxL1][1][component];
+					offsetCuTab[idxL0][idxL1][component][1] := offset[refIdxL1][1][component];
 				end
 			end
 		end end
@@ -464,6 +466,16 @@ int(size=8) interPredCoeff[3][8][8] =
 	getWeightDenom.skip: action ==>
 	guard
 		wpIdc != 1
+	do
+		if(wpIdc = 2) then
+			foreach int idxL0 in -1 .. numRefIdxLxAct[0]-1
+			do
+				foreach int idxL1 in -1 .. numRefIdxLxAct[1]-1
+				do
+					computeWeights(idxL0, idxL1);
+				end
+			end
+		end
 	end
 
 	getWeightLX.launch: action ==>
@@ -494,6 +506,14 @@ int(size=8) interPredCoeff[3][8][8] =
 	getWeightLX.done: action ==>
 	guard
 		listIdx = 2
+	do
+		foreach int idxL0 in -1 .. numRefIdxLxAct[0]-1
+		do
+			foreach int idxL1 in -1 .. numRefIdxLxAct[1]-1
+			do
+				computeWeights(idxL0, idxL1);
+			end
+		end
 	end
 
 	getLumaWeightLX.launch: action WeightedPredSe:[lumWeightFlag] ==>
@@ -585,19 +605,31 @@ int(size=8) interPredCoeff[3][8][8] =
 	getRefIdx.monoPred: action RefIdx:[refIndexLx], Mv:[mv] repeat 2 ==>
 	guard
 		isBiPredOrLx != BI_PRED
+	var
+		uint idxL0,
+		uint idxL1
 	do
 		if(isBiPredOrLx = PRED_L0) then
 			mvLx[0] := [mv[i]:for int i in 0 .. 1];
 			mvLx[1] := [0,0];
-			refIdxLx := [refIndexLx, -1];
-			computeWeights();
+			refIdxLx := [refIndexLx&7, -1];
 			listIdx := 0;
 		else
 			mvLx[1] := [mv[i]:for int i in 0 .. 1];
 			mvLx[0] := [0,0];
-			refIdxLx := [-1, refIndexLx];
-			computeWeights();
+			refIdxLx := [-1, refIndexLx&7];
 			listIdx := 1;
+		end
+		idxL0 := (refIdxLx[0]+1)&7;
+		idxL1 := (refIdxLx[1]+1)&7;
+		foreach int component in 0 .. 2
+		do
+			logWD[component] := logWDTab[idxL0][idxL1][component];
+			foreach int list in 0 .. 1
+			do
+				weightCu[component][list] := weightCuTab[idxL0][idxL1][component][list];
+				offsetCu[component][list] := offsetCuTab[idxL0][idxL1][component][list];
+			end
 		end
 		numList := 1;
 	end
@@ -605,10 +637,23 @@ int(size=8) interPredCoeff[3][8][8] =
 	getRefIdx.biPred: action RefIdx:[refIndexLx] repeat 2, Mv:[mv] repeat 4 ==>
 	guard
 		isBiPredOrLx = BI_PRED
+	var
+		uint idxL0,
+		uint idxL1
 	do
 		mvLx := [[mv[2*i+j]:for uint j in 0 ..1]: for int i in 0 .. 1];
 		refIdxLx := [refIndexLx[i]: for uint i in 0 .. 1];
-		computeWeights();
+		idxL0 := (refIdxLx[0]+1)&7;
+		idxL1 := (refIdxLx[1]+1)&7;
+		foreach int component in 0 .. 2
+		do
+			logWD[component] := logWDTab[idxL0][idxL1][component];
+			foreach int list in 0 .. 1
+			do
+				weightCu[component][list] := weightCuTab[idxL0][idxL1][component][list];
+				offsetCu[component][list] := offsetCuTab[idxL0][idxL1][component][list];
+			end
+		end
 		listIdx := 0;
 		numList :=
 			/* If we have the same picture with the same movement vectors we 
@@ -743,7 +788,7 @@ int(size=8) interPredCoeff[3][8][8] =
 		currComponent := 0;
 	end
 
-	/* Sending all pixel predicted. All Cus have got M x 16 pix */
+	/* Sending all pixel predicted. All Cus have got M x 16 pix. */
 	sendCu.launch: action ==> PredSample:[pix] repeat 16
 	guard
 		currComponent < 3
@@ -799,21 +844,21 @@ int(size=8) interPredCoeff[3][8][8] =
 
 		GetDeltaChrWtLX (getDeltaChromaWeight   )--> GetLumaWeightLX;
 
-		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
-		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
+		GetCuInfo (getCuInfo.launch )--> GetCuMode;
+		GetCuInfo (getCuInfo.done   )--> GetPartMode;
 
-		GetCuMode  (getCuMode.isIntra    )--> GetCuInfo;
-		GetCuMode  (getCuMode.isNotIntra )--> GetRefIdx;
+		GetCuMode (getCuMode.isIntra    )--> GetCuInfo;
+		GetCuMode (getCuMode.isNotIntra )--> GetRefIdx;
 
-		GetRefIdx  (getRefIdx            )--> GetSamples;
+		GetRefIdx (getRefIdx )--> GetSamples;
 
-		GetSamples (getSamples.launch    )--> InterpolateSamples;
-		GetSamples (getSamples.done      )--> SendCu;
+		GetSamples (getSamples.launch )--> InterpolateSamples;
+		GetSamples (getSamples.done   )--> SendCu;
 
 		InterpolateSamples (interpolateSamples )--> GetSamples;
 
-		SendCu     (sendCu.launch        )--> SendCu;
-		SendCu     (sendCu.done          )--> GetCuInfo;
+		SendCu (sendCu.launch )--> SendCu;
+		SendCu (sendCu.done   )--> GetCuInfo;
 	end
 	priority
 		getWeightLX.launch > getWeightLX.skip >getWeightLX.done;
