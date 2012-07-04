@@ -2070,11 +2070,11 @@ actor Algo_Parser ()
 	do
 		println("read_PCMSample");
 		foreach int i  in 0 .. 1 << ( PCMSample_log2CbSize << 1 ) do
-			vld_u_name(  1, fifo, res, "pcm_sample_luma["+i+"]                      ");
+			vld_u_name(  1, fifo, res, "pcm_sample_luma[i]                      ");
 			//pcm_sample_luma[ i ];
 		end
 		foreach int i  in 0 .. 1 << ( PCMSample_log2CbSize << 1 ) do
-			vld_u_name(  1, fifo, res, "pcm_sample_chroma["+i+"]                    ");
+			vld_u_name(  1, fifo, res, "pcm_sample_chroma[i]                    ");
 			//pcm_sample_chroma[ i ]
 		end
 		NumPCMBlock := NumPCMBlock - 1;
@@ -2085,11 +2085,11 @@ actor Algo_Parser ()
 	do
 		println("read_PCMSample2");
 		foreach int i  in 0 .. 1 << ( PCMSample_log2CbSize << 1 ) do
-			vld_u_name(  1, fifo, res, "pcm_sample_luma["+i+"]                      ");
+			vld_u_name(  1, fifo, res, "pcm_sample_luma[i]                      ");
 			//pcm_sample_luma[ i ];
 		end
 		foreach int i  in 0 .. 1 << ( PCMSample_log2CbSize << 1 ) do
-			vld_u_name(  1, fifo, res, "pcm_sample_chroma["+i+"]                    ");
+			vld_u_name(  1, fifo, res, "pcm_sample_chroma[i]                    ");
 			//pcm_sample_chroma[ i ]
 		end
 		NumPCMBlock := NumPCMBlock - 1;
@@ -2150,26 +2150,36 @@ actor Algo_Parser ()
 		ttStack[ttStack_idx][TT_idx] = 1
 	var
 		uint(size= 8) x0L				= ttStack[ttStack_idx][TT_x0L],
-		uint(size= 8) y0L				= ttStack[ttStack_idx][TT_x0L],
+		uint(size= 8) y0L				= ttStack[ttStack_idx][TT_y0L],
 		uint(size= 8) x0C				= ttStack[ttStack_idx][TT_x0C],
-		uint(size= 8) y0C				= ttStack[ttStack_idx][TT_x0C],
+		uint(size= 8) y0C				= ttStack[ttStack_idx][TT_y0C],
 		uint(size= 8) log2TrafoWidth	= ttStack[ttStack_idx][TT_log2TrafoWidth],
 		uint(size= 8) log2TrafoHeight	= ttStack[ttStack_idx][TT_log2TrafoHeight],
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
+		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode = PART_2Nx2N and trafoDepth = 0 then 1 else 0 end,
 		uint(size= 8) log2TrafoSize    = ( log2TrafoWidth + log2TrafoHeight ) >> 1,
 		uint(size= 8) xBase,
 		uint(size= 8) yBase,
 		uint(size=3)  interTbSplitDirectionL,
 		uint(size=3)  interTbSplitDirectionC
-	do
-		println("read_TransformTree.start ");
+	do	
+		println("read_TransformTree.start "+x0L+" "+y0L+" "+x0C+" "+y0C+" "+
+			ttStack[ttStack_idx][TT_xBase]+" "+
+			ttStack[ttStack_idx][TT_yBase]+" "+
+			//ttStack[ttStack_idx][TT_log2CbSize]+" "+
+			log2TrafoWidth+" "+log2TrafoHeight+" "+trafoDepth+" "+
+			ttStack[ttStack_idx][TT_blkIdx]
+		);
 		ttStack[ttStack_idx][TT_idx] := 7;
+		split_transform_flag[ x0L ][ y0L ][ trafoDepth ] := 0;
 		if( log2TrafoSize <= Log2MaxTrafoSize and log2TrafoSize > Log2MinTrafoSize and
 			trafoDepth < MaxTrafoDepth and not(IntraSplitFlag = 1 and trafoDepth = 0) ) then
 			get_SPLIT_TRANSFORM_FLAG(codIRange, codIOffset, ctxTable, fifo, res, 1 /*ct_cbDepth + trafoDepth*/ );
-			split_transform_flag[ x0L ][ y0L ][ trafoDepth ] := res[0];				
+			split_transform_flag[ x0L ][ y0L ][ trafoDepth ] := res[0];
+		elsif log2TrafoSize > Log2MaxTrafoSize or (IntraSplitFlag = 1 and trafoDepth = 0) or InterSplitFlag = 1 then
+			split_transform_flag[ x0L ][ y0L ][ trafoDepth ] := 1;					
 		end
 		if( trafoDepth = 0 or log2TrafoSize > 2 ) then
 			if( trafoDepth = 0 or cbf_cb[ xBase ][ yBase ][ trafoDepth - 1 ] = 1 ) then
@@ -2223,14 +2233,14 @@ actor Algo_Parser ()
 				ttStack[ttStack_idx][TT_y3C] := ttStack[ttStack_idx][TT_y0C];
 			end
 			if interTbSplitDirectionL != 2 then
-				ttStack[ttStack_idx][TT_log2TrafoWidth]  := log2TrafoWidth  - 2 * interTbSplitDirectionL + 1;
-				ttStack[ttStack_idx][TT_log2TrafoHeight] := log2TrafoHeight + 2 * interTbSplitDirectionL - 1;
+				ttStack[ttStack_idx][TT_log2TrafoWidth]  := log2TrafoWidth  - (interTbSplitDirectionL << 1) + 1;
+				ttStack[ttStack_idx][TT_log2TrafoHeight] := log2TrafoHeight + (interTbSplitDirectionL << 1) - 1;
 			end
 			ttStack[ttStack_idx][TT_idx] := 2;
 		else
 			if predMode = MODE_INTRA or trafoDepth != 0 or
 				cbf_cb[ x0C ][ y0C ][ trafoDepth ] = 1 or cbf_cr[ x0C ][ y0C ][ trafoDepth ] = 1 then
-				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
+				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth, log2TrafoSize, Log2MaxTrafoSize);
 				cbf_luma[ x0L ][ y0L ][ trafoDepth ] := res[0];
 			end
 			ttStack[ttStack_idx][TT_idx] := 6;
@@ -2381,6 +2391,7 @@ actor Algo_Parser ()
 				rc_log2TrafoHeight	:= tu_log2TrafoHeight;
 				rc_scanIdx			:= tu_scanIdx;
 				rc_cIdx				:= 0;
+				rc_TType			:= TEXT_LUMA;
 			end
 		end
 	end
@@ -2397,6 +2408,7 @@ actor Algo_Parser ()
 		rc_y0 				:= tu_y0C;
 		rc_scanIdx			:= tu_scanIdxC;
 		rc_cIdx				:= 1;
+		rc_TType			:= TEXT_CHROMA_U;						
 		if tu_log2TrafoSize > 2 then
 			tu_idx := 5;
 			if cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
@@ -2420,9 +2432,10 @@ actor Algo_Parser ()
 	guard 
 		tu_idx = 5
 	do	
-		tu_idx	:= 7;
-		rc_idx 	:= 1;
-		rc_cIdx	:= 2;
+		tu_idx	 := 7;
+		rc_idx 	 := 1;
+		rc_cIdx	 := 2;
+		rc_TType := TEXT_CHROMA_V;						
 		if tu_log2TrafoSize > 2 then
 			if cbf_cr[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
 				tu_idx := 6;
@@ -2457,7 +2470,6 @@ actor Algo_Parser ()
 	 ********        Residual Coding                      *********************
 	 **************************************************************************
 	 *************************************************************************/
-
 	uint(size= 8) rc_idx;
 	uint(size= 8) rc_x0;
 	uint(size= 8) rc_y0;
@@ -2465,9 +2477,10 @@ actor Algo_Parser ()
 	uint(size= 8) rc_log2TrafoHeight;
 	uint(size= 8) rc_scanIdx;
 	uint(size= 8) rc_cIdx;
+	uint(size= 4) rc_TType;
 	//
-	uint(size= 8) DiagScan[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
-	uint(size= 8) ScanOrder[3][BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
+	uint(size= 8) DiagScan[BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
+	uint(size= 8) ScanOrder[3][BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
 	uint(size= 1) significant_coeff_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
 	uint(size= 1) significant_coeff_group_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
 	
@@ -2485,10 +2498,16 @@ actor Algo_Parser ()
 		 int(size=32) res[1],
 		uint(size= 8) LastSignificantCoeffX,
 		uint(size= 8) LastSignificantCoeffY,
-		uint(size= 8) xC		:= 0,
-		uint(size= 8) yC		:= 0
+		uint(size= 8) xC := 0,
+		uint(size= 8) yC := 0
 	do	
-		println("read_ResidualCoding.start ");
+		if rc_TType = TEXT_LUMA then
+			println("read_ResidualCoding.start cbY ");
+		elsif rc_TType = TEXT_CHROMA_U then
+			println("read_ResidualCoding.start cbU");
+		else
+			println("read_ResidualCoding.start cbV");
+		end
 		if rc_log2TrafoWidth = 1 or rc_log2TrafoHeight = 1 then
 			rc_log2TrafoWidth  := 2;
 			rc_log2TrafoHeight := 2;
@@ -2521,11 +2540,13 @@ actor Algo_Parser ()
 		
 		InitScanningArray(rc_log2TrafoWidth, rc_log2TrafoHeight, DiagScan, ScanOrder);
 		rc_numCoeff := 0;
-		while  xC != LastSignificantCoeffX or yC != LastSignificantCoeffY do
+		while  not( xC = LastSignificantCoeffX and yC = LastSignificantCoeffY) do
 			xC := ScanOrder[ rc_scanIdx ][ rc_numCoeff ][ 0 ]; 
 			yC := ScanOrder[ rc_scanIdx ][ rc_numCoeff ][ 1 ]; 
+			println(xC+" = "+LastSignificantCoeffX+" and "+yC+" = "+LastSignificantCoeffY+", rc_numCoeff = "+rc_numCoeff);
 			rc_numCoeff := rc_numCoeff + 1;
 		end 
+		println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_numCoeff = "+rc_numCoeff);
 		rc_numLastSubset := (rc_numCoeff - 1) >> 4;
 		rc_i			 := rc_numLastSubset;
 		rc_idx           := 2;
@@ -2558,7 +2579,6 @@ actor Algo_Parser ()
    			xCG := rc_i;
    			yCG := 0;
    		else 
-			InitScanningArray(rc_log2TrafoWidth-2, rc_log2TrafoHeight-2, DiagScan, ScanOrder);
     		xCG := ScanOrder[ rc_scanIdx ][ rc_offset ][ 0 ] >> 2;
        		yCG := ScanOrder[ rc_scanIdx ][ rc_offset ][ 1 ] >> 2; 
 		end
@@ -2568,16 +2588,17 @@ actor Algo_Parser ()
           	//significant_coeff_group_flag[ xCG ][ yCG ] := res[0]; 
            	implicitNonZeroCoeff := 1; 
         end
-        calcPatternSigCtx( significant_coeff_group_flag, xCG, yCG, rc_log2TrafoWidth-1, rc_log2TrafoHeight-1, res);
+        calcPatternSigCtx( significant_coeff_group_flag, xCG, yCG, rc_log2TrafoWidth, rc_log2TrafoHeight, res);
         patternSigCtx := res[0];
-		InitScanningArray(rc_log2TrafoWidth, rc_log2TrafoHeight, DiagScan, ScanOrder);
   		foreach int m in 0 .. 15 do
   			n := 15 - m;  
 			xC := ScanOrder[ rc_scanIdx ][ n + rc_offset ][ 0 ]; 
 			yC := ScanOrder[ rc_scanIdx ][ n + rc_offset ][ 1 ];
+			println("ScanOrder["+rc_scanIdx+"]["+n+" + "+rc_offset+" ] = ("+xC+","+yC+")");
+			
 			if  (n + rc_offset) < (rc_numCoeff - 1) and significant_coeff_group_flag[ xCG ][ yCG ] = 1 and 
 				( n > 0 or implicitNonZeroCoeff = 0 ) then
-				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res, patternSigCtx, xC, yC, 2, TEXT_LUMA);
+				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res, patternSigCtx, xC, yC, 2, rc_TType);
 //				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res,
 //											rc_log2TrafoWidth-1, rc_log2TrafoHeight-1, xC, yC, rc_cIdx, significant_coeff_flag);
                    significant_coeff_flag[ xC ][ yC ] := res[0];
