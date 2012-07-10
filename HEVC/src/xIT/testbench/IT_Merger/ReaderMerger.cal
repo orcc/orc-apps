@@ -1,0 +1,326 @@
+// Author: Herve Yvique <herve.yviquel@irisa.fr>
+// Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
+// Modified by Jerome Gorin IETR/INSA of Rennes (France)
+
+// Original code: Source.cal actor of the org.ietr.stdio package
+// Modified by Eduardo Juarez, Wei Jianguo and Ren Rong <eduardo.juarez@upm.es> of UPM (Spain) 
+
+package xIT.testbench.IT_Merger;
+
+
+actor ReaderMerger () ==> 
+                      int(size=16)  Block_4x4,
+                      int(size=16)  Block_8x8,
+                      int(size=16)  Block_16x16,
+                      int(size=16)  Block_32x32,  
+                      int(size=6)   Size,  
+                      bool          EOF    // one token each TU
+                      : 
+
+	bool  	DEBUG_L1 := true;
+	bool    DEBUG_L2 := true;
+	
+	@native procedure source_init()
+	end
+	@native procedure source_readNBytes(uint(size=8) outTable[MAX_NB_BYTE_TO_SEND], uint(size=13) nbByteToRead)
+	end		
+	@native function source_sizeOfFile() --> int(size=32)
+	end	
+	@native procedure source_close()
+	end
+
+	uint(size=13) MAX_NB_BYTE_TO_SEND = 2048;	// 32x32 TU = 1024 16-bit coefficients = 2048 bytes
+	uint(size=3)  NB_HEADER_BYTE = 1;			// Size (1 byte)
+
+	uint(size=8)  bytesRead[MAX_NB_BYTE_TO_SEND];	
+	uint(size=32) nbByte          := 0;  				// file size
+	uint(size=32) nbByteLeft      := 0;
+	uint(size=13) nbByteToSend    := NB_HEADER_BYTE;  	// initially, read Size
+	uint(size=13) nbByteSent      := 0;
+	uint(size=32) nbTransformUnit := 0;  				// number of TU read
+    uint(size=16) sizeOfTU;								// size of TU	
+
+	bool          fileClosed  := false;
+	bool		  headerBlock := true;                   // initially, header is read
+
+	initialize ==>
+	do
+		source_init();
+		
+		if (DEBUG_L1) then
+			println("ReaderMerger ACTION: initialize");
+			println("ReaderMerger  STATE: ReadInit");
+			println("---------------------------------");
+		end
+	end
+	
+	getFileSize: action ==> 
+	guard
+		source_sizeOfFile() > 0
+	do
+		nbByte     := source_sizeOfFile();
+		nbByteLeft := nbByte;
+		
+		if (DEBUG_L1) then
+			println("ReaderMerger ACTION: getFileSize");
+			println("ReaderMerger  STATE: ReadFile");
+			println("----------------------------------");
+			if (DEBUG_L2) then
+			  println("nbByte     = " + nbByte);
+			  println("nbByteLeft = " + nbByteLeft);			  
+			  println("----------------------------------");			  
+			end
+		end
+	end
+	
+	readHeader: action ==> 
+	guard
+	  (nbByteToSend > 0) and (nbByteToSend <= nbByteLeft) and (headerBlock = true)
+	do
+	  
+	  source_readNBytes(bytesRead, nbByteToSend);	  
+	  nbByteLeft  := nbByteLeft - nbByteToSend;  
+	  nbByteSent  := 0;          
+	  
+	  if (DEBUG_L1) then
+			println("ReaderMerger ACTION: readHeader");
+			println("ReaderMerger  STATE: SendHeader");
+			println("---------------------------------");
+			if (DEBUG_L2) then			
+			  println("nbByteLeft      = " + nbByteLeft);			  
+			  println("nbByteSent      = " + nbByteSent);
+			  println("---------------------------------");			  	  		  
+			end
+	  end	
+	end
+	
+	readBlock: action ==>
+	                  EOF:[ false ]
+	guard 
+	  (nbByteToSend > 0) and (nbByteToSend <= nbByteLeft) and (headerBlock = false)	
+	do
+
+	  source_readNBytes(bytesRead, nbByteToSend);	  
+	  nbByteLeft  := nbByteLeft - nbByteToSend;	 		  
+	  nbByteSent  := 0;
+	                 	  	  
+	  if (DEBUG_L1) then
+			println("ReaderMerger ACTION: readBlock");
+			println("ReaderMerger  STATE: SendBlock");
+			println("--------------------------------");
+			if (DEBUG_L2) then
+			  println("nbByteLeft      = " + nbByteLeft);				  
+			  println("nbByteSent      = " + nbByteSent);
+			  println("--------------------------------");			  
+			end
+	  end	
+	end
+		
+	readEndOfFile: action ==> 
+	guard
+		(nbByteLeft > 0) and (nbByteToSend > nbByteLeft) 
+	do
+		source_readNBytes(bytesRead, nbByteLeft);
+		nbByteLeft := 0;
+		// nothing else is done
+		
+		if (DEBUG_L1) then
+			println("ReaderMerger ACTION: readEndOfFile");
+			println("ReaderMerger  STATE: ReadFile");
+			println("------------------------------------");
+			if (DEBUG_L2) then
+			  println("nbByteLeft      = " + nbByteLeft);	
+			  println("------------------------------------");			  
+			end			
+		end		
+	end
+
+	closeFile: action ==> 
+	                  EOF:[ true ]
+	guard
+		(nbByteLeft = 0) and (fileClosed = false)
+	do	
+		
+		source_close();
+		fileClosed := true;		
+        	
+        if (DEBUG_L1) then
+			println("ReaderMerger ACTION: closeFile");
+			println("ReaderMerger  STATE: ReadFile");
+			println("--------------------------------");
+		end		
+	end
+	
+    sendHeader.launch: action ==> 
+                              Size:[ sizeOfTU ]	
+	guard
+		(headerBlock = true) and (nbByteToSend > nbByteSent)
+	do	
+	    sizeOfTU   := bytesRead[0];
+		nbByteSent := NB_HEADER_BYTE;  // header tokens sent at once
+			
+		if (DEBUG_L1) then
+			println("ReaderMerger ACTION: sendHeader.launch");
+			println("ReaderMerger  STATE: SendHeader");
+			println("----------------------------------------");
+			if (DEBUG_L2) then
+			  println("sizeOfTU    = " + sizeOfTU);				
+			  println("nbByteSent  = " + nbByteSent);	
+			  println("----------------------------------------");			  		  
+			end			
+		end
+	end
+
+    sendHeader.done: action ==> 
+	guard
+	  (headerBlock = true) and (nbByteToSend = nbByteSent)
+	do	
+		nbByteToSend  := bytesRead[0] * bytesRead[0] * 2;   // size * size 16-bit coefficients to read				
+	    headerBlock   := false;
+	    
+		if (DEBUG_L1) then
+			println("ReaderMerger ACTION: sendHeader.done");
+			println("ReaderMerger  STATE: ReadFile");
+			println("--------------------------------------");
+			if (DEBUG_L2) then
+			  println("nbByteToSend  = "  + nbByteToSend);				  
+			  println("headerBlock    = " + headerBlock);
+			  println("--------------------------------------");			  			  
+			end			
+		end	    
+	end
+	
+	sendBlock_4x4.launch: action ==> 
+	                             Block_4x4:[ block ]
+	guard
+      (sizeOfTU = 4) and (headerBlock = false) and (nbByteToSend > nbByteSent)
+	var
+	  int(size=16) block	  
+	do
+	  block       := bytesRead[nbByteSent + 1];
+	  block       := (block << 8) + bytesRead[nbByteSent];
+	  nbByteSent  := nbByteSent + 2;  // two bytes sent at once
+	  
+      if (DEBUG_L1) then
+        println("ReaderMerger ACTION: sendBlock_4x4.launch");
+        println("ReaderMerger  STATE: SendBlock");
+        println("---------------------------------------");
+        if (DEBUG_L2) then
+          println("block        = " + block);			
+          println("nbByteSent   = " + nbByteSent);        
+	      println("---------------------------------------");          			  
+        end			
+      end  	  
+	end
+	
+	sendBlock_8x8.launch: action ==> 
+	                             Block_8x8:[ block ]
+	guard
+      (sizeOfTU = 8) and (headerBlock = false) and (nbByteToSend > nbByteSent)
+	var
+	  int(size=16) block	  
+	do
+	  block       := bytesRead[nbByteSent + 1];
+	  block       := (block << 8) + bytesRead[nbByteSent];
+	  nbByteSent  := nbByteSent + 2;  // two bytes sent at once
+	  
+      if (DEBUG_L1) then
+        println("ReaderMerger ACTION: sendBlock_8x8.launch");
+        println("ReaderMerger  STATE: SendBlock");
+        println("---------------------------------------");
+        if (DEBUG_L2) then
+          println("block        = " + block);			
+          println("nbByteSent   = " + nbByteSent);        
+	      println("---------------------------------------");          			  
+        end			
+      end  	  
+	end	
+	
+	sendBlock_16x16.launch: action ==> 
+	                               Block_16x16:[ block ]
+	guard
+      (sizeOfTU = 16) and (headerBlock = false) and (nbByteToSend > nbByteSent)
+	var
+	  int(size=16) block	  
+	do
+	  block       := bytesRead[nbByteSent + 1];
+	  block       := (block << 8) + bytesRead[nbByteSent];
+	  nbByteSent  := nbByteSent + 2;  // two bytes sent at once
+	  
+      if (DEBUG_L1) then
+        println("ReaderMerger ACTION: sendBlock_16x16.launch");
+        println("ReaderMerger  STATE: SendBlock");
+        println("---------------------------------------");
+        if (DEBUG_L2) then
+          println("block        = " + block);			
+          println("nbByteSent   = " + nbByteSent);        
+	      println("---------------------------------------");          			  
+        end			
+      end  	  
+	end	
+	
+	sendBlock_32x32.launch: action ==> 
+	                               Block_32x32:[ block ]
+	guard
+      (sizeOfTU = 32) and (headerBlock = false) and (nbByteToSend > nbByteSent)
+	var
+	  int(size=16) block	  
+	do
+	  block       := bytesRead[nbByteSent + 1];
+	  block       := (block << 8) + bytesRead[nbByteSent];
+	  nbByteSent  := nbByteSent + 2;  // two bytes sent at once
+	  
+      if (DEBUG_L1) then
+        println("ReaderMerger ACTION: sendBlock_32x32.launch");
+        println("ReaderMerger  STATE: SendBlock");
+        println("---------------------------------------");
+        if (DEBUG_L2) then
+          println("block        = " + block);			
+          println("nbByteSent   = " + nbByteSent);        
+	      println("---------------------------------------");          			  
+        end			
+      end  	  
+	end	
+
+	sendBlock.done: action ==> 
+	guard
+	  (headerBlock = false) and (nbByteToSend = nbByteSent)
+	do
+	  	nbByteToSend    := NB_HEADER_BYTE;	  	
+      	headerBlock     := true;
+     	nbTransformUnit := nbTransformUnit + 1;	
+	    
+		if (DEBUG_L1) then
+			println("ReaderMerger ACTION: sendBlock.done");
+			println("ReaderMerger  STATE: ReadFile");
+			println("-------------------------------------");
+			if (DEBUG_L2) then		
+			  println("nbByteToSend    = " + nbByteToSend);				  		
+			  println("headerBlock      = " + headerBlock);	
+			  println("nbTransformUnit = " + nbTransformUnit);
+			  println("-------------------------------------");			  				  		  
+			end			
+		end	    
+	end
+	
+	schedule fsm ReadInit :
+
+		ReadInit (getFileSize  ) --> ReadFile;
+		
+		ReadFile (readHeader   )  --> SendHeader;
+		ReadFile (readBlock     ) --> SendBlock;
+		ReadFile (readEndOfFile)  --> ReadFile;
+		ReadFile (closeFile    )  --> ReadFile;
+		
+		SendHeader (sendHeader.launch) --> SendHeader;
+		SendHeader (sendHeader.done  ) --> ReadFile;
+		
+		SendBlock (sendBlock_4x4.launch )   --> SendBlock;
+		SendBlock (sendBlock_8x8.launch )   --> SendBlock;
+		SendBlock (sendBlock_16x16.launch ) --> SendBlock;
+		SendBlock (sendBlock_32x32.launch ) --> SendBlock;						
+		SendBlock (sendBlock.done   )       --> ReadFile;
+			
+	end
+	
+end
