@@ -39,9 +39,12 @@ import std.util.Math.*;
 
 actor IntraPrediction()
 	uint(size=16) CuAddr,
+	uint(size=2)  CuMode,
 	uint(size=7)  CuSize,
+	uint(size=6)  IntraPredMode,
 	uint(size=4)  PartMode,
-	uint(size=16) PicSize
+	uint(size=16) PicSize,
+	bool          SplitTransf
 		==>
 		:
 
@@ -114,6 +117,8 @@ int(size=9) invAngle[64] =
 
 	uint(size=6) predMode;
 	uint(size=6) predModeTab[3];
+	int (size=4) trafoTreeDepth;
+	uint(size=3) trafoTreeIdx[6];
 
 	uint(size=8) pNeighb[2][128];
 	uint(size=8) pAboveLeft;
@@ -141,13 +146,6 @@ int(size=9) invAngle[64] =
 		uint(size=2) cIdxMax,
 		uint(size=16) cuAddrLoc[2]
 	begin
-	
-		/* Remove it !!! */
-		log2NS := 2;
-		while((1<<log2NS) < nS)
-		do
-			log2NS := log2NS+1;
-		end
 
 		cuAddrLoc := cuAddr;
 
@@ -507,12 +505,76 @@ int(size=9) invAngle[64] =
 	guard
 		numPartDecoded = numPart
 	end
-	
+
+	getCuMode.isIntra: action CuMode:[cuMode], IntraPredMode:[predMode] repeat 2 ==>
+	guard
+		cuMode = INTRA
+	do
+		predModeTab[0] := predMode[0];
+		predModeTab[1] := predMode[1];
+		predModeTab[2] := predMode[1];
+
+		log2NS := 2;
+		while((1<<log2NS) < nS)
+		do
+			log2NS := log2NS+1;
+		end
+		trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
+	end
+
+	getCuMode.isInter: action CuMode:[cuMode] ==>
+	guard
+		cuMode = INTER || cuMode = SKIP
+	end
+
+	getCuMode.isOther: action CuMode:[cuMode] ==>
+	guard
+		cuMode = OTHER
+	end
+
+	getSplitTrafo.isTrue: action SplitTransf:[splitTrafo] ==>
+	guard
+		splitTrafo && trafoTreeDepth>-1
+	do
+		trafoTreeDepth := trafoTreeDepth + 1;
+		trafoTreeIdx[trafoTreeDepth] := 0;
+	end
+
+	getSplitTrafo.isFalse: action SplitTransf:[splitTrafo] ==>
+	guard
+		not splitTrafo && trafoTreeDepth>-1
+	do
+
+
+		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+		while(trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4)
+		do
+			trafoTreeDepth := trafoTreeDepth - 1;
+			if(trafoTreeDepth>-1) then
+				trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+			end
+		end
+	end
+
+	getSplitTrafo.done: action ==>
+	guard
+		trafoTreeDepth = -1
+	end
+
 	schedule fsm GetPartMode:
 		GetPartMode(isNewSliceOrPict )--> GetPartMode;
 		GetPartMode(getPartMode      )--> GetCuInfo;
 
-		GetCuInfo   (getCuInfo.launch )--> GetPartMode;
-		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
+		GetCuInfo (getCuInfo.launch )--> GetCuMode;
+		GetCuInfo (getCuInfo.done   )--> GetPartMode;
+
+		GetCuMode (getCuMode.isIntra )--> GetSplitTrafo;
+		GetCuMode (getCuMode.isInter )--> GetCuInfo;
+		GetCuMode (getCuMode.isOther )--> GetCuInfo;
+
+		GetSplitTrafo (getSplitTrafo.isTrue  )--> GetSplitTrafo;
+		GetSplitTrafo (getSplitTrafo.isFalse )--> GetSplitTrafo;
+		GetSplitTrafo (getSplitTrafo.done    )--> GetCuInfo;
 	end
 end
