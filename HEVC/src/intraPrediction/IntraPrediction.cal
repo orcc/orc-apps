@@ -1,0 +1,474 @@
+/*
+ * Copyright (c) 2012, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/**
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
+ 
+package intraPrediction;
+
+import std.util.Math.*;
+
+actor IntraPrediction()
+	==>
+	:
+
+	uint(size=6) INTRA_PLANAR = 0;
+	uint(size=6) INTRA_DC = 1;
+
+	uint(size=1) ABOVE = 0;
+	uint(size=1) LEFT  = 1;
+
+
+uint(size=8) leftBlkAvail[256] =
+	[0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+
+	 8, 1, 7, 1, 2, 1, 1, 1, 6, 1, 5, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+
+	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+
+	 8, 1, 7, 1, 2, 1, 1, 1, 6, 1, 5, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1];
+
+uint(size=8) aboveBlkAvail[256] =
+	[0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+
+	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+
+	 16, 15, 2, 1, 14, 13, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 12, 11, 2, 1, 10,  9, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	  8,  7, 2, 1,  6,  5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	  4,  3, 2, 1,  2,  1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1];
+
+int(size=7) intraPredAngle[64] = [0, 0, 32, 26, 21, 17, 13, 9, 5, 2, 0, -2,
+	-5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9, -5, -2, 0, 2, 5,
+	9, 13, 17, 21, 26, 32];
+
+int(size=9) invAngle[64] =
+	[  0,     0,  -256, -315,  -390,  -482, -630,  -910, -1638, -4096,
+	   0, -4096, -1638, -910,  -630,  -482, -390,  -315,  -256,  -315,
+	-390,  -482,  -630, -910, -1638, -4096,    0, -4096, -1638,  -910,
+	-630,  -482,  -390, -315,  -256];
+
+
+	uint(size=7)  nS;
+	uint(size=3)  log2NS;
+	uint(size=7)  cuSize[2];
+	uint(size=16) cuAddr[2];
+	uint(size=16) pictSize[2];
+
+	uint(size=6) predMode;
+	uint(size=6) predModeTab[3];
+
+	uint(size=8) pNeighb[2][128];
+	uint(size=8) pAboveLeft;
+	uint(size=8) currPict[2048][2048];
+
+	uint(size=8) result[64][64];
+
+	function absCoordToRasterScan(uint(size=16) coord[2]) --> uint(size=8)
+	var
+		uint(size=4) xCoordInBlk = coord[0]/4,
+		uint(size=4) yCoordInBlk = coord[1]/4
+	:
+		if((xCoordInBlk & 1)!=0) then 1   else 0 end +
+		if((xCoordInBlk & 2)!=0) then 4   else 0 end +
+		if((xCoordInBlk & 4)!=0) then 16  else 0 end +
+		if((xCoordInBlk & 8)!=0) then 64  else 0 end +
+		if((yCoordInBlk & 1)!=0) then 2   else 0 end +
+		if((yCoordInBlk & 2)!=0) then 8   else 0 end +
+		if((yCoordInBlk & 4)!=0) then 32  else 0 end +
+		if((yCoordInBlk & 8)!=0) then 128 else 0 end
+	end
+
+	procedure intraPrediction()
+	var
+		uint(size=2) cIdxMax
+	begin
+		uint(size=16) cuAddrLoc[2];
+		uint(size=7)  cuSizeLoc[2];
+	
+		/* Remove it !!! */
+		log2NS := 2;
+		while((1<<log2NS) < cuSize[0])
+		do
+			log2NS := log2NS+1;
+		end
+
+		cuAddrLoc := cuAddr;
+		cuSizeLoc := cuSize;
+
+		if(log2NS != 2) then
+			cIdxMax := 3;
+		else
+			if((cuAddr[0]&7) = 0 && (cuAddr[1]&7) = 0) then
+				cIdxMax := 3;
+			else
+				cIdxMax := 1;
+			end
+		end
+
+		foreach uint cIdx in 0 .. cIdxMax-1
+		do
+			predMode := predModeTab[cIdx];
+			if(cIdx = 1) then
+				if(log2NS != 2) then
+					nS := nS >> 1;
+					log2NS := log2NS - 1;
+				end
+					cuAddrLoc[0] := cuAddrLoc[0] >> 1;
+					cuAddrLoc[1] := cuAddrLoc[1] >> 1;
+					cuSizeLoc[0] := cuSizeLoc[0] >> 1;
+					cuSizeLoc[1] := cuSizeLoc[1] >> 1;
+			end
+			getNeighbSamples(cuAddrLoc, cIdx);
+			if(cIdx=0) then
+				filterNeighbSamp();
+			end
+			if(predMode = INTRA_PLANAR) then
+				intraPlanarPred();
+			else if(predMode = INTRA_DC) then
+				intraDcPred(cIdx);
+			else
+				intraAngularPred(cIdx);
+			end end
+		end
+	end
+
+	procedure getNeighbSamples(uint(size=16) cuAddr[2], uint(size=2) cIdx)
+	var
+		int maxVal[2],
+		int xMax,
+		int yMax
+	begin
+		neighbExist(cuAddr, maxVal, cIdx);
+		xMax := maxVal[0];
+		yMax := maxVal[1];
+		foreach int x in 0 .. xMax-1
+		do
+			pNeighb[ABOVE][x] := currPict[cuAddr[0]+x][cuAddr[1]-1];
+		end
+		if(xMax!=0) then
+			foreach int x in xMax .. 2*nS-1
+			do
+				pNeighb[ABOVE][x] := pNeighb[ABOVE][xMax-1];
+			end
+		end
+
+		foreach int y in 0 .. yMax-1
+		do
+			pNeighb[LEFT][y] := currPict[cuAddr[0]-1][cuAddr[1]+y];
+		end
+		if(yMax!=0) then
+			foreach int y in yMax .. 2*nS-1
+			do
+				pNeighb[LEFT][y] := pNeighb[LEFT][yMax-1];
+			end
+		end
+
+		if(xMax=0 && yMax=0) then
+			foreach int idx in 0 .. 2*nS
+			do
+				pNeighb[ABOVE][idx] := 128;
+				pNeighb[LEFT][idx]  := 128;
+			end
+			pAboveLeft := 128;
+		else if(xMax =0 && yMax!=0) then
+			foreach int x in 0 .. 2*nS
+			do
+				pNeighb[ABOVE][x] := pNeighb[LEFT][0];
+			end
+			pAboveLeft := pNeighb[LEFT][0];
+		else if(xMax!=0 && yMax =0) then
+			foreach int y in 0 .. 2*nS
+			do
+				pNeighb[LEFT][y] := pNeighb[ABOVE][0];
+			end
+			pAboveLeft := pNeighb[ABOVE][0];
+		else
+			pAboveLeft := currPict[cuAddr[0]-1][cuAddr[1]-1];
+		end end end
+	end
+
+	procedure neighbExist(uint(size=16) cuAddr[2], int maxVal[2], int cIdx)
+	var
+		uint(size=7) maxCuSize = if(cIdx=0) then 64 else 32 end,
+		int xMax,
+		int yMax,
+		int numPixRemain
+	begin
+
+		xMax := 0;
+		if(cuAddr[1]!=0) then
+			numPixRemain :=
+				if((cuAddr[1]&~(maxCuSize-1)) =
+					((cuAddr[1]-1)&~(maxCuSize-1))) then
+					min( aboveBlkAvail[absCoordToRasterScan(cuAddr)]<<2,
+						pictSize[0]-cuAddr[0])
+				else
+					pictSize[0]-cuAddr[0]
+				end;
+			yMax := min(2*nS, numPixRemain);
+		end
+
+		yMax := 0;
+		if(cuAddr[0]!=0) then
+			numPixRemain :=
+				if((cuAddr[0]&~(maxCuSize-1)) =
+					((cuAddr[0]-1)&~(maxCuSize-1))) then
+					leftBlkAvail[absCoordToRasterScan(cuAddr)]<<2
+				else
+					maxCuSize-(cuAddr[1]&(maxCuSize-1))
+				end;
+			yMax := min(min(2*nS, numPixRemain), pictSize[1]-cuAddr[1]);
+		end
+
+		maxVal[0] := xMax;
+		maxVal[1] := yMax;
+	end
+
+	procedure filterNeighbSamp()
+	var
+		uint(size=5) minDistVertHor,
+		uint pFNeighb[2][64]
+	begin
+		minDistVertHor := min(abs(predMode-26), abs(predMode-10));
+		if(nS=4  && minDistVertHor>10 ||
+		   nS=8  && minDistVertHor>7 ||
+		   nS=16 && minDistVertHor>1 ||
+		   nS=32 && minDistVertHor>0 ||
+		   nS=64 && minDistVertHor>10) then
+			foreach uint neighb in 0 .. 1
+			do
+				pFNeighb[neighb][0] := (pAboveLeft + 2*pNeighb[neighb][0] +
+					pNeighb[neighb][1] + 2) >> 2;
+				foreach uint i in 1 .. nS*2-2
+				do
+					pFNeighb[neighb][i] := (pNeighb[neighb][i-1] + 2*pNeighb[neighb][i] +
+						pNeighb[neighb][i+1] + 2) >> 2;
+				end
+			end
+			pAboveLeft := (pNeighb[LEFT][0] + 2*(pAboveLeft) + pNeighb[ABOVE][0] + 2) >> 2;
+			foreach uint neighb in 0 .. 1
+			do
+				foreach uint i in 1 .. nS*2-2
+				do
+					pNeighb[neighb][i] := pFNeighb[neighb][i];
+				end
+			end
+		end
+	end
+
+	procedure intraPlanarPred()
+	var
+		uint(size=8) pUpRight,
+		uint(size=8) pBottomLeft
+	begin
+		pUpRight    := pNeighb[ABOVE][nS];
+		pBottomLeft := pNeighb[LEFT][nS];
+		foreach uint y in 0 .. nS-1
+		do
+			foreach uint x in 0 .. nS-1
+			do
+				result[x][y] := ((nS-1-x)*pNeighb[LEFT][y] + (x+1)*pUpRight +
+				(nS-1-y)*pNeighb[ABOVE][x] + (y+1)*pBottomLeft + nS) >> (log2NS+1);
+			end
+		end
+	end
+
+	procedure intraDcPred(uint(size=2) cIdx)
+	var
+		uint(size=13) dcVal
+	begin
+		dcVal := nS;
+		foreach uint x in 0 .. nS-1
+		do
+			dcVal := dcVal + pNeighb[ABOVE][x];
+		end
+		foreach uint y in 0 .. nS-1
+		do
+			dcVal := dcVal + pNeighb[LEFT][y];
+		end
+		dcVal := dcVal >> (log2NS+1);
+		if(cIdx=0) then
+			result[0][0] := (pNeighb[LEFT][0] + 2*dcVal + pNeighb[ABOVE][0] + 2)>>2;
+			foreach uint x in 1 .. nS-1
+			do
+				result[x][0] := (pNeighb[ABOVE][x] + 3*dcVal + 2)>>2;
+			end
+			foreach uint y in 1 .. nS-1
+			do
+				result[0][y] := (pNeighb[LEFT][y] + 3*dcVal + 2)>>2;
+				foreach uint x in 1 .. nS-1
+				do
+					result[x][y] := dcVal;
+				end
+			end
+		else
+			foreach uint y in 0 .. nS-1
+			do
+				foreach uint x in 0 .. nS-1
+				do
+					result[x][y] := dcVal;
+				end
+			end
+		end
+	end
+
+	procedure intraAngularPred(uint(size=2) cIdx)
+	var
+		uint(size=6) OFFSET = 33,
+		uint(size=6) angle := predMode & 63,
+		uint(size=1) neighbIdx,
+		uint refMain[128+33],
+		int(size=9) iIdx,
+		uint(size=5) iFact
+	begin
+		if(angle=26 || angle = 10) then
+			intraAngularVertOrHor( cIdx, angle=26);
+		else
+			neighbIdx := if(angle>=18) then ABOVE else LEFT end;
+			refMain[OFFSET] := pAboveLeft;
+			foreach uint x in 1 .. nS
+			do
+				refMain[x+OFFSET] := pNeighb[neighbIdx][x-1];
+			end
+			if(intraPredAngle[angle]<0) then
+				neighbIdx := neighbIdx^1;
+				foreach int x in (nS*intraPredAngle[angle])>>5 .. -1
+				do
+					refMain[x+OFFSET] := pNeighb[neighbIdx][((x*invAngle[angle]+128)>>8)-1];
+				end
+			else
+				foreach uint x in nS+1 .. 2*nS-1
+				do
+					refMain[x+OFFSET] := pNeighb[neighbIdx][x-1];
+				end
+			end
+			if(angle>=18) then
+				foreach uint y in 0 .. nS-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					foreach uint x in 0 .. nS-1
+					do
+						if(iFact!=0) then
+							result[x][y] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							result[x][y] := refMain[x+iIdx+1 +OFFSET];
+						end
+					end
+				end
+			else
+				foreach uint y in 0 .. nS-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					foreach uint x in 0 .. nS-1
+					do
+						if(iFact!=0) then
+							result[y][x] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							result[y][x] := refMain[x+iIdx+1 +OFFSET];
+						end
+					end
+				end
+			end
+		end
+	end
+
+	procedure intraAngularVertOrHor(uint(size=2) cIdx, bool isVertical)
+	var
+		uint(size=1) neighbIdx = if(isVertical) then ABOVE else LEFT end
+	begin
+		if(cIdx=0) then
+			if(isVertical) then
+				foreach uint y in 0 .. nS-1
+				do
+					result[0][y] := clip_i32(pNeighb[ABOVE][0]+((pNeighb[LEFT][y]-pAboveLeft)>>1),
+						0, 255);
+				end
+				foreach uint x in 1 .. nS-1
+				do
+					result[x][0] := pNeighb[ABOVE][x];
+				end
+			else
+				foreach uint x in 0 .. nS-1
+				do
+					result[x][0] := clip_i32(pNeighb[LEFT][0]+((pNeighb[ABOVE][x]-pAboveLeft)>>1),
+						0, 255);
+				end
+				foreach uint y in 1 .. nS-1
+				do
+					result[0][y] := pNeighb[LEFT][y];
+				end
+			end
+			foreach uint x in 1 .. nS-1
+			do
+				foreach uint y in 1 .. nS-1
+				do
+					result[x][y] := pNeighb[neighbIdx][x];
+				end
+			end
+		else
+			foreach uint x in 0 .. nS-1
+			do
+				foreach uint y in 0 .. nS-1
+				do
+					result[x][y] := pNeighb[neighbIdx][x];
+				end
+			end
+		end
+	end
+end
