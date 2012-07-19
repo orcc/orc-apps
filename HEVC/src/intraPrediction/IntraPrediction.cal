@@ -34,11 +34,16 @@
  
 package intraPrediction;
 
+import interPrediction.NaluType.*;
 import std.util.Math.*;
 
 actor IntraPrediction()
-	==>
-	:
+	uint(size=16) CuAddr,
+	uint(size=7)  CuSize,
+	uint(size=4)  PartMode,
+	uint(size=16) PicSize
+		==>
+		:
 
 	uint(size=6) INTRA_PLANAR = 0;
 	uint(size=6) INTRA_DC = 1;
@@ -102,9 +107,10 @@ int(size=9) invAngle[64] =
 
 	uint(size=7)  nS;
 	uint(size=3)  log2NS;
-	uint(size=7)  cuSize[2];
 	uint(size=16) cuAddr[2];
 	uint(size=16) pictSize[2];
+	uint(size=3)  numPart;
+	uint(size=3)  numPartDecoded;
 
 	uint(size=6) predMode;
 	uint(size=6) predModeTab[3];
@@ -132,20 +138,18 @@ int(size=9) invAngle[64] =
 
 	procedure intraPrediction()
 	var
-		uint(size=2) cIdxMax
+		uint(size=2) cIdxMax,
+		uint(size=16) cuAddrLoc[2]
 	begin
-		uint(size=16) cuAddrLoc[2];
-		uint(size=7)  cuSizeLoc[2];
 	
 		/* Remove it !!! */
 		log2NS := 2;
-		while((1<<log2NS) < cuSize[0])
+		while((1<<log2NS) < nS)
 		do
 			log2NS := log2NS+1;
 		end
 
 		cuAddrLoc := cuAddr;
-		cuSizeLoc := cuSize;
 
 		if(log2NS != 2) then
 			cIdxMax := 3;
@@ -165,10 +169,8 @@ int(size=9) invAngle[64] =
 					nS := nS >> 1;
 					log2NS := log2NS - 1;
 				end
-					cuAddrLoc[0] := cuAddrLoc[0] >> 1;
-					cuAddrLoc[1] := cuAddrLoc[1] >> 1;
-					cuSizeLoc[0] := cuSizeLoc[0] >> 1;
-					cuSizeLoc[1] := cuSizeLoc[1] >> 1;
+				cuAddrLoc[0] := cuAddrLoc[0] >> 1;
+				cuAddrLoc[1] := cuAddrLoc[1] >> 1;
 			end
 			getNeighbSamples(cuAddrLoc, cIdx);
 			if(cIdx=0) then
@@ -470,5 +472,47 @@ int(size=9) invAngle[64] =
 				end
 			end
 		end
+	end
+	
+	uint(size=16) sliceNum := 0;
+
+	isNewSliceOrPict: action PartMode:[partMode], PicSize:[pictSizeVal] repeat 2 ==>
+	guard
+		partMode = NEW_SLICE || partMode = NEW_PICT
+	do
+		pictSize := pictSizeVal;
+		println("Slice num "+sliceNum);
+		sliceNum := sliceNum + 1;
+	end
+
+	getPartMode: action PartMode:[partMode] ==>
+	guard
+		partMode != NEW_SLICE || partMode != NEW_PICT
+	do
+		numPart := partModeToNumPart[partMode];
+		numPartDecoded := 0;
+	end
+
+	getCuInfo.launch: action CuSize:[cuSize] repeat 2, CuAddr:[cuAddrVal]
+		repeat 2 ==>
+	guard
+		numPartDecoded < numPart
+	do
+		nS := cuSize[0];
+		cuAddr := cuAddrVal;
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	getCuInfo.done: action ==>
+	guard
+		numPartDecoded = numPart
+	end
+	
+	schedule fsm GetPartMode:
+		GetPartMode(isNewSliceOrPict )--> GetPartMode;
+		GetPartMode(getPartMode      )--> GetCuInfo;
+
+		GetCuInfo   (getCuInfo.launch )--> GetPartMode;
+		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
 	end
 end
