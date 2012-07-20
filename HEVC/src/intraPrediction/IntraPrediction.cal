@@ -46,6 +46,7 @@ actor IntraPrediction()
 	uint(size=16) PicSize,
 	bool          SplitTransf
 		==>
+	uint(size=8) PredSample
 		:
 
 	uint(size=6) INTRA_PLANAR = 0;
@@ -55,7 +56,7 @@ actor IntraPrediction()
 	uint(size=1) LEFT  = 1;
 
 
-uint(size=8) leftBlkAvail[256] =
+	uint(size=8) leftBlkAvail[256] =
 	[0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
 	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
 	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
@@ -76,7 +77,7 @@ uint(size=8) leftBlkAvail[256] =
 	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
 	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1];
 
-uint(size=8) aboveBlkAvail[256] =
+	uint(size=8) aboveBlkAvail[256] =
 	[0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
 	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
 	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
@@ -97,20 +98,20 @@ uint(size=8) aboveBlkAvail[256] =
 	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
 	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1];
 
-int(size=7) intraPredAngle[64] = [0, 0, 32, 26, 21, 17, 13, 9, 5, 2, 0, -2,
+	int(size=7) intraPredAngle[64] = [0, 0, 32, 26, 21, 17, 13, 9, 5, 2, 0, -2,
 	-5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9, -5, -2, 0, 2, 5,
 	9, 13, 17, 21, 26, 32];
 
-int(size=9) invAngle[64] =
+	int(size=9) invAngle[64] =
 	[  0,     0,  -256, -315,  -390,  -482, -630,  -910, -1638, -4096,
 	   0, -4096, -1638, -910,  -630,  -482, -390,  -315,  -256,  -315,
 	-390,  -482,  -630, -910, -1638, -4096,    0, -4096, -1638,  -910,
 	-630,  -482,  -390, -315,  -256];
 
-
 	uint(size=7)  nS;
 	uint(size=3)  log2NS;
 	uint(size=16) cuAddr[2];
+	uint(size=16) treeAddr[2];
 	uint(size=16) pictSize[2];
 	uint(size=3)  numPart;
 	uint(size=3)  numPartDecoded;
@@ -122,9 +123,11 @@ int(size=9) invAngle[64] =
 
 	uint(size=8) pNeighb[2][128];
 	uint(size=8) pAboveLeft;
-	uint(size=8) currPict[2048][2048];
+	uint(size=8) currPict[3][2048][2048];
 
-	uint(size=8) result[64][64];
+	uint(size=8) result[3][64][64];
+	uint(size=9) numBlkToSent;
+	uint(size=9) idxBlk;
 
 	function absCoordToRasterScan(uint(size=16) coord[2]) --> uint(size=8)
 	var
@@ -141,61 +144,27 @@ int(size=9) invAngle[64] =
 		if((yCoordInBlk & 8)!=0) then 128 else 0 end
 	end
 
-	procedure intraPrediction()
-	var
-		uint(size=2) cIdxMax,
-		uint(size=16) cuAddrLoc[2]
+	procedure rasterScanToAbsCoord(uint(size=8) rasterIdx, uint(size=16) coord[2])
 	begin
+		coord[0] :=  (rasterIdx    &1)* 4 + ((rasterIdx>>2)&1)* 8 +
+		            ((rasterIdx>>4)&1)*16 + ((rasterIdx>>6)&1)*32;
 
-		cuAddrLoc := cuAddr;
-
-		if(log2NS != 2) then
-			cIdxMax := 3;
-		else
-			if((cuAddr[0]&7) = 0 && (cuAddr[1]&7) = 0) then
-				cIdxMax := 3;
-			else
-				cIdxMax := 1;
-			end
-		end
-
-		foreach uint cIdx in 0 .. cIdxMax-1
-		do
-			predMode := predModeTab[cIdx];
-			if(cIdx = 1) then
-				if(log2NS != 2) then
-					nS := nS >> 1;
-					log2NS := log2NS - 1;
-				end
-				cuAddrLoc[0] := cuAddrLoc[0] >> 1;
-				cuAddrLoc[1] := cuAddrLoc[1] >> 1;
-			end
-			getNeighbSamples(cuAddrLoc, cIdx);
-			if(cIdx=0) then
-				filterNeighbSamp();
-			end
-			if(predMode = INTRA_PLANAR) then
-				intraPlanarPred();
-			else if(predMode = INTRA_DC) then
-				intraDcPred(cIdx);
-			else
-				intraAngularPred(cIdx);
-			end end
-		end
+		coord[1] := ((rasterIdx>>1)&1)* 4 + ((rasterIdx>>3)&1)* 8 +
+		            ((rasterIdx>>5)&1)*16 + ((rasterIdx>>7)&1)*32;
 	end
 
-	procedure getNeighbSamples(uint(size=16) cuAddr[2], uint(size=2) cIdx)
+	procedure getNeighbSamples(uint(size=16) cuAddr[2], uint(size=2) cIdx, uint(size=7) nS)
 	var
 		int maxVal[2],
 		int xMax,
 		int yMax
 	begin
-		neighbExist(cuAddr, maxVal, cIdx);
+		neighbExist(cuAddr, maxVal, cIdx, nS);
 		xMax := maxVal[0];
 		yMax := maxVal[1];
 		foreach int x in 0 .. xMax-1
 		do
-			pNeighb[ABOVE][x] := currPict[cuAddr[0]+x][cuAddr[1]-1];
+			pNeighb[ABOVE][x] := currPict[cIdx][cuAddr[0]+x][cuAddr[1]-1];
 		end
 		if(xMax!=0) then
 			foreach int x in xMax .. 2*nS-1
@@ -206,7 +175,7 @@ int(size=9) invAngle[64] =
 
 		foreach int y in 0 .. yMax-1
 		do
-			pNeighb[LEFT][y] := currPict[cuAddr[0]-1][cuAddr[1]+y];
+			pNeighb[LEFT][y] := currPict[cIdx][cuAddr[0]-1][cuAddr[1]+y];
 		end
 		if(yMax!=0) then
 			foreach int y in yMax .. 2*nS-1
@@ -235,11 +204,11 @@ int(size=9) invAngle[64] =
 			end
 			pAboveLeft := pNeighb[ABOVE][0];
 		else
-			pAboveLeft := currPict[cuAddr[0]-1][cuAddr[1]-1];
+			pAboveLeft := currPict[cIdx][cuAddr[0]-1][cuAddr[1]-1];
 		end end end
 	end
 
-	procedure neighbExist(uint(size=16) cuAddr[2], int maxVal[2], int cIdx)
+	procedure neighbExist(uint(size=16) cuAddr[2], int maxVal[2], int cIdx, uint(size=7) nS)
 	var
 		uint(size=7) maxCuSize = if(cIdx=0) then 64 else 32 end,
 		int xMax,
@@ -276,7 +245,7 @@ int(size=9) invAngle[64] =
 		maxVal[1] := yMax;
 	end
 
-	procedure filterNeighbSamp()
+	procedure filterNeighbSamp(uint(size=7) nS)
 	var
 		uint(size=5) minDistVertHor,
 		uint pFNeighb[2][64]
@@ -308,7 +277,7 @@ int(size=9) invAngle[64] =
 		end
 	end
 
-	procedure intraPlanarPred()
+	procedure intraPlanarPred(uint(size=2) cIdx, uint(size=7) nS, uint(size=3) log2NS)
 	var
 		uint(size=8) pUpRight,
 		uint(size=8) pBottomLeft
@@ -319,13 +288,13 @@ int(size=9) invAngle[64] =
 		do
 			foreach uint x in 0 .. nS-1
 			do
-				result[x][y] := ((nS-1-x)*pNeighb[LEFT][y] + (x+1)*pUpRight +
+				result[cIdx][x][y] := ((nS-1-x)*pNeighb[LEFT][y] + (x+1)*pUpRight +
 				(nS-1-y)*pNeighb[ABOVE][x] + (y+1)*pBottomLeft + nS) >> (log2NS+1);
 			end
 		end
 	end
 
-	procedure intraDcPred(uint(size=2) cIdx)
+	procedure intraDcPred(uint(size=2) cIdx, uint(size=7) nS, uint(size=3) log2NS)
 	var
 		uint(size=13) dcVal
 	begin
@@ -340,17 +309,17 @@ int(size=9) invAngle[64] =
 		end
 		dcVal := dcVal >> (log2NS+1);
 		if(cIdx=0) then
-			result[0][0] := (pNeighb[LEFT][0] + 2*dcVal + pNeighb[ABOVE][0] + 2)>>2;
+			result[cIdx][0][0] := (pNeighb[LEFT][0] + 2*dcVal + pNeighb[ABOVE][0] + 2)>>2;
 			foreach uint x in 1 .. nS-1
 			do
-				result[x][0] := (pNeighb[ABOVE][x] + 3*dcVal + 2)>>2;
+				result[cIdx][x][0] := (pNeighb[ABOVE][x] + 3*dcVal + 2)>>2;
 			end
 			foreach uint y in 1 .. nS-1
 			do
-				result[0][y] := (pNeighb[LEFT][y] + 3*dcVal + 2)>>2;
+				result[cIdx][0][y] := (pNeighb[LEFT][y] + 3*dcVal + 2)>>2;
 				foreach uint x in 1 .. nS-1
 				do
-					result[x][y] := dcVal;
+					result[cIdx][x][y] := dcVal;
 				end
 			end
 		else
@@ -358,13 +327,13 @@ int(size=9) invAngle[64] =
 			do
 				foreach uint x in 0 .. nS-1
 				do
-					result[x][y] := dcVal;
+					result[cIdx][x][y] := dcVal;
 				end
 			end
 		end
 	end
 
-	procedure intraAngularPred(uint(size=2) cIdx)
+	procedure intraAngularPred(uint(size=2) cIdx, uint(size=7) nS)
 	var
 		uint(size=6) OFFSET = 33,
 		uint(size=6) angle := predMode & 63,
@@ -374,7 +343,7 @@ int(size=9) invAngle[64] =
 		uint(size=5) iFact
 	begin
 		if(angle=26 || angle = 10) then
-			intraAngularVertOrHor( cIdx, angle=26);
+			intraAngularVertOrHor( cIdx, angle=26, nS);
 		else
 			neighbIdx := if(angle>=18) then ABOVE else LEFT end;
 			refMain[OFFSET] := pAboveLeft;
@@ -402,10 +371,10 @@ int(size=9) invAngle[64] =
 					foreach uint x in 0 .. nS-1
 					do
 						if(iFact!=0) then
-							result[x][y] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+							result[cIdx][x][y] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
 								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
 						else
-							result[x][y] := refMain[x+iIdx+1 +OFFSET];
+							result[cIdx][x][y] := refMain[x+iIdx+1 +OFFSET];
 						end
 					end
 				end
@@ -417,10 +386,10 @@ int(size=9) invAngle[64] =
 					foreach uint x in 0 .. nS-1
 					do
 						if(iFact!=0) then
-							result[y][x] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+							result[cIdx][y][x] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
 								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
 						else
-							result[y][x] := refMain[x+iIdx+1 +OFFSET];
+							result[cIdx][y][x] := refMain[x+iIdx+1 +OFFSET];
 						end
 					end
 				end
@@ -428,7 +397,7 @@ int(size=9) invAngle[64] =
 		end
 	end
 
-	procedure intraAngularVertOrHor(uint(size=2) cIdx, bool isVertical)
+	procedure intraAngularVertOrHor(uint(size=2) cIdx, bool isVertical, uint(size=7) nS)
 	var
 		uint(size=1) neighbIdx = if(isVertical) then ABOVE else LEFT end
 	begin
@@ -436,29 +405,29 @@ int(size=9) invAngle[64] =
 			if(isVertical) then
 				foreach uint y in 0 .. nS-1
 				do
-					result[0][y] := clip_i32(pNeighb[ABOVE][0]+((pNeighb[LEFT][y]-pAboveLeft)>>1),
+					result[cIdx][0][y] := clip_i32(pNeighb[ABOVE][0]+((pNeighb[LEFT][y]-pAboveLeft)>>1),
 						0, 255);
 				end
 				foreach uint x in 1 .. nS-1
 				do
-					result[x][0] := pNeighb[ABOVE][x];
+					result[cIdx][x][0] := pNeighb[ABOVE][x];
 				end
 			else
 				foreach uint x in 0 .. nS-1
 				do
-					result[x][0] := clip_i32(pNeighb[LEFT][0]+((pNeighb[ABOVE][x]-pAboveLeft)>>1),
+					result[cIdx][x][0] := clip_i32(pNeighb[LEFT][0]+((pNeighb[ABOVE][x]-pAboveLeft)>>1),
 						0, 255);
 				end
 				foreach uint y in 1 .. nS-1
 				do
-					result[0][y] := pNeighb[LEFT][y];
+					result[cIdx][0][y] := pNeighb[LEFT][y];
 				end
 			end
 			foreach uint x in 1 .. nS-1
 			do
 				foreach uint y in 1 .. nS-1
 				do
-					result[x][y] := pNeighb[neighbIdx][x];
+					result[cIdx][x][y] := pNeighb[neighbIdx][x];
 				end
 			end
 		else
@@ -466,7 +435,7 @@ int(size=9) invAngle[64] =
 			do
 				foreach uint y in 0 .. nS-1
 				do
-					result[x][y] := pNeighb[neighbIdx][x];
+					result[cIdx][x][y] := pNeighb[neighbIdx][x];
 				end
 			end
 		end
@@ -514,6 +483,9 @@ int(size=9) invAngle[64] =
 		predModeTab[1] := predMode[1];
 		predModeTab[2] := predMode[1];
 
+		if(predMode[1] = 35) then
+			println("Warning : we don't manage Intra_FromLuma yet !!!");
+		end
 		log2NS := 2;
 		while((1<<log2NS) < nS)
 		do
@@ -544,9 +516,63 @@ int(size=9) invAngle[64] =
 	getSplitTrafo.isFalse: action SplitTransf:[splitTrafo] ==>
 	guard
 		not splitTrafo && trafoTreeDepth>-1
+	var
+		uint(size=2)  cIdxMax,
+		uint(size=7)  treeNS,
+		uint(size=3)  treeLog2NS
 	do
+		/* Computing the size and the address of the current block. */
+		treeLog2NS := log2NS - trafoTreeDepth;
+		treeNS := nS;
+		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		foreach uint idx in 1 .. trafoTreeDepth
+		do
+			treeNS := treeNS >> 1;
+			if((trafoTreeIdx[idx]&1) != 0) then
+				treeAddr[0] := treeAddr[0] + treeNS;
+			end
+			if((trafoTreeIdx[idx]&2) != 0) then
+				treeAddr[1] := treeAddr[1] + treeNS;
+			end
+		end
 
+		if(treeLog2NS != 2) then
+			cIdxMax := 3;
+		else
+			if((cuAddr[0]&7) = 0 && (cuAddr[1]&7) = 0) then
+				cIdxMax := 3;
+			else
+				cIdxMax := 1;
+			end
+		end
 
+		foreach uint cIdx in 0 .. cIdxMax-1
+		do
+			predMode := predModeTab[cIdx];
+			if(cIdx = 1) then
+				if(treeLog2NS != 2) then
+					treeNS := treeNS >> 1;
+					treeLog2NS := treeLog2NS - 1;
+				end
+				treeAddr[0] := treeAddr[0] >> 1;
+				treeAddr[1] := treeAddr[1] >> 1;
+			end
+			getNeighbSamples(treeAddr, cIdx, treeNS);
+			if(cIdx=0) then
+				filterNeighbSamp(treeNS);
+			end
+			if(predMode = INTRA_PLANAR) then
+				intraPlanarPred(cIdx, treeNS, treeLog2NS);
+			else if(predMode = INTRA_DC) then
+				intraDcPred(cIdx, treeNS, treeLog2NS);
+			else
+				intraAngularPred(cIdx, treeNS);
+			end end
+		end
+
+		numBlkToSent := treeNS*treeNS/16;
+		idxBlk := 0;
+		/* going to the next "branch of the tree" */
 		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
 		while(trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4)
 		do
@@ -562,6 +588,62 @@ int(size=9) invAngle[64] =
 		trafoTreeDepth = -1
 	end
 
+	sendSamples.launch: action ==> PredSample:[sampleVal] repeat 16
+	guard
+		idxBlk < numBlkToSent
+	var
+		uint(size=8) sampleVal[4*4],
+		uint(size=7) idxSample := 0,
+		uint(size=16) blkAddr[2]
+	do
+		rasterScanToAbsCoord(idxBlk, blkAddr);
+
+		foreach uint y in blkAddr[1] .. blkAddr[1]+3
+		do
+			foreach uint x in blkAddr[0] .. blkAddr[0]+3
+			do
+				sampleVal[idxSample] := result[0][x][y];
+				idxSample := idxSample + 1;
+			end
+		end
+		idxBlk := idxBlk + 1;
+	end
+
+	sendSamples.done: action ==>
+	guard
+		idxBlk = numBlkToSent
+	do
+		idxBlk := 0;
+	end
+
+	getSamples.launch: action ==>
+	guard
+		idxBlk < numBlkToSent
+	var
+		uint(size=8) sampleVal[8*8],
+		uint(size=7) idxSample := 0,
+		uint(size=16) blkAddr[2]
+	do
+		rasterScanToAbsCoord(idxBlk, blkAddr);
+		blkAddr[0] := blkAddr[0] + treeAddr[0];
+		blkAddr[1] := blkAddr[1] + treeAddr[1];
+
+		foreach uint y in blkAddr[1] .. blkAddr[1]+3
+		do
+			foreach uint x in blkAddr[0] .. blkAddr[0]+3
+			do
+				currPict[0][x][y] := sampleVal[idxSample];
+				idxSample := idxSample + 1;
+			end
+		end
+		idxBlk := idxBlk + 1;
+	end
+
+	getSamples.done: action ==>
+	guard
+		idxBlk = numBlkToSent
+	end
+
 	schedule fsm GetPartMode:
 		GetPartMode(isNewSliceOrPict )--> GetPartMode;
 		GetPartMode(getPartMode      )--> GetCuInfo;
@@ -574,7 +656,14 @@ int(size=9) invAngle[64] =
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
 
 		GetSplitTrafo (getSplitTrafo.isTrue  )--> GetSplitTrafo;
-		GetSplitTrafo (getSplitTrafo.isFalse )--> GetSplitTrafo;
+		GetSplitTrafo (getSplitTrafo.isFalse )--> SendSamples;
 		GetSplitTrafo (getSplitTrafo.done    )--> GetCuInfo;
+
+		SendSamples (sendSamples.launch )--> SendSamples;
+		SendSamples (sendSamples.done   )--> GetSamples;
+
+		GetSamples (getSamples.launch )--> GetSamples;
+		GetSamples (getSamples.done   )--> GetSplitTrafo;
+
 	end
 end
