@@ -416,6 +416,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	uint(size= 1) sps_chroma_pred_from_luma_enabled_flag[NB_MAX_SPS];
 	uint(size= 1) sps_transform_skip_enabled_flag[NB_MAX_SPS];
+	uint(size= 1) nsrqt_enabled_flag[NB_MAX_SPS];
 	uint(size= 1) sps_sample_adaptive_offset_enabled_flag[NB_MAX_SPS];
 	uint(size= 1) sps_adaptive_loop_filter_enabled_flag[NB_MAX_SPS];
 	uint(size= 8) sps_num_short_term_ref_pic_sets[NB_MAX_SPS];
@@ -435,7 +436,8 @@ actor Algo_Parser ()
 		vld_u_name(  1, fifo, res, "loop_filter_across_slice_flag           ");
 		sps_loop_filter_across_slice_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "asymmetric_motion_partitions_enabled_flag"); 
-		vld_u_name(  1, fifo, res, "non_square_quadtree_enabled_flag        "); 
+		vld_u_name(  1, fifo, res, "non_square_quadtree_enabled_flag        ");
+		nsrqt_enabled_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag     ");
 		sps_sample_adaptive_offset_enabled_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "adaptive_loop_filter_enabled_flag       ");
@@ -545,6 +547,7 @@ actor Algo_Parser ()
 	uint(size= 2) pps_SliceGranularity[NB_MAX_PPS];
 	uint(size=16) pps_diff_cu_qp_delta_depth[NB_MAX_PPS];
 	uint(size= 1) pps_output_flag_present_flag[NB_MAX_PPS];
+	uint(size= 1) pps_transquant_bypass_enable_flag[NB_MAX_PPS];
 	uint(size= 1) pps_tile_control_present_flag[NB_MAX_PPS];
 	uint(size= 8) pps_num_tile_columns_minus1[NB_MAX_PPS];
 	uint(size= 8) pps_num_tile_rows_minus1[NB_MAX_PPS];
@@ -583,6 +586,7 @@ actor Algo_Parser ()
 		pps_output_flag_present_flag[pps_id]:=res[0];
 		vld_u_name(  1, fifo, res, "dependent_slices_enabled_flag           ");
 		vld_u_name(  1, fifo, res, "transquant_bypass_enable_flag           ");
+		pps_transquant_bypass_enable_flag[pps_id]:=res[0];
 		vld_u_name(  2, fifo, res, "tiles_or_entropy_coding_sync_idc        ");
 		pps_tiles_or_entropy_coding_sync_idc[pps_id]:=res[0];
 		if pps_tiles_or_entropy_coding_sync_idc[pps_id] = 1 then
@@ -976,7 +980,7 @@ actor Algo_Parser ()
 	 	or slice_sample_adaptive_offset_flag[1] = 1 
 	 	or slice_sample_adaptive_offset_flag[2] = 1 
 	 	or  slice_header_disable_deblocking_filter_flag = 0)) then
-		vld_u_name( 1,  fifo, res, "slice_loop_filter_across_slices_enabled_flag         ");
+		vld_u_name( 1,  fifo, res, "slice_loop_filter_across_slices_enabled_flag");
  	end
  	
 	   se_idx := se_idx + 1;
@@ -1217,8 +1221,8 @@ actor Algo_Parser ()
 	uint(size=32) CtbAddrTS;
 	uint(size=32) SliceCbAddrZS;
 	uint(size= 1) moreDataFlag;
-//	 int(size=16) AlfCuFlagIdx;
-
+	 int(size= 8) CuQpDelta;
+	 
 	read_SliceData.start : action ==>
 	guard
 		sliceData_idx = 2
@@ -1228,15 +1232,11 @@ actor Algo_Parser ()
 		decodeStart(codIRange, codIOffset, fifo);
 		contextInit(slice_qp, slice_type, ctxTable);
 		//
-		CtbAddrRS := SliceCtbAddrRS;
-		CtbAddrTS := CtbAddrTS_tab[CtbAddrRS];
-		SliceCbAddrZS := slice_address<< ( ( sps_log2_diff_max_min_coding_block_size[sps_id] - pps_SliceGranularity[pps_id] ) <<1 );
+		CtbAddrRS     := SliceCtbAddrRS;
+		CtbAddrTS     := CtbAddrTS_tab[CtbAddrRS];
+		SliceCbAddrZS := slice_address << ( ( sps_log2_diff_max_min_coding_block_size[sps_id] - pps_SliceGranularity[pps_id] ) <<1 );
 		moreDataFlag  := 1;
-		//
-		//
-		//if adaptive_loop_filter_flag = 1 and alf_cu_control_flag = 1 then
-		//	AlfCuFlagIdx := -1;
-		//end
+		CuQpDelta     := 0;	
 		sliceData_idx := 3;
 	end
 	/**************************************************************************
@@ -1251,43 +1251,75 @@ actor Algo_Parser ()
 	guard
 		sliceData_idx = 3 and isFifoFull(fifo)
 	var
-		uint(size=32) CtbSize        = 1 << Log2CtbSize,
-		uint(size= 1) slice_loop_filter_across_slices_enabled_flag = 0
+		uint(size=32) CtbSize        = 1 << Log2CtbSize
 	do
 		xCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0 );
 		yCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1 );
 		NumPCMBlock    := 0;
 		CtbAddrInSlice := CtbAddrRS - ( slice_address >> pps_SliceGranularity[pps_id] );
-		foreach int cIdx in 0 ..  2 do
+		//
+				foreach int cIdx in 0 ..  2 do
 			if slice_sample_adaptive_offset_flag[cIdx] = 1 then 
-				sao_param( xCtb >> Log2CtbSize, yCtb >> Log2CtbSize, cIdx ,codIRange, codIOffset, ctxTable, fifo,
-								CtbAddrInSlice, slice_loop_filter_across_slices_enabled_flag
-				);
+				sao_param( xCtb >> Log2CtbSize, yCtb >> Log2CtbSize, cIdx ,codIRange, codIOffset, ctxTable, fifo, CtbAddrInSlice, 0);
 			end
 		end
-		sliceData_idx := 5;
-//		sliceData_idx := 4;
+		sliceData_idx := 6;
+		//
+//		sao_cIdx       := 0;
+//		sao_rx		   := xCtb;
+//		sao_ry		   := yCtb;
+//		sliceData_idx  := 4;
 	end
 	/**************************************************************************
 	 * read_SliceData_gotoSaoParam
 	 *************************************************************************/	
 	read_SliceData_gotoSaoParam : action ==>
 	guard
-		sliceData_idx = 4
+		sliceData_idx = 4,
+		sao_cIdx     <= 2 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
 	do
-		sliceData_idx	:= 5;
-		sao_cIdx		:= 0;
-		sao_rx			:= xCtb;
-		sao_ry			:= yCtb;
+		sliceData_idx := 5;
+	end
+	read_SliceData.noGotoSaoParam_Loop : action ==>
+	guard
+		sliceData_idx = 4,
+		sao_cIdx     <= 2 and slice_sample_adaptive_offset_flag[sao_cIdx] = 0
+	do
+		sao_cIdx	:= sao_cIdx + 1;
+	end
+	read_SliceData.noGotoSaoParam_endLoop : action ==>
+	guard
+		sliceData_idx = 4,
+		sao_cIdx      = 3
+	do
+		sliceData_idx := 6;
+	end
+	/**************************************************************************
+	 * read_SliceData_retSaoParam
+	 *************************************************************************/	
+	read_SliceData.retSaoParam_Loop : action ==>
+	guard
+		sliceData_idx = 5,
+		sao_cIdx      < 2
+	do
+		sliceData_idx := 4;
+		sao_cIdx	  := sao_cIdx + 1;
+	end
+	read_SliceData.retSaoParam_endLoop : action ==>
+	guard
+		sliceData_idx = 5,
+		sao_cIdx      = 2
+	do
+		sliceData_idx := 6;
 	end
 	/**************************************************************************
 	 * read_SliceData_gotoCodingTree
 	 *************************************************************************/	
 	read_SliceData_gotoCodingTree : action ==>
 	guard
-		sliceData_idx = 5
+		sliceData_idx = 6
 	do
-		sliceData_idx				:= 6;
+		sliceData_idx				:= 7;
 		ctStack_idx					:= 0;
 		ctStack[0][CT_idx]			:= 1;
 		ctStack[0][CT_x0]			:= xCtb;
@@ -1300,17 +1332,16 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SliceData.retCodingTree : action ==>
 	guard
-		sliceData_idx = 6 and isFifoFull(fifo)
+		sliceData_idx = 7 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1]
 	do
 		CtbAddrTS := CtbAddrTS + 1;
-		if( moreDataFlag = 1 and ( ( pps_tiles_or_entropy_coding_sync_idc[pps_id] = 1 and
-			TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1 ] ) or
-			( 	pps_tiles_or_entropy_coding_sync_idc[pps_id] = 2 and
-				pps_num_substreams_minus1[pps_id] > 0 and
-				CtbAddrTS / PicWidthInCtbs <= pps_num_substreams_minus1[pps_id] and
-				CtbAddrTS mod PicWidthInCtbs = 0 ) ) ) then
+		CtbAddrTS := CtbAddrTS_tab[CtbAddrRS];		
+		if( moreDataFlag = 1 and ( 
+			( pps_tiles_or_entropy_coding_sync_idc[pps_id] = 1 and TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1 ] ) or
+			( pps_tiles_or_entropy_coding_sync_idc[pps_id] = 2 and CtbAddrTS mod PicWidthInCtbs = 0 ) 
+			) ) then
 //			rbsp_trailing_bits( )
 			showBits (24, fifo, res);
 			if( res[0] = 0x000002 ) then
@@ -1318,14 +1349,14 @@ actor Algo_Parser ()
 //			tile_idx_minus_1 u(v)
 			end
 	 	end
-		sliceData_idx := 7;
+		sliceData_idx := 8;
 	end
 	/**************************************************************************
 	 * read_SliceData.whileLoop
 	 *************************************************************************/	
 	read_SliceData.whileLoop: action ==>
 	guard
-		sliceData_idx = 7,
+		sliceData_idx = 8,
 		moreDataFlag = 1
 	do
 		sliceData_idx := 3;
@@ -1335,7 +1366,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SliceData_end: action ==>
 	guard
-		sliceData_idx = 7,
+		sliceData_idx = 8,
 		moreDataFlag = 0	
 	end
 
@@ -1354,7 +1385,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_SaoParam.start : action ==>
 	guard
-		sao_cIdx < 3 and isFifoFull(fifo)
+		isFifoFull(fifo)
 	var
 		 int(size=32) res[1],
 		bool CtbInSlice,
@@ -1404,14 +1435,6 @@ actor Algo_Parser ()
 				end
 			end
 		end
-		sao_cIdx := sao_cIdx + 1;
-	end
-	/**************************************************************************
-	 * read_SaoParam_end
-	 *************************************************************************/	
-	read_SaoParam_end : action ==>
-	guard
-		sao_cIdx = 3		
 	end
 	/**************************************************************************
 	 **************************************************************************
@@ -1433,37 +1456,32 @@ actor Algo_Parser ()
 		uint(size=32) res[1],
 		uint(size= 8) ct_x0		 = ctStack[ctStack_idx][CT_x0],
 		uint(size= 8) ct_y0		 = ctStack[ctStack_idx][CT_y0],
-		uint(size= 8) ct_log2CbSize = ctStack[ctStack_idx][CT_log2CbSize]
+		uint(size= 8) ct_log2CbSize = ctStack[ctStack_idx][CT_log2CbSize],
+		uint(size= 8) Log2MinCuQpDeltaSize = Log2CtbSize - pps_diff_cu_qp_delta_depth[pps_id] - pps_SliceGranularity[pps_id]
 	do
-		println("read_CodingTree.start ");
+		println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
 		split_coding_unit_flag[ct_x0][ct_y0] := 0;
 		if	ct_x0 + ( 1 << ct_log2CbSize ) <= sps_pic_width_in_luma_samples[sps_id] and
 			ct_y0 + ( 1 << ct_log2CbSize ) <= sps_pic_height_in_luma_samples[sps_id] and
 			MinCbAddrZS[ ct_x0 >> Log2MinCbSize ][ ct_y0 >> Log2MinCbSize ] >= SliceCbAddrZS and
-			ct_log2CbSize > Log2MinCbSize and
-			NumPCMBlock = 0 then
+			ct_log2CbSize > Log2MinCbSize and NumPCMBlock = 0 then
 			get_SPLIT_CODING_UNIT_FLAG(codIRange, codIOffset, ctxTable, fifo, res,
 										0, false, 0, false, 0);
 			split_coding_unit_flag[ct_x0][ct_y0] := res[0];
 		end
 		IsCuQpDeltaCoded := 1;
-/*
- 		if( adaptive_loop_filter_flag and alf_cu_control_flag and
-			ct_cbDepth <= alf_cu_control_max_depth and
-			( ct_cbDepth = alf_cu_control_max_depth or
-				split_coding_unit_flag[ct_x0][ct_y0] = 0 ) ) {
-			AlfCuFlagIdx++
-		if( (diff_cu_qp_delta_depth > 0 ) && log2CbSize >= log2MinCUDQPSize )
-			IsCuQpDeltaCoded := 0 
-*/
+
+		if( (pps_diff_cu_qp_delta_depth[pps_id] > 0 ) and ct_log2CbSize >= Log2MinCuQpDeltaSize ) then
+			IsCuQpDeltaCoded := 0; 
+			CuQpDelta        := 0;
+		end
+
 		if split_coding_unit_flag[ct_x0][ct_y0] = 1 then
 			ctStack[ctStack_idx][CT_x1]  := ct_x0 + ( ( 1 << ct_log2CbSize ) >> 1 );
 			ctStack[ctStack_idx][CT_y1]  := ct_y0 + ( ( 1 << ct_log2CbSize ) >> 1 );
 			ctStack[ctStack_idx][CT_idx] := 2;
 		else
 			ctStack[ctStack_idx][CT_idx] := 6;
-//			if(adaptive_loop_filter_flag && alf_cu_control_flag )
-//				AlfCuFlag[ x0 ][ y0 ] = alf_cu_flag[ AlfCuFlagIdx ]		
 		end
 	end
 	/**************************************************************************
@@ -1611,17 +1629,20 @@ actor Algo_Parser ()
 		ctStack[ctStack_idx][CT_idx] = 7 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
-		uint(size= 8) ct_x0		 = ctStack[ctStack_idx][CT_x0],
-		uint(size= 8) ct_y0		 = ctStack[ctStack_idx][CT_y0],
-		uint(size= 8) ct_log2CbSize = ctStack[ctStack_idx][CT_log2CbSize]
+		uint(size= 8) ct_x0			= ctStack[ctStack_idx][CT_x0],
+		uint(size= 8) ct_y0			= ctStack[ctStack_idx][CT_y0],
+		uint(size= 8) ct_log2CbSize = ctStack[ctStack_idx][CT_log2CbSize],
+		uint(size= 8) CbSize        = 1 << ct_log2CbSize
 	do
-		if split_coding_unit_flag[ ct_x0 ][ ct_y0 ] = 1 then
- 			if	( (ct_x0 + (1<<ct_log2CbSize) ) & ((1<<pps_SliceGranularity[pps_id])-1) ) != 0 and
-				( (ct_y0 + (1<<ct_log2CbSize) ) & ((1<<pps_SliceGranularity[pps_id])-1) ) != 0 and
-				NumPCMBlock = 0 then
-//				end_of_slice_flag
-				moreDataFlag := 1 - res[0];
-			end
+		if  ( ( (ct_x0 + CbSize ) & ((1<<pps_SliceGranularity[pps_id])-1) ) != 0 or 
+				(ct_x0 + CbSize ) >=  sps_pic_width_in_luma_samples[sps_id]
+			) and
+			( ( (ct_y0 + CbSize ) & ((1<<pps_SliceGranularity[pps_id])-1) ) != 0 or
+				(ct_y0 + CbSize ) >=  sps_pic_height_in_luma_samples[sps_id]
+			) and
+			NumPCMBlock = 0 then
+//			end_of_slice_flag
+			moreDataFlag := 1 - res[0];
 		end
 		ctStack[ctStack_idx][CT_idx] := 8;
 	end
@@ -1676,11 +1697,11 @@ actor Algo_Parser ()
 		uint(size=32) res[1]//,
 //		uint(size=16) CurrCbAddrTS = MinCbAddrZS[ cu_x0 >> Log2MinCbSize ][ cu_y0 >> Log2MinCbSize ]
 	do
-		println("read_CodingUnit.start ");
+		println("read_CodingUnit.start ("+cu_x0+", "+cu_y0+", "+cu_log2CbSize+")");
 		predMode := MODE_INTRA;
-		//if transquant_bypass_enable_flag != 0 then
+		if pps_transquant_bypass_enable_flag[pps_id] != 0 then
 			//cu_transquant_bypass_flag
-		//end
+		end
 		if slice_type != I_SLICE then
 			// get skip_flag
 			if res[0] != 0 then
@@ -1707,6 +1728,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_CodingUnit.noGoto1
 	 *************************************************************************/
+	int(size= 8) prevIntraLumaPredMode[PART_nRx2N+1];
 	read_CodingUnit.noGoto1 : action ==>
 	guard 
 		cu_idx = 2 and isFifoFull(fifo),
@@ -1732,28 +1754,62 @@ actor Algo_Parser ()
 		cu_y2  := cu_y1 - ( ( 1 << cu_log2CbSize ) >> 2 );
 		cu_x3  := cu_x1 + ( ( 1 << cu_log2CbSize ) >> 2 );
 		cu_y3  := cu_y1 + ( ( 1 << cu_log2CbSize ) >> 2 );
-		cu_idx := 3;
+		cu_idx := 4;
+		if( predMode = MODE_INTRA ) then
+ 			pcm_flag := 0;
+			if  partMode = PART_2Nx2N and sps_pcm_enabled_flag[sps_id] = 1 and
+				pu_log2CbSize >= Log2MinIPCMCUSize and
+				pu_log2CbSize <= Log2MaxIPCMCUSize then
+				//pcm_flag := res[0]
+			end
+			if( pcm_flag = 1) then
+				//num_subsequent_pcm
+				// NumPCMBlock = res[0] + 1
+				byte_align(fifo);
+				cu_idx := 3;
+			else 
+				get_PREV_INTRA_LUMA_PRED(codIRange, codIOffset, ctxTable, fifo, prevIntraLumaPredMode, partMode);
+				get_INTRA_CHROMA_PRED_MODE(codIRange, codIOffset, ctxTable, fifo, res, sps_chroma_pred_from_luma_enabled_flag[sps_id]);
+				//intra_chroma_pred_mode[pu_x0][pu_y0] := res[0]
+/*
+ 				SignalledAsChromaDC = ( chroma_pred_from_luma_enabled_flag ?
+						intra_chroma_pred_mode[pu_x0][pu_y0] = 3 :
+						intra_chroma_pred_mode[pu_x0][pu_y0] = 2 )
+*/
+				cu_idx := 8;
+			end
+		end
+	end
+	/**************************************************************************
+	 * read_CodingUnit_gotoPCMSample
+	 *************************************************************************/
+	read_CodingUnit_gotoPCMSample : action ==>
+	guard 
+		cu_idx = 3
+	do
+		PCMSample_log2CbSize := cu_log2CbSize;
+		cu_idx				 := 8;
 	end
 	/**************************************************************************
 	 * read_CodingUnit_gotoPredictionUnit.goto2
 	 *************************************************************************/
 	read_CodingUnit_gotoPredictionUnit.goto2 : action ==>
 	guard 
-		cu_idx = 3 or cu_idx = 4 or
-		cu_idx = 5 or cu_idx = 6
+		cu_idx = 4 or cu_idx = 5 or
+		cu_idx = 6 or cu_idx = 7
 	do
 		pu_idx		  := 1;
 		pu_x0		  := cu_x0;
 		pu_y0		  := cu_y0;
 		pu_log2CbSize := cu_log2CbSize;
-		if cu_idx = 3 then
-			cu_idx    := 4;
+		if cu_idx = 4 then
+			cu_idx    := 5;
 //	FIXME :		if partMode = PART_2Nx2N then
 			if partMode = PART_NxN then
-				cu_idx := 7;
+				cu_idx := 8;
 			end
-		elsif cu_idx = 4 then
-			cu_idx := 7;
+		elsif cu_idx = 5 then
+			cu_idx := 8;
 			if partMode = PART_2NxN then
 				pu_y0 := cu_y1;
 			elsif partMode = PART_Nx2N then
@@ -1767,14 +1823,14 @@ actor Algo_Parser ()
 			elsif partMode = PART_nRx2N then
 				pu_x0 := cu_x3;
 			else /* PART_NxN */
-				cu_idx := 5;
+				cu_idx := 6;
 				pu_x0  := cu_x1;
 			end
-		elsif cu_idx = 5 then
-			cu_idx := 6;
+		elsif cu_idx = 6 then
+			cu_idx := 7;
 			pu_y0  := cu_y1;
 		else
-			cu_idx := 7;
+			cu_idx := 8;
 			pu_x0  := cu_x1;
 			pu_y0  := cu_y1;
 		end
@@ -1784,23 +1840,22 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_CodingUnit.endFunction : action ==>
 	guard 
-		cu_idx = 7
+		cu_idx = 8
 	var
 		uint(size=32) res[1] := [0]
 	do
-		cu_idx := 9;
-		if sps_pcm_enabled_flag[sps_id] = 0 then
+		cu_idx := 10;
+		if pcm_flag = 0 then
 			if( predMode != MODE_INTRA and not(partMode = PART_2Nx2N and merge_flag[cu_x0][cu_y0] = 1) ) then
 				//no_residual_data_flag
 			end
 			if res[0] = 0 then
-			
 				MaxTrafoDepth := if predMode = MODE_INTRA then
 									sps_max_transform_hierarchy_depth_intra[sps_id] + IntraSplitFlag
 								else
 									sps_max_transform_hierarchy_depth_inter[sps_id]
 								end;
-				cu_idx	:= 8;				
+				cu_idx	:= 9;				
 				//transform_tree( x0, y0, x0, y0, x0, y0, log2CbSize, log2CbSize, log2CbSize, 0, 0 )
 			end
 		end
@@ -1810,7 +1865,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_CodingUnit_gotoTransformTree : action ==>
 	guard 
-		cu_idx = 8
+		cu_idx = 9
 	do
 		cu_idx							:= 9;
 		ttStack_idx						:= 0;
@@ -1832,7 +1887,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	read_CodingUnit_end : action ==>
 	guard 
-		 cu_idx = 9
+		 cu_idx = 10
 	do
 		println("read_CodingUnit_end ");
 	end
@@ -1857,40 +1912,15 @@ actor Algo_Parser ()
 		isFifoFull(fifo),
 		pu_idx = 1
 	var
-		uint(size=32) res[1],
-		uint(size= 8) Log2MinIPCMCUSize = sps_log2_min_coding_block_size_minus3[sps_id] + 3,
-		uint(size= 8) Log2MaxIPCMCUSize = sps_log2_min_coding_block_size_minus3[sps_id] + 3
+		uint(size=32) res[1]
 	do
-		println("read_PredictionUnit.start ");
+		println("read_PredictionUnit.start ("+pu_x0+", "+pu_y0+", "+pu_log2CbSize+")");
 		pu_idx := 7;
 		if ( skip_flag[pu_x0][pu_y0] = 1) then
 			if( MaxNumMergeCand > 1 ) then
 				//merge_idx[ x0 ][ y0 ]
 			end
 			pu_idx := 7;
-		elsif( predMode = MODE_INTRA ) then
- 			pcm_flag := 0;
-			if  partMode = PART_2Nx2N and sps_pcm_enabled_flag[sps_id] = 1 and
-				pu_log2CbSize >= Log2MinIPCMCUSize and
-				pu_log2CbSize <= Log2MaxIPCMCUSize then
-				//pcm_flag := res[0]
-			end
-			if( pcm_flag = 1) then
-				//num_subsequent_pcm
-				// NumPCMBlock = res[0] + 1
-				byte_align(fifo);
-				pu_idx := 2;
-			else 
-				get_PREV_INTRA_LUMA_PRED(codIRange, codIOffset, ctxTable, fifo, res, partMode);
-				get_INTRA_CHROMA_PRED_MODE(codIRange, codIOffset, ctxTable, fifo, res, sps_chroma_pred_from_luma_enabled_flag[sps_id]);
-				//intra_chroma_pred_mode[pu_x0][pu_y0] := res[0]
-/*
- 				SignalledAsChromaDC = ( chroma_pred_from_luma_enabled_flag ?
-						intra_chroma_pred_mode[pu_x0][pu_y0] = 3 :
-						intra_chroma_pred_mode[pu_x0][pu_y0] = 2 )
-*/
-				pu_idx := 7;
-			end
 		else /* MODE_INTER */
 			//merge_flag[pu_x0][pu_y0] := res[0]
 			if res[0] = 1 then
@@ -1915,16 +1945,6 @@ actor Algo_Parser ()
 				pu_idx := 3;
 			end
 		end
-	end
-	/**************************************************************************
-	 * read_PredictionUnit_gotoPCMSample
-	 *************************************************************************/
-	read_PredictionUnit_gotoPCMSample : action ==>
-	guard 
-		pu_idx = 2
-	do
-		PCMSample_log2CbSize := pu_log2CbSize;
-		pu_idx				 := 7;
 	end
 	/**************************************************************************
 	 * read_PredictionUnit.retMVDcoding_goto1
@@ -1978,7 +1998,7 @@ actor Algo_Parser ()
 	guard 
 		pu_idx = 7
 	do
-		println("read_PredictionUnit_end ");
+		println("read_PredictionUnit_end");
 	end
 	
 	/**************************************************************************
@@ -2001,7 +2021,6 @@ actor Algo_Parser ()
 		uint(size= 1) mvd_sign_flag_0  := 0,
 		 int(size=32) abs_mvd_minus2_1 := 0,
 		uint(size= 1) mvd_sign_flag_1  := 0
-		
 	do
 		println("read_MVDCoding");
 		abs_mvd_greater0_flag_0 := res[0];
@@ -2081,20 +2100,27 @@ actor Algo_Parser ()
 	uint(size= 1) cbf_cb[256][256][256];
 	uint(size= 1) cbf_cr[256][256][256];
 	uint(size= 1) cbf_luma[256][256][256];
-	
-	
+		
 	function getInterTbSplitDirectionL(uint(size= 8) log2TrafoSize) --> uint(size= 3) :
-		if( ( ( log2TrafoSize = Log2MaxTrafoSize or ( log2TrafoSize < Log2MaxTrafoSize and ttStack[ttStack_idx][TT_trafoDepth] = 0 ) )
-			and log2TrafoSize > ( Log2MinTrafoSize + 1 )
-			and ( partMode = PART_2NxN or partMode = PART_2NxnU or partMode = PART_2NxnD ) )
+		if( nsrqt_enabled_flag[sps_id] = 1 
+			and ( 
+					( log2TrafoSize = Log2MaxTrafoSize or ( log2TrafoSize < Log2MaxTrafoSize and ttStack[ttStack_idx][TT_trafoDepth] = 0 ) )
+				and log2TrafoSize > ( Log2MinTrafoSize + 1 )
+				and ( partMode = PART_2NxN or partMode = PART_2NxnU or partMode = PART_2NxnD )
+				)
 			or ( log2TrafoSize = ( Log2MinTrafoSize + 1 )
-			and ttStack[ttStack_idx][TT_log2TrafoWidth] < ttStack[ttStack_idx][TT_log2TrafoHeight] ) ) then
+				and ttStack[ttStack_idx][TT_log2TrafoWidth] < ttStack[ttStack_idx][TT_log2TrafoHeight] )
+			) then
 			0
-		elsif( ( ( log2TrafoSize = Log2MaxTrafoSize or ( log2TrafoSize < Log2MaxTrafoSize and ttStack[ttStack_idx][TT_trafoDepth] =  0 ) )
-			and log2TrafoSize > ( Log2MinTrafoSize + 1 )
-			and ( partMode = PART_Nx2N or partMode = PART_nLx2N or partMode = PART_nRx2N ) )
+		elsif( nsrqt_enabled_flag[sps_id] = 1 
+			and (
+					( log2TrafoSize = Log2MaxTrafoSize or ( log2TrafoSize < Log2MaxTrafoSize and ttStack[ttStack_idx][TT_trafoDepth] =  0 ) )
+				and log2TrafoSize > ( Log2MinTrafoSize + 1 )
+				and ( partMode = PART_Nx2N or partMode = PART_nLx2N or partMode = PART_nRx2N ) 
+				)
 			or  ( log2TrafoSize = ( Log2MinTrafoSize + 1 )
-			and ttStack[ttStack_idx][TT_log2TrafoWidth] > ttStack[ttStack_idx][TT_log2TrafoHeight] ) ) then
+				and ttStack[ttStack_idx][TT_log2TrafoWidth] > ttStack[ttStack_idx][TT_log2TrafoHeight] )
+			) then
 			1
 		else
 			2
@@ -2130,6 +2156,8 @@ actor Algo_Parser ()
 		uint(size= 8) log2TrafoWidth	= ttStack[ttStack_idx][TT_log2TrafoWidth],
 		uint(size= 8) log2TrafoHeight	= ttStack[ttStack_idx][TT_log2TrafoHeight],
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
+		uint(size= 8) tmpTrafoWidth		= (1<<log2TrafoWidth),
+		uint(size= 8) tmpTrafoHeight	= (1<<log2TrafoHeight),
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
 		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode = PART_2Nx2N and trafoDepth = 0 then 1 else 0 end,
@@ -2140,10 +2168,10 @@ actor Algo_Parser ()
 		uint(size=3)  interTbSplitDirectionC
 	do	
 		println("read_TransformTree.start "+x0L+" "+y0L+" "+x0C+" "+y0C+" "+
-			ttStack[ttStack_idx][TT_xBase]+" "+
-			ttStack[ttStack_idx][TT_yBase]+" "+
+			//ttStack[ttStack_idx][TT_xBase]+" "+
+			//ttStack[ttStack_idx][TT_yBase]+" "+
 			//ttStack[ttStack_idx][TT_log2CbSize]+" "+
-			log2TrafoWidth+" "+log2TrafoHeight+" "+trafoDepth+" "+
+			tmpTrafoWidth+" "+tmpTrafoHeight+" "+trafoDepth+" "+
 			ttStack[ttStack_idx][TT_blkIdx]
 		);
 		ttStack[ttStack_idx][TT_idx] := 7;
@@ -2156,11 +2184,11 @@ actor Algo_Parser ()
 			split_transform_flag[ x0L ][ y0L ][ trafoDepth ] := 1;					
 		end
 		if( trafoDepth = 0 or log2TrafoSize > 2 ) then
-			if( trafoDepth = 0 or cbf_cb[ xBase ][ yBase ][ trafoDepth ] = 1 ) then
+			if( trafoDepth = 0 or cbf_cb[ xBase ][ yBase ][ trafoDepth - 1] = 1 ) then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 				cbf_cb[ x0C ][ y0C ][ trafoDepth ] := res[0];
 			end
-			if( trafoDepth = 0 or cbf_cr[ xBase ][ yBase ][ trafoDepth ] = 1) then
+			if( trafoDepth = 0 or cbf_cr[ xBase ][ yBase ][ trafoDepth - 1] = 1) then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 				cbf_cr[ x0C ][ y0C ][ trafoDepth ] := res[0];
 			end
@@ -2336,9 +2364,13 @@ actor Algo_Parser ()
 		isFifoFull(fifo),
 		tu_idx = 1
 	var
+		uint(size= 8) tmpTrafoWidth		= (1<<tu_log2TrafoWidth),
+		uint(size= 8) tmpTrafoHeight	= (1<<tu_log2TrafoHeight),
 		uint(size=32) res[1]
 	do
-		println("read_TransformUnit.start ");
+		println("read_TransformUnit.start ("+tu_x0L+", "+tu_y0L+", "+tu_x0C+", "+tu_y0C+", "+
+				tmpTrafoWidth+", "+tmpTrafoHeight+", "+tu_trafoDepth+", "+tu_blkIdx+")"
+		);
 		tu_idx := 7;
 		if  cbf_luma[ tu_x0L ][ tu_y0L ][ tu_trafoDepth ] = 1 or
 			cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 or
@@ -2349,7 +2381,7 @@ actor Algo_Parser ()
 			end
 			tu_log2TrafoSize  := ( tu_log2TrafoWidth + tu_log2TrafoHeight ) >> 1;
 			if predMode = MODE_INTRA then
-				tu_scanIdx  := ScanType[ tu_log2TrafoSize - 2 ][ 0/*IntraPredMode*/ ];
+				tu_scanIdx  := ScanType[ tu_log2TrafoSize - 2 ][ prevIntraLumaPredMode[tu_blkIdx]];
 				tu_scanIdxC := ScanType[ tu_log2TrafoSize - 2 ][ 0/*IntraPredModeC*/ ];
 			else
 				tu_scanIdx  := 0;
@@ -2453,7 +2485,6 @@ actor Algo_Parser ()
 	uint(size= 8) rc_cIdx;
 	uint(size= 4) rc_TType;
 	//
-	uint(size= 8) DiagScan[BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
 	uint(size= 8) ScanOrder[3][BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
 	uint(size= 1) significant_coeff_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
 	uint(size= 1) significant_coeff_group_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
@@ -2469,6 +2500,8 @@ actor Algo_Parser ()
 	guard 
 		rc_idx = 1 and isFifoFull(fifo)
 	var
+		uint(size= 8) tmpTrafoWidth		= (1<<rc_log2TrafoWidth),
+		uint(size= 8) tmpTrafoHeight	= (1<<rc_log2TrafoHeight),
 		 int(size=32) res[1],
 		uint(size= 8) LastSignificantCoeffX,
 		uint(size= 8) LastSignificantCoeffY,
@@ -2476,11 +2509,11 @@ actor Algo_Parser ()
 		uint(size= 8) yC := 0
 	do	
 		if rc_TType = TEXT_LUMA then
-			println("read_ResidualCoding.start cbY ");
+			println("read_ResidualCoding.start cbY ("+rc_x0+", "+rc_y0+", "+tmpTrafoWidth+", "+tmpTrafoHeight+", "+rc_scanIdx+", "+rc_cIdx+")");
 		elsif rc_TType = TEXT_CHROMA_U then
-			println("read_ResidualCoding.start cbU");
+			println("read_ResidualCoding.start cbU ("+rc_x0+", "+rc_y0+", "+tmpTrafoWidth+", "+tmpTrafoHeight+", "+rc_scanIdx+", "+rc_cIdx+")");
 		else
-			println("read_ResidualCoding.start cbV");
+			println("read_ResidualCoding.start cbV ("+rc_x0+", "+rc_y0+", "+tmpTrafoWidth+", "+tmpTrafoHeight+", "+rc_scanIdx+", "+rc_cIdx+")");
 		end
 		if rc_log2TrafoWidth = 1 or rc_log2TrafoHeight = 1 then
 			rc_log2TrafoWidth  := 2;
@@ -2512,15 +2545,17 @@ actor Algo_Parser ()
 		end
 		significant_coeff_flag[LastSignificantCoeffX][LastSignificantCoeffY] := 1;
 		
-		InitScanningArray(rc_log2TrafoWidth, rc_log2TrafoHeight, DiagScan, ScanOrder);
+		InitScanningArray(rc_log2TrafoWidth, rc_log2TrafoHeight, ScanOrder);
 		rc_numCoeff := 0;
+		println("InitScanningArray("+(1<<rc_log2TrafoWidth)+", "+(1<<rc_log2TrafoHeight)+") : rc_scanIdx = "+rc_scanIdx);
+		
 		while  not( xC = LastSignificantCoeffX and yC = LastSignificantCoeffY) do
 			xC := ScanOrder[ rc_scanIdx ][ rc_numCoeff ][ 0 ]; 
 			yC := ScanOrder[ rc_scanIdx ][ rc_numCoeff ][ 1 ]; 
 			println(xC+" = "+LastSignificantCoeffX+" and "+yC+" = "+LastSignificantCoeffY+", rc_numCoeff = "+rc_numCoeff);
 			rc_numCoeff := rc_numCoeff + 1;
 		end 
-		println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_numCoeff = "+rc_numCoeff);
+		println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_numCoeff = "+(rc_numCoeff-1));
 		rc_numLastSubset := (rc_numCoeff - 1) >> 4;
 		rc_i			 := rc_numLastSubset;
 		rc_idx           := 2;
@@ -2567,9 +2602,7 @@ actor Algo_Parser ()
   		foreach int m in 0 .. 15 do
   			n := 15 - m;  
 			xC := ScanOrder[ rc_scanIdx ][ n + rc_offset ][ 0 ]; 
-			yC := ScanOrder[ rc_scanIdx ][ n + rc_offset ][ 1 ];
-			println("ScanOrder["+rc_scanIdx+"]["+n+" + "+rc_offset+" ] = ("+xC+","+yC+")");
-			
+			yC := ScanOrder[ rc_scanIdx ][ n + rc_offset ][ 1 ];			
 			if  (n + rc_offset) < (rc_numCoeff - 1) and significant_coeff_group_flag[ xCG ][ yCG ] = 1 and 
 				( n > 0 or implicitNonZeroCoeff = 0 ) then
 				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res, patternSigCtx, xC, yC, 2, rc_TType);
@@ -2766,8 +2799,7 @@ actor Algo_Parser ()
 		read_SliceData				    ( read_SliceData_gotoCodingTree		) --> read_CodingTree;
 		read_SliceData				    ( read_SliceData_end	  			) --> byte_align;
 		// read_SaoParam
-		read_SaoParam					( read_SaoParam						) --> read_SaoParam;
-		read_SaoParam					( read_SaoParam_end					) --> read_SliceData;
+		read_SaoParam					( read_SaoParam						) --> read_SliceData;
 		// read_CodingTree
 		read_CodingTree				    ( read_CodingTree	  				) --> read_CodingTree;
 		read_CodingTree				    ( read_CodingTree_gotoCodingUnit	) --> read_CodingUnit;
@@ -2775,12 +2807,12 @@ actor Algo_Parser ()
 		read_CodingTree				    ( read_CodingTree_end	 			) --> read_SliceData;
 		// read_CodingUint
 		read_CodingUnit				    ( read_CodingUnit	  				) --> read_CodingUnit;
+		ead_CodingUnit				    ( read_CodingUnit_gotoPCMSample		) --> read_PCMSample2;
 		read_CodingUnit				    ( read_CodingUnit_gotoPredictionUnit) --> read_PredictionUnit;
 		read_CodingUnit				    ( read_CodingUnit_gotoTransformTree ) --> read_TransformTree;
 		read_CodingUnit				    ( read_CodingUnit_end				) --> read_CodingTree;
 		// read_PredictionUnit
 		read_PredictionUnit			    ( read_PredictionUnit	  			) --> read_PredictionUnit;
-		read_PredictionUnit			    ( read_PredictionUnit_gotoPCMSample ) --> read_PCMSample2;
 		read_PredictionUnit			    ( read_PredictionUnit_gotoMVDCoding ) --> read_MVDCoding;
 		read_PredictionUnit			    ( read_PredictionUnit_end			) --> read_CodingUnit;
 		// read_MVDCoding
