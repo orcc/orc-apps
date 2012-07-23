@@ -454,12 +454,43 @@ actor IntraPrediction()
 		sliceNum := sliceNum + 1;
 	end
 
-	getPartMode: action PartMode:[partMode] ==>
+	getPartMode.isNonQuadTree: action PartMode:[partMode] ==>
 	guard
-		partMode != NEW_SLICE || partMode != NEW_PICT
+		partMode != NEW_SLICE || partMode != NEW_PICT,
+		partMode != PART_2Nx2N && partMode != PART_NxN
+	end
+
+	getPartMode.isQuadTree: action PartMode:[partMode] ==>
+	guard
+		partMode != NEW_SLICE || partMode != NEW_PICT,
+		partMode = PART_2Nx2N || partMode = PART_NxN
 	do
 		numPart := partModeToNumPart[partMode];
 		numPartDecoded := 0;
+	end
+
+	getCuInfo.nonQT.isInter: action CuSize:[cuSize] repeat 4, CuAddr:[cuAddrVal] repeat 4, CuMode:[cuMode] repeat 2 ==>
+	guard
+		cuMode[0] != OTHER
+	do
+		if(cuMode[1] = OTHER) then
+			println ("Warning : getCuInfo.nonQT.isInter");
+		end
+		nS := max(cuSize[0], cuSize[1]);
+		idxBlk := 0;
+		numBlkToSent := nS*nS/16;
+		treeAddr := [cuAddrVal[i]:for int i in 0 .. 1];
+	end
+
+	getCuInfo.nonQT.isOther: action CuSize:[cuSize] repeat 4, CuAddr:[cuAddrVal] repeat 4, CuMode:[cuMode] repeat 2 ==>
+	guard
+		cuMode[0] = OTHER
+	do
+		if(cuMode[1] != OTHER) then
+			println ("Warning : getCuInfo.nonQT.isOther");
+		end
+		idxBlk := 0;
+		numBlkToSent := 0;
 	end
 
 	getCuInfo.launch: action CuSize:[cuSize] repeat 2, CuAddr:[cuAddrVal]
@@ -500,6 +531,10 @@ actor IntraPrediction()
 	getCuMode.isInter: action CuMode:[cuMode] ==>
 	guard
 		cuMode = INTER || cuMode = SKIP
+	do
+		idxBlk := 0;
+		numBlkToSent := nS*nS/16;
+		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
 	end
 
 	getCuMode.isOther: action CuMode:[cuMode] ==>
@@ -648,25 +683,34 @@ actor IntraPrediction()
 	end
 
 	schedule fsm GetPartMode:
-		GetPartMode(isNewSliceOrPict )--> GetPartMode;
-		GetPartMode(getPartMode      )--> GetCuInfo;
+		GetPartMode(isNewSliceOrPict          )--> GetPartMode;
+		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
+		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
+
+		GetCuInfoNonQT (getCuInfo.nonQT )--> GetInterNonQtSample;
+
+		GetInterNonQtSample (getSamples.launch )--> GetInterNonQtSample;
+		GetInterNonQtSample (getSamples.done   )--> GetPartMode;
 
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
 
 		GetCuMode (getCuMode.isIntra )--> GetSplitTrafo;
-		GetCuMode (getCuMode.isInter )--> GetCuInfo;
+		GetCuMode (getCuMode.isInter )--> GetInterSamples;
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
+
+		GetInterSamples (getSamples.launch )--> GetInterSamples;
+		GetInterSamples (getSamples.done   )--> GetCuInfo;
 
 		GetSplitTrafo (getSplitTrafo.isTrue  )--> GetSplitTrafo;
 		GetSplitTrafo (getSplitTrafo.isFalse )--> SendSamples;
 		GetSplitTrafo (getSplitTrafo.done    )--> GetCuInfo;
 
 		SendSamples (sendSamples.launch )--> SendSamples;
-		SendSamples (sendSamples.done   )--> GetSamples;
+		SendSamples (sendSamples.done   )--> GetIntraSamples;
 
-		GetSamples (getSamples.launch )--> GetSamples;
-		GetSamples (getSamples.done   )--> GetSplitTrafo;
+		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
+		GetIntraSamples (getSamples.done   )--> GetSplitTrafo;
 
 	end
 end
