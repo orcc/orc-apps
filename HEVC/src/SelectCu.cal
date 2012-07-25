@@ -1,0 +1,137 @@
+/*
+ * Copyright (c) 2012, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+import interPrediction.NaluType.*;
+import std.util.Math.*;
+
+actor SelectCu()
+	uint(size=2)  CuMode,
+	uint(size=7)  CuSize,
+	uint(size=8)  InterSample,
+	uint(size=8)  IntraSample,
+	uint(size=4)  PartMode
+		==>
+		:
+
+	uint(size=3)  numPart;
+	uint(size=3)  numPartDecoded;
+	uint(size=7)  cuWidth;
+	uint(size=9)  nbBlk;
+	uint(size=9)  idxBlk;
+
+	isNewSlice: action PartMode:[partMode] ==>
+	guard
+		partMode = NEW_SLICE || partMode = NEW_PICT
+	end
+
+	getPartMode: action PartMode:[partMode] ==>
+	guard
+		partMode != NEW_SLICE && partMode != NEW_PICT
+	do
+		numPart := partModeToNumPart[partMode];
+		numPartDecoded := 0;
+	end
+
+	getCuInfo.launch: action CuSize:[cuSize] repeat 2 ==>
+	guard
+		numPartDecoded < numPart && numPart != 2
+	do
+		cuWidth := cuSize[0];
+		nbBlk   := cuWidth*cuWidth/16;
+		idxBlk  := 0;
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	getCuInfo.launch.numPart2: action CuSize:[cuSize] repeat 4, CuMode:[cuMode] ==>
+	guard
+		numPartDecoded < numPart && numPart = 2
+	do
+		cuWidth := max(cuSize[0], cuSize[1]);
+		nbBlk   := cuWidth*cuWidth/16;
+		idxBlk  := 0;
+		numPartDecoded := 2;
+	end
+
+	getCuInfo.done: action ==>
+	guard
+		numPartDecoded = numPart
+	end
+
+	getCuMode.isIntra: action CuMode:[cuMode] ==>
+	guard
+		cuMode = INTRA
+	end
+
+	getCuMode.isInter: action CuMode:[cuMode] ==>
+	guard
+		cuMode = INTER || cuMode = SKIP
+	end
+
+	getCuMode.isOther: action CuMode:[cuMode] ==>
+	guard
+		cuMode = OTHER
+	end
+
+	getCuSample.isIntra: action IntraSample:[intraSample] repeat 16 +2*4 ==>
+	guard
+		idxBlk < nbBlk
+	do
+		idxBlk := idxBlk + 1;
+	end
+
+	getCuSample.isInter: action InterSample:[interSample] repeat 16 +2*4 ==>
+	guard
+		idxBlk < nbBlk
+	do
+		idxBlk := idxBlk + 1;
+	end
+
+	getCuSample.done: action ==>
+	guard
+		idxBlk = nbBlk
+	end
+
+	schedule fsm GetPartMode:
+		GetPartMode (isNewSlice       )--> GetPartMode;
+		GetPartMode (getPartMode      )--> GetCuInfo;
+
+		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
+		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
+
+		GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
+		GetCuMode (getCuMode.isInter )--> GetCuSampleInter;
+		GetCuMode (getCuMode.isOther )--> GetCuInfo;
+
+		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
+
+		GetCuSampleInter (getCuSample.isInter )--> GetCuSampleInter;
+		GetCuSampleInter (getCuSample.done    )--> GetCuInfo;
+	end
+end
