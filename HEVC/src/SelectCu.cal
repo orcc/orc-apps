@@ -43,10 +43,14 @@ actor SelectCu()
 
 	uint(size=3)  numPart;
 	uint(size=3)  numPartDecoded;
+	uint(size=7)  cuSize[4][2];
+	uint(size=5)  cuOff[2][2] := [[0,0],[0,0]];
 	uint(size=7)  cuWidth;
 	uint(size=9)  nbBlk;
 	uint(size=9)  idxBlk;
-	uint(size=8)  interSamp[256][16+2*4];
+	uint(size=8)  interSamp[16][16][16+2*4];
+	uint(size=5)  xIdx;
+	uint(size=5)  yIdx;
 
 	isNewSlice: action PartMode:[partMode] ==>
 	guard
@@ -61,23 +65,32 @@ actor SelectCu()
 		numPartDecoded := 0;
 	end
 
-	getCuInfo.launch: action CuSize:[cuSize] repeat 2 ==>
+	getCuInfo.launch: action CuSize:[cuSizeVal] repeat 2 ==>
 	guard
 		numPartDecoded < numPart && numPart != 2
 	do
-		cuWidth := cuSize[0];
+		cuWidth := cuSizeVal[0];
 		nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
+		cuSize := [[cuSizeVal[i]/4:for int i in 0 .. 1]:for int j in 0 .. 3];
 		numPartDecoded := numPartDecoded + 1;
 	end
 
-	getCuInfo.launch.numPart2: action CuSize:[cuSize] repeat 4, CuMode:[cuMode] ==>
+	getCuInfo.launch.numPart2: action CuSize:[cuSizeVal] repeat 4, CuMode:[cuMode] ==>
 	guard
 		numPartDecoded < numPart && numPart = 2
 	do
-		cuWidth := max(cuSize[0], cuSize[1]);
+		cuSize  := [[cuSizeVal[i+2*j]/4:for uint i in 0 .. 1]: for uint j in 0 .. 1];
+		cuWidth := max(cuSizeVal[0], cuSizeVal[1]);
 		nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
+		if(cuMode=PART_2NxN || cuMode=PART_2NxnU || cuMode=PART_2NxnD) then
+			cuOff[1][0] := 0;
+			cuOff[1][1] := cuSizeVal[1];
+		else
+			cuOff[1][0] := cuSizeVal[0];
+			cuOff[1][1] := 0;
+		end
 		numPartDecoded := 2;
 	end
 
@@ -94,6 +107,9 @@ actor SelectCu()
 	getCuMode.isInter: action CuMode:[cuMode] ==>
 	guard
 		cuMode = INTER || cuMode = SKIP
+	do
+		xIdx := 0;
+		yIdx := 0;
 	end
 
 	getCuMode.isOther: action CuMode:[cuMode] ==>
@@ -114,20 +130,49 @@ actor SelectCu()
 		end
 	end
 
-	getCuSample.isInter: action InterSample:[interSample] repeat 16 +2*4 ==> Sample:[interSample] repeat 16+2*4
+	getCuSample.isInter: action InterSample:[interSample] repeat 16 +2*4 ==>
 	guard
 		idxBlk < nbBlk
 	do
-		foreach uint i in 0 .. 16+2*4-1
+		/*foreach uint i in 0 .. 16+2*4-1
 		do
-			interSamp[idxBlk][i] := interSample[i];
+			interSamp[xIdx+cuOff[numPartDecoded][0]]
+				[yIdx+cuOff[numPartDecoded][1]][i] := interSample[i];
 		end
+		xIdx := xIdx + 1;
+		if(xIdx = cuSize[numPartDecoded][0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+			if(yIdx = cuSize[numPartDecoded][1]) then
+				yIdx := 0;
+				numPartDecoded := numPartDecoded + 1;
+			end
+		end*/
 		idxBlk := idxBlk + 1;
+	end
+
+	getCuSample.isInterRes: action /*ResidualSample:[resSample] repeat 16 +2*4*/ ==> Sample:[sample] repeat 16+2*4
+	guard
+		idxBlk < nbBlk
+	var
+		uint(size=8)  sample[16+2*4],
+		uint(size=16) interIdx[2]
+	do
+		rasterScanToAbsCoord(idxBlk, interIdx);
+		interIdx[0] := interIdx[0]>>2;
+		interIdx[1] := interIdx[1]>>2;
+		idxBlk := idxBlk + 1;
+		foreach int i in 0 .. 16+2*4-1
+		do
+			sample[i] := clip_i32(interSamp[interIdx[0]][interIdx[1]][i]/*+resSample[i]*/, 0, 255);
+		end
 	end
 
 	getCuSample.done: action ==>
 	guard
 		idxBlk = nbBlk
+	do
+		idxBlk := 0;
 	end
 
 	schedule fsm GetPartMode:
@@ -145,6 +190,9 @@ actor SelectCu()
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
 
 		GetCuSampleInter (getCuSample.isInter )--> GetCuSampleInter;
-		GetCuSampleInter (getCuSample.done    )--> GetCuInfo;
+		GetCuSampleInter (getCuSample.done    )--> GetCuResInter;
+
+		GetCuResInter (getCuSample.isInterRes )--> GetCuResInter;
+		GetCuResInter (getCuSample.done       )--> GetCuInfo;
 	end
 end
