@@ -2430,10 +2430,14 @@ actor Algo_Parser ()
 		uint(size= 1) signHidden,
 		uint(size= 8) sumAbs,
 		uint(size= 8) baseLevel,
-		uint(size= 8) numC1Flag,
-		uint(size= 8) c1
+		uint(size= 8) c1,
+		uint(size= 8) coeff_abs_level_greater1_flag[16] := [0: for int i in 0 .. 15],
+		uint(size= 8) coeff_abs_level_greater2_flag[16] := [0: for int i in 0 .. 15],
+		uint(size= 8) coeff_abs_level_remaining[16] := [0: for int i in 0 .. 15],
+		uint(size= 8) cLastAbsLevel,
+		uint(size= 8) cLastRiceParam
+		
 	do	
- 		numC1Flag := min(rc_numNonZero, C1FLAG_NUMBER);
 		c1 := 1;
   		foreach int m in 0 .. 15 do
   			n  := 15 - m;  
@@ -2441,10 +2445,10 @@ actor Algo_Parser ()
 			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
 				if numGreater1Flag < 8 then
-					//coeff_abs_level_greater1_flag[ n ]
 					get_ONE_FLAG( codIRange, codIOffset, ctxTable, fifo, res, c1);
+					coeff_abs_level_greater1_flag[ n ] := res[0];
 					numGreater1Flag := numGreater1Flag + 1; 
-					if res[0] = 1 /*coeff_abs_level_greater1_flag[ n ]*/ and firstGreater1ScanPos = -1 then
+					if (coeff_abs_level_greater1_flag[ n ] = 1 and firstGreater1ScanPos = -1) then
 						firstGreater1ScanPos := n;
 					end
 				end
@@ -2463,8 +2467,8 @@ actor Algo_Parser ()
 		
 		signHidden := if lastSigScanPos - firstSigScanPos >= 3 and cu_transquant_bypass_flag != 0 then 1 else 0 end;
 		if firstGreater1ScanPos != -1 then 
-			//coeff_abs_level_greater2_flag[ firstGreater1ScanPos] ae(v)
 			get_ABS_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
+			coeff_abs_level_greater2_flag[ firstGreater1ScanPos] := res[0];
 		end
   		foreach int m in 0 .. 15 do
   			n  := 15 - m;  
@@ -2472,23 +2476,29 @@ actor Algo_Parser ()
 			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 and
 				(pps_sign_data_hiding_flag[pps_id] != 0 or signHidden != 0 or n != firstSigScanPos) then
-				decodeBinsEP(1, res, codIRange, codIOffset, fifo);
-				//coeff_sign_flag[ n ]
 				println("coeff_sign_flag");
+				decodeBinsEP(1, res, codIRange, codIOffset, fifo);
 			end
 		end
 
 		numGreater1Flag := 0;
 		sumAbs      := 0;
+		cLastAbsLevel :=0;
+		cLastRiceParam := 0;
   		foreach int m in 0 .. 15 do
   			n  := 15 - m;  
 			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
 			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
-				baseLevel := 1 /* + coeff_abs_level_greater1_flag[ n ] + coeff_abs_level_greater2_flag[ n ]*/;
+				baseLevel := 1  + coeff_abs_level_greater1_flag[ n ] + coeff_abs_level_greater2_flag[ n ];
 				if baseLevel = if numGreater1Flag < 8 then if n = firstGreater1ScanPos then 3 else 2 end else 1 end then
-					//coeff_abs_level_remaining[ n ]
-					println("TODO coeff_abs_level_remaining");
+					get_Coef(codIRange, codIOffset, fifo, res, cLastRiceParam);
+					coeff_abs_level_remaining[ n ] := res[0];
+					cLastAbsLevel := baseLevel + coeff_abs_level_remaining[ n ];
+					cLastRiceParam := min(if cLastAbsLevel>= 3 * ( 1 << cLastRiceParam ) then 1 else 0 end,4);
+					println("baseLevel " + baseLevel);
+					println("coeff_abs_level_remaining[ n ] " + coeff_abs_level_remaining[ n ]);
+					println("cLastAbsLevel " + cLastAbsLevel);
 				end
 				//transCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] := ( coeff_abs_level_remaining[ n ] + baseLevel ) * ( 1 − 2 * coeff_sign_flag[ n ] )
 				if pps_sign_data_hiding_flag[pps_id] = 1 and signHidden = 1 then
