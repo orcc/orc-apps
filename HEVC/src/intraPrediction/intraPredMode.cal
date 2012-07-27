@@ -28,11 +28,24 @@
  */
 
 /**
+ * Derivation process for intra prediction mode.
+ * 
+ * 
+ * @input CUInfo : Informations related to the current CU
+ *        (size, address and mode : INTRA,INTER,...).
+ * 
+ * @input SyntaxElem : syntax elements needed by this actor :
+ *        prev_intra_luma_pred_flag, mpm_idx, rem_intra_luma_pred_mode,
+ *        intra_chroma_pred_mode.
+ * 
+ * 
+ * @output IntraPredMode : Indicates which prediction will be realized
+ *         for the current CU.
+ * 
  * 
  * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
  */
- 
- 
+
 package intraPrediction;
 
 import interPrediction.NaluType.*;
@@ -54,13 +67,21 @@ actor intraPredMode()
 		 [ 1,  1,  1, 34,  1],
 		 [35, 35, 35, 35, 35]];
 
-	uint(size=16) TABLE_HEIGHT = 128/4;
-	uint(size=16) TABLE_HEIGHT_MASK = (128/4)-1;
+	/* For the neeighbours, only one block are needed for the heigh.
+	 * TABLE_HEIGH is a power of two in order to avoid computation as much as
+	 * possible.
+	 * */
+	uint(size=16) TABLE_HEIGHT = 64/4;
+	uint(size=16) TABLE_HEIGHT_MASK = (64/4)-1;
 
 	uint(size=6) intraPredMode[2048/4][TABLE_HEIGHT];
 	uint(size=6) currIntraPredMod;
 
-	procedure getCandModeList(uint(size=16) addr[2], uint(size=6) candModeList[3])
+	/* Generate the list of three candidates depending on the intraPredMode
+	 * from the neighbours
+	 */
+	procedure getCandModeList(uint(size=16) addr[2],
+		uint(size=6) candModeList[3])
 	var
 		uint(size=6) intraPredModeA,
 		uint(size=6) intraPredModeB
@@ -81,18 +102,25 @@ actor intraPredMode()
 		else
 			candModeList[0] := intraPredModeA;
 			candModeList[1] := intraPredModeB;
-			if(intraPredModeA != INTRA_PLANAR && intraPredModeB != INTRA_PLANAR) then
+			if(intraPredModeA != INTRA_PLANAR &&
+			   intraPredModeB != INTRA_PLANAR) then
 				candModeList[2] := INTRA_PLANAR;
-			else if(intraPredModeA != INTRA_DC && intraPredModeB != INTRA_DC) then
+			else if(intraPredModeA != INTRA_DC &&
+			        intraPredModeB != INTRA_DC) then
 				candModeList[2] := INTRA_DC;
 			else
 				candModeList[2] := 26;
 			end end
 		end
 	end
-	
+
+	/* Give the intraPrediction value from the neighbour */
 	function getIntraPredModeN(int xBN, int yBN, bool isAbove) --> uint(size=6)
 	:
+		/* If the location of the block is out of the picture or in the
+		 * coding tree above, the intraPredMode is considered as an INTRA_DC
+		 * prediction
+		 */
 		if(xBN<0 || yBN<0 || ((yBN&63) = 63 && isAbove)) then
 			INTRA_DC
 		else
@@ -100,7 +128,9 @@ actor intraPredMode()
 		end
 	end
 
-	procedure saveIntraPredMode(uint(size=16) addr[2], uint(size=7) sizeOfCu[2], uint(size=6) intraPred)
+	/* Save the intraPrediction value for all blocks from the CU */
+	procedure saveIntraPredMode(uint(size=16) addr[2],
+		uint(size=7) sizeOfCu[2], uint(size=6) intraPred)
 	var
 		uint(size=14) xMin,
 		uint(size=14) xMax,
@@ -120,6 +150,8 @@ actor intraPredMode()
 		end
 	end
 
+	/** Get the informations concerning the current CU in order to determine
+	 * whether there is an intra prediction or not. **/
 	getCu.isIntra: action CUInfo:[cuInfo] repeat 5,
 		SyntaxElem:[se] repeat 2 ==>
 		IntraPredMode:[currIntraPredMod]
@@ -135,6 +167,7 @@ actor intraPredMode()
 		uint(size=7)  cuSize[2] = [cuInfo[3], cuInfo[4]]
 	do
 		getCandModeList(cuAddr, candModeList);
+		/* Derivation process for luma intra prediction mode */
 		if(prevIntraPred) then
 			currIntraPredMod := candModeList[mpmIdx];
 		else
@@ -167,14 +200,18 @@ actor intraPredMode()
 		uint(size=16) cuAddr[2] = [cuInfo[1], cuInfo[2]],
 		uint(size=7)  cuSize[2] = [cuInfo[3], cuInfo[4]]
 	do
+		/* A non-intra prediction CU is considered as an INTRA_DC prediction. */
 		saveIntraPredMode(cuAddr, cuSize, INTRA_DC);
 	end
 
-	computeChromaPredMode: action SyntaxElem:[intraChrPredMode] ==> IntraPredMode:[predMode]
+	/* Derivation process for chroma intra prediction mode */
+	computeChromaPredMode: action SyntaxElem:[intraChrPredMode] ==>
+		IntraPredMode:[predMode]
 	var
 		uint(size=6) predMode,
 		uint(size=3) idx
 	do
+		/* the chroma intra prediction mode is based on the luma one. */
 		if(intraChrPredMode=5) then
 			predMode := currIntraPredMod;
 		else
