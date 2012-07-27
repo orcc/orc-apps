@@ -28,6 +28,28 @@
  */
 
 /**
+ * Decoding process for intra blocks.
+ * 
+ * 
+ * @input CUInfo : Informations related to the current CU
+ *        (size, address and mode : INTRA,INTER,...).
+ * 
+ * @input IntraPredMode : Luma and chroma intra prediction mode for the
+ *        current CU.
+ * 
+ * @input PartMode : Giving the partitioning mode of the current CU.
+ * 
+ * @input PicSize : Size of the current picture.
+ * 
+ * @input Sample : Value of the YUV components of every pixel from the pictures.
+ *        The tokens correspond to the pixels of the unfiltered picture.
+ * 
+ * @input SplitTransf : split_transform_flag syntax element.
+ * 
+ * 
+ * @output PredSample : Pixel's values predicted from the intra prediction
+ *         provess.
+ * 
  * 
  * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
  */
@@ -146,7 +168,8 @@ actor IntraPrediction()
 		if((yCoordInBlk & 8)!=0) then 128 else 0 end
 	end
 
-	procedure getNeighbSamples(uint(size=16) cuAddr[2], uint(size=2) cIdx, uint(size=7) nS)
+	procedure getNeighbSamples(uint(size=16) cuAddr[2], uint(size=2) cIdx,
+		uint(size=7) nS)
 	var
 		int maxVal[2],
 		int xMax,
@@ -157,7 +180,8 @@ actor IntraPrediction()
 		yMax := maxVal[1];
 		foreach int x in 0 .. xMax-1
 		do
-			pNeighb[ABOVE][x] := currPict[cIdx][cuAddr[0]+x][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
+			pNeighb[ABOVE][x] :=
+				currPict[cIdx][cuAddr[0]+x][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
 		end
 		if(xMax!=0) then
 			foreach int x in xMax .. 2*nS-1
@@ -168,7 +192,8 @@ actor IntraPrediction()
 
 		foreach int y in 0 .. yMax-1
 		do
-			pNeighb[LEFT][y] := currPict[cIdx][cuAddr[0]-1][(cuAddr[1]+y)&TABLE_HEIGHT_MASK];
+			pNeighb[LEFT][y] :=
+				currPict[cIdx][cuAddr[0]-1][(cuAddr[1]+y)&TABLE_HEIGHT_MASK];
 		end
 		if(yMax!=0) then
 			foreach int y in yMax .. 2*nS-1
@@ -177,6 +202,9 @@ actor IntraPrediction()
 			end
 		end
 
+		/* When the neighbours are not available, the nearest valid value is
+		 * propagated to the other neighbours
+		 */
 		if(xMax=0 && yMax=0) then
 			foreach int idx in 0 .. 2*nS-1
 			do
@@ -197,11 +225,16 @@ actor IntraPrediction()
 			end
 			pAboveLeft := pNeighb[ABOVE][0];
 		else
-			pAboveLeft := currPict[cIdx][cuAddr[0]-1][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
+			pAboveLeft :=
+				currPict[cIdx][cuAddr[0]-1][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
 		end end end
 	end
 
-	procedure neighbExist(uint(size=16) cuAddr[2], int maxVal[2], int cIdx, uint(size=7) nS)
+	/* Check if the neighbours are available. maxVal contained either 2*nS or
+	 * the index of the first pixel unavailable.
+	 */
+	procedure neighbExist(uint(size=16) cuAddr[2], int maxVal[2], int cIdx,
+		uint(size=7) nS)
 	var
 		uint(size=7) maxCuSize = if(cIdx=0) then 64 else 32 end,
 		int xMax,
@@ -238,6 +271,7 @@ actor IntraPrediction()
 		maxVal[1] := yMax;
 	end
 
+	/* Filtering process of neighbouring sample. */
 	procedure filterNeighbSamp(uint(size=7) nS)
 	var
 		uint(size=5) minDistVertHor,
@@ -256,11 +290,13 @@ actor IntraPrediction()
 						pNeighb[neighb][1] + 2) >> 2;
 					foreach uint i in 1 .. nS*2-2
 					do
-						pFNeighb[neighb][i] := (pNeighb[neighb][i-1] + 2*pNeighb[neighb][i] +
-							pNeighb[neighb][i+1] + 2) >> 2;
+						pFNeighb[neighb][i] := (pNeighb[neighb][i-1] +
+							2*pNeighb[neighb][i] + pNeighb[neighb][i+1] + 2)
+							>> 2;
 					end
 				end
-				pAboveLeft := (pNeighb[LEFT][0] + 2*(pAboveLeft) + pNeighb[ABOVE][0] + 2) >> 2;
+				pAboveLeft := (pNeighb[LEFT][0] + 2*(pAboveLeft) +
+					pNeighb[ABOVE][0] + 2) >> 2;
 				foreach uint neighb in 0 .. 1
 				do
 					foreach uint i in 0 .. nS*2-2
@@ -272,7 +308,8 @@ actor IntraPrediction()
 		end
 	end
 
-	procedure intraPlanarPred(uint(size=2) cIdx, uint(size=7) nS, uint(size=3) log2NS)
+	procedure intraPlanarPred(uint(size=2) cIdx, uint(size=7) nS,
+		uint(size=3) log2NS)
 	var
 		uint(size=8) pUpRight,
 		uint(size=8) pBottomLeft
@@ -283,12 +320,14 @@ actor IntraPrediction()
 		do
 			foreach uint x in 0 .. nS-1
 			do
-				result[cIdx][x][y] := ((nS-1-x)*pNeighb[LEFT][y] + (x+1)*pUpRight +
-				(nS-1-y)*pNeighb[ABOVE][x] + (y+1)*pBottomLeft + nS) >> (log2NS+1);
+				result[cIdx][x][y] := ((nS-1-x)*pNeighb[LEFT][y] +
+					(x+1)*pUpRight + (nS-1-y)*pNeighb[ABOVE][x] +
+					(y+1)*pBottomLeft + nS) >> (log2NS+1);
 			end
 		end
 	end
 
+	/* Implementation of Intra_DC prediction mode. */
 	procedure intraDcPred(uint(size=2) cIdx, uint(size=7) nS, uint(size=3) log2NS)
 	var
 		uint(size=13) dcVal
@@ -303,8 +342,9 @@ actor IntraPrediction()
 			dcVal := dcVal + pNeighb[LEFT][y];
 		end
 		dcVal := dcVal >> (log2NS+1);
-		if(cIdx=0) then
-			result[cIdx][0][0] := (pNeighb[LEFT][0] + 2*dcVal + pNeighb[ABOVE][0] + 2)>>2;
+		if(cIdx=0) then // Luma component
+			result[cIdx][0][0] := (pNeighb[LEFT][0] + 2*dcVal +
+				pNeighb[ABOVE][0] + 2)>>2;
 			foreach uint x in 1 .. nS-1
 			do
 				result[cIdx][x][0] := (pNeighb[ABOVE][x] + 3*dcVal + 2)>>2;
@@ -317,7 +357,7 @@ actor IntraPrediction()
 					result[cIdx][x][y] := dcVal;
 				end
 			end
-		else
+		else // Chroma component
 			foreach uint y in 0 .. nS-1
 			do
 				foreach uint x in 0 .. nS-1
@@ -328,6 +368,7 @@ actor IntraPrediction()
 		end
 	end
 
+	/* Implementation of Intra_Angular prediction mode. */
 	procedure intraAngularPred(uint(size=2) cIdx, uint(size=7) nS)
 	var
 		uint(size=6) OFFSET = 33,
@@ -340,6 +381,9 @@ actor IntraPrediction()
 		if(angle=26 || angle = 10) then
 			intraAngularVertOrHor( cIdx, angle=26, nS);
 		else
+			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
+			 * mode.
+			 */
 			neighbIdx := if(angle>=18) then ABOVE else LEFT end;
 			refMain[OFFSET] := pAboveLeft;
 			foreach uint x in 1 .. nS
@@ -350,7 +394,8 @@ actor IntraPrediction()
 				neighbIdx := neighbIdx^1;
 				foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
 				do
-					refMain[k+OFFSET] := pNeighb[neighbIdx][((k*invAngle[angle]+128)>>8)-1];
+					refMain[k+OFFSET] :=
+						pNeighb[neighbIdx][((k*invAngle[angle]+128)>>8)-1];
 				end
 			else
 				foreach uint x in nS+1 .. 2*nS
@@ -366,7 +411,8 @@ actor IntraPrediction()
 					foreach uint x in 0 .. nS-1
 					do
 						if(iFact!=0) then
-							result[cIdx][x][y] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+							result[cIdx][x][y] :=
+								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
 								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
 						else
 							result[cIdx][x][y] := refMain[x+iIdx+1 +OFFSET];
@@ -381,7 +427,8 @@ actor IntraPrediction()
 					foreach uint x in 0 .. nS-1
 					do
 						if(iFact!=0) then
-							result[cIdx][y][x] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+							result[cIdx][y][x] :=
+								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
 								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
 						else
 							result[cIdx][y][x] := refMain[x+iIdx+1 +OFFSET];
@@ -392,7 +439,9 @@ actor IntraPrediction()
 		end
 	end
 
-	procedure intraAngularVertOrHor(uint(size=2) cIdx, bool isVertical, uint(size=7) nS)
+	/* Implementation of Intra_angular(10,26) prediction mode. */
+	procedure intraAngularVertOrHor(uint(size=2) cIdx, bool isVertical,
+		uint(size=7) nS)
 	var
 		uint(size=1) neighbIdx = if(isVertical) then ABOVE else LEFT end
 	begin
@@ -400,8 +449,8 @@ actor IntraPrediction()
 			if(isVertical) then
 				foreach uint y in 0 .. nS-1
 				do
-					result[cIdx][0][y] := clip_i32(pNeighb[ABOVE][0]+((pNeighb[LEFT][y]-pAboveLeft)>>1),
-						0, 255);
+					result[cIdx][0][y] := clip_i32(pNeighb[ABOVE][0]+
+						((pNeighb[LEFT][y]-pAboveLeft)>>1), 0, 255);
 				end				
 				foreach uint x in 1 .. nS-1
 				do
@@ -413,8 +462,8 @@ actor IntraPrediction()
 			else
 				foreach uint x in 0 .. nS-1
 				do
-					result[cIdx][x][0] := clip_i32(pNeighb[LEFT][0]+((pNeighb[ABOVE][x]-pAboveLeft)>>1),
-						0, 255);
+					result[cIdx][x][0] := clip_i32(pNeighb[LEFT][0]+
+						((pNeighb[ABOVE][x]-pAboveLeft)>>1), 0, 255);
 				end
 				foreach uint x in 0 .. nS-1
 				do
@@ -439,25 +488,25 @@ actor IntraPrediction()
 		end
 	end
 
-	uint(size=16) sliceNum := 0;
-
-	isNewSliceOrPict: action PartMode:[partMode], PicSize:[pictSizeVal] repeat 2 ==>
+	/* Updating the picture size. */
+	isNewSliceOrPict: action PartMode:[partMode],
+		PicSize:[pictSizeVal] repeat 2 ==>
 	guard
 		partMode = NEW_SLICE || partMode = NEW_PICT
 	do
 		pictSize[0] := [pictSizeVal[i]:for int i in 0 .. 1];
 		pictSize[1] := [pictSizeVal[i]>>1:for int i in 0 .. 1];
 		pictSize[2] := [pictSizeVal[i]>>1:for int i in 0 .. 1];
-		println("Slice num "+sliceNum);
-		sliceNum := sliceNum + 1;
 	end
 
+	/* Check when there are two parts in the CU.  */
 	getPartMode.isNonQuadTree: action PartMode:[partMode] ==>
 	guard
 		partMode != NEW_SLICE && partMode != NEW_PICT,
 		partMode != PART_2Nx2N && partMode != PART_NxN
 	end
 
+	/* Check if all parts of the CU are a square. */
 	getPartMode.isQuadTree: action PartMode:[partMode] ==>
 	guard
 		partMode != NEW_SLICE  && partMode != NEW_PICT,
@@ -467,14 +516,9 @@ actor IntraPrediction()
 		numPartDecoded := 0;
 	end
 
-	getCuInfo.nonQT.isInter: action CUInfo:[cuInfo] repeat 10 ==>
-	do
-		nS := max(cuInfo[3], cuInfo[4]);
-		idxBlk := 0;
-		numBlkToSend := nS*nS/16;
-		treeAddr := [cuInfo[1], cuInfo[2]];
-	end
-
+	/* Get the information concerning the CU to be able to save the values in
+	 * currPict.
+	 */
 	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
 	guard
 		numPartDecoded < numPart
@@ -485,11 +529,26 @@ actor IntraPrediction()
 		numPartDecoded := numPartDecoded + 1;
 	end
 
+	/* When there are two parts, we get both part in once in order to perform a
+	 * raster scan on the square (the SelectCU actor reorder the differents
+	 * blocks)
+	 */
+	getCuInfo.nonQT.isInter: action CUInfo:[cuInfo] repeat 10 ==>
+	do
+		nS := max(cuInfo[3], cuInfo[4]);
+		idxBlk := 0;
+		numBlkToSend := nS*nS/16;
+		treeAddr := [cuInfo[1], cuInfo[2]];
+		numPart := 2;
+		numPartDecoded := 2;
+	end
+
 	getCuInfo.done: action ==>
 	guard
 		numPartDecoded = numPart
 	end
 
+	/* When it's an intra CU, getting the intra prediction mode for chroma and luma component. */
 	getCuMode.isIntra: action IntraPredMode:[predMode] repeat 2 ==>
 	guard
 		cuMode = INTRA
@@ -510,6 +569,9 @@ actor IntraPrediction()
 		trafoTreeIdx[0] := 3;
 	end
 
+	/* Check if it's an inter prediction, then the pixels sent will be saved in
+	 * currPict.
+	 */
 	getCuMode.isInter: action ==>
 	guard
 		cuMode = INTER || cuMode = SKIP
@@ -519,11 +581,15 @@ actor IntraPrediction()
 		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
 	end
 
+	/* When it's neither an intra nor inter prediction CU, do neither
+	 * prediction nor saving pixels' value
+	 */
 	getCuMode.isOther: action ==>
 	guard
 		cuMode = OTHER
 	end
 
+	/* Check if the intra prediction CU has to be split in 4 "subCU" */
 	getSplitTrafo.isTrue: action SplitTransf:[splitTrafo] ==>
 	guard
 		splitTrafo && trafoTreeDepth>-1
@@ -532,6 +598,9 @@ actor IntraPrediction()
 		trafoTreeIdx[trafoTreeDepth] := 0;
 	end
 
+	/* Check if the intra prediction will not be split again, then realize the
+	 * prediction for this part of CU
+	 */
 	getSplitTrafo.isFalse: action SplitTransf:[splitTrafo] ==>
 	guard
 		not splitTrafo && trafoTreeDepth>-1
@@ -560,28 +629,35 @@ actor IntraPrediction()
 		numBlkToSend := treeNS*treeNS/16;
 		idxBlk := 0;
 
+		/* Chroma component are not split if we get a 2x2 block (this problem
+		 * appear with YUV420)
+		 */
 		if(treeLog2NS != 2) then
 			cIdxMax := 3;
 		else
+			/* In this case, we interpolate chroma component only once*/
 			if((treeAddr[0]&7) = 0 && (treeAddr[1]&7) = 0) then
 				cIdxMax := 3;
 			else
-				cIdxMax := 1;
+				cIdxMax := 1; // Computation will be only for luma component.
 			end
 		end
 		locAddr := [treeAddr[i]:for int i in 0 .. 1];
 		foreach uint cIdx in 0 .. cIdxMax-1
 		do
 			predMode := predModeTab[cIdx];
-			if(cIdx = 1) then
+			if(cIdx = 1) then // chroma component.
 				if(treeLog2NS != 2) then
+					/* 2x2 blocks are forbidden */
 					treeNS := treeNS >> 1;
 					treeLog2NS := treeLog2NS - 1;
 				end
 				locAddr[0] := locAddr[0] >> 1;
 				locAddr[1] := locAddr[1] >> 1;
 			end
+
 			getNeighbSamples(locAddr, cIdx, treeNS);
+
 			if(cIdx=0) then
 				filterNeighbSamp(treeNS);
 			end
@@ -593,15 +669,23 @@ actor IntraPrediction()
 				intraAngularPred(cIdx, treeNS);
 			end end
 		end
+
+		
 		if(cIdxMax=1) then
+			/* When we have 4x4 luma blocks, the chroma block corresponding to
+			 * the luma one is copied at the begining of result in order to be
+			 * sent (this block might have been computed beforehand).
+			 */
 			off := [(treeAddr[i]>>1)&2: for int i in 0 .. 1];
-			foreach uint comp in 1 .. 2
-			do
-				foreach int y in 0 .. 1
+			if(off[0]!=0 || off[1]!=0) then
+				foreach uint comp in 1 .. 2
 				do
-					foreach int x in 0 .. 1
+					foreach int y in 0 .. 1
 					do
-						result[comp][x][y] := result[comp][x+off[0]][y+off[1]];
+						foreach int x in 0 .. 1
+						do
+							result[comp][x][y] := result[comp][x+off[0]][y+off[1]];
+						end
 					end
 				end
 			end
@@ -613,7 +697,8 @@ actor IntraPrediction()
 		do
 			trafoTreeDepth := trafoTreeDepth - 1;
 			if(trafoTreeDepth>-1) then
-				trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+				trafoTreeIdx[trafoTreeDepth] :=
+					trafoTreeIdx[trafoTreeDepth] + 1;
 			end
 		end
 	end
@@ -623,6 +708,7 @@ actor IntraPrediction()
 		trafoTreeDepth = -1
 	end
 
+	/* Sending One 4x4 luma blocks and the corresponding chroma values. */
 	sendSamples.launch: action ==> PredSample:[sampleVal] repeat 16 + 2*4
 	guard
 		idxBlk < numBlkToSend
@@ -664,6 +750,7 @@ actor IntraPrediction()
 		idxBlk := 0;
 	end
 
+	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
 	getSamples.launch: action Sample:[sample] repeat 16 + 2*4 ==>
 	guard
 		idxBlk < numBlkToSend
@@ -693,7 +780,8 @@ actor IntraPrediction()
 			do
 				foreach uint x in blkAddr[0] .. blkAddr[0]+1
 				do
-					currPict[comp][x][y&TABLE_HEIGHT_MASK] := sample[idxSample];
+					currPict[comp][x][y&TABLE_HEIGHT_MASK] :=
+						sample[idxSample];
 					idxSample := idxSample + 1;
 				end
 			end
@@ -711,10 +799,7 @@ actor IntraPrediction()
 		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
 		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
 
-		GetCuInfoNonQT (getCuInfo.nonQT )--> GetInterNonQtSample;
-
-		GetInterNonQtSample (getSamples.launch )--> GetInterNonQtSample;
-		GetInterNonQtSample (getSamples.done   )--> GetPartMode;
+		GetCuInfoNonQT (getCuInfo.nonQT )--> GetInterSamples;
 
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
@@ -735,6 +820,5 @@ actor IntraPrediction()
 
 		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
 		GetIntraSamples (getSamples.done   )--> GetSplitTrafo;
-
 	end
 end
