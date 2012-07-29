@@ -2300,6 +2300,7 @@ actor Algo_Parser ()
 		uint(size= 8) xC := 0,
 		uint(size= 8) yC := 0
 	do	
+        significant_coeff_flag:=[[0: for int i in 0 .. 254] :for int j in 0 .. 254];
 		if rc_TType = TEXT_LUMA then
 			println("read_ResidualCoding.start cbY ("+rc_x0+", "+rc_y0+", "+tmpTrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
 		elsif rc_TType = TEXT_CHROMA_U then
@@ -2373,6 +2374,7 @@ actor Algo_Parser ()
 		xS := ScanOrder[ rc_log2TrafoSize - 2 ][ rc_scanIdx ][ rc_i ][ 0 ] >> 2;
    		yS := ScanOrder[ rc_log2TrafoSize - 2 ][ rc_scanIdx ][ rc_i ][ 1 ] >> 2; 
 	    inferSigCoeffFlag := 0; 
+	    rc_numNonZero := 1;
         coded_sub_block_flag[ xS ][ yS ] := 1; 
         if rc_i < rc_lastSubBlock and rc_i > 0 then 
            	inferSigCoeffFlag := 1; 
@@ -2387,17 +2389,13 @@ actor Algo_Parser ()
 				( n > 0 or inferSigCoeffFlag = 0 ) then
 				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res, patternSigCtx, xC, yC, 2, rc_TType);
                 significant_coeff_flag[ xC ][ yC ] := res[0];
+				rc_numNonZero := rc_numNonZero + 1;
 				if DEBUG_CABAC then
 					println(" significant_coeff_flag["+xC+"]["+yC+"]:=" +res[0]);
 				end
 				if significant_coeff_flag[ xC ][ yC ] = 1 then 
                    	inferSigCoeffFlag := 0;
                	end
-        	else
-               	res[0] := 0;
-			end
-			if res[0] = 1 then
-				rc_numNonZero := rc_numNonZero + 1;
 			end
 		end
 		rc_idx := 3;
@@ -2440,12 +2438,14 @@ actor Algo_Parser ()
 		
 	do	
 		c1 := 1;
-  		foreach int m in 0 .. 15 do
-  			n  := 15 - m;  
+		
+  		foreach int m in 0 .. rc_numNonZero do
+  			n  := rc_numNonZero - m;  
 			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
 			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
 				if numGreater1Flag < 8 then
+					println(" significant_coeff_flag["+xC+"]["+yC+"]:=" +significant_coeff_flag[ xC ][ yC ]);
 					get_ONE_FLAG( codIRange, codIOffset, ctxTable, fifo, res, c1);
 					coeff_abs_level_greater1_flag[ n ] := res[0];
 					numGreater1Flag := numGreater1Flag + 1; 
@@ -2466,21 +2466,21 @@ actor Algo_Parser ()
 			end
 		end
 		
-		signHidden := if lastSigScanPos - firstSigScanPos >= 3 and cu_transquant_bypass_flag != 0 then 1 else 0 end;
+		signHidden := if lastSigScanPos - firstSigScanPos >= 3 then 0 else 1 end;
+		println("signHidden "+signHidden);
 		if firstGreater1ScanPos != -1 then 
 			get_ABS_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 			coeff_abs_level_greater2_flag[ firstGreater1ScanPos] := res[0];
 		end
-		signBin:=0;
-  		foreach int m in 0 .. 15 do
-  			n  := 15 - m;  
+  		foreach int m in 0 .. rc_numNonZero do
+  			n  := rc_numNonZero - m;  
 			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
 			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 and
 				(pps_sign_data_hiding_flag[pps_id] != 0 or signHidden != 0 or n != firstSigScanPos) then
 				println("coeff_sign_flag " +xC + " " + yC);
-				decodeBinsEP(signBin, res, codIRange, codIOffset, fifo);
-				signBin:=1;
+				decodeBinsEP(signHidden, res, codIRange, codIOffset, fifo);
+				signHidden:=1;
 			end
 		end
 
@@ -2488,8 +2488,8 @@ actor Algo_Parser ()
 		sumAbs      := 0;
 		cLastAbsLevel :=0;
 		cLastRiceParam := 0;
-  		foreach int m in 0 .. 15 do
-  			n  := 15 - m;  
+  		foreach int m in 0 .. rc_numNonZero do
+  			n  := rc_numNonZero - m;  
 			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
 			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
