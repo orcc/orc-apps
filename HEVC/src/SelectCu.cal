@@ -27,6 +27,29 @@
  * SUCH DAMAGE.
  */
  
+ 
+/**
+ * Decoding process for intra blocks.
+ * 
+ * 
+ * @input CUInfo : Informations related to the current CU
+ *        (size, address and mode : INTRA,INTER,...).
+ * 
+ * @input InterSample : Pixel's value from the Inter-prediction CU.
+ * 
+ * @input IntraSample : Pixel's value from the Intra-prediction CU.
+ * 
+ * @input PartMode : Giving the partitioning mode of the current CU.
+ * 
+ * @input ResidualSample : Residual values for the current CU.
+ * 
+ * 
+ * @output Sample : Pixel's value before inLoop filter.
+ * 
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
+ 
 import interPrediction.NaluType.*;
 import std.util.Math.*;
 
@@ -67,6 +90,7 @@ actor SelectCu()
 		numPartDecoded := 0;
 	end
 
+	/* Getting informations of the next CU. */
 	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
 	guard
 		numPartDecoded < numPart && numPart != 2
@@ -79,16 +103,22 @@ actor SelectCu()
 		cuOff[1] := [0:for int i in 0 .. 1];
 	end
 
+	/* Getting informations of the next CU when there are two part.
+	 * Get twice informations in order to have all the informations concerning
+	 * this CU.
+	 */
 	getCuInfo.launch.numPart2: action CUInfo:[cuInfo] repeat 10 ==>
 	guard
 		numPartDecoded < numPart && numPart = 2
 	do
 		cuMode := cuInfo[0];
-		cuSize  := [[cuInfo[i+5*j]/4:for uint i in 3 .. 4]: for uint j in 0 .. 1];
+		cuSize  := [[cuInfo[i+5*j]/4:for uint i in 3 .. 4]:
+			for uint j in 0 .. 1];
 		cuWidth := max(cuInfo[3], cuInfo[4]);
 		nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
-		if(partMode=PART_2NxN || partMode=PART_2NxnU || partMode=PART_2NxnD) then
+		if(partMode=PART_2NxN || partMode=PART_2NxnU ||
+			partMode=PART_2NxnD) then
 			cuOff[1][0] := 0;
 			cuOff[1][1] := cuInfo[4]/4;
 		else
@@ -103,6 +133,7 @@ actor SelectCu()
 		numPartDecoded = numPart
 	end
 
+	/** Checking type of prediction.  **/
 	getCuMode.isIntra: action ==>
 	guard
 		cuMode = INTRA
@@ -125,30 +156,42 @@ actor SelectCu()
 		numPartDecoded := numPartDecoded + 1;
 	end
 
-	getCuSample.isIntra: action IntraSample:[intraSample] repeat 16 +2*4, ResidualSample:[resSample] repeat 16 +2*4 ==> Sample:[sample] repeat 16+2*4
+	/* Getting samples from intraPrediction */
+	getCuSample.isIntra: action IntraSample:[intraSample] repeat 16 +2*4,
+		ResidualSample:[resSample] repeat 16 +2*4
+		==> Sample:[sample] repeat 16+2*4
 	guard
 		idxBlk < nbBlk
 	var
 		uint(size=8) sample[16+2*4]
 	do
 		idxBlk := idxBlk + 1;
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
 		foreach int i in 0 .. 16+2*4-1
 		do
 			sample[i] := clip_i32(intraSample[i]+resSample[i], 0, 255);
 		end
 	end
 
+	/* Getting prediction samples from interPrediction */
 	getCuSample.isInter: action InterSample:[interSample] repeat 16 +2*4 ==>
 	guard
 		idxBlk < nbBlk
 	var
+		/* Offset is not null when numPart = 2 and partIdx = 1. */
 		uint xOff = cuOff[numPartDecoded][0],
 		uint yOff = cuOff[numPartDecoded][1]
 	do
+		/* Saving the inter prediction part because it's in ZScan instead of
+		 * RasterScan.
+		 */
 		foreach uint i in 0 .. 16+2*4-1
 		do
 			interSamp[xIdx+xOff][yIdx+yOff][i] := interSample[i];
 		end
+		/* Computing the location of the next block. */
 		xIdx := xIdx + 1;
 		if(xIdx = cuSize[numPartDecoded][0]) then
 			xIdx := 0;
@@ -158,10 +201,15 @@ actor SelectCu()
 				numPartDecoded := numPartDecoded + 1;
 			end
 		end
+
 		idxBlk := idxBlk + 1;
 	end
 
-	getCuSample.isInterRes: action ResidualSample:[resSample] repeat 16 +2*4 ==> Sample:[sample] repeat 16+2*4
+	/* Getting the residual part for interPrediction then computing the
+	 * result.
+	 */
+	getCuSample.isInterRes: action ResidualSample:[resSample] repeat 16 +2*4
+		==> Sample:[sample] repeat 16+2*4
 	guard
 		idxBlk < nbBlk
 	var
@@ -174,7 +222,8 @@ actor SelectCu()
 		idxBlk := idxBlk + 1;
 		foreach int i in 0 .. 16+2*4-1
 		do
-			sample[i] := clip_i32(interSamp[interIdx[0]][interIdx[1]][i] + resSample[i], 0, 255);
+			sample[i] := clip_i32(interSamp[interIdx[0]][interIdx[1]][i] +
+				resSample[i], 0, 255);
 		end
 	end
 
