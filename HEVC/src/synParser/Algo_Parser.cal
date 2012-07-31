@@ -1611,6 +1611,7 @@ actor Algo_Parser ()
 	 * read_CodingUnit.noGoto1
 	 *************************************************************************/
 	uint(size= 1) prev_intra_luma_pred_flag[PART_nRx2N+1][PART_nRx2N+1];
+	uint(size= 8) rem_intra_luma_pred_mode[PART_nRx2N+1][PART_nRx2N+1];
 	uint(size= 8) cu_nCbS;
 	read_CodingUnit.noGoto1 : action ==>
 	guard 
@@ -1659,9 +1660,10 @@ actor Algo_Parser ()
 						if prev_intra_luma_pred_flag[ cu_x0 + i*pbOffset ][ cu_y0 + j*pbOffset ] = 0 then
 							get_MPM_IDX(codIRange, codIOffset, fifo, res);
 //							mpm_idx[ cu_x0 + i*pbOffset ][ cu_y0 + j*pbOffset ] := res[0];
+/*	FIXME : */				rem_intra_luma_pred_mode[ cu_x0 + i*pbOffset ][ cu_y0 + j*pbOffset ] := res[0];
 						else
 							get_PREV_INTRA_LUMA_PRED(codIRange, codIOffset, ctxTable, fifo, res);
-//							rem_intra_luma_pred_mode[ cu_x0 + i*pbOffset ][ cu_y0 + j*pbOffset ] := res[0];
+							rem_intra_luma_pred_mode[ cu_x0 + i*pbOffset ][ cu_y0 + j*pbOffset ] := res[0];
 						end
 					end
 				end
@@ -2066,9 +2068,7 @@ actor Algo_Parser ()
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
-		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode = PART_2Nx2N and trafoDepth = 0 then 1 else 0 end,
-		uint(size= 8) xBase:=0,
-		uint(size= 8) yBase:=0
+		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode = PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
 	do	
 		println("read_TransformTree.start "+x0+" "+y0+" "+
 			(1<<log2TrafoSize)+" "+trafoDepth+" "+
@@ -2086,23 +2086,30 @@ actor Algo_Parser ()
 //
 		end
 		if trafoDepth = 0 or log2TrafoSize > 2  then
-			if trafoDepth = 0 or cbf_cb[ x0 ][ y0 ][ trafoDepth-1 ] = 1 then
+			if trafoDepth = 0 then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 				cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
-			end
-			if trafoDepth = 0 or cbf_cr[ x0 ][ y0 ][ trafoDepth-1 ] = 1 then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 				cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
+			else
+				if cbf_cb[ x0 ][ y0 ][ trafoDepth-1 ] = 1 then
+					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
+					cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				end
+				if cbf_cr[ x0 ][ y0 ][ trafoDepth-1 ] = 1 then
+					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
+					cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				end
 			end
 		end
 		if split_transform_flag[ x0 ][ y0 ][ trafoDepth ] = 1 then
-			ttStack[ttStack_idx][TT_x1] := x0 + ( ( 1 << log2TrafoSize ) >> 1 );
-			ttStack[ttStack_idx][TT_y1] := y0 + ( ( 1 << log2TrafoSize ) >> 1 );
+			ttStack[ttStack_idx][TT_x1]  := x0 + ( ( 1 << log2TrafoSize ) >> 1 );
+			ttStack[ttStack_idx][TT_y1]  := y0 + ( ( 1 << log2TrafoSize ) >> 1 );
 			ttStack[ttStack_idx][TT_idx] := 3;
 		else
 			if predMode = MODE_INTRA or trafoDepth != 0 or
 				cbf_cb[ x0 ][ y0 ][ trafoDepth ] = 1 or cbf_cr[ x0 ][ y0 ][ trafoDepth ] = 1 then
-				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth, log2TrafoSize, Log2MaxTrafoSize);
+				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 				cbf_luma[ x0 ][ y0 ][ trafoDepth ] := res[0];
 			end
 			ttStack[ttStack_idx][TT_idx] := 2;
@@ -2145,14 +2152,14 @@ actor Algo_Parser ()
 		ttStack[ttStack_idx][TT_yBase]				:= ttStack[idx][TT_y0];
 		ttStack[ttStack_idx][TT_log2TrafoSize]		:= ttStack[idx][TT_log2TrafoSize]  - 1;
 		ttStack[ttStack_idx][TT_trafoDepth]			:= ttStack[idx][TT_trafoDepth] + 1;
-		if ttStack[ttStack_idx][TT_idx] = 3 then
+		if ttStack[idx][TT_idx] = 4 then
 			//transform_tree( x0, y0, x0, y0, log2TrafoSize − 1, trafoDepth + 1, 0 )
 			ttStack[ttStack_idx][TT_blkIdx]			:= 0;
-		elsif ttStack[ttStack_idx][TT_idx] = 4 then
+		elsif ttStack[idx][TT_idx] = 5 then
 			//transform_tree( x1, y0, x0, y0, log2TrafoSize − 1 trafoDepth + 1, 1 )
 			ttStack[ttStack_idx][TT_x0]			    := ttStack[idx][TT_x1];
 			ttStack[ttStack_idx][TT_blkIdx]			:= 1;
-		elsif ttStack[ttStack_idx][TT_idx] = 5 then
+		elsif ttStack[idx][TT_idx] = 6 then
 			//transform_tree( x0, y1, x0, y0, log2TrafoSize − 1, trafoDepth + 1, 2 )
 			ttStack[ttStack_idx][TT_y0]				:= ttStack[idx][TT_y1];
 			ttStack[ttStack_idx][TT_blkIdx]			:= 2;
@@ -2192,8 +2199,6 @@ actor Algo_Parser ()
 	uint(size= 8) tu_trafoDepth;
 	uint(size= 8) tu_blkIdx;
 	uint(size= 8) tu_log2TrafoSize;
-	uint(size= 2) tu_scanIdx;
-	uint(size= 2) tu_scanIdxC;
 	
 	/**************************************************************************
 	 * read_TransformUnit.start
@@ -2216,13 +2221,6 @@ actor Algo_Parser ()
 				//cu_qp_delta
 				IsCuQpDeltaCoded := 1;
 			end
-			if predMode = MODE_INTRA then
-				tu_scanIdx  := ScanType[ tu_log2TrafoSize - 2 ][ prev_intra_luma_pred_flag[tu_x0][tu_y0]];
-				tu_scanIdxC := ScanType[ tu_log2TrafoSize - 2 ][ 0/*IntraPredModeC*/ ];
-			else
-				tu_scanIdx  := 0;
-				tu_scanIdxC := 0;
-			end
 			tu_idx := 3;
 			if cbf_luma[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
 				//residual_coding( x0, y0, log2TrafoSize, 0 )
@@ -2231,7 +2229,6 @@ actor Algo_Parser ()
 				rc_x0 				:= tu_x0;
 				rc_y0 				:= tu_y0;
 				rc_log2TrafoSize	:= tu_log2TrafoSize;
-				rc_scanIdx			:= tu_scanIdx;
 				rc_cIdx				:= 0;
 				rc_TType			:= TEXT_LUMA;
 			end
@@ -2246,7 +2243,6 @@ actor Algo_Parser ()
 	do
 		tu_idx 				:= 7;
 		rc_idx 				:= 1;
-		rc_scanIdx			:= tu_scanIdxC;
 		rc_cIdx				:= 1;
 		rc_TType			:= TEXT_CHROMA_U;						
 		if tu_log2TrafoSize > 2 then
@@ -2256,7 +2252,7 @@ actor Algo_Parser ()
 				tu_idx				:= 4;
 				rc_x0 				:= tu_x0;
 				rc_y0 				:= tu_y0;
-				rc_log2TrafoSize	:= tu_log2TrafoSize  - 1;
+				rc_log2TrafoSize	:= tu_log2TrafoSize;
 			end
 		elsif tu_blkIdx = 3 then
 			tu_idx := 5;
@@ -2324,7 +2320,8 @@ actor Algo_Parser ()
 	uint(size= 8) rc_cIdx;
 	uint(size= 4) rc_TType;
 	//
-	uint(size= 8) ScanOrder[3][3][BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
+	uint(size= 8) ScanOrder[3][BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
+	uint(size= 8) ScanOrder2[3][BLW_WIDTH_MAX*BLW_HEIGHT_MAX][2];
 	uint(size= 1) significant_coeff_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
 	uint(size= 1) coded_sub_block_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX];
 	uint(size= 8) LastSignificantCoeffX;
@@ -2333,6 +2330,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_ResidualCoding.start
 	 *************************************************************************/
+	uint(size= 8) rc_lastScanPos;
 	uint(size= 8) rc_lastSubBlock;
 	 int(size= 8) rc_i;
 	uint(size= 8) rc_numCoeff;
@@ -2343,6 +2341,8 @@ actor Algo_Parser ()
 	var
 		uint(size= 8) tmpTrafoSize		= (1<<rc_log2TrafoSize),
 		 int(size=32) res[1],
+		uint(size= 8) xS := 0,
+		uint(size= 8) yS := 0,
 		uint(size= 8) xC := 0,
 		uint(size= 8) yC := 0
 	do	
@@ -2373,63 +2373,63 @@ actor Algo_Parser ()
 			LastSignificantCoeffY := (1 << ((LastSignificantCoeffY >> 1) - 1)) *
 									 (2  +  (LastSignificantCoeffY & 1 )) + res[0];
 		end
-		if rc_scanIdx = 2 then
-			res[0] 				  := LastSignificantCoeffX;
-			LastSignificantCoeffX := LastSignificantCoeffY;
-			LastSignificantCoeffY := res[0];
-		end
 		
-		InitScanningArray(rc_log2TrafoSize, ScanOrder);
-		rc_numCoeff := 0;
-		println("InitScanningArray("+(1<<rc_log2TrafoSize)+") : rc_scanIdx = "+rc_scanIdx);
-		
+		InitScanningArray(rc_log2TrafoSize-2, ScanOrder);
+		InitScanningArray(2, ScanOrder2);
+		rc_scanIdx      := getScanIdx(predMode, rc_log2TrafoSize, rc_cIdx, rem_intra_luma_pred_mode[rc_x0][rc_y0]);
+		rc_lastScanPos  := 16;
+		rc_lastSubBlock := ( 1 << ( rc_log2TrafoSize - 2 ) * ( 1 << ( rc_log2TrafoSize - 2 ) ) ) - 1;
 		while  not( xC = LastSignificantCoeffX and yC = LastSignificantCoeffY) do
-			xC := ScanOrder[rc_log2TrafoSize - 2][ rc_scanIdx ][ rc_numCoeff ][ 0 ]; 
-			yC := ScanOrder[rc_log2TrafoSize - 2][ rc_scanIdx ][ rc_numCoeff ][ 1 ]; 
-			println(xC+" = "+LastSignificantCoeffX+" and "+yC+" = "+LastSignificantCoeffY+", rc_numCoeff = "+rc_numCoeff);
-			rc_numCoeff := rc_numCoeff + 1;
-		end 
-		println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_numCoeff = "+(rc_numCoeff-1));
-		rc_lastSubBlock  := ( 1 << ( rc_log2TrafoSize - 2 ) * ( 1 << ( rc_log2TrafoSize - 2 ) ) ) - 1;
+			if rc_lastScanPos = 0 then
+				rc_lastScanPos  := 16;
+				rc_lastSubBlock := rc_lastSubBlock - 1;
+			end
+			rc_lastScanPos := rc_lastScanPos - 1;
+			xS := ScanOrder[ rc_scanIdx ][ rc_lastSubBlock ][ 0 ]; 
+			yS := ScanOrder[ rc_scanIdx ][ rc_lastSubBlock ][ 1 ]; 
+			xC := ( xS << 2 ) + ScanOrder2[ rc_scanIdx ][ rc_lastScanPos ][ 0 ];
+			yC := ( yS << 2 ) + ScanOrder2[ rc_scanIdx ][ rc_lastScanPos ][ 1 ];
+//			println(xC+", "+LastSignificantCoeffX+" : "+yC+", "+LastSignificantCoeffY+", rc_lastSubBlock = "+rc_lastSubBlock+", rc_lastScanPos = "+rc_lastScanPos);
+		end
+//		println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_lastSubBlock = "+(rc_lastSubBlock)+" rc_scanIdx = "+rc_scanIdx);
 		rc_i			 := rc_lastSubBlock;
 		rc_idx           := 2;
  	end
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.start
 	 *************************************************************************/
-	uint(size=32) rc_offset;
-	 		
+	uint(size= 8) rc_xS;
+	uint(size= 8) rc_yS;
 	read_ResidualCoding.for_numLastSubset.start : action ==>
 	guard 
 		rc_idx = 2 and isFifoFull(fifo),
 		rc_i >= 0
 	var
 		 int(size=32) res[1],
+		int            m_end,
 		int            n,
 		uint(size= 8) xC,
 		uint(size= 8) yC,
-		uint(size= 8) xS,
-		uint(size= 8) yS,
-		uint(size= 1) inferSigCoeffFlag,
-		 int(size= 4) patternSigCtx:=0
+		uint(size= 1) inferSigCoeffFlag
 	do	
    
-		xS := ScanOrder[ rc_log2TrafoSize - 2 ][ rc_scanIdx ][ rc_i ][ 0 ] >> 2;
-   		yS := ScanOrder[ rc_log2TrafoSize - 2 ][ rc_scanIdx ][ rc_i ][ 1 ] >> 2; 
+		rc_xS := ScanOrder[ rc_scanIdx ][ rc_i ][ 0 ] >> 2;
+   		rc_yS := ScanOrder[ rc_scanIdx ][ rc_i ][ 1 ] >> 2; 
 	    inferSigCoeffFlag := 0; 
-        coded_sub_block_flag[ xS ][ yS ] := 1; 
+        coded_sub_block_flag[ rc_xS ][ rc_yS ] := 1; 
         if rc_i < rc_lastSubBlock and rc_i > 0 then 
+	        calcPatternSigCtx( coded_sub_block_flag, rc_xS, rc_yS, rc_log2TrafoSize, res);
+	        get_CODED_SUB_BLOCK_FLAG( codIRange, codIOffset, ctxTable, fifo, res, coded_sub_block_flag, rc_xS, rc_yS, rc_cIdx, rc_log2TrafoSize);
+	        coded_sub_block_flag[ rc_xS ][ rc_yS ] := res[0];
            	inferSigCoeffFlag := 1; 
         end
-        calcPatternSigCtx( coded_sub_block_flag, xS, yS, rc_log2TrafoSize, res);
-        patternSigCtx := res[0];
-  		foreach int m in 0 .. rc_numCoeff do
-  			n := rc_numCoeff - m;  
-			xC := ScanOrder[ rc_log2TrafoSize - 2 ][ rc_scanIdx ][ n ][ 0 ]; 
-			yC := ScanOrder[ rc_log2TrafoSize - 2 ][ rc_scanIdx ][ n ][ 1 ];			
-			if  (n + rc_offset) < (rc_numCoeff - 1) and coded_sub_block_flag[ xS ][ yS ] = 1 and 
-				( n > 0 or inferSigCoeffFlag = 0 ) then
-				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res, patternSigCtx, xC, yC, 2, rc_TType);
+        m_end := if rc_i = rc_lastSubBlock then rc_lastScanPos - 1 else 15 end;
+        foreach int m in 0 .. m_end do
+  			n := m_end - m;  
+			xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
+			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];			
+			if coded_sub_block_flag[ rc_xS ][ rc_yS ] = 1 and ( n > 0 or inferSigCoeffFlag = 0 ) then
+				get_SIGNIFICANT_COEFF_FLAG( codIRange, codIOffset, ctxTable, fifo, res, coded_sub_block_flag, xC, yC, rc_cIdx, rc_log2TrafoSize, rc_scanIdx);
                 significant_coeff_flag[ xC ][ yC ] := res[0];
 				if significant_coeff_flag[ xC ][ yC ] = 1 then 
                    	inferSigCoeffFlag := 0;
@@ -2463,27 +2463,28 @@ actor Algo_Parser ()
 		 int(size= 8) lastSigScanPos			:= -1,
 		uint(size= 8) numGreater1Flag			:=  0,
 		 int(size= 8) firstGreater1ScanPos		:= -1,
-		 int            n,
+		 int          n,
 		uint(size= 8) xC,
 		uint(size= 8) yC,
 		uint(size= 1) signHidden,
-		uint(size= 8) sumAbs,
+		uint(size= 8) numSigCoeff,
+		uint(size= 8) sumAbsLevel,
 		uint(size= 8) baseLevel,
 		uint(size= 8) c1,
 		uint(size= 8) coeff_abs_level_greater1_flag[16] := [0: for int i in 0 .. 15],
 		uint(size= 8) coeff_abs_level_greater2_flag[16] := [0: for int i in 0 .. 15],
+		uint(size= 1) coeff_sign_flag[16] := [0: for int i in 0 .. 15],
 		uint(size= 8) coeff_abs_level_remaining[16] := [0: for int i in 0 .. 15],
-		uint(size= 8) cLastAbsLevel,
 		uint(size= 8) cLastRiceParam
 	do	
 		c1 := 1;
-  		foreach int m in 0 .. rc_numCoeff do
-  			n  := rc_numCoeff - m;  
-			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
-			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
+  		foreach int m in 0 .. 15 do
+  			n  := 15 - m;  
+			xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
+			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];			
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
 				if numGreater1Flag < 8 then
-					get_ONE_FLAG( codIRange, codIOffset, ctxTable, fifo, res, c1);
+					get_COEFF_ABS_LEVEL_GREATER1_FLAG( codIRange, codIOffset, ctxTable, fifo, res, c1);
 					coeff_abs_level_greater1_flag[ n ] := res[0];
 					numGreater1Flag := numGreater1Flag + 1; 
 					if (coeff_abs_level_greater1_flag[ n ] = 1 and firstGreater1ScanPos = -1) then
@@ -2503,48 +2504,44 @@ actor Algo_Parser ()
 			end
 		end
 		
-		signHidden := if lastSigScanPos - firstSigScanPos >= 3 then 0 else 1 end;
+		signHidden := if lastSigScanPos - firstSigScanPos >= 3 and cu_transquant_bypass_flag = 0 then 1 else 0 end;
 		if firstGreater1ScanPos != -1 then 
-			get_ABS_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
+			get_COEFF_ABS_LEVEL_GREATER2_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 			coeff_abs_level_greater2_flag[ firstGreater1ScanPos] := res[0];
 		end
-  		foreach int m in 0 .. rc_numCoeff do
-  			n  := rc_numCoeff - m;  
-			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
-			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
+  		foreach int m in 0 .. 15 do
+  			n  := 15 - m;  
+			xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
+			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];
 			if significant_coeff_flag[ xC ][ yC ] = 1 and
-				(pps_sign_data_hiding_flag[pps_id] != 0 or signHidden != 0 or n != firstSigScanPos) then
-				decodeBinsEP(signHidden, res, codIRange, codIOffset, fifo);
-				signHidden:=1;
+				(pps_sign_data_hiding_flag[pps_id] = 0 or signHidden = 0 or n != firstSigScanPos) then
+				get_COEFF_SIGN_FLAG(codIRange, codIOffset, fifo, res);
+				coeff_sign_flag[ n ] := res[0];
 			end
 		end
-
-		numGreater1Flag := 0;
-		sumAbs      := 0;
-		cLastAbsLevel :=0;
-		cLastRiceParam := 0;
-  		foreach int m in 0 .. rc_numCoeff do
-  			n  := rc_numCoeff - m;  
-			xC := ScanOrder[2][ rc_scanIdx ][ n ][ 0 ];
-			yC := ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];
+		
+		numSigCoeff		:= 0;
+		sumAbsLevel		:= 0;
+		cLastRiceParam	:= 0;
+  		foreach int m in 0 .. 15 do
+  			n  := 15 - m;  
+			xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
+			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];			
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
-				baseLevel := 1  + coeff_abs_level_greater1_flag[ n ] + coeff_abs_level_greater2_flag[ n ];
-				if baseLevel = if numGreater1Flag < 8 then if n = firstGreater1ScanPos then 3 else 2 end else 1 end then
-					get_Coef(codIRange, codIOffset, fifo, res, cLastRiceParam);
+				baseLevel := 1 + coeff_abs_level_greater1_flag[ n ] + coeff_abs_level_greater2_flag[ n ];
+				if baseLevel = ( if numSigCoeff < 8 then if n = firstGreater1ScanPos then 3 else 2 end else 1 end) then
+					get_COEFF_ABS_LEVEL(codIRange, codIOffset, fifo, res, cLastRiceParam);				
 					coeff_abs_level_remaining[ n ] := res[0];
-					cLastAbsLevel := baseLevel + coeff_abs_level_remaining[ n ];
-					cLastRiceParam := min(if cLastAbsLevel>= 3 * ( 1 << cLastRiceParam ) then cLastRiceParam + 1 else cLastRiceParam end,4);
+					cLastRiceParam := 1;			
 				end
-				//transCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] := ( coeff_abs_level_remaining[ n ] + baseLevel ) * ( 1 − 2 * coeff_sign_flag[ n ] )
+				//TransCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] := ( coeff_abs_level_remaining[ n ] + baseLevel ) * ( 1 - 2 * coeff_sign_flag[ n ] );
 				if pps_sign_data_hiding_flag[pps_id] = 1 and signHidden = 1 then
-					sumAbs := sumAbs + ( res[0] /*coeff_abs_level_remaining[ n ] */ + baseLevel );
-					if n = firstSigScanPos and (sumAbs&3) = 1 then
-//						transCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] := -transCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ];
+					sumAbsLevel := sumAbsLevel + coeff_abs_level_remaining[ n ] + baseLevel;
+					if n = firstSigScanPos and ( sumAbsLevel & 1 ) = 1 then
+						//TransCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] = − TransCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ]
 					end
 				end
-				numGreater1Flag := numGreater1Flag + 1;
-			else
-//				transCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] := 0;
+				numSigCoeff := numSigCoeff + 1;
 			end
 		end
 		rc_i	:= rc_i - 1;

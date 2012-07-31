@@ -71,7 +71,7 @@ unit CabacContextFunctionHEVC :
 		end
 	end
 	/*************************************************************************
-	 * Context_92314
+	 * calcPatternSigCtx
 	 *************************************************************************/
 	procedure calcPatternSigCtx(
 		uint(size= 1) sigCoeffGroupFlag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX],
@@ -102,45 +102,95 @@ unit CabacContextFunctionHEVC :
   			ret[0] := sigRight + (sigLower<<1);
   		end
   	end
-	uint(size=8) ctxInMap[16] = [
-		0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8
-		];
-	procedure context_92314(
-		 int(size=4) patternSigCtx,
-		uint(size=8) posX,
-		uint(size=8) posY,		
-		uint(size=8) blockType,
-		uint(size=8) textureType,
+	/*************************************************************************
+	 * Context_93313
+	 *************************************************************************/
+	procedure context_93313(
+		uint(size=1) coded_sub_block_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX],
+		uint(size=8) xS,
+		uint(size=8) yS,
+		uint(size=8) cIdx,
+		uint(size=8) log2TrafoSize,
 		uint(size=9) ctxIdx[1]
 	)
 	var
-		uint(size=8) offset,
-		uint(size=8) posXinSubset,
-  		uint(size=8) posYinSubset,
-  		uint(size=8) cnt 
+		uint(size=8) csbfCtx := 0
+		
 	begin
-		println(" getSigCtxInc("+patternSigCtx+", "+posX+", "+posY+", "+blockType+", "+textureType+") ==>");
-		if posX + posY = 0 then
-			ctxIdx[0]  := 0;
-		elsif blockType = 2 then
-			ctxIdx[0]   := ctxInMap[(posY<<2) + posX];
-		elsif blockType = 3 then
-			ctxIdx[0]   := 9 + ctxInMap[((posY>>1)<<2) + (posX>>1)];
+//		println(" getSigCtxInc( "+xC+", "+yC+", "+cIdx+", "+log2TrafoSize+", "+scanIdx+") ==>");
+		if xS < (1 << (log2TrafoSize - 2) - 1) then
+			csbfCtx := csbfCtx + coded_sub_block_flag[ xS + 1 ][ yS ];
+		end
+		if yS < (1 << log2TrafoSize - 1) then
+			csbfCtx := csbfCtx + coded_sub_block_flag[ xS ][ yS + 1 ];
+		end
+		ctxIdx[1] := min(csbfCtx,1) + if cIdx = 0 then 0 else 2 end;
+	end
+	/*************************************************************************
+	 * Context_93314
+	 *************************************************************************/
+	uint(size=8) ctxInMap[16] = [
+		0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8
+		];
+	procedure context_93314(
+		uint(size=1) coded_sub_block_flag[BLW_WIDTH_MAX][BLW_HEIGHT_MAX],
+		uint(size=8) xC,
+		uint(size=8) yC,
+		uint(size=8) cIdx,
+		uint(size=8) log2TrafoSize,
+		uint(size=8) scanIdx,		
+		uint(size=9) ctxIdx[1]
+	)
+	var
+		uint(size=8) xS = xC >> 2,
+		uint(size=8) yS = yC >> 2,		
+		uint(size=8) xP = xC & 3,
+		uint(size=8) yP = yC & 3,		
+		uint(size=8) sigCtx,
+		uint(size=8) prevCsbf := 0
+	begin
+//		println(" getSigCtxInc( "+xC+", "+yC+", "+cIdx+", "+log2TrafoSize+", "+scanIdx+") ==>");
+		if log2TrafoSize = 2 then
+			sigCtx := ctxInMap[(yC<<2) + xC];
+		elsif xC + yC = 0 then
+			sigCtx := 0;
 		else
-			offset       := 18;
-			posXinSubset := posX-((posX>>2)<<2);
-			posYinSubset := posY-((posY>>2)<<2);
-			cnt          := 0;
-			if patternSigCtx = 0 then
-    			cnt := if posXinSubset+posYinSubset <= 2 then 1 else 0 end;
-			elsif patternSigCtx = 1 then
-				cnt := if posYinSubset <= 1 then 1 else 0 end;
-			elsif patternSigCtx = 2 then
-				cnt := if posXinSubset <= 1 then 1 else 0 end;
-			else
-				cnt := if posXinSubset+posYinSubset <= 4 then 2 else 1 end;
+			if xS < (1 << (log2TrafoSize - 2) - 1) then
+				prevCsbf := prevCsbf + coded_sub_block_flag[ xS + 1 ][ yS ];
 			end
-			ctxIdx[0] := if textureType = TEXT_LUMA and ((posX>>2) + (posY>>2)) > 0  then 3 else 0 end + offset + cnt;
+			if yS < (1 << log2TrafoSize - 1) then
+				prevCsbf := prevCsbf + (coded_sub_block_flag[ xS ][ yS + 1 ] << 1);
+			end
+			if prevCsbf = 0 then
+				sigCtx := if xP + yP = 0 then 2 elsif xP + yP < 3 then 1 else 0 end;
+			elsif prevCsbf = 1 then
+				sigCtx := if yP = 0 then 2 elsif yP = 1 then 1 else 0 end;
+			elsif prevCsbf = 2 then
+				sigCtx := if xP = 0 then 2 elsif xP = 1 then 1 else 0 end;
+			else
+				sigCtx := 3;
+			end
+			if cIdx = 0 then
+				if xS + yS > 0 then
+					sigCtx := sigCtx + 3;
+				end
+				if log2TrafoSize = 3 then
+					sigCtx := sigCtx + if scanIdx = 0 then 9 else 15 end;
+				else
+					sigCtx := sigCtx + 21;
+				end
+			else
+				if log2TrafoSize = 3 then
+					sigCtx := sigCtx + 9;
+				else
+					sigCtx := sigCtx + 12;
+				end
+			end
+		end
+		if cIdx = 0 then
+			ctxIdx[0] := sigCtx;
+		else
+			ctxIdx[0] := 27 + sigCtx;
 		end
 	end
 	uint(size=8) ctxIdxMap4x4[30] = [
