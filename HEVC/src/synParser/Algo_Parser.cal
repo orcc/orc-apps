@@ -2064,6 +2064,8 @@ actor Algo_Parser ()
 	var
 		uint(size= 8) x0				= ttStack[ttStack_idx][TT_x0],
 		uint(size= 8) y0				= ttStack[ttStack_idx][TT_y0],
+		uint(size= 8) xBase				= ttStack[ttStack_idx][TT_xBase],
+		uint(size= 8) yBase				= ttStack[ttStack_idx][TT_yBase],
 		uint(size= 8) log2TrafoSize	    = ttStack[ttStack_idx][TT_log2TrafoSize],
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
 		uint(size=32) res[1] := [0],
@@ -2083,6 +2085,9 @@ actor Algo_Parser ()
 		elsif log2TrafoSize > Log2MaxTrafoSize or (IntraSplitFlag = 1 and trafoDepth = 0) or InterSplitFlag = 1 then
 			split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := 1;							
 		end
+		
+		cbf_cb[ x0 ][ y0 ][ trafoDepth ] := 0;
+		cbf_cr[ x0 ][ y0 ][ trafoDepth ] := 0;
 		if trafoDepth = 0 or log2TrafoSize > 2  then
 			if trafoDepth = 0 then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
@@ -2090,22 +2095,27 @@ actor Algo_Parser ()
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 				cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
 			else
-				if cbf_cb[ x0 ][ y0 ][ trafoDepth-1 ] = 1 then
+				if cbf_cb[ xBase ][ yBase ][ trafoDepth-1 ] = 1 then
 					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 					cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
 				end
-				if cbf_cr[ x0 ][ y0 ][ trafoDepth-1 ] = 1 then
+				if cbf_cr[ xBase ][ yBase ][ trafoDepth-1 ] = 1 then
 					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
 					cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
 				end
 			end
 		end
+		if trafoDepth > 0 and log2TrafoSize = 2  then
+			cbf_cb[ x0 ][ y0 ][ trafoDepth ] := cbf_cb[ xBase ][ yBase ][ trafoDepth-1 ];
+			cbf_cr[ x0 ][ y0 ][ trafoDepth ] := cbf_cr[ xBase ][ yBase ][ trafoDepth-1 ];
+		end
+				
 		if split_transform_flag[ x0 ][ y0 ][ trafoDepth ] = 1 then
 			ttStack[ttStack_idx][TT_x1]  := x0 + ( ( 1 << log2TrafoSize ) >> 1 );
 			ttStack[ttStack_idx][TT_y1]  := y0 + ( ( 1 << log2TrafoSize ) >> 1 );
-			println("x0 = "+x0+", x1 = "+ttStack[ttStack_idx][TT_x1]+", y0 = "+y0+", y1 = "+ttStack[ttStack_idx][TT_y1]);
 			ttStack[ttStack_idx][TT_idx] := 3;
 		else
+			cbf_luma[ x0 ][ y0 ][ trafoDepth ] := 1;
 			if predMode = MODE_INTRA or trafoDepth != 0 or
 				cbf_cb[ x0 ][ y0 ][ trafoDepth ] = 1 or cbf_cr[ x0 ][ y0 ][ trafoDepth ] = 1 then
 				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
@@ -2341,8 +2351,8 @@ actor Algo_Parser ()
 		 int(size=32) res[1],
 		uint(size= 8) xS := 0,
 		uint(size= 8) yS := 0,
-		uint(size= 8) xC := 0,
-		uint(size= 8) yC := 0
+		 int(size= 8) xC := -1,
+		 int(size= 8) yC := -1
 	do	
 		if rc_TType = TEXT_LUMA then
 			println("read_ResidualCoding.start cbY ("+rc_x0+", "+rc_y0+", "+tmpTrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
@@ -2372,20 +2382,16 @@ actor Algo_Parser ()
 									 (2  +  (LastSignificantCoeffY & 1 )) + res[0];
 		end
 		
-		
-		
 		InitScanningArray(rc_log2TrafoSize-2, ScanOrder);
 		InitScanningArray(2, ScanOrder2);
 		rc_scanIdx      := getScanIdx(predMode, rc_log2TrafoSize, rc_cIdx, rem_intra_luma_pred_mode[rc_x0][rc_y0]);
-		
+//		println("rc_scanIdx      := getScanIdx("+predMode+", "+rc_log2TrafoSize+", "+rc_cIdx+", "+rem_intra_luma_pred_mode[rc_x0][rc_y0]+") = "+rc_scanIdx);
 		
 		if rc_scanIdx = 2 then
 			res[0] := LastSignificantCoeffX;
 			LastSignificantCoeffX := LastSignificantCoeffY;
 			LastSignificantCoeffY := res[0];
 		end
-		
-		
 		
 		rc_lastScanPos  := 16;
 		rc_lastSubBlock := ( 1 << ( rc_log2TrafoSize - 2 ) * ( 1 << ( rc_log2TrafoSize - 2 ) ) ) - 1;
@@ -2399,7 +2405,7 @@ actor Algo_Parser ()
 			yS := ScanOrder[ rc_scanIdx ][ rc_lastSubBlock ][ 1 ]; 
 			xC := ( xS << 2 ) + ScanOrder2[ rc_scanIdx ][ rc_lastScanPos ][ 0 ];
 			yC := ( yS << 2 ) + ScanOrder2[ rc_scanIdx ][ rc_lastScanPos ][ 1 ];
-			println(xC+", "+LastSignificantCoeffX+" : "+yC+", "+LastSignificantCoeffY+", rc_lastSubBlock = "+rc_lastSubBlock+", rc_lastScanPos = "+rc_lastScanPos);
+//			println(xC+", "+LastSignificantCoeffX+" : "+yC+", "+LastSignificantCoeffY+", rc_lastSubBlock = "+rc_lastSubBlock+", rc_lastScanPos = "+rc_lastScanPos);
 		end
 //		println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_lastSubBlock = "+(rc_lastSubBlock)+" rc_scanIdx = "+rc_scanIdx);
 		rc_i			 := rc_lastSubBlock;
@@ -2480,6 +2486,10 @@ actor Algo_Parser ()
 		uint(size= 8) numSigCoeff,
 		uint(size= 8) sumAbsLevel,
 		uint(size= 8) baseLevel,
+		uint(size= 1) prevValue := 0,
+		uint(size= 8) ctxSet[1] := [0],
+		uint(size= 1) greater1Ctx[1] := [0],
+		uint(size= 1) ctxIdxInc[1] := [0],
 		uint(size= 8) c1,
 		uint(size= 8) coeff_abs_level_greater1_flag[16] := [ 0 : for int i in 0 .. 15 ],
 		uint(size= 8) coeff_abs_level_greater2_flag[16] := [ 0 : for int i in 0 .. 15 ],
@@ -2495,8 +2505,10 @@ actor Algo_Parser ()
 			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];			
 			if significant_coeff_flag[ xC ][ yC ] = 1 then
 				if numGreater1Flag < 8 then
-					get_COEFF_ABS_LEVEL_GREATER1_FLAG( codIRange, codIOffset, ctxTable, fifo, res, c1);
+					context_93315(rc_cIdx, rc_i, n, prevValue, ctxSet, greater1Ctx, ctxIdxInc);
+					get_COEFF_ABS_LEVEL_GREATER1_FLAG( codIRange, codIOffset, ctxTable, fifo, res, ctxIdxInc[0]/*c1*/);
 					coeff_abs_level_greater1_flag[ n ] := res[0];
+					prevValue := res[0];
 					numGreater1Flag := numGreater1Flag + 1; 
 					if (coeff_abs_level_greater1_flag[ n ] = 1 and firstGreater1ScanPos = -1) then
 						firstGreater1ScanPos := n;
