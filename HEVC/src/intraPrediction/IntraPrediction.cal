@@ -535,12 +535,15 @@ actor IntraPrediction()
 	 */
 	getCuInfo.nonQT.isInter: action CUInfo:[cuInfo] repeat 10 ==>
 	do
+		cuMode := cuInfo[0];
 		nS := max(cuInfo[3], cuInfo[4]);
 		idxBlk := 0;
 		numBlkToSend := nS*nS/16;
 		treeAddr := [cuInfo[1], cuInfo[2]];
 		numPart := 2;
 		numPartDecoded := 2;
+		trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
 	end
 
 	getCuInfo.done: action ==>
@@ -579,6 +582,8 @@ actor IntraPrediction()
 		idxBlk := 0;
 		numBlkToSend := nS*nS/16;
 		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
 	end
 
 	/* When it's neither an intra nor inter prediction CU, do neither
@@ -702,6 +707,34 @@ actor IntraPrediction()
 			end
 		end
 	end
+	
+	getSplitTrafo.isSkip: action ==>
+	guard
+		trafoTreeDepth>-1, cuMode = SKIP
+	do
+		trafoTreeDepth := -1;
+	end
+
+	getSplitTrafo.isInter: action SplitTransf:[splitTrafo] ==>
+	guard
+		trafoTreeDepth>-1, cuMode != SKIP,
+		numPart = 1 || numPart = 2
+	do
+		if(splitTrafo) then
+			trafoTreeDepth := trafoTreeDepth + 1;
+			trafoTreeIdx[trafoTreeDepth] := 0;
+		else
+			trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+			while(trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4)
+			do
+				trafoTreeDepth := trafoTreeDepth - 1;
+				if(trafoTreeDepth>-1) then
+					trafoTreeIdx[trafoTreeDepth] :=
+						trafoTreeIdx[trafoTreeDepth] + 1;
+				end
+			end
+		end
+	end
 
 	getSplitTrafo.done: action ==>
 	guard
@@ -799,26 +832,30 @@ actor IntraPrediction()
 		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
 		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
 
-		GetCuInfoNonQT (getCuInfo.nonQT )--> GetInterSamples;
+		GetCuInfoNonQT (getCuInfo.nonQT )--> GetSplitTrafoInter;
 
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
 
-		GetCuMode (getCuMode.isIntra )--> GetSplitTrafo;
-		GetCuMode (getCuMode.isInter )--> GetInterSamples;
+		GetCuMode (getCuMode.isIntra )--> GetSplitTrafoIntra;
+		GetCuMode (getCuMode.isInter )--> GetSplitTrafoInter;
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
 
 		GetInterSamples (getSamples.launch )--> GetInterSamples;
 		GetInterSamples (getSamples.done   )--> GetCuInfo;
 
-		GetSplitTrafo (getSplitTrafo.isTrue  )--> GetSplitTrafo;
-		GetSplitTrafo (getSplitTrafo.isFalse )--> SendSamples;
-		GetSplitTrafo (getSplitTrafo.done    )--> GetCuInfo;
+		GetSplitTrafoIntra (getSplitTrafo.isTrue  )--> GetSplitTrafoIntra;
+		GetSplitTrafoIntra (getSplitTrafo.isFalse )--> SendSamples;
+		GetSplitTrafoIntra (getSplitTrafo.done    )--> GetCuInfo;
+
+		GetSplitTrafoInter (getSplitTrafo.isInter  )--> GetSplitTrafoInter;
+		GetSplitTrafoInter (getSplitTrafo.isSkip  )--> GetInterSamples;
+		GetSplitTrafoInter (getSplitTrafo.done    )--> GetInterSamples;
 
 		SendSamples (sendSamples.launch )--> SendSamples;
 		SendSamples (sendSamples.done   )--> GetIntraSamples;
 
 		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
-		GetIntraSamples (getSamples.done   )--> GetSplitTrafo;
+		GetIntraSamples (getSamples.done   )--> GetSplitTrafoIntra;
 	end
 end
