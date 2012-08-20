@@ -5,9 +5,13 @@ import std.util.Math.*;
 
 actor GenerateBs()
 	uint(size=16) CUInfo,
+	uint(size=2)  IsBiPredOrLx,
+	int (size=16) Mv,
 	uint(size=4)  PartMode,
+//	int (size=16) RefPoc,
 	bool          SplitTransf
 		==>
+	uint(size=2) BS
 		:
 
 	uint(size=16) PIC_WIDTH_MAX = 2048;
@@ -33,7 +37,6 @@ actor GenerateBs()
 
 	bool edgeFlag[2][16][16];
 	bool isTUEdge[2][16][16];
-	int chromaPartWidth[16][16];
 
 
 	uint(size=2) predModeTab[PIC_WIDTH_MAX/4][2*64/4];//
@@ -41,6 +44,42 @@ actor GenerateBs()
 	bool isBiPredTab[PIC_WIDTH_MAX/4][2*64/4];//
 	int(size=16) refPocTab[PIC_WIDTH_MAX/4][2*64/4][2];//
 	int(size=16) mvTab[PIC_WIDTH_MAX/4][2*64/4][2][2];//
+	bool isBiPred[2];
+	int(size=16) refPoc[2][2];
+	int(size=16) mv[2][2][2];
+	
+
+	uint(size=9) currIdx;
+	uint(size=9) maxRasterScanIdx;
+	uint(size=2) numMvInfo;
+	uint(size=2) bsTable[2][256];
+
+	procedure savePredInfo(uint(size=16) addr[2], uint(size=8) puSize[2],
+		uint(size=1) tabIdx)
+	var
+		uint(size=16) xMin = (addr[0]>>2)&(PIC_WIDTH_MAX/4-1),
+		uint(size=16) xMax = ((addr[0]+puSize[0])/4)&(PIC_WIDTH_MAX/4-1),
+		uint(size=16) yMin = (addr[1]/4)&31,
+		uint(size=16) yMax = ((addr[1]+puSize[1])/4)&31,
+		uint(size=16) y
+	begin
+		foreach uint x in xMin .. xMax-1
+		do
+			y := yMin;
+			while(y!=yMax)
+			do
+				predModeTab[x][y] := cuMode;
+				isBiPredTab[x][y] := isBiPred[tabIdx];
+				foreach int i in 0 .. 1
+				do
+					refPocTab[x][y][i] := refPoc[tabIdx][i];
+					mvTab[x][y][i][0] := mv[tabIdx][i][0];
+					mvTab[x][y][i][1] := mv[tabIdx][i][1];
+				end
+				y := (y+1)&31;
+			end
+		end
+	end
 
 	procedure rstEdgeTables(uint(size=16) addr[2])
 	begin
@@ -200,6 +239,9 @@ actor GenerateBs()
 	guard
 		partMode != NEW_SLICE && partMode != NEW_PICT,
 		partMode != PART_2Nx2N && partMode != PART_NxN
+	do
+		currIdx := 0;
+		numMvInfo := 2;
 	end
 
 	/* Check if all parts of the CU are a square. */
@@ -209,6 +251,37 @@ actor GenerateBs()
 	do
 		numPart := partModeToNumPart[partMode];
 		numPartDecoded := 0;
+	end
+
+	getRefPictInfo.launch.isNotBiPred: action IsBiPredOrLx:[isBiPredOrLx],
+		/*RefPoc:[refPocVal],*/ Mv:[mvVal] repeat 2 ==>
+	guard
+		isBiPredOrLx != BI_PRED and currIdx < numMvInfo
+	do
+		isBiPred[currIdx] := (isBiPredOrLx=BI_PRED);
+		refPoc[currIdx][0] := 0;//refPocVal;
+		mv[currIdx][0] := [mvVal[i]:for uint i in 0 .. 1];
+		currIdx := currIdx + 1;
+	end
+
+	getRefPictInfo.launch.isBiPred: action IsBiPredOrLx:[isBiPredOrLx],
+		/*RefPoc:[refPocVal] repeat 2,*/ Mv:[mvVal] repeat 4 ==>
+	guard
+		isBiPredOrLx = BI_PRED and currIdx < numMvInfo
+	do
+		isBiPred[currIdx] := (isBiPredOrLx=BI_PRED);
+		refPoc[currIdx] := [/*refPocVal[i]*/0:for uint i in 0 .. 1];
+		mv[currIdx] := [[mvVal[i+2*j]:for uint i in 0 .. 1]: for uint j in 0 .. 1];
+		currIdx := currIdx + 1;
+	end
+
+	getRefPictInfo.done: action ==>
+	guard
+		currIdx = numMvInfo
+	do
+		if(numMvInfo=1) then
+			savePredInfo(cuAddr, [nS, nS], 0);
+		end
 	end
 
 	/* Get the information concerning the CU to be able to save the values in
@@ -245,12 +318,15 @@ actor GenerateBs()
 		nS := max(cuInfo[3], cuInfo[4]);
 		puSize := [cuInfo[3], cuInfo[4]];
 		processPUBoundary(cuAddr, puSize);
+		savePredInfo(cuAddr, puSize, 0);
 		puSize := [cuInfo[8], cuInfo[9]];
 		processPUBoundary([cuInfo[6], cuInfo[7]], puSize);
+		savePredInfo([cuInfo[6], cuInfo[7]], puSize, 1);
 		numPart := 2;
 		numPartDecoded := 2;
 		trafoTreeDepth  := 0;
 		trafoTreeIdx[0] := 3;
+		
 	end
 
 	getCuInfo.done: action ==>
@@ -265,6 +341,13 @@ actor GenerateBs()
 		processPUBoundary(cuAddr, [nS, nS]);
 		trafoTreeDepth  := 0;
 		trafoTreeIdx[0] := 3;
+		currIdx := 0;
+		numMvInfo :=
+			if(cuMode=INTRA) then
+				0
+			else
+				1
+			end;
 	end
 
 	/* When it's neither an intra nor inter prediction CU, do neither
@@ -309,42 +392,76 @@ actor GenerateBs()
 		int(size=16) yMin = (cuAddr[0] & 63)>>2,
 		int(size=16) yMax = yMin + (nS>>2),
 		uint(size=2) bS[1],
-		uint(size=16) addrBlk[2]
+		uint(size=16) addrBlk[2],
+		uint(size=8) rasterIdx
 	do
 		addrBlk := cuAddr;
 		foreach int y in yMin .. yMax - 1
 		do
 			foreach int x in xMin .. xMax - 1
 			do
+				rasterIdx := absCoordToRasterScan(addrBlk);
 				if(edgeFlag[VERT][x][y]) then
 					genBoundFilterStrength(bS, addrBlk, true, 0, isTUEdge[VERT][x][y]);
+					bsTable[0][rasterIdx] := bS[0];
+				else				
+					bsTable[0][rasterIdx] := 0;
 				end
 				if(edgeFlag[HORIZ][x][y]) then
 					genBoundFilterStrength(bS, addrBlk, false, 0, isTUEdge[HORIZ][x][y]);
+					bsTable[1][rasterIdx] := bS[0];
+				else
+					bsTable[0][rasterIdx] := 0;
 				end
 				addrBlk[0] := addrBlk[0] + 4;
 			end
 			addrBlk[1] := addrBlk[1] + 4;
 			addrBlk[0] := cuAddr[0];
 		end
+		currIdx := absCoordToRasterScan(cuAddr);
+		addrBlk := [cuAddr[0]+nS, cuAddr[1]+nS];
+		maxRasterScanIdx := absCoordToRasterScan(addrBlk);
+	end
+
+	sendBS.launch: action ==> BS:[bs] repeat 2
+	guard
+		currIdx <= maxRasterScanIdx
+	var
+		uint(size=2)  bs[2]
+	do
+		bs := [bsTable[i][currIdx]: for uint i in 0 .. 1];
+		currIdx := currIdx + 1;
+	end
+
+	sendBS.done: action ==>
+	guard
+		currIdx > maxRasterScanIdx
 	end
 
 	schedule fsm GetPartMode:
 		GetPartMode(isNewSliceOrPict          )--> GetPartMode;
 		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
-		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
+		GetPartMode(getPartMode.isNonQuadTree )--> GetRefPictInfo1;
 
-		GetCuInfoNonQT (getCuInfo.nonQT )--> GetSplitTrafo;
+		GetRefPictInfo1 (getRefPictInfo.launch )--> GetRefPictInfo1;
+		GetRefPictInfo1 (getRefPictInfo.done   )--> GetCuInfoNonQT;
+		GetCuInfoNonQT  (getCuInfo.nonQT       )--> GetSplitTrafo;
 
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
 
-		GetCuMode (getCuMode.isNotOther )--> GetSplitTrafo;
+		GetCuMode (getCuMode.isNotOther )--> GetRefPictInfo2;
 		GetCuMode (getCuMode.isOther    )--> GetCuInfo;
+
+		GetRefPictInfo2 (getRefPictInfo.launch )--> GetRefPictInfo2;
+		GetRefPictInfo2 (getRefPictInfo.done   )--> GetSplitTrafo;
 
 		GetSplitTrafo (getSplitTrafo.launch )--> GetSplitTrafo;
 		GetSplitTrafo (getSplitTrafo.done   )--> GenerateBS;
 
-		GenerateBS (generateBS )--> GetCuInfo;
+		GenerateBS (generateBS )--> SendBS;
+
+		SendBS (sendBS.launch )--> SendBS;
+		SendBS (sendBS.done   )--> GetCuInfo;
 	end
 end
