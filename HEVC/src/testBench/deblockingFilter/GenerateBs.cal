@@ -4,11 +4,12 @@ import interPrediction.NaluType.*;
 import std.util.Math.*;
 
 actor GenerateBs()
+	bool          Cbf,
 	uint(size=16) CUInfo,
 	uint(size=2)  IsBiPredOrLx,
 	int (size=16) Mv,
 	uint(size=4)  PartMode,
-//	int (size=16) RefPoc,
+	int (size=16) RefPoc,
 	bool          SplitTransf
 		==>
 	uint(size=2) BS
@@ -254,23 +255,23 @@ actor GenerateBs()
 	end
 
 	getRefPictInfo.launch.isNotBiPred: action IsBiPredOrLx:[isBiPredOrLx],
-		/*RefPoc:[refPocVal],*/ Mv:[mvVal] repeat 2 ==>
+		RefPoc:[refPocVal], Mv:[mvVal] repeat 2 ==>
 	guard
 		isBiPredOrLx != BI_PRED and currIdx < numMvInfo
 	do
 		isBiPred[currIdx] := (isBiPredOrLx=BI_PRED);
-		refPoc[currIdx][0] := 0;//refPocVal;
+		refPoc[currIdx][0] := refPocVal;
 		mv[currIdx][0] := [mvVal[i]:for uint i in 0 .. 1];
 		currIdx := currIdx + 1;
 	end
 
 	getRefPictInfo.launch.isBiPred: action IsBiPredOrLx:[isBiPredOrLx],
-		/*RefPoc:[refPocVal] repeat 2,*/ Mv:[mvVal] repeat 4 ==>
+		RefPoc:[refPocVal] repeat 2, Mv:[mvVal] repeat 4 ==>
 	guard
 		isBiPredOrLx = BI_PRED and currIdx < numMvInfo
 	do
 		isBiPred[currIdx] := (isBiPredOrLx=BI_PRED);
-		refPoc[currIdx] := [/*refPocVal[i]*/0:for uint i in 0 .. 1];
+		refPoc[currIdx] := [refPocVal[i]:for uint i in 0 .. 1];
 		mv[currIdx] := [[mvVal[i+2*j]:for uint i in 0 .. 1]: for uint j in 0 .. 1];
 		currIdx := currIdx + 1;
 	end
@@ -358,24 +359,63 @@ actor GenerateBs()
 		cuMode = OTHER
 	end
 
-	getSplitTrafo.launch: action SplitTransf:[splitTrafo] ==>
+	getSplitTrafo.launch.isTrue: action SplitTransf:[splitTrafo] ==>
 	guard
-		trafoTreeDepth>-1
+		trafoTreeDepth>-1 && splitTrafo
 	do
-		if(splitTrafo) then
-			trafoTreeDepth := trafoTreeDepth + 1;
-			trafoTreeIdx[trafoTreeDepth] := 0;
-		else
-			processTUBoundaries();
+		trafoTreeDepth := trafoTreeDepth + 1;
+		trafoTreeIdx[trafoTreeDepth] := 0;
+	end
 
-			trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
-			while(trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4)
+	getSplitTrafo.launch.isFalse: action SplitTransf:[splitTrafo], Cbf:[cbf] ==>
+	guard
+		trafoTreeDepth>-1 && not splitTrafo
+	var
+		uint(size=7)  treeNS,
+		uint(size=16) treeAddr[2],
+		uint(size=16) xMin,
+		uint(size=16) xMax,
+		uint(size=16) yMin,
+		uint(size=16) yMax,
+		uint(size=16) y
+	do
+		processTUBoundaries();
+
+		/* Computing the size and the address of the current block. */
+		treeNS := nS;
+		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		foreach uint idx in 1 .. trafoTreeDepth
+		do
+			treeNS := treeNS >> 1;
+			if((trafoTreeIdx[idx]&1) != 0) then
+				treeAddr[0] := treeAddr[0] + treeNS;
+			end
+			if((trafoTreeIdx[idx]&2) != 0) then
+				treeAddr[1] := treeAddr[1] + treeNS;
+			end
+		end
+
+		xMin := (treeAddr[0] & PIC_WIDTH_MAX-1) >>2;
+		xMax := (xMin+(treeNS>>2))&(PIC_WIDTH_MAX/4-1);
+		yMin := (treeAddr[1]/4)&31;
+		yMax := ((treeAddr[1]+treeNS)/4)&31;
+		foreach int x in xMin .. xMax-1
+		do
+			y := yMin;
+			while(y!=yMax)
 			do
-				trafoTreeDepth := trafoTreeDepth - 1;
-				if(trafoTreeDepth>-1) then
-					trafoTreeIdx[trafoTreeDepth] :=
-						trafoTreeIdx[trafoTreeDepth] + 1;
-				end
+				cbfTab[x][y] := cbf;
+				y:= (y+1)&31;
+			end
+		end
+
+		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+		while(trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4)
+		do
+			trafoTreeDepth := trafoTreeDepth - 1;
+			if(trafoTreeDepth>-1) then
+				trafoTreeIdx[trafoTreeDepth] :=
+					trafoTreeIdx[trafoTreeDepth] + 1;
 			end
 		end
 	end
