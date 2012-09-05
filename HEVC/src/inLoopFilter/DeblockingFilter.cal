@@ -37,6 +37,7 @@ actor DeblockingFilter()
 	int (size=8)  Qp,
 	uint(size=8)  SampleIn
 		==>
+	uint(size=8)  FiltSample
 		:
 
 	uint(size=16) PIC_WIDTH_MAX=2048;
@@ -291,43 +292,48 @@ actor DeblockingFilter()
 	guard
 		yIdx < picSizeInCu[1]
 	var
-		uint(size=16) xPixIdx,
-		uint(size=16) yPixIdx,
+		uint(size=16) pixAddr[2],
 		uint tokenOffset,
 		uint(size=16) xMin, uint(size=16) xMax,
 		uint(size=16) yMin, uint(size=16) yMax, uint(size=16) yVal
 	do
-		xPixIdx := xIdx*64;
-		yPixIdx := yIdx*64;
-		xAddr := xPixIdx;
-		yAddr := yPixIdx;
-		foreach uint y in 0 .. 63
+		xAddr := xIdx*64;
+		yAddr := yIdx*64;
+		foreach uint blkIdx in 0 .. 255
 		do
-			foreach uint x in 0 .. 63
+			rasterScanToAbsCoord(blkIdx, pixAddr);
+			pixAddr[0] := pixAddr[0] + xAddr;
+			pixAddr[1] := pixAddr[1] + yAddr;
+			tokenOffset := blkIdx*(16+2*4);
+			foreach uint y in 0 .. 3
 			do
-				pictureBuffer[0][xPixIdx+x][yPixIdx+y] := samp[x+y*64];
-			end
-		end
-
-		xPixIdx := xPixIdx>>1;
-		yPixIdx := xPixIdx>>1;
-		foreach uint component in 1 .. 2
-		do
-			tokenOffset:= 64*64 + 32*32*(component-1);
-			foreach uint y in 0 .. 32
-			do
-				foreach uint x in 0 .. 32
+				foreach uint x in 0 .. 3
 				do
-					pictureBuffer[component][xPixIdx+x][yPixIdx+y] :=
-						samp[x+y*32 + tokenOffset];
+					pictureBuffer[0][pixAddr[0]+x][pixAddr[1]+y] :=
+						samp[tokenOffset + 4*y+x];
 				end
+			end
+			tokenOffset := blkIdx + 16;
+			pixAddr[0]  := pixAddr[0]>>1;
+			pixAddr[1]  := pixAddr[1]>>1;
+			foreach uint comp in 1 .. 2
+			do
+				foreach uint y in 0 .. 1
+				do
+					foreach uint x in 0 .. 1
+					do
+						pictureBuffer[comp][pixAddr[0]+x][pixAddr[1]+y] :=
+							samp[tokenOffset + 2*y+x];
+					end
+				end
+				tokenOffset := tokenOffset + 4;
 			end
 		end
 
 		xMin := (xIdx*64 & PIC_WIDTH_MAX-1) >>2;
 		xMax := (xMin+16)&(PIC_WIDTH_MAX/4-1);
 		yMin := (yIdx*64/4)&31;
-		yMax := ((yIdx*64+16)/4)&31;
+		yMax := ((yIdx*64+64)/4)&31;
 		yVal := yMin;
 		while(yVal!=yMax)
 		do
@@ -374,11 +380,44 @@ actor DeblockingFilter()
 		end
 	end
 
+	sendSamples: action ==> FiltSample:[filtSamp] repeat 64*64 + 2* 32*32
+	var
+		uint tokenOffset,
+		uint(size=8) filtSamp[64*64+2*32*32],
+		uint(size=16) blkAddrX, uint(size=16) blkAddrY
+	do
+		blkAddrX := xAddr;
+		blkAddrY := yAddr;
+		foreach uint y in 0 .. 63
+		do
+			foreach uint x in 0 .. 63
+			do
+				filtSamp[x+y*64] := pictureBuffer[0][blkAddrX+x][blkAddrY+y];
+			end
+		end
+
+		blkAddrX := blkAddrX>>1;
+		blkAddrY := blkAddrY>>1;
+		tokenOffset:= 64*64;
+		foreach uint comp in 1 .. 2
+		do
+			foreach uint y in 0 .. 31
+			do
+				foreach uint x in 0 .. 31
+				do
+					filtSamp[x+y*32 + tokenOffset] := pictureBuffer[comp][blkAddrX+x][blkAddrY+y];
+				end
+			end
+			tokenOffset:= tokenOffset + 32*32;
+		end
+	end
+
 	schedule fsm IsNewPict:
 		IsNewPict (isNewPict       )--> GetCuPix;
 		GetCuPix  (getCuPix.launch )--> FilterVertEdges;
 		GetCuPix  (getCuPix.done   )--> IsNewPict;
 
-		FilterVertEdges (filterVertEdges )--> GetCuPix;
+		FilterVertEdges (filterVertEdges )--> SendSamples;
+		SendSamples     (sendSamples     )--> GetCuPix;
 	end
 end
