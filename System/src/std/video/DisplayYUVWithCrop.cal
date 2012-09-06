@@ -34,7 +34,7 @@ import  std.util.Math.*;
 import  std.stdio.Source.*;
 
 
-actor DisplayYUVWithCrop()
+actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	uint(size=8)  Byte,
 	uint(size=14) DispCoord,
 	uint(size=9)  PicSizeInMb
@@ -73,7 +73,7 @@ actor DisplayYUVWithCrop()
 		(displayYUV_getFlags() & DISP_READY) != 0
 	do
 
-		pictureWidthLuma  := picWidth * MB_SIZE_LUMA;
+		pictureWidthLuma  := picWidth * BLK_SIDE;
 		pictureSizeInMb   := picWidth * picHeight;
 		xMin := dispCoord[0];
 		xMax := dispCoord[1];
@@ -88,9 +88,10 @@ actor DisplayYUVWithCrop()
 		yIdxChroma := 0;
 	end
 
-	getPixValue.launch.Luma: action Byte :[Bytes] repeat 256 ==>
+	getPixValue.launch.Luma.blk16x16: action Byte :[Bytes] repeat 256 ==>
 	guard
-		nbBlockGot < pictureSizeInMb
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 16
 	do
 		uint(size=14) xIdxMin = max(xIdxLuma, xMin);
 		uint(size=14) xIdxMax = min(xIdxLuma + 15, xMax);
@@ -110,7 +111,32 @@ actor DisplayYUVWithCrop()
 		chromaComponent := 0;
 	end
 
-	getPixValue.launch.Chroma: action Byte :[Bytes] repeat 64 ==>
+	getPixValue.launch.Luma.blk64x64: action Byte :[Bytes] repeat 4096 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 64
+	do
+		uint(size=14) xIdxMin = max(xIdxLuma, xMin);
+		uint(size=14) xIdxMax = min(xIdxLuma + 63, xMax);
+		uint(size=14) yIdxMin = max(yIdxLuma, yMin);
+		uint(size=14) yIdxMax = min(yIdxLuma + 63, yMax);
+
+		nbBlockGot := nbBlockGot + 1;
+		foreach int y in yIdxMin .. yIdxMax
+		do
+			foreach int x in xIdxMin .. xIdxMax
+			do
+				pictureBufferY[(y-yMin)*cropPicWthLuma+x-xMin]
+					:= Bytes[(y-yIdxLuma)*64 + x-xIdxLuma];
+			end
+		end
+		xIdxLuma := xIdxLuma + 64;
+		chromaComponent := 0;
+	end
+
+	getPixValue.launch.Chroma.blk16x16: action Byte :[Bytes] repeat 64 ==>
+	guard
+		BLK_SIDE = 16
 	do
 		uint(size=14) xIdxMin = max(xIdxChroma, xMin/2);
 		uint(size=14) xIdxMax = min(xIdxChroma + 7, xMax/2);
@@ -137,6 +163,40 @@ actor DisplayYUVWithCrop()
 				xIdxChroma := 0;
 				yIdxLuma   := yIdxLuma + MB_SIZE_LUMA;
 				yIdxChroma := yIdxChroma + MB_SIZE_CHROMA;
+			end
+		end
+		chromaComponent := 1;
+	end
+
+	getPixValue.launch.Chroma.blk64x64: action Byte :[Bytes] repeat 1024 ==>
+	guard
+		BLK_SIDE = 64
+	do
+		uint(size=14) xIdxMin = max(xIdxChroma, xMin/2);
+		uint(size=14) xIdxMax = min(xIdxChroma + 31, xMax/2);
+		uint(size=14) yIdxMin = max(yIdxChroma, yMin/2);
+		uint(size=14) yIdxMax = min(yIdxChroma + 31, yMax/2);
+
+		foreach int y in yIdxMin .. yIdxMax
+		do
+			foreach int x in xIdxMin .. xIdxMax
+			do
+				if(chromaComponent=0)then
+					pictureBufferU[(y-yMin/2)*cropPicWthLuma/2 + x-xMin/2] :=
+						Bytes[(y-yIdxChroma)*32 + x-xIdxChroma];
+				else
+					pictureBufferV[(y-yMin/2)*cropPicWthLuma/2 + x-xMin/2] :=
+						Bytes[(y-yIdxChroma)*32 + x-xIdxChroma];
+				end
+			end
+		end
+		if chromaComponent != 0 then
+			xIdxChroma := xIdxChroma + 32;
+			if xIdxLuma = pictureWidthLuma then
+				xIdxLuma   := 0;
+				xIdxChroma := 0;
+				yIdxLuma   := yIdxLuma + 64;
+				yIdxChroma := yIdxChroma + 32;
 			end
 		end
 		chromaComponent := 1;
