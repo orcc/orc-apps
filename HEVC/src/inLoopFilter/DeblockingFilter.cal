@@ -76,7 +76,9 @@ actor DeblockingFilter(bool DEBUG)
 
 	uint(size=8)  pictureBuffer[3][PIC_WIDTH_MAX][PIC_HEIGHT_MAX];
 	int (size=8)  qpTab[PIC_WIDTH_MAX/4][2*64/4];
-	uint(size=2)  bSTable[256][2];
+	uint(size=2)  bSTableVert[256];
+	uint(size=2)  bSTableHoriz[2][256];
+	uint(size=1)  currHorIdx;
 
 	int           betaOffset;
 	uint(size=2)  dE;
@@ -352,8 +354,10 @@ actor DeblockingFilter(bool DEBUG)
 			end
 			yVal := (yVal+1)&31;
 		end
-		bSTable := [[bs[i+2*j]:for uint i in 0 .. 1]: for uint j in 0 .. 255];
+		bSTableVert := [bs[2*j]: for uint j in 0 .. 255];
+		bSTableHoriz[currHorIdx&1] := [bs[1+2*j]: for uint j in 0 .. 255];
 
+		currHorIdx := currHorIdx + 1;
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
 			xIdx := 0;
@@ -401,7 +405,8 @@ actor DeblockingFilter(bool DEBUG)
 		end
 
 		qpTab[(xAddrVert & PIC_WIDTH_MAX-1) >>2][(yAddrVert/4)&31] := qp;
-		bSTable[blkIdx] := [bs[i]:for uint i in 0 .. 1];
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[currHorIdx&1][blkIdx] := bs[1];
 
 		blkIdx := blkIdx + 1;
 		rasterScanToAbsCoord(blkIdx, pixAddr);
@@ -414,7 +419,8 @@ actor DeblockingFilter(bool DEBUG)
 		blkIdx < 256,
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
-		bSTable[blkIdx] := [0,0];
+		bSTableVert[blkIdx] := 0;
+		bSTableHoriz[currHorIdx&1][blkIdx] := 0;
 		blkIdx := blkIdx + 1;
 		rasterScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
@@ -425,6 +431,7 @@ actor DeblockingFilter(bool DEBUG)
 	guard
 		blkIdx = 256
 	do
+		currHorIdx := currHorIdx + 1;
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
 			xIdx := 0;
@@ -441,13 +448,13 @@ actor DeblockingFilter(bool DEBUG)
 		if(xAddrHor != -1) then
 			foreach int idxBlk in 0 .. 255
 			do
-				if(bSTable[idxBlk][1]!=0) then
+				if(bSTableHoriz[(currHorIdx&1)^1][idxBlk]!=0) then
 					rasterScanToAbsCoord(idxBlk, blkAddr);
 					blkAddr[0] := blkAddr[0] + xAddrHor;
 					blkAddr[1] := blkAddr[1] + yAddrHor;
-					decisionProcessLumaBlkEdge(blkAddr, false, bSTable[idxBlk][1]);
+					decisionProcessLumaBlkEdge(blkAddr, false, bSTableHoriz[(currHorIdx&1)^1][idxBlk]);
 					filterProcessLumaBlkEdge(blkAddr, false);
-					if(bSTable[idxBlk][1]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
+					if(bSTableHoriz[(currHorIdx&1)^1][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
 						foreach int cIdx in 1 .. 2
 						do
 							filtProcessChrBlkEdge(blkAddr, false, cIdx);
@@ -466,13 +473,13 @@ actor DeblockingFilter(bool DEBUG)
 	do
 		foreach int idxBlk in 0 .. 255
 		do
-			if(bSTable[idxBlk][0]!=0) then
+			if(bSTableVert[idxBlk]!=0) then
 				rasterScanToAbsCoord(idxBlk, blkAddr);
 				blkAddr[0] := blkAddr[0] + xAddrVert;
 				blkAddr[1] := blkAddr[1] + yAddrVert;
-				decisionProcessLumaBlkEdge(blkAddr, true, bSTable[idxBlk][0]);
+				decisionProcessLumaBlkEdge(blkAddr, true, bSTableVert[idxBlk]);
 				filterProcessLumaBlkEdge(blkAddr, true);
-				if(bSTable[idxBlk][0]=2 && ((blkAddr[0]>>2)&3) = 0 ) then
+				if(bSTableVert[idxBlk]=2 && ((blkAddr[0]>>2)&3) = 0 ) then
 					foreach int cIdx in 1 .. 2
 					do
 						filtProcessChrBlkEdge(blkAddr, true, cIdx);
@@ -483,13 +490,13 @@ actor DeblockingFilter(bool DEBUG)
 		if(xAddrHor != -1) then
 			foreach int idxBlk in 0 .. 255
 			do
-				if(bSTable[idxBlk][1]!=0) then
+				if(bSTableHoriz[currHorIdx&1][idxBlk]!=0) then
 					rasterScanToAbsCoord(idxBlk, blkAddr);
 					blkAddr[0] := blkAddr[0] + xAddrHor;
 					blkAddr[1] := blkAddr[1] + yAddrHor;
-					decisionProcessLumaBlkEdge(blkAddr, false, bSTable[idxBlk][1]);
+					decisionProcessLumaBlkEdge(blkAddr, false, bSTableHoriz[currHorIdx&1][idxBlk]);
 					filterProcessLumaBlkEdge(blkAddr, false);
-					if(bSTable[idxBlk][1]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
+					if(bSTableHoriz[currHorIdx&1][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
 						foreach int cIdx in 1 .. 2
 						do
 							filtProcessChrBlkEdge(blkAddr, false, cIdx);
