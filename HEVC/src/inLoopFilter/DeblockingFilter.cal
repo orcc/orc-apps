@@ -425,9 +425,9 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		end
 	end
 
-	getCuPix.launch.lastColOrRow: action ==>
+	getCuPix.launch.lastColOrRow.vert: action ==>
 	guard
-		yIdx = picSizeInCu[1]-1
+		yIdx = picSizeInCu[1]-1 && FILT_VERT_EDGES
 	do
 		xAddrVert := xIdx*64;
 		yAddrVert := yIdx*64;
@@ -436,6 +436,16 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		rasterScanToAbsCoord(0, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
 		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+
+	getCuPix.launch.lastColOrRow.hor: action SampleIn:[samp] repeat 64*64 + 32*32*2 ==>
+	guard
+		yIdx = picSizeInCu[1]-1 && not FILT_VERT_EDGES
+	do
+		xAddrVert := xIdx*64;
+		yAddrVert := yIdx*64;
+		saveZScanCu(samp);
+		blkIdx := 0;
 	end
 
 	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 4*4 + 2*2*2 ==>
@@ -514,13 +524,56 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		end
 	end
 
+
+	getBs4Blk.launch: action  Bs:[bs] repeat 2, Qp:[qp] ==>
+	guard
+		blkIdx < 256 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
+	do
+
+		qpTab[(xAddrVert & PIC_WIDTH_MAX-1) >>2][(yAddrVert/4)&31] := qp;
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[currHorIdx&1][blkIdx] := bs[1];
+
+		blkIdx := blkIdx + 1;
+		rasterScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+
+	getBs4Blk.skip: action ==>
+	guard
+		blkIdx < 256,
+		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
+	do
+		bSTableVert[blkIdx] := 0;
+		bSTableHoriz[currHorIdx&1][blkIdx] := 0;
+		blkIdx := blkIdx + 1;
+		rasterScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+
+	getBs4Blk.done: action ==>
+	guard
+		blkIdx = 256
+	do
+		currHorIdx := currHorIdx + 1;
+		lastXIdx := xIdx;
+		lastYIdx := yIdx;
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+
 	getCuPix.done: action ==>
 	guard
 		yIdx = picSizeInCu[1]
 	var
 		uint(size=16) blkAddr[2]
 	do
-		/*if(xAddrHor != -1 and FILT_HOR_EDGES) then
+		if(xAddrHor != -1 and FILT_HOR_EDGES) then
 			foreach int idxBlk in 0 .. 255
 			do
 				if(bSTableHoriz[(currHorIdx&1)^1][idxBlk]!=0) then
@@ -537,7 +590,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 					end
 				end
 			end
-		end*/
+		end
 		lastXIdx := 0;
 		lastYIdx := 0;
 		xIdx := 0;
@@ -566,7 +619,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 				end
 			end
 		end
-/*		if(FILT_HOR_EDGES) then
+		if(FILT_HOR_EDGES) then
 			if(xAddrHor != -1) then
 				foreach int idxBlk in 0 .. 255
 				do
@@ -585,7 +638,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 					end
 				end
 			end
-		end*/
+		end
 		xAddrHor := xAddrVert;
 		yAddrHor := yAddrVert;
 	end
@@ -675,13 +728,18 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		IsNewPict (isNewSlc  )--> IsNewPict;
 		IsNewPict (isNewPict )--> GetCuPix;
 
-		GetCuPix  (getCuPix.launch.pict         )--> FilterEdges;
-		GetCuPix  (getCuPix.launch.lastColOrRow )--> GetBlk;
-		GetCuPix  (getCuPix.done                )--> SendSamples;
+		GetCuPix  (getCuPix.launch.pict              )--> FilterEdges;
+		GetCuPix  (getCuPix.launch.lastColOrRow.vert )--> GetBlk;
+		GetCuPix  (getCuPix.launch.lastColOrRow.hor  )--> GetBs4Blk;
+		GetCuPix  (getCuPix.done                     )--> SendSamples;
 
 		GetBlk (getBlk.launch )--> GetBlk;
 		GetBlk (getBlk.skip   )--> GetBlk;
 		GetBlk (getBlk.done   )--> FilterEdges;
+
+		GetBs4Blk (getBs4Blk.launch )--> GetBs4Blk;
+		GetBs4Blk (getBs4Blk.skip   )--> GetBs4Blk;
+		GetBs4Blk (getBs4Blk.done   )--> FilterEdges;
 
 		FilterEdges (filterEdges  )--> CheckEdgeFiltered;
 
