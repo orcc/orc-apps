@@ -427,9 +427,22 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
 
-	getBlk.skip: action ==>
+	getBlk.skip.vertEdge: action ==>
 	guard
-		blkIdx < 256,
+		blkIdx < 256  && FILT_VERT_EDGES,
+		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
+	do
+		bSTableVert[blkIdx] := 0;
+		bSTableHoriz[currHorIdx&1][blkIdx] := 0;
+		blkIdx := blkIdx + 1;
+		rasterScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+
+	getBlk.skip.horEdge: action SampleIn:[samp] repeat 4*4 + 2*2*2 ==>
+	guard
+		blkIdx < 256  && not FILT_VERT_EDGES,
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
 		bSTableVert[blkIdx] := 0;
@@ -476,6 +489,8 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 				end
 			end
 		end
+		xIdx := 0;
+		yIdx := 0;
 	end
 
 	filterEdges: action ==>
@@ -524,9 +539,20 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		yAddrHor := yAddrVert;
 	end
 
+	filteringOnlyVertEdge.isTrue: action ==>
+	guard
+		FILT_VERT_EDGES and not FILT_HOR_EDGES
+	end
+
+	filteringOnlyVertEdge.isFalse: action ==>
+	guard
+		FILT_HOR_EDGES
+	end
+
 	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 64*64 + 2* 32*32
 	guard
-		yIdxSamp < picSizeInCu[1]
+		yIdxSamp < picSizeInCu[1],
+		FILT_HOR_EDGES || xIdxSamp != xIdx || yIdxSamp != yIdx
 	var
 		uint tokenOffset,
 		uint(size=8) filtSamp[64*64+2*32*32],
@@ -580,9 +606,18 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		end
 	end
 
+	sendSamples.skip: action ==> 
+	guard
+		 xIdxSamp = xIdx
+	end
+
+	uint(size=16) newPictIdx;
 	sendSamples.done: action ==>
 	guard
 		yIdxSamp = picSizeInCu[1]
+	do
+		println("New Pict : "+newPictIdx);
+		newPictIdx := newPictIdx + 1;
 	end
 
 	schedule fsm IsNewPict:
@@ -597,7 +632,13 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		GetBlk (getBlk.skip   )--> GetBlk;
 		GetBlk (getBlk.done   )--> FilterEdges;
 
-		FilterEdges (filterEdges  )--> GetCuPix;
+		FilterEdges (filterEdges  )--> CheckEdgeFiltered;
+
+		CheckEdgeFiltered (filteringOnlyVertEdge.isTrue  )--> SendSamplesVert;
+		CheckEdgeFiltered (filteringOnlyVertEdge.isFalse )--> GetCuPix;
+
+		SendSamplesVert (sendSamples.launch )--> GetCuPix;
+		SendSamplesVert (sendSamples.skip   )--> GetCuPix;
 
 		SendSamples (sendSamples.launch )--> SendSamples;
 		SendSamples (sendSamples.done   )--> IsNewPict;
