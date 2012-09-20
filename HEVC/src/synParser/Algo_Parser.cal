@@ -13,7 +13,10 @@ import  common.CabacParserFunctionHEVC.*;
 actor Algo_Parser () 
 				uint(size= 8) byte
 				==>
+				uint(size=8)  NaluType,
+				uint(size=16) PictSize
 :
+	bool DEBUG_MODE = false;
 	bool DEBUG_BITSTREAM = false;
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
@@ -96,7 +99,7 @@ actor Algo_Parser ()
 	 *************************************************************************/		
 	uint(size= 6) nal_unit_type;
 	
-	read_nal_unit_header : action ==>
+	read_nal_unit_header : action ==> NaluType:[nal_unit_type]
 	var
 		uint(size=32) res[1]
 	do
@@ -745,7 +748,7 @@ actor Algo_Parser ()
 	    poc:= iPOCmsb+iPOClsb;
 	end
 	
-	read_SliceHeader.se_idx_1.read : action ==>
+	read_SliceHeader.se_idx_1.read : action ==> PictSize:[pictSize] repeat 2
 	guard
 		se_idx = 1 and isFifoFull(fifo)
 	var
@@ -753,11 +756,14 @@ actor Algo_Parser ()
 		uint(size=32) prev := 0,
 		uint(size=32) j,
 		uint(size= 1) first_slice_in_pic_flag,
-		uint(size= 1) dependent_slice_flag
+		uint(size= 1) dependent_slice_flag,
+		uint(size=16) pictSize[2]
    	do	
 		vld_u_name(  1, fifo, res, "first_slice_in_pic_flag                 ");
 		first_slice_in_pic_flag := res[0];
-		println(" nal_unit_type = "+nal_unit_type);
+		if DEBUG_MODE then
+			println(" nal_unit_type = "+nal_unit_type);
+		end
 		if nal_unit_type >= NAL_UNIT_CRA and nal_unit_type <= NAL_UNIT_IDR then
 			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
 		end
@@ -828,6 +834,8 @@ actor Algo_Parser ()
 			end
 //			vld_ue_name(    fifo, res, "aps_id                                  "); 
 		end
+		pictSize[0] := sps_pic_width_in_luma_samples[sps_id];
+		pictSize[1] := sps_pic_height_in_luma_samples[sps_id];
 	    se_idx := se_idx + 1;
 	end
 	/**************************************************************************
@@ -981,7 +989,9 @@ actor Algo_Parser ()
 	guard
 		se_idx = 7
 	do
-		println("\tPOC: "+poc);
+		if DEBUG_MODE then
+			println("\tPOC: "+poc);
+		end
 		sliceData_idx := 1;
 		sliceCbAddrZs := 0;
 	end 	
@@ -1433,11 +1443,11 @@ actor Algo_Parser ()
 		uint(size= 1) split_coding_unit_flag,
 		uint(size= 8) Log2MinCuQpDeltaSize = Log2CtbSize - pps_diff_cu_qp_delta_depth[pps_id] - pps_SliceGranularity[pps_id]
 	do
-		if DEBUG_TRACE1 then
-			println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
-		else
-			println("read_CodingTree.start");
-		end
+			if DEBUG_TRACE1 then
+				println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
+			else if DEBUG_MODE then
+				println("read_CodingTree.start");
+			end end
 			
 		if	ct_x0 + ( 1 << ct_log2CbSize ) <= sps_pic_width_in_luma_samples[sps_id] and
 			ct_y0 + ( 1 << ct_log2CbSize ) <= sps_pic_height_in_luma_samples[sps_id] and
@@ -1634,9 +1644,9 @@ actor Algo_Parser ()
 	do
 		if DEBUG_TRACE1 then
 			println("read_CodingUnit.start ("+cu_x0+", "+cu_y0+", "+cu_log2CbSize+")");
-		else
+		else if DEBUG_MODE then
 			println("read_CodingUnit.start");
-		end
+		end end
 		predMode := MODE_INTRA;
 		if pps_transquant_bypass_enable_flag[pps_id] != 0 then
 			//cu_transquant_bypass_flag
@@ -1946,7 +1956,9 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		println("read_PredictionUnit.start ("+pu_x0+", "+pu_y0+", "+pu_PbW+", "+pu_PbH+")");
+		if DEBUG_MODE then
+			println("read_PredictionUnit.start ("+pu_x0+", "+pu_y0+", "+pu_PbW+", "+pu_PbH+")");
+		end
 		pu_idx := 7;
 		if ( skip_flag[pu_x0][pu_y0] = 1) then
 			if( MaxNumMergeCand > 1 ) then
@@ -2030,7 +2042,9 @@ actor Algo_Parser ()
 	guard 
 		pu_idx = 7
 	do
-		println("read_PredictionUnit_end");
+		if DEBUG_MODE then
+			println("read_PredictionUnit_end");
+		end
 	end
 	
 	/**************************************************************************
@@ -2054,7 +2068,9 @@ actor Algo_Parser ()
 		 int(size=32) abs_mvd_minus2_1 := 0,
 		uint(size= 1) mvd_sign_flag_1  := 0
 	do
-		println("read_MVDCoding");
+		if DEBUG_MODE then
+			println("read_MVDCoding");
+		end
 		abs_mvd_greater0_flag_0 := res[0];
 		abs_mvd_greater0_flag_1 := res[0];
 		if abs_mvd_greater0_flag_0 = 1 then
@@ -2093,7 +2109,9 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]		
 	do
-		println("read_PCMSample");
+		if DEBUG_MODE then
+			println("read_PCMSample");
+		end
 		foreach int i  in 0 .. 1 << ( PCMSample_log2CbSize << 1 ) do
 			vld_u_name(  1, fifo, res, "pcm_sample_luma[i]                      ");
 			//pcm_sample_luma[ i ];
@@ -2108,7 +2126,9 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]		
 	do
-		println("read_PCMSample2");
+		if DEBUG_MODE then
+			println("read_PCMSample2");
+		end
 		foreach int i  in 0 .. 1 << ( PCMSample_log2CbSize << 1 ) do
 			vld_u_name(  1, fifo, res, "pcm_sample_luma[i]                      ");
 			//pcm_sample_luma[ i ];
@@ -2155,9 +2175,9 @@ actor Algo_Parser ()
 	do	
 		if DEBUG_TRACE1 then
 			println("read_TransformTree.start("+x0L+", "+y0L+", "+x0C+", "+y0C+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
-		else
+		else if DEBUG_MODE then
 			println("read_TransformTree.start");
-		end
+		end end
 		if IntraSplitFlag = 1 then
         	if trafoDepth = 1 then
             	cur_intra_pred_mode := intra_pred_mode[ttStack[ttStack_idx][TT_blkIdx]];
@@ -2314,9 +2334,9 @@ actor Algo_Parser ()
 		if DEBUG_TRACE1 then
 			println("read_TransformUnit.start("+tu_x0L+", "+tu_y0L+", "+tu_x0C+", "+tu_y0C+", "+
 					tu_log2TrafoSize+", "+tu_log2TrafoSize+", "+tu_trafoDepth+", "+tu_blkIdx+")");
-		else
+		else if DEBUG_MODE then
 			println("read_TransformUnit.start");
-		end
+		end end
 		tu_idx := 7;
 		if  cbf_luma[ tu_x0L ][ tu_y0L ][ tu_trafoDepth ] = 1 or
 			cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 or
@@ -2404,7 +2424,9 @@ actor Algo_Parser ()
 	guard 
 		tu_idx = 7
 	do
-		println("read_TransformUnit_end");
+		if DEBUG_MODE then
+			println("read_TransformUnit_end");
+		end
 	end
 
 	/**************************************************************************
@@ -2452,7 +2474,7 @@ actor Algo_Parser ()
 			else
 				println("read_ResidualCoding.start cbV("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
 			end
-		else
+		else if DEBUG_MODE then
 			if rc_TType = TEXT_LUMA then
 				println("read_ResidualCoding.start cbY");
 			elsif rc_TType = TEXT_CHROMA_U then
@@ -2460,7 +2482,7 @@ actor Algo_Parser ()
 			else
 				println("read_ResidualCoding.start cbV");
 			end
-		end
+		end end
 		coded_sub_block_flag := [[0	: for int j in 0 .. 7]	: for int i in 0 .. 7];
 		if pps_transform_skip_enabled_flag[pps_id] = 1 and cu_transquant_bypass_flag = 0 and
 			rc_log2TrafoSize = 2 then
@@ -2570,7 +2592,9 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0
 	do
-		println("read_ResidualCoding_end");
+		if DEBUG_MODE then
+			println("read_ResidualCoding_end");
+		end
 	end
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
