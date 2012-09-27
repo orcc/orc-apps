@@ -1,0 +1,265 @@
+/**
+ * This FU is part of the RVC-CAL implementation of hPIN/hTAN protocols based eBanking system.
+ * It assists the T_Controller FU by implementing the console oriented functions (taking 'OK' as
+ * input and displaying the messages). 
+ * 
+ * FU ID: T_Console
+ * Three input ports:
+ *  1) uint(size=8) IP1_Nonce: receives random numbers from PRG (to generate digits-to-alphabets mapping). 
+ * // T_Controller.
+ *  2) String IP2_Controller_NC: receives textual data (coded edition of PIN as alphabetic characters) from T_Controller.
+ *  3) uint(size=8) IP3_Status: receives the status from T_Controller.
+ * 
+ * One output port:
+ * 	1) uint(size=8) OP1_Controller_NC: sends the numeric data (numeric PIN and status codes) to T_Controller.
+ * 
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2012
+ * Last Modified: 15.06.2012
+ */
+ 
+package Protocols.eBanking.hPINhTAN;
+
+import system.io.Console.* ;
+
+actor T_Console ()
+	 uint(size=8) IP1_Nonce, String IP2_Controller_TC, uint(size=8) IP3_Status
+	==> 
+	uint(size=8) OP1_Controller_NC:
+	
+	List(type:String, size=12) STATUS_MESSAGES := ["Unknown State!", 
+	"Server Authenticated!", "Server Authentication Failed!", 
+	"PIN Verified!", "PIN Incorrect - Try Again!", "PIN Incorrect - Token Locking!",  
+	"Starting hPIN!", "hPIN Finished!", 
+	"Starting hTAN!", "hTAN Finished!", "hTAN transaction successfully completed!", "hTAN transaction failed!"]; 
+
+	int handle := 0;
+
+	initialize ==>
+	do
+		handle := openConsole("USB-Token");
+	end
+
+// OK message.
+	int counter := 0;
+	readOkay:
+	action ==>
+	guard counter < 3
+	do
+		write(handle,"===================\n-->Type 'OK'\n");
+	end
+	
+	bool okValidated := false;	
+	validateOkay: 
+	action ==> 
+	guard counter < 3 and not okValidated 
+	var 
+		String x = read(handle)
+	do
+		counter := counter + 1;
+		if(x = "OK") then
+			counter := 0;
+			okStatus := 1;
+			okValidated := true;
+			write(handle,"-->'OK' message validated!\n");
+		else
+			if(counter = 3) then
+				write(handle,"-->'OK' message not validated - Token Locked!\n");
+			else
+				write(handle,"-->'OK' message not validated - Try again\n");
+			end					
+		end
+	end
+
+	okaySuccess:
+	action ==> OP1_Controller_NC:[1] // OK Validated.
+	guard counter < 3 and okValidated
+	end
+
+	okayFail:
+	action ==> OP1_Controller_NC:[0]  // OK failed. 
+	guard counter = 3 and not okValidated 
+	end
+
+// IDU verification.
+	IDUSuccess:
+	action IP3_Status:[status] ==>
+	guard status = 1
+	do	
+		write(handle,"-->IDU validated!\n");
+	end
+
+	IDUFail:
+	action IP3_Status:[status] ==>
+	guard status = 0
+	do
+		write(handle,"-->IDU not validated - Token Locked!\n"); 
+	end
+
+// hPIN
+	List(type:String, size=10) Mapping := ["": for int i in 0 .. 9];
+	List(type:String, size=26) Alphabet := ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+	displayDigits:
+	action ==>
+	do
+		foreach int i in 0 .. 9 do
+			write(handle, " "+i+" ");
+		end
+		write(handle, "\n");
+	end
+	
+	int mappingCounter := 0;
+	bool duplicatedAlphabet := false;
+	generateMapping:
+	action IP1_Nonce:[b] ==>
+	guard pinIndex < 4 and mappingCounter < 10
+	do
+		Mapping[mappingCounter] := Alphabet[b mod 26]; 
+		foreach int i in 0 .. (mappingCounter-1) do
+			if(Mapping[i] = Mapping[mappingCounter]) then
+				duplicatedAlphabet := true;
+				i := mappingCounter;
+			end
+		end
+		
+		if(duplicatedAlphabet) then
+			duplicatedAlphabet := false;
+		else
+			write(handle, " "+Mapping[mappingCounter]+" "); // Show A .. Z.
+			mappingCounter := mappingCounter + 1;
+		end	
+	end
+	
+	generateMappingDone:
+	action ==> OP1_Controller_NC:[1] // generate Mapping done.
+	guard mappingCounter = 10
+	do
+		mappingCounter := 0;
+		write(handle, "\n");
+	end
+	
+	List(type:int(size=8), size=4) PIN := [0, 0, 0, 0];
+	int pinIndex := 0;
+	receivePIN:
+	action IP2_Controller_TC:[b] ==>
+	guard pinIndex < 4
+	do
+		foreach int i in 0 .. 9 do
+			if(b = Mapping[i]) then
+				PIN[pinIndex] := i;
+				i := 10;
+			end
+		end
+		pinIndex := pinIndex + 1;		
+	end
+	
+	sendPIN:
+	action ==> OP1_Controller_NC:[PIN] repeat 4 guard pinIndex = 4 
+	end
+
+// Alerts, locking and reset.
+	int alertCode := 0;
+	showAlert:
+	action IP3_Status:[code] ==> 
+	do
+		alertCode := code;
+		write(handle, "-->"+STATUS_MESSAGES[code]+"\n");
+	end
+
+	failAlert:
+	action ==>
+	guard alertCode = 2 or alertCode = 4
+	end
+
+	lockAlert:
+	action ==>
+	guard alertCode = 5
+	end
+	
+	bool locked := false;
+	lock:
+	action ==> guard not locked
+	do 
+		locked := true;
+		write(handle, "-->USB-Token Locked!\n");
+	end
+
+	showTextMessage:
+	action IP2_Controller_TC:[x] ==> 
+	do
+		write(handle, "-->"+x+"\n");
+	end
+
+	reset:
+	action ==>
+	do
+		write(handle,"\n");	
+		// Reset.
+		counter := 0;
+		okValidated := false;
+		pinIndex := 0;
+	end
+	
+// hTAN - OK message
+	readOkayForNewhTAN:
+	action IP2_Controller_TC:[x] ==>
+	guard counter < 3 and x = "New_hTAN"
+	do
+		okStatus := 0;
+		okValidated := false;	
+		write(handle,"-->Type 'OK' to start a new hTAN transaction!\n");
+	end
+
+	readOkayToConfirmTransaction:
+	action IP2_Controller_TC:[x] ==>
+	guard counter < 3 and x = "Confirm_TD"
+	do
+		okStatus := 0;
+		okValidated := false;	
+		write(handle,"-->Type 'OK' to confirm the transaction's data above!\n");
+	end
+	
+	int okStatus := 0;
+	signalOKStatus:
+	action ==> OP1_Controller_NC:[okStatus]
+	end
+
+	schedule fsm start:	
+		start (readOkay) --> validateOK;
+
+		validateOK (validateOkay) --> validationStatus;
+		validationStatus (okaySuccess) --> verifyIDU;
+		validationStatus (okayFail) --> locked;
+
+		verifyIDU (IDUSuccess) --> hPINStart;
+		verifyIDU (IDUFail) --> locked;
+
+		hPINStart (showAlert) --> displayDigits;
+		
+		displayDigits (displayDigits) --> mappingFunction;
+		mappingFunction (generateMapping) --> mappingFunction;
+		mappingFunction (generateMappingDone) --> readData;
+		readData (receivePIN) --> displayDigits;
+
+		mappingFunction (sendPIN) --> listen;
+
+		listen (showAlert) --> listen;		
+		listen (showTextMessage) --> listen;
+		listen (failAlert) --> reset;
+		listen (lockAlert) --> locked;
+		
+		listen (readOkayForNewhTAN) --> validateOKForhTAN;
+		listen (readOkayToConfirmTransaction) --> validateOKForhTAN;
+		validateOKForhTAN (validateOkay) --> validationStatusForhTAN;
+		validationStatusForhTAN (signalOKStatus) --> listen;
+		
+		reset (reset) --> start;
+
+		locked (lock) --> locked;
+	end
+
+	priority
+		showAlert > failAlert > lockAlert > readOkayForNewhTAN > readOkayToConfirmTransaction > showTextMessage; 
+		okaySuccess > okayFail;
+	end
+
+end

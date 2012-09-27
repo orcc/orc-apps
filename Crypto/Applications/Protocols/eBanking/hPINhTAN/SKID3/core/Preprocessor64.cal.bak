@@ -1,0 +1,117 @@
+/**
+ * This FU is part of a CAL implementation of Secure Hash Algorithms (SHA-1, SHA-2) specified in FIPS-180-3.
+ * It performs the following steps as part of the preprocessing operation of the algorithm: 
+ * 1) Padding of the input message to be a multiple of 64 bytes (512 bits).
+ * 2) Parsing of the input message into multiple message block each of size 64 bytes (512 bits). 
+ * 
+ * FU ID: Preprocessor64
+ * Two input port:
+ * 		1) int(size=64) IP1_Size: the size of the input message
+ * 		2) uint(size=8) IP2_M: the input message (as byte stream) 
+ * Two output port:
+ * 		1) int(size=32) OP1_N: the number of input message blocks
+ * 		2) uint(size=8) OP2_M: the message block (16 bytes each)
+ *
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2010
+ * Last modified: 04.04.2012
+ */
+
+package Protocols.Authentication.SKID3.hw.core;
+
+actor Preprocessor64() int(size=64) IP1_Size, uint(size=8) IP2_M ==> int(size=32) OP1_N, uint(size=8) OP2_M:
+	// State variables:
+	uint BLOCK_SIZE = 64; // Block size of one message in bytes.
+	int(size=64) messageSize := 0; // Size of the current message in bytes.
+	int(size=64) messageBitSize := 0;
+	
+	int byteCounter := 0;
+	int numZeroBytes := 0;
+	int N;
+	
+	// Receive message size and calculates:
+	// 1) numZeroBytes: Number of zeros bytes to be padded.
+	// 2) N: Number of 64 byte (512 bits) message blocks including 
+	//    the padding, 0x80 byte and message size.
+	receiveSize:
+	action IP1_Size:[mSize] ==> OP1_N:[N]
+	var
+		int(size=64) temp
+	do
+		messageSize := mSize;
+		messageBitSize := mSize << 3;
+		
+		temp := messageSize + 9;
+		if (temp mod BLOCK_SIZE) = 0 then
+			N := temp / BLOCK_SIZE;
+			numZeroBytes := 0;
+		else
+			N := temp / BLOCK_SIZE + 1;
+			numZeroBytes := N * BLOCK_SIZE - temp;
+		end		
+	
+		byteCounter := 0;
+	end
+	
+	// Receive and forward input message byte by byte.
+	receiveAndForwardMessage:
+	action IP2_M:[b] ==> OP2_M:[b]
+	guard byteCounter < messageSize
+	do
+		byteCounter := byteCounter + 1;
+	end
+	
+/*	receiveAndForwardMessage.last:
+	action IP2_M:[b] ==> OP2_M:[b]
+	guard byteCounter >= messageSize
+	do
+		byteCounter := 0;
+	end
+*/	
+	// Once input message is finished, forward byte 0x80 (the most significant bit as 1).
+	forward80Byte:
+	action ==> OP2_M:[0x80]		
+	end	 
+	
+	// Forward the number of zeros bytes to be padded to make the message blocks to be of 64 bytes.
+	forwardZeroBytes:
+	action ==> OP2_M:[0x00]
+	guard numZeroBytes > 0
+	do	
+		numZeroBytes := numZeroBytes - 1;
+	end
+
+	// Forward the message size as last 2 dwords of the last message block.
+	forwardSize.others:
+	action ==> OP2_M:[b]
+	var
+		uint(size=8) b := messageBitSize & 0xff
+	do
+		messageBitSize := messageBitSize >> 8;
+		byteCounter := byteCounter + 1;
+	end
+	
+	forwardSize.last:
+	action ==> OP2_M:[b]
+	guard byteCounter >= 7
+	var
+		uint(size=8) b := messageBitSize & 0xff
+	do
+		messageBitSize := messageBitSize >> 8;
+		byteCounter := 0;
+	end
+	
+	schedule fsm setSize :
+		setSize  ( receiveSize              ) --> bypass;
+		bypass   ( receiveAndForwardMessage ) --> bypass;
+		bypass   ( forward80Byte            ) --> padded;
+		padded   ( forwardZeroBytes         ) --> padded;
+		padded   ( forwardSize.others       ) --> padded;
+		padded   ( forwardSize.last         ) --> setSize;
+	end
+	
+	priority
+		receiveAndForwardMessage.others;
+		forwardZeroBytes > forwardSize.last > forwardSize.others;
+	end
+	
+end

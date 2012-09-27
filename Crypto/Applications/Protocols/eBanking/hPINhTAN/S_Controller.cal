@@ -1,0 +1,276 @@
+/**
+ * This FU is part of the RVC-CAL implementation of hPIN/hTAN protocols based eBanking system.
+ * It serves as the controller of the Server S module and manages all the communication within its internal modules 
+ * (hPIN and hTAN), and external modules (Token T).
+ * 
+ * FU ID: S_Controller
+ * Six input ports:
+ *  // Data channels from T.
+ *  1) uint(size=8) IP1_T_NC: receives numeric data from T (NC = Numeric Channel).
+ *  2) String IP2_T_TC: receives textual data from T (TC = Textual Channel). 
+ * 	// hPIN
+ *  3) uint(size=8) IP3_hPIN_Status: receives the status of the authentication hPIN>SKID3_Server.
+ *  4) uint(size=8) IP4_hPIN_NC: receives the numeric data from hPIN>SKID3_Server to be tunneled to T via OP3_T_NC.
+ * 	// hTAN
+ *  5) uint(size=8) IP5_hTAN_Status: receives the status of the authentication hTAN.
+ *  6) uint(size=8) IP6_hTAN_NC: receives the numeric data from hTAN to be tunneled to T via OP3_S_NC. 
+ * 
+ * Six output ports:
+ *  // hPIN
+ * 	1) uint(size=8) OP1_hPIN_HMACKey: sends the HMAC key needed for HMAC operations in hPIN>SKID3_Server.
+ * 	2) uint(size=8) OP2_hPIN_NC: sends the authentications-oriented numeric data (received from T on IP1_T_NC during the 
+ * 	hPIN session) to the input channel of hPIN>SKID3_Server.
+ * 	// Data channels to T (used in both hPIN and hTAN protocols).
+ * 	3) uint(size=8) OP3_T_NC: sends the numeric data (authentications-oriented data for hPIN and hTAN protocols) to T.
+ * 	// hTAN
+ * 	4) uint(size=8) OP4_hTAN_HMACKey: sends the HMAC key needed for HMAC operations in hTAN.
+ * 	5) uint(size=8) OP5_hTAN_NC: sends the numeric authentications-oriented and STD data (received from T on IP1_T_NC during the
+ *  hTAN session) to the input channel of hTAN.
+ * 	6) String OP6_hTAN_TC: sends the NSTD data (received from T on IP2_T_TC during the hTAN session) to the input channel of hTAN.
+ * 
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2012
+ * Last Modified: 15.06.2012
+ */
+ 
+package Protocols.eBanking.hPINhTAN;
+
+actor S_Controller ()
+	// USB-Token (T)
+	uint(size=8) IP1_T_NC, // Token's Numeric Channel.
+	String IP2_T_TC, // Token's Text Channel.
+	// hPIN
+	uint(size=8) IP3_hPIN_Status,
+	uint(size=8) IP4_hPIN_NC, // Tunneled to Token via OP3_T_NC.	
+	// hTAN
+	uint(size=8) IP5_hTAN_Status,
+	uint(size=8) IP6_hTAN_NC // Tunneled to Token via OP3_T_NC.
+
+	==> 
+
+	// hPIN
+	uint(size=8) OP1_hPIN_HMACKey,
+	uint(size=8) OP2_hPIN_NC,
+	// Data channel to Token (used in both hPIN and hTAN).
+	uint(size=8) OP3_T_NC,
+	// hTAN
+	uint(size=8) OP4_hTAN_HMACKey,
+	uint(size=8) OP5_hTAN_NC,	
+	String OP6_hTAN_TC:
+
+	List(type:uint(size=8), size=32) hPIN_KT := [0x56,0xba,0x51,0xe3,0x27,0x46,0x8e,0xe9,0x90,0xa0,0x1a,0x67,0x37,0x68,0xf9,0xd1,
+												 0xd0,0x39,0x72,0x7a,0x82,0x1e,0xc8,0x12,0x6d,0x9c,0xbb,0xe5,0x19,0x21,0xad,0x40];
+	List(type:uint(size=8), size=32) hashed_KT := [0x8d,0xe7,0x42,0x32,0x14,0xb4,0x12,0xf3,0x63,0xa0,0x7c,0xc7,0xdf,0xc3,0x0a,0xb5,
+												 0x30,0x65,0x38,0xb6,0x10,0xed,0xda,0x3e,0x6a,0xa3,0x84,0xb3,0x58,0x9d,0xd3,0x75];
+	int client_IDU := 100;
+/*
+List(type:String, size=16) hexDigits = [
+		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"
+	];
+procedure print_byte(uint(size=8) x)
+	begin
+		print("0x" + hexDigits[x>>4] + hexDigits[x & 0x0f] + ",");
+	end
+*/
+//---------- hPIN ------------//
+	uint(size=8) hPIN_IDU := 0;
+	hPIN.start:
+	action IP1_T_NC:[idu] ==>
+	guard hPIN_IDU = 0 
+	do
+		hPIN_IDU := idu;
+		println("Server>hPIN: Starting hPIN process for IDU: "+hPIN_IDU);
+	end
+
+	// In practical scenarios, the following two actions should check from a list of all active IDUs. 
+	// In this implementation, we assume to have only active IDU, which is stored in client_IDU.
+	hPIN.IDUSuccess:
+	action ==> 
+	guard hPIN_IDU = client_IDU
+	end
+
+	hPIN.IDUFail:
+	action ==>
+	guard hPIN_IDU != client_IDU
+	do
+		println("UID "+hPIN_IDU+" is not recognized!");
+	end	
+
+	hPIN.finish:
+	action ==>  
+	do
+		println("Server>hPIN: Exiting hPIN process for IDU: "+hPIN_IDU);	
+	end
+
+	hPIN.sendHMACSize:
+	action ==> OP1_hPIN_HMACKey:[32]
+	end
+	
+	hPIN.sendHMACKey:
+	action ==> OP1_hPIN_HMACKey:[hashed_KT] repeat 32
+	end
+
+	// IDU is sent manually sent because IDU was eaten up receiveIDU action above (for validation purpose). 
+	hPIN.sendIDU:
+	action ==> OP2_hPIN_NC:[hPIN_IDU]
+	end
+
+	hPIN.tunnelData1:
+	action IP4_hPIN_NC:[x] ==> OP3_T_NC:[x]	
+	end
+
+	int hPINTunnelData2Counter := 0;
+	hPIN.tunnelData2:
+	action IP1_T_NC:[x] ==> OP2_hPIN_NC:[x]
+	guard hPINTunnelData2Counter <= 32
+	do
+		hPINTunnelData2Counter := hPINTunnelData2Counter + 1;
+	end
+
+	hPIN.authenticateTokenSuccess:
+	action IP3_hPIN_Status:[b] ==>  
+	guard b = 1 
+	do
+		println("Server>hPIN: Client Token Authenticated.");
+	end
+	
+	hPIN.authenticateTokenFail:
+	action IP3_hPIN_Status:[b] ==> 
+	guard b = 2 
+	do
+		println("Server>hPIN: Client Token NOT Authenticated.");
+	end	
+
+//---------- hTAN ------------//
+	int hTAN_IDU := 0;
+	
+	hTAN.start:
+	action IP1_T_NC:[idu] ==>
+	do
+		hTAN_IDU := idu;
+		println("Server>hTAN: Starting hTAN process for IDU: "+idu);
+	end
+	
+	hTAN.IDUSuccess:
+	action ==>  OP5_hTAN_NC:[hTAN_IDU]
+	guard hTAN_IDU = client_IDU and hTAN_IDU = hPIN_IDU
+	end
+
+	hTAN.IDUFail:
+	action ==>
+	guard hTAN_IDU != client_IDU or hTAN_IDU != hPIN_IDU
+	do
+		println("UID "+hTAN_IDU+" is not recognized for this hTAN transaction!");
+	end	
+
+	hTAN.finish:
+	action ==>  
+	do
+		println("Server>hTAN: Exiting hTAN process for IDU: "+hTAN_IDU);	
+	end
+
+	List(type:uint(size=8), size=4) STD := [0, 0, 0, 0];
+	String NSTD := "";
+	hTAN.processTransactionalData:
+	action IP1_T_NC:[std] repeat 4, IP2_T_TC:[nstd] ==> OP5_hTAN_NC:[std] repeat 4, OP6_hTAN_TC:[nstd]
+	do
+		STD[0] := std[0];
+		STD[1] := std[1];
+		STD[2] := std[2];
+		STD[3] := std[3];
+		NSTD := nstd;
+		println("Server>hTAN: Transaction's data: STD = "+((STD[3]<<24)|(STD[2]<<16)|(STD[1]<<8)|STD[0])+" NSTD = "+NSTD);		
+	end
+	
+	hTAN.sendHMACSize:
+	action ==> OP4_hTAN_HMACKey:[32]
+	end
+	
+	hTAN.sendHMACKey:
+	action ==> OP4_hTAN_HMACKey:[hashed_KT] repeat 32
+	end
+
+	hTAN.tunnelData1NC:
+	action IP6_hTAN_NC:[x] ==> OP3_T_NC:[x]	
+	end
+
+	hTAN.tunnelData2NC:
+	action IP1_T_NC:[x] ==> OP5_hTAN_NC:[x]
+	end
+
+	hTAN.tunnelData1TC:
+	action IP2_T_TC:[x] ==> OP6_hTAN_TC:[x]	
+	end
+
+	hTAN.TransactionSuccess:
+	action IP5_hTAN_Status:[b] ==> 
+	guard b = 1 
+	do
+		println("Server>hTAN: Transaction with data ("+((STD[3]<<24)|(STD[2]<<16)|(STD[1]<<8)|STD[0])+","+NSTD+") was successful.");
+	end
+	
+	hTAN.TransactionFail:
+	action IP5_hTAN_Status:[b] ==> 
+	guard b = 1 
+	do
+		println("Server>hTAN: Transaction with data ("+((STD[3]<<24)|(STD[2]<<16)|(STD[1]<<8)|STD[0])+","+NSTD+") failed.");
+	end
+
+// ------------------- reset ---------- //
+	reset:
+	action ==>
+	do
+		hPIN_IDU := 0;
+		hTAN_IDU := 0;
+		hPINTunnelData2Counter := 0;
+	end
+
+// ------------------- FSM ---------- //
+	schedule fsm hPIN_start:	
+//hPIN		
+		// Validate IDU.
+		hPIN_start (hPIN.start) --> hPIN_verifyIDU;
+
+		hPIN_verifyIDU (hPIN.IDUSuccess) --> hPIN_sendHMACSize;
+		hPIN_verifyIDU (hPIN.IDUFail) --> reset;
+
+		// Mutual authentication via SKID3.
+		hPIN_sendHMACSize (hPIN.sendHMACSize) --> hPIN_sendHMACKey;
+		hPIN_sendHMACKey (hPIN.sendHMACKey) --> hPIN_sendIDU;
+		hPIN_sendIDU (hPIN.sendIDU) --> hPIN_authenticateToken;
+
+		hPIN_authenticateToken (hPIN.tunnelData1) --> hPIN_authenticateToken;
+		hPIN_authenticateToken (hPIN.tunnelData2) --> hPIN_authenticateToken;
+		hPIN_authenticateToken (hPIN.authenticateTokenSuccess) --> hPIN_finish;
+		hPIN_authenticateToken (hPIN.authenticateTokenFail) --> reset;
+
+		hPIN_finish (hPIN.finish) --> hTAN_start;
+
+//hTAN		
+		hTAN_start (hTAN.start) --> hTAN_verifyIDU;
+		//hTAN_start (reset) --> hPIN_start;		
+
+		hTAN_verifyIDU (hTAN.IDUSuccess) --> hTAN_processTransactionalData;
+		hTAN_verifyIDU (hTAN.IDUFail) --> reset;
+
+		hTAN_processTransactionalData (hTAN.processTransactionalData) --> hTAN_sendHMACSize;
+		hTAN_sendHMACSize (hTAN.sendHMACSize) --> hTAN_sendHMACKey;
+		hTAN_sendHMACKey (hTAN.sendHMACKey) --> hTAN_authenticateTransaction;
+
+		hTAN_authenticateTransaction (hTAN.tunnelData1NC) --> hTAN_authenticateTransaction;
+		hTAN_authenticateTransaction (hTAN.tunnelData2NC) --> hTAN_authenticateTransaction;
+		hTAN_authenticateTransaction (hTAN.tunnelData1TC) --> hTAN_authenticateTransaction;
+		hTAN_authenticateTransaction (hTAN.TransactionSuccess) --> hTAN_finish;
+		hTAN_authenticateTransaction (hTAN.TransactionFail) --> reset;
+
+		hTAN_finish (hTAN.finish) --> reset;
+
+		reset (reset) --> hPIN_start;
+	end
+
+	priority
+		hPIN.tunnelData1 > hPIN.tunnelData2 > hPIN.authenticateTokenSuccess > hPIN.authenticateTokenFail;
+
+		hTAN.tunnelData1NC > hTAN.tunnelData2NC > hTAN.tunnelData1TC > hTAN.TransactionSuccess > hTAN.TransactionFail;
+	end
+
+end

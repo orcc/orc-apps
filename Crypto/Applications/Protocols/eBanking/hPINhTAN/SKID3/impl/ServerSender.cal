@@ -1,0 +1,99 @@
+/**
+ * This FU is part of a RVC-CAL implementation of SKID3 user authentication protocol.
+ * This FU (as part of the server's implementation) authenticates client by comparing the HMAC messages (H2 and H2') 
+ * and sends its own HMAC on its nonce (i.e., H1) to allow the client to authenticate it.
+ * 
+ * FU ID: ServerSender
+ * Four input port:
+ * 	 1) uint(size=8) IP1_PRG: the nonce from pseudo random generator (PRG).
+ *   2) int(size=8) IP2_Hash_Size: the hash size (in bytes) of the Hash operation (e.g. SHA-1, SHA-2 etc.) used in the HMAC.
+ *   3) uint(size=8) IP3_HMAC: the HMAC.
+ *   4) uint(size=8) IP4_Link: the link to exchange data between this FU and the Server_Receiver FU. 
+ * One output port:
+ * 	 1) uint(size=8) OP1_Channel: the communication channel to send out its data (the nonce rS and the HMAC H1).
+ *   2) uint(size=8) OP2_Status: the status (success/failure) of the authentication.
+ *   
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2012
+ * 			  Thavot Richard @ EPFL
+ * Last modified: 15.06.2012
+ */
+
+package Protocols.eBanking.hPINhTAN.SKID3.impl;
+
+actor ServerSender() uint(size=8) IP1_PRG, int(size=8) IP2_Hash_Size, uint(size=8) IP3_HMAC, uint(size=8) IP4_Link  
+	==> 
+	uint(size=8) OP1_Channel, uint(size=8) OP2_Status:
+
+	uint(size=8) rS := 0; // My nonce.
+	int(size=8) hashSize := 0; // Number of bytes.	
+	//List(type:uint(size=8),size=32) serverHMAC := [0: for int i in 0 .. 31];
+	int counter := 0;
+	int errors := 0; // Authentication errors.	
+
+	receiveConfigurations:
+	action IP1_PRG:[r], IP2_Hash_Size:[hSize] ==> OP1_Channel:[rS]
+	do
+		rS := r;
+		hashSize := hSize;
+		counter := 0;
+	end
+
+	// Now send the HMAC on client's nonce (i.e., H1) to the client so that client can authenticate me.
+	sendHMACData:
+	action IP3_HMAC:[h] ==> OP1_Channel:[h]
+	do
+		counter := counter + 1;		
+	end
+	
+	// Authenticate (compare) the HMAC sent by the client (H2 received on port IP4_Link) 
+	// with my own copy of the client's HMAC (H2' received on port IP3_HMAC) 
+	authenticateHMAC:
+	action IP3_HMAC:[h1], IP4_Link:[h2] ==> 
+	do
+		if( h1 != h2 ) then
+			errors := errors + 1;
+		end	
+		counter := counter + 1;
+	end
+	
+	// Report the successful authentication.
+	authenticationSuccess:
+	action ==> OP2_Status:[1]
+	guard errors = 0
+	end
+	
+	// Report the failed authentication.
+	authenticationFail:
+	action ==> OP2_Status:[0]
+	end
+ 
+	done:
+	action ==>
+	guard counter >= hashSize 
+	do 
+		counter := 0;				
+	end
+	
+
+	schedule fsm start:
+		start(receiveConfigurations) --> sendData;
+		
+		sendData(sendHMACData) --> sendData;
+		sendData(done) --> authenticateHMAC;
+		
+		authenticateHMAC(authenticateHMAC) --> authenticateHMAC;
+		authenticateHMAC(done) --> authenticate; 
+		
+		authenticate(authenticationSuccess) --> start;
+		authenticate(authenticationFail) --> Halt;
+		
+		Halt(done) --> Halt;
+	end
+	
+	priority
+		done > sendHMACData;
+		done > authenticateHMAC;
+		authenticationSuccess > authenticationFail;
+	end
+
+end

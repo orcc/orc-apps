@@ -1,0 +1,322 @@
+/**
+ * This FU is part of the RVC-CAL implementation of hPIN/hTAN protocols based eBanking system. 
+ * It serves as the controller of the (Untrusted) Computer C module and manages all the communication with external Token T module.
+ * In addition, this FU also prompts the User (U) to input PIN, STD and NSTD from C's untrusted keyboard.
+ * 
+ * FU ID: S_Controller
+ * One input ports:
+ *  // Data channels from T.
+ *  1) uint(size=8) IP1_T_NC: receives numeric data (status codes) from T.
+ * 
+ * Two output ports:
+ * 	1) uint(size=8) OP1_T_NC: sends the numeric data (STD and status codes) to T.
+ * 	2) String OP2_T_TC: sends the NSTD data to T.
+ * 
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2012
+ * Last Modified: 15.06.2012
+ */
+ 
+package Protocols.eBanking.hPINhTAN;
+
+import system.io.Console.* ;
+
+actor C_Controller ()
+	// Status
+	uint(size=8) IP1_T_NC // Numeric Channel from USB-Token.
+
+	==> 
+
+	// USB-Token
+	uint(size=8) OP1_T_NC, // Numeric Channel to USB-Token.
+	String OP2_T_TC:  // Text Channel to USB-Token.
+	
+	int handle := 0;
+	initialize ==>
+	do
+		handle := openConsole("Untrusted Computer");
+	end	
+	
+	typeOK:
+	action ==>
+	do
+		write(handle,"-->Type 'OK' on the USB-Token!\n");
+	end
+
+	okSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"OK validated on USB-Token!\n");
+	end
+
+	okFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	do
+		write(handle,"OK NOT validated on USB-Token!\n");
+	end
+
+	typeIDU:
+	action ==>
+	do
+		write(handle,"-->Type IDU below!\n");
+	end	
+	
+	uint(size=8) IDU := 0;
+	readIDU: 
+	action ==> OP1_T_NC:[IDU]
+	var 
+		uint(size=8) x = readInteger(handle)
+	do
+		IDU := x;
+	end
+
+	IDUSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"IDU verified!\n");	
+	end
+
+	IDUFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	end
+	
+	typePIN:
+	action ==>
+	do
+		write(handle,"--> For each digit of the PIN, look at the screen of USB-Token, enter the \ncharacter corresponding to the digit in the PIN and hit enter!\nNote: Enter key is required after every character you type!\n");
+	end	
+	
+	List(type:String, size=4) PIN := ["C", "V", "X", "K"];// ["": for int i in 0 .. 3];
+	int pinCounter := 0;
+	getPIN:
+	action IP1_T_NC:[x] ==>
+	guard x = 1 and pinCounter < 4
+	end
+	
+	readPIN: 
+	action ==> OP2_T_TC:[PIN[pinCounter-1]]
+	guard pinCounter < 4
+	do
+		PIN[pinCounter] := read(handle);
+		pinCounter := pinCounter + 1;
+		write(handle,"Input received. ");
+		if(pinCounter != 4) then
+			write(handle,"Enter next character!\n");
+		else
+			write(handle,"4 Digit PIN received!\n");	
+		end	
+	end
+	
+	readPINFinish:
+	action ==> 
+	guard pinCounter = 4
+end
+
+	PINSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"PIN authenticated successfully!\n");
+	end
+
+	PINFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	do
+		write(handle,"PIN authentication failed!\n");
+	end	
+
+	PINFailAndLock:
+	action IP1_T_NC:[x] ==> 
+	guard x = 111
+	do
+		write(handle,"PIN authentication failed and USB-Token is locked!\n");	
+	end	
+
+	serverAuthenticationSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"Server authenticated successfully!\n");	
+	end
+
+	serverAuthenticationFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	do
+		write(handle,"Server authentication failed!\n");	
+	end	
+	
+	typeOKhTANNew:
+	action ==>
+	do
+		write(handle,"-->Type 'OK' on the USB-Token to start a new hTAN session!\n");
+	end
+
+	okSuccesshTANNewSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"New hTAN session started!\n");	
+	end
+
+	okSuccesshTANNewFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	do
+		write(handle,"New hTAN session could not be started!\n");
+	end	
+
+	typeSTD:
+	action ==>
+	do
+		write(handle,"-->Type amount to be transferred in the transaction!\n");
+	end
+
+	uint(size=32) STD := 0;
+	readSTD: 
+	action ==> OP1_T_NC:[STD&0xFF, (STD>>8)&0xFF, (STD>>16)&0xFF, (STD>>24)&0xFF]
+	var 
+		uint(size=32) std = readInteger(handle)
+	do
+		STD := std;
+	end
+
+	typeNSTD:
+	action ==>
+	do
+		write(handle,"-->Type description of the transaction!\n");
+	end
+
+	String NSTD := "";
+	readNSTD: 
+	action ==> OP2_T_TC:[NSTD]
+	var 
+		String nstd = read(handle)
+	do
+		NSTD := nstd;
+	end
+
+	typeOKhTANConfirmTD:
+	action ==>
+	do
+		write(handle,"-->Type 'OK' on the USB-Token to confirm the transaction with details:\nSTD ="+STD+", NSTD = "+NSTD+"!\n");
+	end
+
+	okSuccesshTANConfirmTDSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"Transaction confirmed!\n");	
+	end
+
+	okSuccesshTANConfirmTDFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	do
+		write(handle,"Transaction confirmation failed\n");
+	end		
+
+	hTANTransactionSuccess:
+	action IP1_T_NC:[x] ==> 
+	guard x = 1	
+	do
+		write(handle,"Transaction completed successfully!\n");	
+	end
+
+	hTANTransactionFail:
+	action IP1_T_NC:[x] ==> 
+	guard x = 0
+	do
+		write(handle,"Transaction failed\n");
+	end
+	
+	bool locked := false;
+	lock1:
+	action IP1_T_NC:[x] ==>
+	guard not locked and x = 111 // Code to signal locking of the USB-Token.
+	do
+		write(handle,"USB-Token Locked!\n");
+		locked := true;
+	end
+
+	lock2:
+	action ==>
+	guard not locked
+	do
+		write(handle,"USB-Token Locked!\n");
+		locked := true;
+	end
+
+	currentStatus:
+	action IP1_T_NC:[x] ==>
+	do
+		println("currentStatus "+x);
+	end
+	
+	reset:
+	action ==> OP1_T_NC:[112]// Code to signal reseting of the USB-Token.
+	do
+		write(handle,"Reseting and starting a new session!\n");
+		IDU := 0;
+		pinCounter := 0;
+		STD := 0;
+		NSTD := "";
+		locked := false;
+	end
+	
+	schedule fsm start:
+		start (typeOK) --> OK_Status;
+		OK_Status (okSuccess) --> type_IDU;
+		OK_Status (okFail) --> reset;
+
+		type_IDU (typeIDU) --> read_IDU;
+		read_IDU (readIDU) --> IDU_status;
+		IDU_status (IDUSuccess) --> type_PIN;
+		IDU_status (IDUFail) --> reset;
+		
+		type_PIN (typePIN) --> get_PIN;
+		get_PIN (getPIN) --> read_PIN;
+		read_PIN (readPIN) --> get_PIN;
+		get_PIN (readPINFinish) --> PIN_status;
+		PIN_status (PINSuccess) --> server_authentication_status;
+		PIN_status (PINFail) --> reset;
+		PIN_status (PINFailAndLock) --> locked;
+
+		server_authentication_status (serverAuthenticationSuccess) --> type_OK_hTANNew;
+		server_authentication_status (serverAuthenticationFail) --> reset;
+		
+		type_OK_hTANNew (typeOKhTANNew) --> OK_Status_hTANNew;
+		OK_Status_hTANNew (okSuccesshTANNewSuccess) --> type_STD;
+		OK_Status_hTANNew (okSuccesshTANNewFail) --> reset;
+		
+		type_STD (typeSTD) --> read_STD;
+		read_STD (readSTD) --> type_NSTD;
+		type_NSTD (typeNSTD) --> read_NSTD;
+		read_NSTD (readNSTD) --> type_OK_hTANConfirmTD;
+
+		type_OK_hTANConfirmTD (typeOKhTANConfirmTD) --> OK_Status_hTANConfirmTD;
+		OK_Status_hTANConfirmTD (okSuccesshTANConfirmTDSuccess) --> hTAN_TransactionStatus;
+		OK_Status_hTANConfirmTD (okSuccesshTANConfirmTDFail) --> reset;
+
+		hTAN_TransactionStatus (hTANTransactionSuccess) --> get_status;
+		hTAN_TransactionStatus (hTANTransactionFail) --> reset;
+		
+		get_status (lock1) --> locked;		
+		get_status (currentStatus) --> get_status;
+		
+		locked (lock1) --> locked;
+		locked (lock2) --> locked;
+		
+		reset (reset) --> start;
+		
+	end	
+	
+	priority
+		 lock1 > currentStatus;
+	end
+
+end	

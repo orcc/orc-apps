@@ -1,0 +1,175 @@
+/**
+ * This FU is part of a RVC-CAL implementation of hTAN transaction authentication protocol.
+ * This FU (as part of the client's implementation) receives the server's data (the nonce rS and the HMACs H1, H3) from the communication channel,
+ * prepares data for HMAC operations (H1', H2, and H3') and sends the needed data to its helper FU (ClientSender).
+ * 
+ * FU ID: ClientReceiver
+ * Two FU parameter: 
+ * 	 This FU gets the UIDs of both the server and its own as FU parameters.
+ * 	 1) int clientID: the UID of the client.
+ *   2) int serverID: the UID of the server.
+ * Three input port:
+ * 	 1) uint(size=8) IP1_PRG: the nonce from pseudo random generator (PRG).
+ *   2) int(size=8) IP2_Hash_Size: the hash size (in bytes) of the Hash operation (e.g. SHA-1, SHA-2 etc.) used in the HMAC.
+ *   3) uint(size=8) IP3_Numeric_Data: the STD numeric data.  
+ *   4) String IP4_Text_Data: the NSTD textual data.
+ *   3) uint(size=8) IP5_Channel: the communication channel to receive server's data (the nonce rS and the HMAC H1). 
+ * ClientSender
+ * Four output port:
+ * 	 1) int(size=64) OP1_Message_Size: the size (in bytes) of the message to be HMACed.
+ *   2) uint(size=8) OP2_Message: the message to be HMACed.
+ *   3) int(size=64) OP3_Hash_Size: the hash size (in bytes) of the Hash operation (e.g. SHA-1, SHA-2 etc.) used in the HMAC. 
+ *   4) uint(size=8) IP3_Numeric_Data: the link to exchange numeric data between this FU and the ClientSender FU.
+ *   5) String OP5_Text_Link: the link to exchange textual data between this FU and the ClientSender FU.
+ *   Note: OP1_Message_Size and OP3_Hash_Size ports have to be 64-bit in size to match the corresponding input ports in the HMAC.
+ * 
+ * Developer: Junaid Jameel Ahmad @ Uni-Konstanz 2012
+ * Last modified: 15.06.2012
+ */
+
+package Protocols.eBanking.hPINhTAN.hTAN.impl;
+
+actor ClientReceiver(int(size=8) clientID, int(size=8) serverID) uint(size=8) IP1_PRG, int(size=8) IP2_Hash_Size, uint(size=8) IP3_Numeric_Data, String IP4_Text_Data,  uint(size=8) IP5_Channel
+	==> 
+	int(size=64) OP1_Message_Size, uint(size=8) OP2_Message, int(size=64) OP3_Hash_Size,  uint(size=8) OP4_Numeric_Link, String OP5_Text_Link:
+
+	// used global var for working around a bug of HDL (casting pb??)
+	uint(size=8) param_clientID := 0;
+	uint(size=8) param_serverID := 0;	
+	
+	uint(size=8) rC := 0; // My nonce.
+	uint(size=8) rS := 0; // Server's nonce.
+	List(type:uint(size=8), size=4) STD := [0, 0, 0, 0]; // STD data (amount involved in the transaction).
+	String NSTD := ""; // NSTD data for (description for the transaction).
+	
+	int(size=8) hashSize := 0; // Number of bytes.
+	int counter := 0;
+	
+	initialize ==>
+	do
+		param_clientID := clientID;
+		param_serverID := serverID;
+	end
+
+	receiveConfigurations:
+	action IP1_PRG:[r], IP2_Hash_Size:[hSize], IP3_Numeric_Data:[std] repeat 4, IP4_Text_Data:[nstd] ==> OP4_Numeric_Link:[std] repeat 4, OP5_Text_Link:[nstd]
+	do
+		rC := r;
+		hashSize := hSize;
+		STD[0] := std[0];
+		STD[1] := std[1];
+		STD[2] := std[2];
+		STD[3] := std[3];
+		NSTD := nstd;
+		counter := 0;
+	end
+	
+	// Process server's nonce (rS)
+	processServerNonce:
+	action IP5_Channel:[r] ==>
+	do
+		rS := r;
+	end
+
+	// Process (receive and forward) the server's HMAC (H1)
+	processServerHMAC1.recv:
+	action IP5_Channel:[h] ==> OP4_Numeric_Link:[h]
+	do
+		counter := counter + 1;		
+	end
+	
+	processServerHMAC1.done:
+	action ==>
+	guard counter >= hashSize
+	do
+		counter := 0;
+	end
+ 
+	// Prepare data to generate our copy of the server's HMAC (i.e., H1'). Client_Sender actor will verify if H1' equals H1.  	
+	sendHMACData1.rS:
+	action ==> OP1_Message_Size:[6], OP2_Message:[rS], OP3_Hash_Size:[hashSize]
+	end
+	
+	sendHMACData1.rC:
+	action ==> OP2_Message:[rC]
+	end
+	
+	sendHMACData1.STD:
+	action ==> OP2_Message:[STD] repeat 4
+	end
+
+	// Prepare data to generate the HMAC on server's nonce (i.e., H2), which will be sent to the server for authentication.
+	sendHMACData2.rC:
+	action ==> OP1_Message_Size:[6], OP2_Message:[rC], OP3_Hash_Size:[hashSize]
+	end
+	
+	sendHMACData2.rS:
+	action ==>OP2_Message:[rS]
+	end
+	
+	sendHMACData2.STD:
+	action ==> OP2_Message:[STD] repeat 4
+	end
+
+	// Process (receive and forward) the server's HMAC embedding the success/failure of hTAN (i.e., H3).
+	processServerHMAC2.recv:
+	action IP5_Channel:[h] ==> OP4_Numeric_Link:[h]
+	do
+		counter := counter + 1;		
+	end
+	
+	processServerHMAC2.done:
+	action ==>
+	guard counter >= hashSize
+	do
+		counter := 0;
+	end
+ 
+	// Prepare data to generate our copy of the server's HMAC assuming success of the transaction. Client_Sender actor will verify if H3' equals H3.  	
+	sendHMACData3.rS:
+	action ==> OP1_Message_Size:[7], OP2_Message:[rS], OP3_Hash_Size:[hashSize]
+	end
+	
+	sendHMACData3.rC:
+	action ==> OP2_Message:[rC]
+	end
+
+	sendHMACData3.status:
+	action ==> OP2_Message:[1] // 1 = success.
+	end
+	
+	sendHMACData3.STD:
+	action ==> OP2_Message:[STD] repeat 4
+	end
+
+	schedule fsm start:
+		start(receiveConfigurations) --> processServerNonce;
+		
+		processServerNonce (processServerNonce) --> processServerHMAC1;
+		
+		processServerHMAC1 (processServerHMAC1.recv) --> processServerHMAC1;
+		processServerHMAC1 (processServerHMAC1.done) --> sendHMACData1_rS;
+		
+		sendHMACData1_rS (sendHMACData1.rS) --> sendHMACData1_rC;
+		sendHMACData1_rC (sendHMACData1.rC) --> sendHMACData1_STD;
+		sendHMACData1_STD (sendHMACData1.STD) --> sendHMACData2_rC;
+		
+	 	sendHMACData2_rC  (sendHMACData2.rC) --> sendHMACData2_rS;
+	 	sendHMACData2_rS ( sendHMACData2.rS ) --> sendHMACData2_STD;
+	 	sendHMACData2_STD( sendHMACData2.STD) --> processServerHMAC2;
+	 	
+		processServerHMAC2 (processServerHMAC2.recv) --> processServerHMAC2;
+		processServerHMAC2 (processServerHMAC2.done) --> sendHMACData3_rS;
+		
+		sendHMACData3_rS (sendHMACData3.rS) --> sendHMACData3_rC;
+		sendHMACData3_rC (sendHMACData3.rC) --> sendHMACData3_status;
+		sendHMACData3_status (sendHMACData3.status) --> sendHMACData3_STD;
+		sendHMACData3_STD (sendHMACData3.STD) --> start; 	
+	end
+	
+	priority
+		processServerHMAC1.done > processServerHMAC1.recv;
+		processServerHMAC2.done > processServerHMAC2.recv;		
+	end
+
+end
