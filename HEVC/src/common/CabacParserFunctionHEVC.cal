@@ -60,7 +60,7 @@ unit CabacParserFunctionHEVC :
 		binString[0] := (binString[0] << 1) + binVal[0];
 	end
 	/*************************************************************************
-	 * decodeBinTop
+	 * decodeBinTopTerminate
 	 *************************************************************************/
 	procedure decodeBinTopTerminate(
 		uint(size=32) binString[1],
@@ -71,6 +71,35 @@ unit CabacParserFunctionHEVC :
 	begin
 		decodeTerminate(codIRange, codIOffset, binString, fifo);
 		if DEBUG_CABAC or DEBUG_CABAC2 then
+			println("codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" binVal := "+binString[0]);
+		end		
+	end
+	/*************************************************************************
+	 * decodeNumSubseqIPCM
+	 *************************************************************************/
+	procedure decodeNumSubseqIPCM(
+		uint(size=32) binString[1],
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=8) bit := 0,
+		uint(size=8) numSubseqIPCM := 0
+	begin
+  		while( bit != 0 && (numSubseqIPCM < 3 )) do
+    		codIOffset[0] := codIOffset[0] << 1;
+    		vld_u(  1, fifo, res);
+			codIOffset[0]	:= (codIOffset[0] << 1) + res[0];
+		    bit := codIOffset[0] & 1;
+    		numSubseqIPCM := numSubseqIPCM + 1;
+		end
+  		if bit != 0 && numSubseqIPCM = 3 then
+    		numSubseqIPCM := numSubseqIPCM + 1;
+    	end
+    	binString[0] := numSubseqIPCM - 1;
+		if DEBUG_CABAC then
 			println("codIRange := "+codIRange[0]+ " codIOffset := " +codIOffset[0]+" binVal := "+binString[0]);
 		end		
 	end
@@ -149,6 +178,67 @@ unit CabacParserFunctionHEVC :
 					i := i + 1;
 				end
 			end		
+		end
+	end
+	/*************************************************************************
+	 * xReadEpExGolomb
+	 *************************************************************************/
+	procedure xReadEpExGolomb(
+		uint(size=32) count_int,
+		uint(size=32) debinValue[1],
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) count  := count_int,
+		uint(size=32) bit[1] := [1],
+		uint(size=32) binString[1] := [0]
+	begin
+		debinValue[0] := 0;
+		while bit[0] = 1 do
+			decodeBinsEP(1, bit, codIRange, codIOffset, fifo);
+			debinValue[0] := debinValue[0] + (bit[0] << count); 
+			count := count + 1;
+		end
+		count := count - 1;
+		if count != 0 then
+			decodeBinsEP(count, binString, codIRange, codIOffset, fifo);
+			debinValue[0] := debinValue[0] + binString[0];
+		end
+	end
+	/*************************************************************************
+	 * xReadUnaryMaxSymbol
+	 *************************************************************************/
+	procedure xReadUnaryMaxSymbol(
+		uint(size= 9) ctxIdx,
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size= 8) se,		
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		uint(size=32) maxSymbol
+	)
+	var
+		uint(size=32) symbol := 0,
+		uint(size=32) binString[1]
+	begin
+		if maxSymbol = 0 then
+			debinValue[0] := 0;
+		else
+			decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, se, fifo);
+			debinValue[0] := binString[0];
+			if binString[0] != 0 and maxSymbol != 1 then
+				while binString[0] = 1 and symbol < maxSymbol - 1 do
+					decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, se, fifo);
+					symbol := symbol + 1;		
+				end
+				if binString[0] = 1 and symbol = maxSymbol - 1 then
+					symbol := symbol + 1;
+				end
+				debinValue[0] := symbol;
+			end
 		end
 	end
 	/*************************************************************************
@@ -327,7 +417,7 @@ unit CabacParserFunctionHEVC :
 		uint(size=32) binString[1] := [0],
 		uint(size= 1) debinCompleted[1]
 	begin
-		ctxIdx	  := getCtx_SPLIT_CODING_UNIT_FLAG(depthSubPart, availableA, depthSubPartA, availableB, depthSubPartB);
+		ctxIdx	  := context_93311_SKIP_CU_FLAG(depthSubPart, availableA, depthSubPartA, availableB, depthSubPartB);
 		if DEBUG_CABAC then
 			println(" SPLIT_CODING_UNIT_FLAG ==> ctxIdx := "+ctxIdx);
 		end
@@ -603,7 +693,7 @@ unit CabacParserFunctionHEVC :
 			println(" LAST_SIGNIFICANT_COEFF_X_PREFIX ==> "+(1<<log2TrafoWidth));
 		end
 		while debinCompleted[0] = 0 do
-			ctxIdx := context_92312(binIdx, log2TrafoWidth, cIdx);
+			ctxIdx := context_93312(binIdx, log2TrafoWidth, cIdx);
 			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, SE_LAST_SIGNIFICANT_COEFF_X_PREFIX, fifo);
 			debinTU(binString[0], binIdx, (log2TrafoWidth << 1 ) - 2, debinCompleted, debinValue, discard_suffix);
 			binIdx := binIdx + 1;
@@ -635,7 +725,7 @@ unit CabacParserFunctionHEVC :
 			println(" LAST_SIGNIFICANT_COEFF_Y_PREFIX ==> "+(1<<log2TrafoHeight));
 		end		
 		while debinCompleted[0] = 0 do
-			ctxIdx := context_92312(binIdx, log2TrafoHeight, cIdx);
+			ctxIdx := context_93312(binIdx, log2TrafoHeight, cIdx);
 			decodeBinTop(ctxIdx, false, binString, codIRange, codIOffset, ctxTable, SE_LAST_SIGNIFICANT_COEFF_Y_PREFIX, fifo);
 			debinTU(binString[0], binIdx, (log2TrafoHeight << 1 ) - 2, debinCompleted, debinValue, discard_suffix);
 			binIdx := binIdx + 1;
@@ -650,24 +740,14 @@ unit CabacParserFunctionHEVC :
 	procedure get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(
 		uint(size= 9) codIRange[1],
 		uint(size=16) codIOffset[1],
-		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
 		uint(size=32) debinValue[1],
 		uint(size= 8) prefix
 	)
-//	var
-//		uint(size= 8) binIdx := 0,
-//		uint(size=32) binString[1] := [0],
-//		uint(size= 1) debinCompleted[1] := [0]
 	begin
 		if DEBUG_CABAC then
 			println(" LAST_SIGNIFICANT_COEFF_XY_SUFFIX ==>");
 		end
-//		while debinCompleted[0] = 0 do
-//			decodeBinTop(0, true, binString, codIRange, codIOffset, ctxTable, SE_DUMMY, fifo);
-//			debinFL(binString[0], binIdx, (prefix>>1)-2, debinCompleted, debinValue);
-//			binIdx := binIdx + 1;
-//		end
 		debinValue[0] := 0;
 		decodeBinsEP((prefix>>1)-1, debinValue, codIRange, codIOffset, fifo);		
 		if DEBUG_CABAC then
@@ -864,5 +944,235 @@ unit CabacParserFunctionHEVC :
 			println(" END_OF_SLICE_FLAG = "+debinValue[0]);
 		end
 	end
-	
+	/*************************************************************************
+	 * get_SKIP_FLAG
+	 *************************************************************************/
+	procedure get_SKIP_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		
+		uint(size= 1) skip_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX],
+		uint(size=16) cu_x0,
+		uint(size=16) cu_y0
+	)
+	var
+		uint(size= 9) ctxIdx,
+		uint(size= 1) availableA = if cu_x0 > 0 then skip_flag[cu_x0-1][cu_y0] else 0 end,
+		uint(size= 1) availableB = if cu_y0 > 0 then skip_flag[cu_x0][cu_y0-1] else 0 end
+	begin
+		ctxIdx	  := context_93311_SKIP_FLAG(availableA, availableB);
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" SKIP_FLAG ==> "+ctxIdx);
+		end
+		decodeBinTop(ctxIdx, false, debinValue, codIRange, codIOffset, ctxTable, SE_SKIP_FLAG, fifo);
+		if DEBUG_CABAC then
+			println(" SKIP_FLAG = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_MERGE_FLAG
+	 *************************************************************************/
+	procedure get_MERGE_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" MERGE_FLAG ==>");
+		end
+		decodeBinTop(0, false, debinValue, codIRange, codIOffset, ctxTable, SE_MERGE_FLAG, fifo);
+		if DEBUG_CABAC then
+			println(" MERGE_FLAG = "+debinValue[0]);
+		end
+	end	
+	/*************************************************************************
+	 * get_MERGE_IDX
+	 *************************************************************************/
+	procedure get_MERGE_IDX(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1],
+		uint(size= 5) MaxNumMergeCand
+	)
+	var
+		uint(size=32) binString[1] := [0],
+		uint(size= 8) i := 0
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" MERGE_IDX ==>");
+		end
+		decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, SE_MERGE_IDX, fifo);
+		while binString[0] != 0 and i < MaxNumMergeCand-1 do
+			decodeBinsEP(1, binString, codIRange, codIOffset, fifo);
+			i := i + 1;
+		end
+		if DEBUG_CABAC then
+			println(" MERGE_IDX = "+debinValue[0]);
+		end
+	end	
+	/*************************************************************************
+	 * get_PCM_FLAG
+	 *************************************************************************/
+	procedure get_PCM_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		if DEBUG_CABAC then
+			println(" PCM_FLAG ==>");
+		end
+		decodeBinTopTerminate(debinValue, codIRange, codIOffset, fifo);
+		if DEBUG_CABAC then
+			println(" PCM_FLAG = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_NUM_SUBSEQUENT_PCM
+	 *************************************************************************/
+	procedure get_NUM_SUBSEQUENT_PCM(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		if DEBUG_CABAC then
+			println(" NUM_SUBSEQUENT_PCM ==>");
+		end
+		decodeNumSubseqIPCM(debinValue, codIRange, codIOffset, fifo);
+		if DEBUG_CABAC then
+			println(" NUM_SUBSEQUENT_PCM = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_ABS_MVD_GREATER0_FLAG
+	 *************************************************************************/
+	procedure get_ABS_MVD_GREATER0_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" ABS_MVD_GREATER0_FLAG ==>");
+		end
+		decodeBinTop(0, false, debinValue, codIRange, codIOffset, ctxTable, SE_ABS_MVD_GREATER0_FLAG, fifo);
+		if DEBUG_CABAC then
+			println(" ABS_MVD_GREATER0_FLAG = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_ABS_MVD_GREATER1_FLAG
+	 *************************************************************************/
+	procedure get_ABS_MVD_GREATER1_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" ABS_MVD_GREATER1_FLAG ==>");
+		end
+		decodeBinTop(1, false, debinValue, codIRange, codIOffset, ctxTable, SE_ABS_MVD_GREATER0_FLAG, fifo);
+		if DEBUG_CABAC then
+			println(" ABS_MVD_GREATER1_FLAG = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_ABS_MVD_MINUS2
+	 *************************************************************************/
+	procedure get_ABS_MVD_MINUS2(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" ABS_MVD_MINUS2 ==>");
+		end
+		xReadEpExGolomb(1, debinValue, codIRange, codIOffset, fifo);
+		if DEBUG_CABAC then
+			println(" ABS_MVD_MINUS2 = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_MVD_SIGN_FLAG
+	 *************************************************************************/
+	procedure get_MVD_SIGN_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" MVD_SIGN_FLAG ==>");
+		end
+		decodeBinsEP(1, debinValue, codIRange, codIOffset, fifo);
+		if DEBUG_CABAC then
+			println(" MVD_SIGN_FLAG = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_MVP_IDX
+	 *************************************************************************/
+	procedure get_MVP_IDX(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" MVP_IDX ==>");
+		end
+		xReadUnaryMaxSymbol(1, codIRange, codIOffset, ctxTable, SE_MVP_IDX, fifo, debinValue, 1);
+		if DEBUG_CABAC then
+			println(" MVP_IDX = "+debinValue[0]);
+		end
+	end
+	/*************************************************************************
+	 * get_NO_RESIDUAL_SYNTAX_FLAG
+	 *************************************************************************/
+	procedure get_NO_RESIDUAL_SYNTAX_FLAG(
+		uint(size= 9) codIRange[1],
+		uint(size=16) codIOffset[1],
+		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
+		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+		uint(size=32) debinValue[1]
+	)
+	begin
+		debinValue[0] := 0;
+		if DEBUG_CABAC then
+			println(" NO_RESIDUAL_SYNTAX_FLAG ==>");
+		end
+		decodeBinTop(0, false, debinValue, codIRange, codIOffset, ctxTable, SE_NO_RESIDUAL_SYNTAX_FLAG, fifo);
+		if DEBUG_CABAC then
+			println(" NO_RESIDUAL_SYNTAX_FLAG = "+debinValue[0]);
+		end
+	end
 end

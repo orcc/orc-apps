@@ -22,8 +22,6 @@ actor Algo_Parser ()
 				uint(size=2)  SliceType,
 				bool          SplitTransform
 :
-	bool DEBUG_MODE = false;
-	bool DEBUG_BITSTREAM = false;
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
 	uint(size= 8) se_idx;
@@ -453,7 +451,7 @@ actor Algo_Parser ()
 		se_idx = 7 and isFifoFull(fifo),
 		cnt_i < sps_num_short_term_ref_pic_sets[sps_id]
    	do
-   		parseShortTermRefPicSet(cnt_i, fifo, pcRPS);
+   		parseShortTermRefPicSet(cnt_i, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
 		cnt_i := cnt_i + 1;
  	end
  	read_SPS_Header.se_idx_7.loopEnd : action ==>
@@ -468,6 +466,7 @@ actor Algo_Parser ()
 	 * read_SPS_Header.se_idx_8
 	 *************************************************************************/	
 	uint(size= 1) sps_long_term_ref_pics_present_flag[NB_MAX_SPS];
+	uint(size= 1) sps_temporal_mvp_enable_flag[NB_MAX_SPS];
 	
 	read_SPS_Header.se_idx_8 : action ==>
 	guard
@@ -478,6 +477,7 @@ actor Algo_Parser ()
 		vld_u_name(  1, fifo, res, "long_term_ref_pics_present_flag         "); 
 		sps_long_term_ref_pics_present_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "sps_temporal_mvp_enable_flag            ");
+		sps_temporal_mvp_enable_flag[sps_id] := res[0];
 		foreach int i in 0 .. sps_maxCUDepth[sps_id] do
 			vld_u_name(  1, fifo, res, "AMVP_MODE                               "); 
 		end
@@ -805,7 +805,7 @@ actor Algo_Parser ()
 				
 				vld_u_name(  1, fifo, res, "short_term_ref_pic_set_sps_flag         ");
 				if res[0] = 0 then
-			   		parseShortTermRefPicSet(pps_id, fifo, pcRPS);
+			   		parseShortTermRefPicSet(pps_id, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
 		   		else
 				    vld_ue_name(    fifo, res, "short_term_ref_pic_set_idx              ");
 				end
@@ -849,7 +849,7 @@ actor Algo_Parser ()
 	uint(size= 8) num_ref_idx_l0_active_minus1;
 	uint(size= 8) num_ref_idx_l1_active_minus1;
 	uint(size= 8) num_ref_idx_lc_active_minus1;
-	
+	uint(size= 1) mvd_l1_zero_flag;
 	read_SliceHeader.se_idx_2.read : action ==>
 	guard
 		se_idx = 2 and isFifoFull(fifo)
@@ -859,8 +859,12 @@ actor Algo_Parser ()
 	   	num_ref_idx_l0_active_minus1 := 0;
 	   	num_ref_idx_l1_active_minus1 := 0;
 	   	num_ref_idx_lc_active_minus1 := 0;
+	   	mvd_l1_zero_flag             := 0;
 		if entropy_slice_flag = 0 then
 			if slice_type = P_SLICE or slice_type = B_SLICE then
+				if sps_temporal_mvp_enable_flag[sps_id] = 1 then
+					vld_u_name(  1, fifo, res, "temporal_mvp_enable_flag                ");	
+				end	
 				vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");		
 	      		if res[0] = 1 then
 					vld_ue_name(    fifo, res, "num_ref_idx_l0_active_minus1            ");
@@ -876,7 +880,8 @@ actor Algo_Parser ()
 		    	println("TODO ref_pic_list_combination( )");
 		    end
 		    if slice_type = B_SLICE then
-				vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");		
+				vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");
+				mvd_l1_zero_flag := res[0];		
 			end	    
 	    end
 		se_idx := se_idx + 1;
@@ -1027,6 +1032,7 @@ actor Algo_Parser ()
 	uint(size=16) MinCbAddrZS[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
 	uint(size= 1) skip_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
+	
 	uint(size= 1) inter_pred_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	uint(size= 1) merge_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
@@ -1448,11 +1454,11 @@ actor Algo_Parser ()
 		uint(size= 1) split_coding_unit_flag,
 		uint(size= 8) Log2MinCuQpDeltaSize = Log2CtbSize - pps_diff_cu_qp_delta_depth[pps_id] - pps_SliceGranularity[pps_id]
 	do
-			if DEBUG_TRACE1 then
-				println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
-			else if DEBUG_MODE then
-				println("read_CodingTree.start");
-			end end
+		if DEBUG_TRACE1 then
+			println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
+		elsif DEBUG_MODE then
+			println("read_CodingTree.start");
+		end
 			
 		if	ct_x0 + ( 1 << ct_log2CbSize ) <= sps_pic_width_in_luma_samples[sps_id] and
 			ct_y0 + ( 1 << ct_log2CbSize ) <= sps_pic_height_in_luma_samples[sps_id] and
@@ -1667,15 +1673,15 @@ actor Algo_Parser ()
 	do
 		if DEBUG_TRACE1 then
 			println("read_CodingUnit.start ("+cu_x0+", "+cu_y0+", "+cu_log2CbSize+")");
-		else if DEBUG_MODE then
+		elsif DEBUG_MODE then
 			println("read_CodingUnit.start");
-		end end
+	 	end
 		predMode := MODE_INTRA;
 		if pps_transquant_bypass_enable_flag[pps_id] != 0 then
 			//cu_transquant_bypass_flag
 		end
 		if slice_type != I_SLICE then
-			// get skip_flag
+			get_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, skip_flag, cu_x0, cu_y0);
 			skip_flag[cu_x0][cu_y0] := res[0];
 		end
 		cu_idx := 2; 
@@ -1737,15 +1743,14 @@ actor Algo_Parser ()
 			if  partMode = PART_2Nx2N and sps_pcm_enabled_flag[sps_id] = 1 and
 				cu_log2CbSize >= Log2MinIPCMCUSize and
 				cu_log2CbSize <= Log2MaxIPCMCUSize then
-				//pcm_flag := res[0]
+				get_PCM_FLAG(codIRange, codIOffset, fifo, res);
 			end
 			if( pcm_flag = 1) then
-				//num_subsequent_pcm
-				// NumPCMBlock = res[0] + 1
+				get_NUM_SUBSEQUENT_PCM(codIRange, codIOffset, fifo, res);
+				NumPCMBlock := res[0] + 1;
 				byte_align(fifo);
 				cu_idx := 3;
 			else 
-			
 				pbOffset := if partMode = PART_NxN then cu_nCbS>>1 else cu_nCbS end;
 				pbEnd    := if partMode = PART_NxN then 1 else 0 end;
 				foreach int i in 0 .. pbEnd do
@@ -1838,8 +1843,7 @@ actor Algo_Parser ()
 		pu_y0  := cu_y0;
 		pu_PbW := cu_nCbS;
 		pu_PbH := cu_nCbS;
-//	FIXME :		if partMode = PART_2Nx2N then
-		if partMode = PART_NxN then
+		if partMode = PART_2Nx2N then
 			//prediction_unit( x0, y0, nCbS, nCbS )
 			cu_idx    := 8;
 		elsif partMode = PART_2NxN then
@@ -1935,14 +1939,18 @@ actor Algo_Parser ()
 	guard 
 		cu_idx = 8
 	var
-		uint(size=32) res[1] := [0]
+		uint(size=32) res[1] := [1]
 	do
 		cu_idx := 10;
 		if pcm_flag = 0 then
+			if( predMode != MODE_INTRA ) then
+				println(" not("+partMode+" = "+PART_2Nx2N+" and "+merge_flag[cu_x0][cu_y0]+" = 1)");
+			end
 			if( predMode != MODE_INTRA and not(partMode = PART_2Nx2N and merge_flag[cu_x0][cu_y0] = 1) ) then
+				get_NO_RESIDUAL_SYNTAX_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 				//no_residual_data_flag
 			end
-			if res[0] = 0 then
+			if res[0] != 0 then
 				MaxTrafoDepth := if predMode = MODE_INTRA then
 									sps_max_transform_hierarchy_depth_intra[sps_id] + IntraSplitFlag
 								else
@@ -2014,20 +2022,16 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		if DEBUG_MODE then
-			println("read_PredictionUnit.start ("+pu_x0+", "+pu_y0+", "+pu_PbW+", "+pu_PbH+")");
-		end
-		pu_idx := 7;
 		if ( skip_flag[pu_x0][pu_y0] = 1) then
 			if( MaxNumMergeCand > 1 ) then
-				//merge_idx[ x0 ][ y0 ]
+				get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res, MaxNumMergeCand);
 			end
 			pu_idx := 7;
 		else /* MODE_INTER */
-			//merge_flag[pu_x0][pu_y0] := res[0]
+			get_MERGE_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 			if res[0] = 1 then
 				if MaxNumMergeCand > 1 then
-					//merge_idx[pu_x0][pu_y0] := res[0]
+					get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res, MaxNumMergeCand);
 				end
 				pu_idx := 7;
 			else
@@ -2035,16 +2039,15 @@ actor Algo_Parser ()
 				if( slice_type = B_SLICE ) then
 					//inter_pred_flag[pu_x0][pu_y0] := res[0];
 				end
-				if( inter_pred_flag[pu_x0][pu_y0] = Pred_LC ) then
-					if( num_ref_idx_lc_active_minus1 > 0 ) then
-						//ref_idx_lc[ x0 ][ y0 ]
-					end
-				else // Pred_L0 or Pred_BI
+				if( inter_pred_flag[pu_x0][pu_y0] != Pred_L1 ) then
 					if( num_ref_idx_l0_active_minus1 > 0 ) then
 						//ref_idx_l0[ x0 ][ y0 ]
 					end
+					// goto mvd_coding
+					pu_idx := 3;
+				else
+					pu_idx := 4;
 				end	
-				pu_idx := 3;
 			end
 		end
 	end
@@ -2054,18 +2057,19 @@ actor Algo_Parser ()
 	read_PredictionUnit.retMVDcoding_goto1 : action ==>
 	guard 
 		pu_idx = 4
+	var
+		uint(size=32) res[1]
 	do
-		if( inter_pred_flag[pu_x0][pu_y0] = Pred_LC ) then
-			//mvp_lc_flag[ x0 ][ y0 ];
-		else // Pred_L0 or Pred_BI
-			//mvp_l0_flag[ x0 ][ y0 ]
+		if( inter_pred_flag[pu_x0][pu_y0] != Pred_L1 ) then
+			get_MVP_IDX(codIRange, codIOffset, ctxTable, fifo, res);
+			//mvp_l0_flag[ x0 ][ y0 ];
 		end	
 		pu_idx := 7;
-		if( inter_pred_flag[pu_x0][pu_y0] = Pred_BI ) then
+		if( inter_pred_flag[pu_x0][pu_y0] != Pred_L0 ) then
 			if( num_ref_idx_l1_active_minus1 > 0 ) then
 				//ref_idx_l1[ x0 ][ y0 ]
 			end
-			if( /*mvd_l1_zero_flag*/ true ) then
+			if( mvd_l1_zero_flag = 1 and inter_pred_flag[pu_x0][pu_y0] = Pred_BI ) then
 				//mvd_l1[ x0 ][ y0 ][ 0 ] = 0
 				//mvd_l1[ x0 ][ y0 ][ 1 ] = 0
 				pu_idx := 6;
@@ -2089,7 +2093,10 @@ actor Algo_Parser ()
 	read_PredictionUnit.retMVDcoding_goto2 : action ==>
 	guard 
 		pu_idx = 6
+	var
+		uint(size=32) res[1]
 	do
+		get_MVP_IDX(codIRange, codIOffset, ctxTable, fifo, res);
 		//mvp_l1_flag[ x0 ][ y0 ]
 		pu_idx := 7;
 	end
@@ -2099,10 +2106,6 @@ actor Algo_Parser ()
 	read_PredictionUnit_end : action ==>
 	guard 
 		pu_idx = 7
-	do
-		if DEBUG_MODE then
-			println("read_PredictionUnit_end");
-		end
 	end
 	
 	/**************************************************************************
@@ -2126,28 +2129,33 @@ actor Algo_Parser ()
 		 int(size=32) abs_mvd_minus2_1 := 0,
 		uint(size= 1) mvd_sign_flag_1  := 0
 	do
-		if DEBUG_MODE then
-			println("read_MVDCoding");
-		end
+		get_ABS_MVD_GREATER0_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 		abs_mvd_greater0_flag_0 := res[0];
+		get_ABS_MVD_GREATER0_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 		abs_mvd_greater0_flag_1 := res[0];
 		if abs_mvd_greater0_flag_0 = 1 then
+			get_ABS_MVD_GREATER1_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 			abs_mvd_greater1_flag_0 := res[0];
 		end
 		if abs_mvd_greater0_flag_1 = 1 then
+		get_ABS_MVD_GREATER1_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 			abs_mvd_greater1_flag_1 := res[0];
 		end
 		if abs_mvd_greater0_flag_0 = 1 then
 			abs_mvd_minus2_0 := -1;
 			if abs_mvd_greater1_flag_0 = 1 then
+				get_ABS_MVD_MINUS2(codIRange, codIOffset, fifo, res);
 				abs_mvd_minus2_0 := res[0];
 			end
+			get_MVD_SIGN_FLAG(codIRange, codIOffset, fifo, res);
 			mvd_sign_flag_0 := res[0];
 		end
 		if abs_mvd_greater0_flag_1 = 1 then
 			if abs_mvd_greater1_flag_1 = 1 then
+				get_ABS_MVD_MINUS2(codIRange, codIOffset, fifo, res);
 				abs_mvd_minus2_1 := res[0];
 			end
+			get_MVD_SIGN_FLAG(codIRange, codIOffset, fifo, res);
 			mvd_sign_flag_1 := res[0];
 		end
 		mvd_x := abs_mvd_greater0_flag_0 * ( abs_mvd_minus2_0 + 2 ) * ( 1 - (mvd_sign_flag_0 << 1) );
@@ -2235,9 +2243,9 @@ actor Algo_Parser ()
 	do	
 		if DEBUG_TRACE1 then
 			println("read_TransformTree.start("+x0L+", "+y0L+", "+x0C+", "+y0C+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
-		else if DEBUG_MODE then
+		elsif DEBUG_MODE then
 			println("read_TransformTree.start");
-		end end
+		end
 		if IntraSplitFlag = 1 then
         	if trafoDepth = 1 then
             	cur_intra_pred_mode := intra_pred_mode[ttStack[ttStack_idx][TT_blkIdx]];
@@ -2321,9 +2329,9 @@ actor Algo_Parser ()
 	do	
 		if DEBUG_TRACE1 then
 			println("read_TransformTree.start("+x0L+", "+y0L+", "+x0C+", "+y0C+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
-		else if DEBUG_MODE then
+		elsif DEBUG_MODE then
 			println("read_TransformTree.start");
-		end end
+		end
 		if IntraSplitFlag = 1 then
         	if trafoDepth = 1 then
             	cur_intra_pred_mode := intra_pred_mode[ttStack[ttStack_idx][TT_blkIdx]];
@@ -2481,9 +2489,9 @@ actor Algo_Parser ()
 		if DEBUG_TRACE1 then
 			println("read_TransformUnit.start("+tu_x0L+", "+tu_y0L+", "+tu_x0C+", "+tu_y0C+", "+
 					tu_log2TrafoSize+", "+tu_log2TrafoSize+", "+tu_trafoDepth+", "+tu_blkIdx+")");
-		else if DEBUG_MODE then
+		elsif DEBUG_MODE then
 			println("read_TransformUnit.start");
-		end end
+		end
 		tu_idx := 7;
 		if  cbf_luma[ tu_x0L ][ tu_y0L ][ tu_trafoDepth ] = 1 or
 			cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 or
@@ -2621,7 +2629,7 @@ actor Algo_Parser ()
 			else
 				println("read_ResidualCoding.start cbV("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
 			end
-		else if DEBUG_MODE then
+		elsif DEBUG_MODE then
 			if rc_TType = TEXT_LUMA then
 				println("read_ResidualCoding.start cbY");
 			elsif rc_TType = TEXT_CHROMA_U then
@@ -2629,7 +2637,7 @@ actor Algo_Parser ()
 			else
 				println("read_ResidualCoding.start cbV");
 			end
-		end end
+		end
 		coded_sub_block_flag := [[0	: for int j in 0 .. 7]	: for int i in 0 .. 7];
 		if pps_transform_skip_enabled_flag[pps_id] = 1 and cu_transquant_bypass_flag = 0 and
 			rc_log2TrafoSize = 2 then
@@ -2641,12 +2649,12 @@ actor Algo_Parser ()
 		get_LAST_SIGNIFICANT_COEFF_Y_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
 		LastSignificantCoeffY := res[0];
 		if LastSignificantCoeffX > 3 then
-			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, ctxTable, fifo, res, LastSignificantCoeffX);
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffX);
 			LastSignificantCoeffX := (1 << ((LastSignificantCoeffX >> 1) - 1)) *
 									 (2  +  (LastSignificantCoeffX & 1 )) + res[0];			
 		end
 		if LastSignificantCoeffY > 3 then 
-			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, ctxTable, fifo, res, LastSignificantCoeffY);
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffY);
 			LastSignificantCoeffY := (1 << ((LastSignificantCoeffY >> 1) - 1)) *
 									 (2  +  (LastSignificantCoeffY & 1 )) + res[0];
 		end
@@ -2947,7 +2955,7 @@ actor Algo_Parser ()
 		read_PredictionUnit			    ( read_PredictionUnit_gotoMVDCoding ) --> read_MVDCoding;
 		read_PredictionUnit			    ( read_PredictionUnit_end			) --> read_CodingUnit;
 		// read_MVDCoding
-		read_MVDCoding				    ( read_MVDCoding	  				) --> undefined;//read_PredictionUnit;
+		read_MVDCoding				    ( read_MVDCoding	  				) --> read_PredictionUnit;
 		// read_PCMSample
 		read_PCMSample				    ( read_PCMSample	  				) --> undefined;//read_CodingTree;
 		read_PCMSample2				    ( read_PCMSample2	  				) --> undefined;//read_PredictionUnit;
