@@ -457,7 +457,11 @@ unit CabacParserFunctionHEVC :
 		uint(size=16) codIOffset[1],
 		uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX],
 		uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
-		uint(size=32) debinValue[1]
+		uint(size=32) debinValue[1],
+		
+		bool          isIntra,
+		uint(size= 8) cu_log2CbSize,
+		uint(size= 8) Log2MinCbSize
 	)
 	var
 		uint(size=32) binString[1] := [0]
@@ -465,10 +469,60 @@ unit CabacParserFunctionHEVC :
 		if DEBUG_CABAC then
 			println(" PART_SIZE ==>");
 		end
-		debinValue[0] := PART_2Nx2N;
 		decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
-		if binString[0] = 0 then
-			debinValue[0] := PART_NxN;
+		debinValue[0] := PART_NxN;                  // 000
+		if binString[0] = 1 then 
+			debinValue[0] := PART_2Nx2N;            // 1
+		elsif cu_log2CbSize = Log2MinCbSize then
+			if isIntra then 
+				debinValue[0] := PART_NxN;          // 0
+			else
+				binString[0] := 0;
+				decodeBinTop(1, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
+				if binString[0] = 1 then 
+					debinValue[0] := PART_2NxN;     // 01
+				elsif cu_log2CbSize = 3 then 
+					debinValue[0] := PART_Nx2N;     // 00
+				else
+					binString[0] := 0;
+					decodeBinTop(2, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
+					if binString[0] = 1 then 
+						debinValue[0] := PART_Nx2N; // 001
+					end
+				end
+			end
+		else
+			binString[0] := 0;
+			decodeBinTop(1, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
+			if binString[0] = 1 then
+				binString[0] := 0;
+				decodeBinTop(2, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
+				if binString[0] = 1 then 
+					debinValue[0] := PART_2NxN;       // 011
+				else
+//					binString[0] := 0;
+//					decodeBinTop(3, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
+					decodeBinsEP(1, binString, codIRange, codIOffset, fifo);
+					if binString[0] = 1 then
+						debinValue[0] := PART_2NxnD;  // 0101
+					else
+						debinValue[0] := PART_2NxnU;  // 0100
+					end
+				end
+			else
+				binString[0] := 0;
+				decodeBinTop(2, false, binString, codIRange, codIOffset, ctxTable, SE_PART_SIZE, fifo);
+				if binString[0] = 1 then 
+					debinValue[0] := PART_Nx2N;       // 001
+				else
+					decodeBinsEP(1, binString, codIRange, codIOffset, fifo);
+					if binString[0] = 1 then
+						debinValue[0] := PART_nRx2N;  // 0001
+					else
+						debinValue[0] := PART_nLx2N;  // 0000
+					end
+				end
+			end
 		end
 		if DEBUG_CABAC then
 			println(" PART_SIZE = "+debinValue[0]);
@@ -963,7 +1017,7 @@ unit CabacParserFunctionHEVC :
 		uint(size= 1) availableA = if cu_x0 > 0 then skip_flag[cu_x0-1][cu_y0] else 0 end,
 		uint(size= 1) availableB = if cu_y0 > 0 then skip_flag[cu_x0][cu_y0-1] else 0 end
 	begin
-		ctxIdx	  := context_93311_SKIP_FLAG(availableA, availableB);
+		ctxIdx	  := availableA + availableB;
 		debinValue[0] := 0;
 		if DEBUG_CABAC then
 			println(" SKIP_FLAG ==> "+ctxIdx);
@@ -1006,17 +1060,20 @@ unit CabacParserFunctionHEVC :
 	)
 	var
 		uint(size=32) binString[1] := [0],
-		uint(size= 8) i := 0
+		uint(size= 8) binIdx := 1
 	begin
 		debinValue[0] := 0;
 		if DEBUG_CABAC then
 			println(" MERGE_IDX ==>");
 		end
-		decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, SE_MERGE_IDX, fifo);
-		while binString[0] != 0 and i < MaxNumMergeCand-1 do
-			decodeBinsEP(1, binString, codIRange, codIOffset, fifo);
-			i := i + 1;
+		if MaxNumMergeCand > 1 then
+			decodeBinTop(0, false, binString, codIRange, codIOffset, ctxTable, SE_MERGE_IDX, fifo);
+			while binString[0] != 0 and binIdx < MaxNumMergeCand-1 do
+				decodeBinsEP(1, binString, codIRange, codIOffset, fifo);
+				binIdx := binIdx + 1;
+			end
 		end
+		debinValue[0] := binIdx - 1;
 		if DEBUG_CABAC then
 			println(" MERGE_IDX = "+debinValue[0]);
 		end
