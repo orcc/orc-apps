@@ -14,6 +14,7 @@ actor Algo_Parser ()
 				uint(size= 8) byte
 				==>
 				uint(size=16) CUInfo,
+				uint(size=6)  IntraPredMode,
 				bool          IsNewPictOrSlc,
 				uint(size=8)  NaluType,
 				uint(size=4)  PartMode,
@@ -1660,6 +1661,13 @@ actor Algo_Parser ()
 	uint(size= 1) cu_transquant_bypass_flag;
 	uint(size= 8) cu_top_ctDepth[CTB_ADDR_TS_MAX];
 	uint(size= 8) cu_left_ctDepth[CTB_ADDR_TS_MAX];
+	uint(size=6) intraChrPredModIdx;
+	uint(size=6) intraPredModeC[5][5] =
+		[[34,  0,  0,  0,  0],
+		 [26, 34, 26, 26, 26],
+		 [10, 10, 34, 10, 10],
+		 [ 1,  1,  1, 34,  1],
+		 [0, 26, 10, 1, 0]];
 	
 	/**************************************************************************
 	 * read_CodingUnit.start
@@ -1772,6 +1780,7 @@ actor Algo_Parser ()
 					end
 				end
 				get_INTRA_CHROMA_PRED_MODE(codIRange, codIOffset, ctxTable, fifo, res);
+				intraChrPredModIdx := res[0];
 				if res[0] != 4 then
         			if intra_pred_mode[0] = intra_chroma_table[res[0]] then
             			intra_pred_mode_c := 34;
@@ -1783,6 +1792,68 @@ actor Algo_Parser ()
     			end    			
 				cu_idx := 8;
 			end
+		end
+	end
+
+	sendIntraPredMode.skip: action ==>
+	guard
+		predMode != MODE_INTRA
+	end
+
+	sendIntraPredMode.part2Nx2N: action ==> IntraPredMode:[intra_pred_mode[0], predMode]
+	guard
+		partModeToNumPart[partMode] = 1 and predMode = MODE_INTRA
+	var
+		uint(size=6) predMode,
+		uint(size=3) idx
+	do	
+		if(intraChrPredModIdx=4) then
+			predMode := intra_pred_mode[0];
+		else
+			idx :=
+				if(intra_pred_mode[0] = 0) then
+					0
+				else if(intra_pred_mode[0] = 26) then
+					1
+				else if(intra_pred_mode[0] = 10) then
+					2
+				else if(intra_pred_mode[0] = 1) then
+					3
+				else
+					4
+				end end end end;
+			predMode := intraPredModeC[intraChrPredModIdx][idx];
+		end
+	end
+
+	sendIntraPredMode.partNxN: action ==> IntraPredMode:[intraPredMode] repeat 8
+	guard
+		partModeToNumPart[partMode] != 1 and predMode = MODE_INTRA
+	var
+		uint(size=6) intraPredMode[8],
+		uint(size=3) idx
+	do
+		foreach uint i in 0 .. 3
+		do
+			intraPredMode[2*i] := intra_pred_mode[i];
+
+			if(intraChrPredModIdx=4) then
+				intraPredMode[2*i+1] := intra_pred_mode[i];
+			else
+				idx :=
+					if(intra_pred_mode[i] = 0) then
+						0
+					else if(intra_pred_mode[i] = 26) then
+						1
+					else if(intra_pred_mode[i] = 10) then
+						2
+					else if(intra_pred_mode[i] = 1) then
+						3
+					else
+						4
+					end end end end;
+				intraPredMode[2*i+1] := intraPredModeC[intraChrPredModIdx][idx];
+		end
 		end
 	end
 
@@ -2943,12 +3014,13 @@ actor Algo_Parser ()
 		read_CodingQuadTree				( read_CodingQuadTree_end	 			) --> read_CodingTree;
 		// read_CodingUint
 		read_CodingUnit				    ( read_CodingUnit                   ) --> read_CodingUnit;
-		read_CodingUnit				    ( read_CodingUnit_noGoto1           ) --> send_CUInfo;
+		read_CodingUnit				    ( read_CodingUnit_noGoto1           ) --> send_IntraPredMode;
 		read_CodingUnit				    ( read_CodingUnit_gotoPCMSample		) --> read_PCMSample2;
 		read_CodingUnit				    ( read_CodingUnit_gotoPredictionUnit) --> read_PredictionUnit;
 		read_CodingUnit				    ( read_CodingUnit_gotoTransformTree ) --> read_TransformTree;
 		read_CodingUnit				    ( read_CodingUnit_end				) --> read_CodingQuadTree;
 
+		send_IntraPredMode              (sendIntraPredMode                  )-->  send_CUInfo;
 		send_CUInfo                     (sendCUInfo                         ) --> read_CodingUnit;
 		// read_PredictionUnit
 		read_PredictionUnit			    ( read_PredictionUnit	  			) --> read_PredictionUnit;
