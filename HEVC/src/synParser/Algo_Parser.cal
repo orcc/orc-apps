@@ -22,6 +22,7 @@ actor Algo_Parser ()
 				uint(size=16) PictSize,
 				uint(size=16) Poc,
 				uint(size=2)  SliceType,
+				bool          Cbf, //Token generation fits with Dbf, it should be modified when residual will be integrated.
 				bool          SplitTransform
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -1717,7 +1718,7 @@ actor Algo_Parser ()
 	 * read_CodingUnit_gotoPredictionUnit.goto1
 	 *************************************************************************/
 	read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5,
-		 PartMode:[PART_2Nx2N], SplitTransform:[false]
+		 PartMode:[PART_2Nx2N], SplitTransform:[false], Cbf:[false]
 	guard 
 		cu_idx = 2,
 		skip_flag != 0
@@ -2302,9 +2303,11 @@ actor Algo_Parser ()
 	uint(size= 8) ttStack_idx;
 	uint(size=16) ttStack[10][TT_STRUCT_SIZE];
 	uint(size= 1) split_transform_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
+	bool          lastSplitTransf;
 	uint(size= 1) cbf_cb[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
 	uint(size= 1) cbf_cr[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
 	uint(size= 1) cbf_luma[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
+	bool          cbfLumaVal;
 	uint(size= 8) cur_intra_pred_mode;
 	/**************************************************************************
 	 * read_TransformTree.start
@@ -2395,7 +2398,7 @@ actor Algo_Parser ()
 		end
 	end
 
-	read_TransformTree.start.nonPartNxN : action ==> SplitTransform:[splitTransf]
+	read_TransformTree_start.nonPartNxN : action ==> SplitTransform:[lastSplitTransf]
 	guard 
 		isFifoFull(fifo),
 		ttStack[ttStack_idx][TT_idx] = 1,
@@ -2411,8 +2414,7 @@ actor Algo_Parser ()
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
-		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end,
-		bool splitTransf
+		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
 	do	
 		if DEBUG_TRACE1 then
 			println("read_TransformTree.start("+x0L+", "+y0L+", "+x0C+", "+y0C+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
@@ -2479,7 +2481,18 @@ actor Algo_Parser ()
 			end
 			ttStack[ttStack_idx][TT_idx] := 2;
 		end
-		splitTransf := split_transform_flag[ x0L ][ y0L ][ trafoDepth ] != 0;
+		lastSplitTransf := split_transform_flag[ x0L ][ y0L ][ trafoDepth ] != 0;
+		cbfLumaVal := cbf_luma[ x0L ][ y0L ][ trafoDepth ] != 0;
+	end
+
+	send_Cbf.skip: action ==>
+	guard
+		lastSplitTransf
+	end
+	
+	send_Cbf.launch: action ==> Cbf:[cbfLumaVal]
+	guard
+		not lastSplitTransf
 	end
 	/**************************************************************************
 	 * read_TransformTree_gotoTransformUnit
@@ -3049,8 +3062,11 @@ actor Algo_Parser ()
 		read_PCMSample2				    ( read_PCMSample2	  				) --> undefined;//read_PredictionUnit;
 		// read_TransformTree
 		read_TransformTree			    ( read_TransformTree	  			) --> read_TransformTree;
+		read_TransformTree              (read_TransformTree_start           ) --> send_Cbf;
 		read_TransformTree			    ( read_TransformTree_gotoTransformUnit) --> read_TransformUnit;
 		read_TransformTree			    ( read_TransformTree_end	  		) --> read_CodingUnit;
+
+		send_Cbf                        (send_Cbf                           ) --> read_TransformTree;
 		// read_TransformUnit
 		read_TransformUnit			    ( read_TransformUnit	  			) --> read_TransformUnit;
 		read_TransformUnit			    ( read_TransformUnit_gotoResidualCoding) --> read_ResidualCoding;
