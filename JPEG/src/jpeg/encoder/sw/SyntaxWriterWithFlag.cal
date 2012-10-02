@@ -38,18 +38,21 @@ import jpeg.encoder.common.Tables.chromaDCValues;
 import jpeg.encoder.common.Tables.chromaACValues;
 
 
-actor Streamer()
+actor SyntaxWriterWithFlag(int nbFramesToEncode)
 	int(size=1) Bit,
 	int(size=32) Count,
 	int(size=32) SOI
 		==> 
-			uint(size=8) BitStream:
+			uint(size=8) BitStream,
+			bool pEOF:
 	uint count;
 	uint bytes_read := 0;
 	bool padding := false;
 	int qt_count := 0;
 	int ht_count := 0;
 	int val_count := 0;
+	
+	int framecount := 0;
 
 	List(type:uint(size=8), size=16) APP0_data = [0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 00, 00];
 
@@ -57,19 +60,21 @@ actor Streamer()
 
 	List(type:uint(size=8), size=12) SOS_data = [0x00, 0x0C, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3F, 0x00];
 	
-	SOI.send_marker:action ==> BitStream:[0xFF, 0xD8]
+	SOI.send_marker:action ==> BitStream:[0xFF, 0xD8], pEOF:[false, false]
+	do
+		framecount := framecount + 1;
 	end
 	
-	APP0.send_marker:action ==> BitStream:[0xFF, 0xE0]
+	APP0.send_marker:action ==> BitStream:[0xFF, 0xE0], pEOF:[false, false]
 	end
 	
-	APP0.send_data:action ==> BitStream:[[APP0_data[i] : for int i in 0 .. 15]] repeat 16
+	APP0.send_data:action ==> BitStream:[[APP0_data[i] : for int i in 0 .. 15]] repeat 16, pEOF:[ [false : for int i in 0 .. 15] ] repeat 16
 	end
 	
-	DQT.send_marker:action ==> BitStream:[0xFF, 0xDB]
+	DQT.send_marker:action ==> BitStream:[0xFF, 0xDB], pEOF:[false, false]
 	end
 	
-	DQT.send_data: action  ==> BitStream:[DQT_data] repeat 67
+	DQT.send_data: action  ==> BitStream:[DQT_data] repeat 67, pEOF:[ [false : for int i in 0 .. 66] ] repeat 67
 	var
 		List(type:uint(size=8), size=67) DQT_data
 	do
@@ -95,17 +100,17 @@ actor Streamer()
 		SOF0_data[15] := 0x11;
 	end
 	
-	SOF0.send_marker:action ==> BitStream:[0xFF, 0xC0]
+	SOF0.send_marker:action ==> BitStream:[0xFF, 0xC0], pEOF:[ [false : for int i in 0 .. 1] ] repeat 2
 	end
 	
-	SOF0.send_data:action ==> BitStream:[[SOF0_data[i] : for int i in 0 .. 16]] repeat 17
+	SOF0.send_data:action ==> BitStream:[[SOF0_data[i] : for int i in 0 .. 16]] repeat 17,  pEOF:[ [false : for int i in 0 .. 16] ] repeat 17
 	end
 	
-	DHT.send_marker:action ==> BitStream:[0xFF, 0xC4]
+	DHT.send_marker:action ==> BitStream:[0xFF, 0xC4],  pEOF:[ [false : for int i in 0 .. 1] ] repeat 2
 	end
 	
 	uint to_read;
-	DHT.len:action  ==> BitStream:[DHT_data] repeat 19
+	DHT.len:action  ==> BitStream:[DHT_data] repeat 19,  pEOF:[ [false : for int i in 0 .. 18] ] repeat 19
 	var
 		List(type:uint(size=8), size=19) DHT_data,
 		uint len
@@ -124,7 +129,7 @@ actor Streamer()
 		val_count := 0;
 	end
 	
-	DHT.send_data:action  ==> BitStream:[v]
+	DHT.send_data:action  ==> BitStream:[v], pEOF:[ false ]
 	guard 
 		to_read != 0
 	var
@@ -157,16 +162,16 @@ actor Streamer()
 		ht_count := ht_count + 1;
 	end
 	
-	SOS.send_marker:action ==> BitStream:[0xFF, 0xDA]
+	SOS.send_marker:action ==> BitStream:[0xFF, 0xDA], pEOF:[ [false : for int i in 0 .. 1] ] repeat 2
 	end
 	
-	SOS.send_data:action ==> BitStream:[[SOS_data[i] : for int i in 0 .. 11]] repeat 12
+	SOS.send_data:action ==> BitStream:[[SOS_data[i] : for int i in 0 .. 11]] repeat 12,  pEOF:[ [false : for int i in 0 .. 11] ] repeat 12
 	do
 		// The number of bytes has not been received yet.
 		count := 0xFFFFFFFF;
 	end
 	
-	SCAN.send_data:action Bit:[b] repeat 8 ==> BitStream:[v]
+	SCAN.send_data:action Bit:[b] repeat 8 ==> BitStream:[v], pEOF:[ false ]
 	guard 
 		not padding
 	var
@@ -181,7 +186,7 @@ actor Streamer()
 		bytes_read := bytes_read + 8;
 	end
 	
-	SCAN.padding:action ==> BitStream:[0x00]
+	SCAN.padding:action ==> BitStream:[0x00], pEOF:[ false ]
 	guard 
 		padding
 	do
@@ -191,25 +196,33 @@ actor Streamer()
 	SCAN.count:action Count:[c] ==>
 	do
 		count := c;
-		//println("count " + c);
+		println("count " + c);
 	end
 	
 	// We have received the length of the entropy coded section, we now know when to add EOI.
 	SCAN.done:action ==>
 	guard 
 		bytes_read >= count
+
 	end
 	
-	EOI.send_marker:action ==> BitStream:[0xFF, 0xD9]
+	EOI.send_marker:action ==> BitStream:[0xFF, 0xD9], pEOF:[ false, false ]
 	do
 		bytes_read := 0;
 		qt_count := 0;
 		ht_count := 0;
+		
 		padding := false;
 	end
 	
-
-
+	EOF.send: action ==> pEOF:[ true ] 
+	guard framecount = nbFramesToEncode
+	end
+	
+	EOF.nosend: action ==>
+	end
+	
+	
 	schedule fsm SOI_marker:
 		SOI_marker(SOI.send_marker)-->APP0_marker;
 		
@@ -253,11 +266,13 @@ actor Streamer()
 		SCAN_send(SCAN.count)-->SCAN_send;
 		SCAN_send(SCAN.padding)-->SCAN_send;
 		
-		EOI_marker(EOI.send_marker)-->SOI_marker;
+		EOI_marker(EOI.send_marker)-->sendEOF;
+		sendEOF (EOF) --> SOI_marker;
 	end
 	
 	priority
 		SCAN.done > SCAN.send_data;
 		SCAN.count > SCAN.send_data;
+		EOF.send > EOF.nosend;
 	end
 end
