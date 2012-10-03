@@ -426,7 +426,6 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	uint(size= 1) sps_sample_adaptive_offset_enabled_flag[NB_MAX_SPS];
 	uint(size= 8) sps_num_short_term_ref_pic_sets[NB_MAX_SPS];
-	uint(size= 1) sps_amp_enabled_flag[NB_MAX_SPS];
 	
 	read_SPS_Header.se_idx_6 : action ==>
 	guard
@@ -436,7 +435,6 @@ actor Algo_Parser ()
    	do
 		vld_u_name(  1, fifo, res, "scaling_list_enabled_flag               ");
 		vld_u_name(  1, fifo, res, "amp_enabled_flag                        "); 
-		sps_amp_enabled_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag     ");
 		sps_sample_adaptive_offset_enabled_flag[sps_id] := res[0];
 		if sps_pcm_enabled_flag[sps_id] = 1 then
@@ -538,6 +536,8 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	uint(size= 1) pps_sign_data_hiding_flag[NB_MAX_PPS];
 	uint(size= 1) pps_cabac_init_present_flag[NB_MAX_PPS];
+	uint(size= 8) pps_num_ref_idx_l0_default_active_minus1[NB_MAX_PPS];
+	uint(size= 8) pps_num_ref_idx_l1_default_active_minus1[NB_MAX_PPS];
 	 int(size=32) pps_pic_init_qp_minus26[NB_MAX_PPS];
 	uint(size= 1) pps_transform_skip_enabled_flag[NB_MAX_PPS];
 	uint(size= 2) pps_SliceGranularity[NB_MAX_PPS];
@@ -564,9 +564,9 @@ actor Algo_Parser ()
 		vld_u_name(  1, fifo, res, "cabac_init_present_flag                 ");
 		pps_cabac_init_present_flag[pps_id] := res[0];
 		vld_ue_name(    fifo, res, "num_ref_idx_l0_default_active_minus1    ");
+		pps_num_ref_idx_l0_default_active_minus1[pps_id] := res[0];
 		vld_ue_name(    fifo, res, "num_ref_idx_l1_default_active_minus1    ");
-//		vld_ue_name(    fifo, res, "num_ref_idx_l0_default_active_minus1    ");
-//		vld_ue_name(    fifo, res, "num_ref_idx_l1_default_active_minus1    ");
+		pps_num_ref_idx_l1_default_active_minus1[pps_id] := res[0];
 		vld_se_name(    fifo, res, "pic_init_qp_minus26                     ");
 		pps_pic_init_qp_minus26[pps_id] := res[0]; 
 		vld_u_name(  1, fifo, res, "constrained_intra_pred_flag             ");
@@ -855,7 +855,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	uint(size= 8) num_ref_idx_l0_active_minus1;
 	uint(size= 8) num_ref_idx_l1_active_minus1;
-	uint(size= 8) num_ref_idx_lc_active_minus1;
+	uint(size= 1) temporal_mvp_enable_flag;
 	uint(size= 1) mvd_l1_zero_flag;
 	read_SliceHeader.se_idx_2.read : action ==>
 	guard
@@ -863,14 +863,15 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
    	do
-	   	num_ref_idx_l0_active_minus1 := 0;
-	   	num_ref_idx_l1_active_minus1 := 0;
-	   	num_ref_idx_lc_active_minus1 := 0;
+	   	num_ref_idx_l0_active_minus1 := pps_num_ref_idx_l0_default_active_minus1[pps_id];
+	   	num_ref_idx_l1_active_minus1 := pps_num_ref_idx_l1_default_active_minus1[pps_id];
+	   	temporal_mvp_enable_flag     := 0;
 	   	mvd_l1_zero_flag             := 0;
 		if entropy_slice_flag = 0 then
 			if slice_type = P_SLICE or slice_type = B_SLICE then
 				if sps_temporal_mvp_enable_flag[sps_id] = 1 then
 					vld_u_name(  1, fifo, res, "temporal_mvp_enable_flag                ");	
+					temporal_mvp_enable_flag := res[0];
 				end	
 				vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");		
 	      		if res[0] = 1 then
@@ -898,6 +899,7 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	 int(size=32) slice_qp;
 	uint(size= 8) MaxNumMergeCand;
+	uint(size= 1) cabac_init_flag;
 	 	
 	read_SliceHeader.se_idx_3 : action ==>
 	guard
@@ -907,8 +909,10 @@ actor Algo_Parser ()
 		uint(size= 1) deblocking_filter_override_flag := 0,
 		uint(size= 1) slice_header_disable_deblocking_filter_flag := 0
    	do	
+   	cabac_init_flag := 0;
 	if( pps_cabac_init_present_flag[pps_id] = 1  and  slice_type  !=  I_SLICE )	then
-		vld_u_name(  1, fifo, res, "cabac_init_flag                         ");		
+		vld_u_name(  1, fifo, res, "cabac_init_flag                         ");	
+		cabac_init_flag := res[0];	
 	end
 	if(entropy_slice_flag = 0) then
 		vld_se_name(    fifo, res, "slice_qp_delta                          ");
@@ -926,12 +930,14 @@ actor Algo_Parser ()
 				end
 			end
 		end	
-		res[0] := 1;
-		if( slice_type = B_SLICE ) then	
-			vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
-		end
-		if ( /*collocated_from_l0_flag*/ res[0] = 1 and num_ref_idx_l0_active_minus1 > 0 ) or ( /*collocated_from_l0_flag*/ res[0]  =  0 and num_ref_idx_l1_active_minus1 > 0 ) then
-			vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+		if temporal_mvp_enable_flag = 1 then
+			res[0] := 1;
+			if( slice_type = B_SLICE ) then	
+				vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
+			end
+			if ( /*collocated_from_l0_flag*/ res[0] = 1 and num_ref_idx_l0_active_minus1 > 0 ) or ( /*!collocated_from_l0_flag*/ res[0]  =  0 and num_ref_idx_l1_active_minus1 > 0 ) then
+				vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+			end
 		end
 		
 /*/ 		if( slice_type != I  &&  
@@ -1045,7 +1051,6 @@ actor Algo_Parser ()
 	
 	uint(size= 1) skip_flag_tab[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	uint(size= 1) inter_pred_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
-	uint(size= 1) merge_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
 	uint(size= 8) top_ipm[CTB_ADDR_TS_MAX];
 	uint(size= 8) left_ipm[CTB_ADDR_TS_MAX];
@@ -1090,7 +1095,6 @@ actor Algo_Parser ()
 		
 		skip_flag_tab	  := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
 		inter_pred_flag   := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
-		merge_flag		  := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
 		
 		
 		if num_tile_columns_minus1 >= COLUMN_WIDTH_MAX then
@@ -1214,7 +1218,7 @@ actor Algo_Parser ()
 		uint(size=32) SliceCtbAddrRS = ( slice_address >> pps_SliceGranularity[pps_id] )
 	do
 		decodeStart(codIRange, codIOffset, fifo);
-		contextInit(slice_qp, slice_type, ctxTable);
+		contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag);
 		//
 		CtbAddrRS     := SliceCtbAddrRS;
 		CtbAddrTS     := ctbAddrRStoTS[CtbAddrRS];
@@ -1672,6 +1676,7 @@ actor Algo_Parser ()
 	uint(size= 8) cu_top_ctDepth[CTB_ADDR_TS_MAX];
 	uint(size= 8) cu_left_ctDepth[CTB_ADDR_TS_MAX];
 	uint(size= 1) skip_flag;
+	uint(size= 1) merge_flag;
 	uint(size=6) intraChrPredModIdx;
 	uint(size=6) intraPredModeC[5][5] =
 		[[34,  0,  0,  0,  0],
@@ -1694,6 +1699,8 @@ actor Algo_Parser ()
     	uint(size=16) y_cb 			 = cu_y0 >> Log2MinCbSize//,
 //		uint(size=16) CurrCbAddrTS = MinCbAddrZS[ cu_x0 >> Log2MinCbSize ][ cu_y0 >> Log2MinCbSize ]
 	do
+		skip_flag  := 0;
+		merge_flag := 0;
 		if DEBUG_TRACE1 then
 			println("read_CodingUnit.start ("+cu_x0+", "+cu_y0+", "+cu_log2CbSize+")");
 		elsif DEBUG_MODE then
@@ -2034,7 +2041,7 @@ actor Algo_Parser ()
 	do
 		cu_idx := 10;
 		if pcm_flag = 0 then
-			if( predMode != MODE_INTRA and not(partMode = PART_2Nx2N and merge_flag[cu_x0][cu_y0] = 1) ) then
+			if( predMode != MODE_INTRA and not(partMode = PART_2Nx2N and merge_flag = 1) ) then
 				get_NO_RESIDUAL_SYNTAX_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 				//no_residual_data_flag
 			end
@@ -2117,6 +2124,7 @@ actor Algo_Parser ()
 			pu_idx := 7;
 		else /* MODE_INTER */
 			get_MERGE_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
+			merge_flag := res[0];
 			if res[0] = 1 then
 				if MaxNumMergeCand > 1 then
 					get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res, MaxNumMergeCand);
@@ -2129,6 +2137,7 @@ actor Algo_Parser ()
 				end
 				if( inter_pred_flag[pu_x0][pu_y0] != Pred_L1 ) then
 					if( num_ref_idx_l0_active_minus1 > 0 ) then
+						get_REF_IDX_L0(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l0_active_minus1);
 						//ref_idx_l0[ x0 ][ y0 ]
 					end
 					// goto mvd_coding
@@ -2762,7 +2771,7 @@ actor Algo_Parser ()
 		InitScanningArray(rc_log2TrafoSize-2, ScanOrder);
 		InitScanningArray(2, ScanOrder2);
 		
-		if rc_scanIdx = 2 then
+		if rc_scanIdx = SCAN_VER then
 			res[0] := LastSignificantCoeffX;
 			LastSignificantCoeffX := LastSignificantCoeffY;
 			LastSignificantCoeffY := res[0];
@@ -2815,6 +2824,7 @@ actor Algo_Parser ()
         		coded_sub_block_flag[ rc_xS ][ rc_yS ] := 1;
         	end
         end
+ 
 		significant_coeff_flag := [0	: for int j in 0 .. 15];        
         m_end := if rc_i = rc_lastSubBlock then rc_lastScanPos - 1 else 15 end;
         significant_coeff_flag[ rc_lastScanPos ] := 1;
