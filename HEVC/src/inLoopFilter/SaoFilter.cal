@@ -43,6 +43,11 @@ actor SaoFilter(bool DEBUG)
 	uint(size=16) PIC_HEIGHT_MAX=2048;
 	uint(size=4)  BIT_DEPTH = 8;
 
+
+	int(size=3) constHPos0[4][2] = [[-1,1],  [ 0,0], [-1,1],  [ 1,-1]];
+	int(size=3) constVPos0[4][2] = [[ 0,0],  [-1,1], [-1,1],  [-1, 1]];
+	int(size=3) edgeIdxConv[5] = [1, 2, 0, 3, 4];
+
 	uint(size=32) numSlice := 0;
 	bool          slcSaoCompEn[3];
 
@@ -56,6 +61,7 @@ actor SaoFilter(bool DEBUG)
 	uint(size=5) saoLeftClass[PIC_WIDTH_MAX/64][2][3];
 
 	uint(size=6)  picSizeInCu[2];
+	uint(size=16) picSize[2];
 	uint(size=6)  xIdx := 0;
 	uint(size=6)  yIdx := 0;
 
@@ -68,9 +74,73 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
+	procedure codingTreeBlockModif(uint(size=16) rx, uint(size=16) ry, uint(size=16) xCuIdx, uint(size=16) yCuIdx)
+	var
+		uint(size=3) xMax = if(cIdx=0) then 3 else 1 end,
+		uint(size=3) yMax = if(cIdx=0) then 3 else 1 end,
+		uint(size=16) xIdx,
+		uint(size=16) yIdx,
+		uint(size=16) pixIdx[2][2],
+		bool pixIsInPict,
+		uint(size=3) edgeIdx,
+		uint(size=3) bandShift = 3,
+		uint(size=3) bandTable[32],
+		uint(size=3) bandIdx
+	begin
+		rx := if(cIdx=0) then rx<<2 else rx<<1 end;
+		ry := if(cIdx=0) then ry<<2 else rx<<1 end;
+		foreach uint(size=3) y in 0 .. yMax
+		do
+			yIdx := ry + y;
+			foreach uint(size=3) x in 0 .. xMax
+			do
+				xIdx := rx + x;
+				if(xIdx<picSize[0] && yIdx<picSize[1]) then
+					if(saoTypeIdx[xCuIdx][yCuIdx][cIdx] = 2) then
+						pixIsInPict := true;
+						foreach uint k in 0 .. 1
+						do
+							pixIdx[k][0] := xIdx + constHPos0[saoEoClass[xCuIdx][yCuIdx][cIdx]][k];
+							pixIdx[k][1] := xIdx + constVPos0[saoEoClass[xCuIdx][yCuIdx][cIdx]][k];
+							if(pixIdx[k][0] > picSize[0] || pixIdx[k][1]>picSize[1]) then
+								pixIsInPict := false;
+							end
+						end
+						if(pixIsInPict) then
+							edgeIdx := 2;
+							foreach uint k in 0 .. 1
+							do
+								edgeIdx := edgeIdx + Sign3(OrigPict[cIdx][xIdx][yIdx &(4*64-1)] -
+									OrigPict[cIdx][pixIdx[k][0]][pixIdx[k][1] &(4*64-1)]);
+							end
+							edgeIdx := edgeIdxConv[edgeIdx];
+						else
+							edgeIdx := 0;
+						end
+						FiltPict[cIdx][xIdx][yIdx] := clip_i32(OrigPict[cIdx][xIdx][yIdx &(4*64-1)] +
+							saoOffset[xCuIdx][yCuIdx][cIdx][edgeIdx], 0, 255);
+					else
+						foreach uint i in 0 .. 31
+						do
+							bandTable[i] := 0;
+						end
+						foreach uint k in 0 .. 3
+						do
+							bandTable[(k+saoLeftClass[xCuIdx][yCuIdx][cIdx]) & 31] := k+1;
+						end
+						bandIdx := bandTable[OrigPict[cIdx][xIdx][yIdx &(4*64-1)]>>bandShift];
+						FiltPict[cIdx][xIdx][yIdx] := clip_i32(OrigPict[cIdx][xIdx][yIdx &(4*64-1)] +
+							saoOffset[xCuIdx][yCuIdx][cIdx][bandIdx], 0, 255);
+					end
+				end		
+			end
+		end
+	end
+
 	isNewPict: action PicSize:[picWidthInPix, picHeightInPix], SaoSe:[saoSe] ==>
 	do
 		picSizeInCu := [picWidthInPix/64, picHeightInPix/64];
+		picSize     := [picWidthInPix   , picHeightInPix];
 		slcSaoCompEn[0] := (saoSe & 1) !=0;
 		slcSaoCompEn[1] := (saoSe & 2) !=0;
 		slcSaoCompEn[2] := slcSaoCompEn[1];
@@ -91,7 +161,7 @@ actor SaoFilter(bool DEBUG)
 		do
 			foreach uint x in 0 .. 63
 			do
-				OrigPict[0][x+xPic][y+yPic] := samp[xPic + yPic*64]; 
+				OrigPict[0][x+xPic][(y+yPic) &(4*64-1)] := samp[xPic + yPic*64]; 
 			end
 		end
 
@@ -104,7 +174,7 @@ actor SaoFilter(bool DEBUG)
 			do
 				foreach uint x in 0 .. 31
 				do
-					OrigPict[cIdx][x+xPic][y+yPic] := samp[x + y*32 +offset]; 
+					OrigPict[cIdx][x+xPic][(y+yPic) &(4*64-1)] := samp[x + y*32 +offset]; 
 				end
 			end
 			offset := offset + 32*32;
