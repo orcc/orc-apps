@@ -33,7 +33,8 @@ import interPrediction.NaluType.*;
 
 actor SaoFilter(bool DEBUG)
 	uint(size=16) PicSize,
-	uint(size=8)  SampleIn
+	uint(size=8)  SampleIn,
+	int (size=9)  SaoSe
 		==>
 	//uint(size=8)  FiltSample
 		:
@@ -43,21 +44,23 @@ actor SaoFilter(bool DEBUG)
 	uint(size=4)  BIT_DEPTH = 8;
 
 	uint(size=32) numSlice := 0;
+	bool          slcSaoCompEn[3];
+
+	uint(size=8) OrigPict[3][PIC_WIDTH_MAX][4*64];
+	uint(size=8) FiltPict[3][PIC_WIDTH_MAX][PIC_HEIGHT_MAX];
+
+	uint(size=2) cIdx;
+	uint(size=2) saoTypeIdx[PIC_WIDTH_MAX/64][2][3];
+	int (size=9) saoOffset[PIC_WIDTH_MAX/64][2][3][5];
+	uint(size=2) saoEoClass[PIC_WIDTH_MAX/64][2][3];
+	uint(size=5) saoLeftClass[PIC_WIDTH_MAX/64][2][3];
 
 	uint(size=6)  picSizeInCu[2];
 	uint(size=6)  xIdx := 0;
 	uint(size=6)  yIdx := 0;
 
-
-	isNewPict: action PicSize:[picWidthInPix, picHeightInPix] ==>
-	do
-		picSizeInCu := [picWidthInPix/64, picHeightInPix/64];
-	end
-
-	getCuPix.launch: action SampleIn:[samp] repeat 64*64 + 32*32*2 ==>
-	guard
-		yIdx < picSizeInCu[1] && xIdx < picSizeInCu[0]
-	do
+	procedure nextLcuAddress()
+	begin
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
 			xIdx := 0;
@@ -65,6 +68,123 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
+	isNewPict: action PicSize:[picWidthInPix, picHeightInPix], SaoSe:[saoSe] ==>
+	do
+		picSizeInCu := [picWidthInPix/64, picHeightInPix/64];
+		slcSaoCompEn[0] := (saoSe & 1) !=0;
+		slcSaoCompEn[1] := (saoSe & 2) !=0;
+		slcSaoCompEn[2] := slcSaoCompEn[1];
+	end
+
+	getCuPix.launch: action SampleIn:[samp] repeat 64*64 + 32*32*2 ==>
+	guard
+		yIdx < picSizeInCu[1] && xIdx < picSizeInCu[0]
+	var
+		uint(size=16) offset,
+		uint(size=16) xPic,
+		uint(size=16) yPic
+	do
+		xPic := xIdx<<6;
+		yPic := (yIdx<<6)&(4*64-1);
+
+		foreach uint y in 0 .. 63
+		do
+			foreach uint x in 0 .. 63
+			do
+				OrigPict[0][x+xPic][y+yPic] := samp[xPic + yPic*64]; 
+			end
+		end
+
+		xPic := xPic>>1;
+		yPic := yPic>>1;
+		offset := 64*64;
+		foreach uint cIdx in 1 .. 2
+		do
+			foreach uint y in 0 .. 31
+			do
+				foreach uint x in 0 .. 31
+				do
+					OrigPict[cIdx][x+xPic][y+yPic] := samp[x + y*32 +offset]; 
+				end
+			end
+			offset := offset + 32*32;
+		end
+	end
+
+	getSaoMerge.noMerge: action SaoSe:[mergeInfo] ==>
+	guard
+		(slcSaoCompEn[0] || slcSaoCompEn[1]) and mergeInfo = SAO_NO_MERGE
+	do
+	end
+
+	getSaoMerge.merge: action SaoSe:[mergeInfo] ==>
+	guard
+		(slcSaoCompEn[0] || slcSaoCompEn[1]) and mergeInfo != SAO_NO_MERGE
+	var
+		uint(size=16) xMerge =
+			if(mergeInfo = SAO_MERGE_LEFT) then xIdx-1 else xIdx end,
+		uint(size=16) yMerge =
+			if(mergeInfo = SAO_MERGE_UP)  then (yIdx-1)&1 else yIdx&1 end
+	do
+		foreach uint cIdx in 0 .. 2
+		do
+			saoTypeIdx[xMerge][yMerge][cIdx] := saoTypeIdx[xIdx][yIdx&1][cIdx];
+			foreach uint i in 1 .. 4
+			do
+				saoOffset[xMerge][yMerge][cIdx][i] := saoOffset[xIdx][yIdx&1][cIdx][i];
+			end
+			saoEoClass[xMerge][yMerge][cIdx] := saoEoClass[xIdx][yIdx&1][cIdx];
+			saoLeftClass[xMerge][yMerge][cIdx] := saoLeftClass[xIdx][yIdx&1][cIdx];
+		end
+		nextLcuAddress();
+	end
+
+	getSaoMerge.skip: action ==>
+	guard
+		not slcSaoCompEn[0] && not slcSaoCompEn[1]
+	do
+		nextLcuAddress();
+	end
+
+	getSaoTypeIdx.is0: action SaoSe:[typeIdx] ==>
+	guard
+		cIdx<3 && slcSaoCompEn[cIdx] && typeIdx = 0
+	do
+		saoTypeIdx[xIdx][yIdx&1][cIdx] := typeIdx;
+		cIdx := cIdx + 1;
+	end
+
+	getSaoTypeIdx.isNot0: action SaoSe:[saoSe] repeat 6 ==>
+	guard
+		cIdx<3 && slcSaoCompEn[cIdx] && saoSe[0] != 0
+	do
+		saoTypeIdx[xIdx][yIdx&1][cIdx] := saoSe[0];
+		foreach uint i in 1 .. 4
+		do
+			saoOffset[xIdx][yIdx&1][cIdx][i] := saoSe[i];
+		end
+		if(saoTypeIdx[xIdx][yIdx&1][cIdx]=2) then
+			saoEoClass[xIdx][yIdx&1][cIdx] := saoSe[5];
+		else
+			saoLeftClass[xIdx][yIdx&1][cIdx] := saoSe[5];
+		end
+		cIdx := cIdx + 1;
+	end
+
+	getSaoTypeIdx.skip: action ==>
+	guard
+		cIdx<3 && not slcSaoCompEn[cIdx]
+	do
+		cIdx := cIdx + 1;
+	end
+
+	getSaoTypeIdxDone: action ==>
+	guard
+		cIdx = 3
+	do
+		cIdx := 0;
+		nextLcuAddress();
+	end
 
 	getCuPix.done: action ==>
 	guard
@@ -81,7 +201,14 @@ actor SaoFilter(bool DEBUG)
 	schedule fsm IsNewPict:
 		IsNewPict (isNewPict )--> GetCuPix;
 
-		GetCuPix  (getCuPix.launch )--> GetCuPix;
+		GetCuPix  (getCuPix.launch )--> GetSaoMerge;
 		GetCuPix  (getCuPix.done   )--> IsNewPict;
+
+		GetSaoMerge (getSaoMerge.skip    )--> GetCuPix;
+		GetSaoMerge (getSaoMerge.merge   )--> GetCuPix;
+		GetSaoMerge (getSaoMerge.noMerge )--> GetSaoTypeIdx;
+
+		GetSaoTypeIdx(getSaoTypeIdx     )--> GetSaoTypeIdx;
+		GetSaoTypeIdx(getSaoTypeIdxDone )--> GetCuPix;
 	end
 end
