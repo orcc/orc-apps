@@ -1,0 +1,199 @@
+/*************************************************************************
+* This software module was originally developed by David B. Parlour (Xilinx Inc.), 
+* in the course of development of the ISO/IEC 23002-4 (Video Tool Library) 
+* for reference purposes and its performance may not have been optimized. 
+* This software module is an implementation of one or more tools as 
+* specified by the ISO/IEC 23002-4.
+* 
+* ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+* license to copy, distribute, and make derivative works of this software 
+* module or modifications thereof for use in implementations of the 
+* ISO/IEC 23002-4 in products that satisfy conformance criteria (if any). 
+* 
+* Those intending to use this software module in products are advised that 
+* its use may infringe existing patents. ISO/IEC have no liability for use 
+* of this software module or modifications thereof.
+* 
+* Copyright is not released for products that do not conform to audiovisual 
+* and image-coding related ITU Recommendations and/or ISO/IEC International 
+* Standards. 
+* 
+* Assurance that the originally developed software module can be used 
+* (1) in the ISO/IEC 23002-4 once the ISO/IEC 23002-4 has been adopted; and 
+* (2) to develop the ISO/IEC 23002-4: 
+* 
+* Xilinx Inc.  grants ISO/IEC all rights necessary to 
+* include the originally developed software module or modifications thereof 
+* in the ISO/IEC 23002-4 and to permit ISO/IEC to offer You a royalty-free, 
+* worldwide, non-exclusive, copyright license to copy, distribute, and make 
+* derivative works for use in implementations of the ISO/IEC 23002-4 in 
+* products that satisfy conformance criteria (if any), and to the extent 
+* that such originally developed software module or portions of it are 
+* included in the ISO/IEC 23002-4.  To the extent that Xilinx Inc. 
+* owns patent rights that would be required to make, use, or 
+* sell the originally developed software module or portions thereof 
+* included in the ISO/IEC 23002-4 in a conforming product, Xilinx Inc.
+* will assure the ISO/IEC that it is willing to 
+* negotiate licenses under reasonable and non-discriminatory terms and 
+* conditions with applicants throughout the world.
+* 
+* ISO/IEC gives You a free license to this software module or modifications 
+* thereof for the sole  purpose of developing theISO/IEC 23002-4
+* 
+* Xilinx Inc. retains full right to modify and use the 
+* code for its own purpose, assign or donate the code to a third party and 
+* to inhibit third parties from using the code for products that do not 
+* conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+* Standards. 
+* 
+* This copyright notice must be included in all copies or derivative works. 
+* Copyright (c) ISO/IEC 2007-2011.
+*************************************************************************/
+
+/*********************************
+ *  Algo_IAP_AdaptiveHorizontalOrVerticalPred_16x16
+*
+* Created By:  David B. Parlour (dave.parlour@xilinx.com)
+* Modified By: Andrew Kinane (kinanea@eeng.dcu.ie)
+*         
+*
+* Functionality:
+* This module computes inverse AC prediction for specific AC coefficients of 8x8 blocks
+* that have been flagged in the bistream as coded in this fashion. For more details see 
+* ISO/IEC 14496-2.
+*
+* Input Ports:
+* ============
+* int(size=SAMPLE_SZ) PQF_AC
+* AC coefficient tokens sent in a horizontal raster manner after being 
+* decoded and re-ordered by the inverse scan block.
+*
+* int(size=MB_COORD_SZ+2) PTR
+* The address of the 8x8 block used for the prediction in the encoder.
+*
+* int(size=3) AC_PRED_DIR
+* A flag to communicate the direction of prediction to the IAP block but also info
+* about the scan mode of the block to the inverse scan block
+* AC_PRED_DIR = -2 => NEWVOP flag
+* AC_PRED_DIR = -1 => An uncoded block so skip inverse AC prediction
+* AC_PRED_DIR =  0 => No inverse AC prediction but use zig zag inverse scan
+* AC_PRED_DIR =  1 => Prediction form the left and use alternate vertical scan
+* AC_PRED_DIR =  2 => Prediction form the top and use alternate horizontal scan
+*
+* Output Ports:
+* =============
+* int(size=SAMPLE_SZ) QF_AC
+* Decoded AC coefficients sent in a horizontal raster manner after inverse AC prediction. 
+*
+* Modifications:
+* * In advance action, indices adjust after every 4 components instead of 6 since now
+*   dealing with 4 8x8 blocks rather than 6 8x8 blocks.
+**************************************************/
+package fr.irisa.mpeg4.part2.sp.texture;
+
+import org.sc29.wg11.mpeg4.part2.Constants.*;
+
+actor Algo_IAP_AdaptiveHorizontalOrVerticalPred_16x16 () 
+	int(size=SAMPLE_SZ) PQF_AC, 
+	int(size=MB_COORD_SZ + 2) PTR,
+	int(size=3) AC_PRED_DIR, 
+	int(size=QUANT_SZ) QP,
+	int(size=QUANT_SZ) PREV_QP
+		==>
+	int(size=SAMPLE_SZ) QF_AC :
+
+	// Block coefficient counter (start at 1 since 0 is DC coeff)
+	int BUF_SIZE = (MAXW_IN_MB + 2) * 4;
+
+	int(size=MB_COORD_SZ + 2) ptr;
+
+	// Pointer to current 8x8 block
+	int(size=MB_COORD_SZ + 2) pred_ptr;
+
+	// Pointer to 8x8 block used for prediction of current 8x8 block
+	// Initialize to the dummy values needed for uncoded blocks (always mapped to index 0)
+	// Add 4 address lines  so that we can store the left edge and top edge AC values (14 in all).
+	int(size=SAMPLE_SZ) buf[BUF_SIZE * 16];
+
+	int(size=4) comp;
+
+	// 8x8 block component in macroblock index
+	bool top;
+	bool acpred_flag;
+
+
+	newvop: action AC_PRED_DIR:[ s ] ==>
+	guard
+		s = -2
+	do
+		comp := 0;
+		ptr := 4;
+		// Start at 4, since 0-3 are reserved
+	end
+
+	skip: action AC_PRED_DIR:[ s ] ==>
+	guard
+		s < 0
+	end
+
+	start: action AC_PRED_DIR:[ s ], PTR:[ p ], QP:[ qp ], PREV_QP:[ prev_qp ] ==>
+	do
+		pred_ptr := p;
+		top := s = 2;
+		acpred_flag := s != 0;
+	end
+
+	advance: action ==>
+	do
+		comp := comp + 1;
+		if comp = 4 then
+			comp := 0;
+			ptr := if ptr = 4 then
+				BUF_SIZE - 4
+			else
+				ptr - 4
+			end;
+		end
+	end
+	
+  copy: action PQF_AC:[ ac ] repeat 63 ==> QF_AC:[ pred ] repeat 63
+  var
+    int(size=4) v,
+    int(size=SAMPLE_SZ) pred[63],
+    int(size=4) h, bool top_edge,
+    bool left_edge, int(size=5) index, int count
+  do
+    foreach int i in 0 .. 62 do
+    	count := i + 1;
+    	v := (count & 7);
+    	h := ((count >> 3) & 7);
+    	top_edge := (h = 0);
+    	left_edge := (v = 0);
+    	index := if top_edge then v else (h | 8) end;
+    	
+	    if acpred_flag and ((top and top_edge) or ((not top) and left_edge)) then
+	      pred[i] := ac[i] + buf[((pred_ptr << 4) | index)];
+	    else
+	      pred[i] := ac[i];
+	    end
+	    
+	    if left_edge or top_edge then
+	      buf[(((ptr | comp) << 4) | index)] := pred[i];
+	    end
+    end
+  end
+
+	schedule fsm start :
+		start ( newvop ) --> start;
+		start ( skip ) --> advance;
+		start ( start ) --> pred;
+		pred ( copy ) --> advance;
+		advance ( advance ) --> start;
+	end
+
+	priority
+		newvop > skip > start;
+		advance > copy;
+	end
+
+end

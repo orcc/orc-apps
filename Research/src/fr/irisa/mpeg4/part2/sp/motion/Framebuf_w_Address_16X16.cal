@@ -1,0 +1,273 @@
+/* 
+ * MPEG4_mgnt_Address.cal
+ *
+ * Author: David B. Parlour (dave.parlour@xilinx.com)
+ *
+ * Modified by: Christophe Lucarz (christophe.lucarz@epfl.ch)
+ *
+ * Modified by: Carl von Platen (carl.von.platen@ericsson.com) 
+ *              Ericsson AB, 2009
+ *              Integrated frame buffer with address generation
+ * 
+ * Modified by: Herve Yviquel (herve.yviquel[at]irisa.fr)
+ * 				IRISA 2012
+ *
+ * Copyright (c) 2004-2005 Xilinx Inc.
+ * All Rights Reserved
+ *
+ * Disclaimer:  THIS PROGRAM IS PROVIDED "AS IS" WITH NO WARRANTY 
+ *              WHATSOEVER AND XILINX SPECIFICALLY DISCLAIMS ANY 
+ *              IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+ *              A PARTICULAR PURPOSE, OR AGAINST INFRINGEMENT.
+ */ 
+package fr.irisa.mpeg4.part2.sp.motion;
+
+import org.sc29.wg11.mpeg4.part2.Constants.*;
+import org.ietr.mpeg4.part2.sp.ConstantsBtype.*;
+
+actor Framebuf_w_Address_16X16 ()
+	int(size=MV_SZ) MV, int(size=BTYPE_SZ) BTYPE, int(size=PIX_SZ) WD 
+	==>
+	int(size=FLAG_SZ) halfpel, int(size=PIX_SZ) RD :
+	
+	int SAMPLES_PER_MB = 16;
+	int COMP_PER_MB = 4; // 8x8 blocks/MB
+	
+	int MAXW_IN_SAMPLES = MAXW_IN_MB * SAMPLES_PER_MB;
+	int MAXH_IN_SAMPLES = MAXH_IN_MB * SAMPLES_PER_MB;
+	
+	int EDGE_SIZE = 20;
+	
+	int BUFFER_WIDTH = MAXW_IN_SAMPLES + 2 * EDGE_SIZE;
+	int BUFFER_HEIGHT = MAXH_IN_SAMPLES + 2 * EDGE_SIZE;
+	int BUFFER_NB = 2;
+	
+	int(size=PIX_SZ) frameBuffer[BUFFER_WIDTH][BUFFER_HEIGHT][BUFFER_NB];
+	
+	// Properties of the VOP
+	int vop_width := 0;             // width in macro blocks
+	int vop_height := 0;            // height in macro blocks
+	int vop_width_in_samples := 0;  // width in samples
+	int vop_height_in_samples := 0; // height in samples
+	int vop_rounding_mode := 0;     // rounding mode: 0,1 
+  
+	// Reading from the frame buffer
+	int idx_read := 1;              // Current buffer to read
+	int mbx_read := 0;              // Macro-block column:  0,...,MAXW_IN_MB-1
+	int mby_read := 0;              // Macro-block row: 0,...,MAXH_IN_MB-1
+	int comp_read := 0;             // 8x8-block within MB: 0,...,COMP_PER_MB-1
+	int(size=MV_SZ) mvx;           // Motion vector x
+	int(size=MV_SZ) mvy;           // Motion vector y
+ 
+	// Writing to the frame buffer
+	int idx_write := 0;             // Current buffer to write
+	int mbx_write := 0;             // Macro-block column:  0,...,MAXW_IN_MB-1
+	int mby_write := 0;             // Macro-block row: 0,...,MAXH_IN_MB-1
+    int comp_write := 0;            // 8x8-block within MB: 0,...,COMP_PER_MB-1
+    
+	/**
+	 * Move pointers to next block
+	 */
+	procedure advance_block()
+	begin
+		// Advance to next block
+		comp_read := comp_read + 1;
+    
+		if (comp_read = COMP_PER_MB) then
+			comp_read := 0;
+			mbx_read := mbx_read + 1;
+
+			if (mbx_read=vop_width) then
+				mbx_read := 0;
+				mby_read := mby_read + 1;
+				
+				if (mby_read=vop_height) then
+					mby_read := 0;
+					//println("Finish read");
+					idx_read := idx_read + 1;
+					
+					if(idx_read = BUFFER_NB) then
+						idx_read := 0;
+					end
+				end
+			end
+    	end
+	end
+	
+	procedure set_bufside()
+	var
+		int(size=PIX_SZ) value,
+		int vop_x_start = EDGE_SIZE,
+		int vop_x_end = vop_x_start + vop_width_in_samples - 1,
+		int vop_y_start = EDGE_SIZE,
+		int vop_y_end = vop_y_start + vop_height_in_samples - 1,
+		int buff_x_start = 0,
+		int buff_x_end = vop_x_end + EDGE_SIZE,
+		int buff_y_start = 0,
+		int buff_y_end = vop_y_end + EDGE_SIZE
+	begin
+		foreach int j in vop_y_start .. vop_y_end do
+			value := frameBuffer[vop_x_start][j][idx_write];
+			foreach int i in buff_x_start .. vop_x_start - 1 do
+	    		frameBuffer[i][j][idx_write] := value;
+	    	end
+	    	value := frameBuffer[vop_x_end][j][idx_write];
+			foreach int i in vop_x_end + 1 .. buff_x_end do
+	    		frameBuffer[i][j][idx_write] := value;
+	    	end
+	    end
+	    foreach int i in buff_x_start .. buff_x_end do
+			value := frameBuffer[i][vop_y_start][idx_write];
+			foreach int j in buff_y_start .. vop_y_start - 1 do
+	    		frameBuffer[i][j][idx_write] := value;
+	    	end
+	    	value := frameBuffer[i][vop_y_end][idx_write];
+			foreach int j in vop_y_end + 1 .. buff_y_end do
+	    		frameBuffer[i][j][idx_write] := value;
+	    	end
+	    end
+	end
+	
+
+	/**
+	 * free-running write to frame buffer is driven by token availability
+	 */
+	action WD:[wd] repeat 64 ==>
+	var
+		int x := EDGE_SIZE + mbx_write * SAMPLES_PER_MB + 8 * (comp_write & 1),
+    	int y := EDGE_SIZE + mby_write * SAMPLES_PER_MB + 8 * (comp_write >> 1)
+	do
+		foreach int i in 0 .. 7 do
+    		foreach int j in 0 .. 7 do
+    			frameBuffer[x + j][y + i][idx_write] := wd[j + 8 * i];
+    		end
+		end
+		
+		//println("Write ("+ idx_write +"): x="+x+", y="+y);
+		//println("Height="+vop_height+", width="+vop_width);
+		
+		comp_write := comp_write + 1;
+		
+		if (comp_write = COMP_PER_MB) then
+			comp_write := 0;
+			mbx_write := mbx_write + 1;
+
+			if (mbx_write = vop_width) then
+				mbx_write := 0;
+				mby_write := mby_write + 1;
+				
+				if (mby_write = vop_height) then
+					mby_write := 0;
+					//println("Finish write");
+					set_bufside();
+					//println("bufside");
+					idx_write := idx_write + 1;
+					
+					if(idx_write = BUFFER_NB) then
+						idx_write := 0;
+					end
+				end
+			end
+    	end
+	end
+
+	/**
+	 * Read one 9x9 block from the frame buffer
+	 */
+	read_fb: action ==> RD:[rd] repeat 81
+	guard
+		idx_read != idx_write
+  	var
+    	int(size=9) rd[81],
+    	int x := EDGE_SIZE + mbx_read * SAMPLES_PER_MB + 8 * (comp_read & 1) + mvx,
+    	int y := EDGE_SIZE + mby_read * SAMPLES_PER_MB + 8 * (comp_read >> 1) + mvy
+	do
+		foreach int i in 0 .. 8 do
+			foreach int j in 0 .. 8 do
+				rd[j + 9 * i] := frameBuffer[x + j][y + i][idx_read];
+			end
+		end
+		//println("Read ("+ idx_read +"): x="+x+", y="+y);
+		
+		// Advance to next block
+		advance_block();
+	end
+	
+	read_w_h: action BTYPE:[ w, h ] ==>
+	do
+		vop_width := w;
+	    vop_height := h;
+	    vop_width_in_samples := vop_width * SAMPLES_PER_MB;
+	    vop_height_in_samples := vop_height * SAMPLES_PER_MB;
+  	end
+  	
+  	/**
+	 * Start a new VOP by setting VOP parameters and initializing the block scan
+	 */
+	cmd.newVop: action BTYPE:[ cmd ] ==>
+	guard
+		(cmd & NEWVOP) != 0
+	do
+		vop_rounding_mode := if (cmd & ROUND_TYPE) != 0 then 1 else 0 end;
+		//println("newvop");
+	end
+
+	/**
+	 * Pure texture
+	 */
+	cmd.noMotion: action BTYPE:[ cmd ] ==>
+	guard
+ 		(cmd & INTRA) != 0
+	do
+    	advance_block();
+    	//println("no motion");
+	end
+
+	/**
+	 * Pure motion
+	 */
+	cmd.motion: action BTYPE:[ cmd ] ==>
+	guard
+		(cmd & MOTION) != 0
+	do
+		//println("motion");
+	end
+	
+	/**
+	 * No change in the block
+	 */
+	cmd.neither: action BTYPE:[ cmd ] ==> halfpel:[ 0 ]
+	do
+		mvx := 0;
+		mvy := 0;
+	end
+
+	/**
+	 * Encode flags on halfpel:
+	 * 		bit2 = interp. x
+	 *		bit1 = interp. y
+	 *		bit0 = round
+	 */
+	read_mv: action MV:[ x, y ] ==> halfpel:[ flags ]
+	var
+		int(size=FLAG_SZ) flags = ((x & 1) << 2) + ((y & 1) << 1) + vop_rounding_mode
+	do
+    	mvx := (x >> 1);
+		mvy := (y >> 1);
+	end
+
+
+	schedule fsm cmd:
+		cmd          ( cmd.newVop   ) --> read_w_h;
+		cmd          ( cmd.noMotion ) --> cmd;
+		cmd          ( cmd.motion   ) --> read_mv;
+		cmd          ( cmd.neither  ) --> read_fb;
+		read_w_h     ( read_w_h     ) --> cmd;
+		read_mv      ( read_mv      ) --> read_fb;
+		read_fb      ( read_fb      ) --> cmd;
+	end
+
+	priority
+		cmd.newVop > cmd.noMotion > cmd.motion > cmd.neither;
+	end
+end
