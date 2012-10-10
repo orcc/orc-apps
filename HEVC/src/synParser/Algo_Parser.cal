@@ -113,14 +113,12 @@ actor Algo_Parser ()
 		if DEBUG_BITSTREAM then
 			println("=========== NAL_UNIT ===========");
 			flushBits_name( 1, fifo,   "reserved_zero_1bits                     ");
-//			vld_u_name(  1, fifo, res, "nal_ref_flag                            "); 
 			vld_u_name(  6, fifo, res, "nal_unit_type                           "); 
 			nal_unit_type := res[0];
 			flushBits_name( 6, fifo,   "reserved_zero_5bits                     ");
 			vld_u_name(  3, fifo, res, "temporal_id                             "); 
 		else
 			flushBits( 1, fifo );
-//			vld_u(  1, fifo, res);
 			vld_u(  6, fifo, res);
 			nal_unit_type := res[0];
 			flushBits( 6, fifo  );
@@ -360,9 +358,9 @@ actor Algo_Parser ()
 	uint(size= 8) sps_log2_diff_max_min_coding_block_size[NB_MAX_SPS];
 	uint(size= 8) sps_log2_min_transform_block_size_minus2[NB_MAX_SPS];
 	uint(size= 8) sps_log2_diff_max_min_transform_block_size[NB_MAX_SPS];
-	uint(size= 8) sps_maxCUWidth[NB_MAX_SPS];
-	uint(size= 8) sps_addCUDepth[NB_MAX_SPS];
-	uint(size= 8) sps_maxCUDepth[NB_MAX_SPS];
+	uint(size=16) sps_maxCUWidth[NB_MAX_SPS];
+	uint(size=16) sps_addCUDepth[NB_MAX_SPS];
+	uint(size=16) sps_maxCUDepth[NB_MAX_SPS];
 
 	read_SPS_Header.se_idx_4 : action ==>
 	guard
@@ -898,7 +896,7 @@ actor Algo_Parser ()
 	 * read_SliceHeader.se_idx_3
 	 *************************************************************************/
 	 int(size=32) slice_qp;
-	uint(size= 8) MaxNumMergeCand;
+	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
 	 	
 	read_SliceHeader.se_idx_3 : action ==>
@@ -1017,7 +1015,7 @@ actor Algo_Parser ()
 	guard
 		se_idx = 7
 	do
-		if DEBUG_MODE then
+		if DEBUG_MODE or DEBUG_CABAC then
 			println("\tPOC: "+poc);
 		end
 		sliceData_idx := 1;
@@ -1052,8 +1050,7 @@ actor Algo_Parser ()
 	uint(size= 1) skip_flag_tab[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	uint(size= 1) inter_pred_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
-	uint(size= 8) top_ipm[CTB_ADDR_TS_MAX];
-	uint(size= 8) left_ipm[CTB_ADDR_TS_MAX];
+	uint(size= 8) intraPredMode[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 
 	read_SliceData.init: action ==>
 	guard
@@ -1198,9 +1195,7 @@ actor Algo_Parser ()
 				MinCbAddrZS[x][y] := p;	
 			end
 		end
-		
-		top_ipm		:= [INTRA_DC	: for int i in 0 .. CTB_ADDR_TS_MAX-1];	
-		left_ipm	:= [INTRA_DC	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
+		intraPredMode := [[INTRA_DC	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
 		//
 		sliceData_idx := 2;
 	end
@@ -1469,12 +1464,12 @@ actor Algo_Parser ()
 		uint(size= 1) split_coding_unit_flag,
 		uint(size= 8) Log2MinCuQpDeltaSize = Log2CtbSize - pps_diff_cu_qp_delta_depth[pps_id] - pps_SliceGranularity[pps_id]
 	do
-		if DEBUG_TRACE1 then
+		if DEBUG_MODE and DEBUG_TRACE1 then
 			println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
 		elsif DEBUG_MODE then
 			println("read_CodingTree.start");
 		end
-			
+		
 		if	ct_x0 + ( 1 << ct_log2CbSize ) <= sps_pic_width_in_luma_samples[sps_id] and
 			ct_y0 + ( 1 << ct_log2CbSize ) <= sps_pic_height_in_luma_samples[sps_id] and
 			MinCbAddrZS[ct_x0>>Log2MinCbSize][ct_y0>>Log2MinCbSize] >= sliceCbAddrZs and
@@ -1701,7 +1696,8 @@ actor Algo_Parser ()
 	do
 		skip_flag  := 0;
 		merge_flag := 0;
-		if DEBUG_TRACE1 then
+		intra_pred_mode := [1 : for int i in 0 .. 3];
+		if DEBUG_MODE and DEBUG_TRACE1 then
 			println("read_CodingUnit.start ("+cu_x0+", "+cu_y0+", "+cu_log2CbSize+")");
 		elsif DEBUG_MODE then
 			println("read_CodingUnit.start");
@@ -1711,6 +1707,7 @@ actor Algo_Parser ()
 			//cu_transquant_bypass_flag
 		end
 		if slice_type != I_SLICE then
+			predMode := MODE_SKIP;
 			get_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, skip_flag_tab, x_cb, y_cb);
 			skip_flag := res[0];
 			foreach uint x  in 0 .. length-1 do
@@ -1740,7 +1737,6 @@ actor Algo_Parser ()
 		pu_y0		:= cu_y0;
 		pu_PbW		:= cu_nCbS;
 		pu_PbH		:= cu_nCbS;
-		predMode	:= MODE_SKIP;
 	end
 	/**************************************************************************
 	 * read_CodingUnit.noGoto1
@@ -1798,11 +1794,10 @@ actor Algo_Parser ()
 					foreach int j in 0 .. pbEnd do
 						if prev_intra_luma_pred_flag[ (i<<1) + j ] = 1 then
 							get_MPM_IDX(codIRange, codIOffset, fifo, res);
-//							mpm_idx[ cu_x0 + i*pbOffset ][ cu_y0 + j*pbOffset ] := res[0];
 						else
 							get_REM_INTRA_LUMA_PRED_MODE(codIRange, codIOffset, fifo, res);
 						end
-						luma_intra_pred_mode(cu_x0 + j*pbOffset, cu_y0 + i*pbOffset, pbOffset, prev_intra_luma_pred_flag[ (i<<1) + j ], res[0], res, Log2MinIPCMCUSize-1 ,Log2CtbSize, top_ipm, left_ipm);
+						luma_intra_pred_mode(cu_x0 + j*pbOffset, cu_y0 + i*pbOffset, pbOffset, prev_intra_luma_pred_flag[ (i<<1) + j ], res[0], res, Log2MinIPCMCUSize-1 ,Log2CtbSize, intraPredMode);
 						intra_pred_mode[ (i<<1) + j ] := res[0];
 					end
 				end
@@ -1827,15 +1822,15 @@ actor Algo_Parser ()
 		predMode != MODE_INTRA
 	end
 
-	sendIntraPredMode.part2Nx2N: action ==> IntraPredMode:[intra_pred_mode[0], predMode]
+	sendIntraPredMode.part2Nx2N: action ==> IntraPredMode:[intra_pred_mode[0], predMode_v]
 	guard
 		partModeToNumPart[partMode] = 1 and predMode = MODE_INTRA
 	var
-		uint(size=6) predMode,
+		uint(size=6) predMode_v,
 		uint(size=3) idx
 	do	
 		if(intraChrPredModIdx=4) then
-			predMode := intra_pred_mode[0];
+			predMode_v := intra_pred_mode[0];
 		else
 			idx :=
 				if(intra_pred_mode[0] = 0) then
@@ -1849,7 +1844,7 @@ actor Algo_Parser ()
 				else
 					4
 				end end end end;
-			predMode := intraPredModeC[intraChrPredModIdx][idx];
+			predMode_v := intraPredModeC[intraChrPredModIdx][idx];
 		end
 	end
 
@@ -2311,11 +2306,11 @@ actor Algo_Parser ()
 
 	uint(size= 8) ttStack_idx;
 	uint(size=16) ttStack[10][TT_STRUCT_SIZE];
-	uint(size= 1) split_transform_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
+	uint(size= 1) split_transform_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
 	bool          lastSplitTransf;
-	uint(size= 1) cbf_cb[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
-	uint(size= 1) cbf_cr[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
-	uint(size= 1) cbf_luma[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][256];
+	uint(size= 1) cbf_cb[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
+	uint(size= 1) cbf_cr[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
+	uint(size= 1) cbf_luma[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
 	bool          cbfLumaVal;
 	uint(size= 8) cur_intra_pred_mode;
 	/**************************************************************************
@@ -2340,7 +2335,7 @@ actor Algo_Parser ()
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
 		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
 	do	
-		if DEBUG_TRACE1 then
+		if DEBUG_MODE and DEBUG_TRACE1 then
 			println("read_TransformTree.start("+x0L+", "+y0L+", "+x0C+", "+y0C+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
 		elsif DEBUG_MODE then
 			println("read_TransformTree.start");
@@ -2425,7 +2420,7 @@ actor Algo_Parser ()
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
 		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
 	do	
-		if DEBUG_TRACE1 then
+		if DEBUG_MODE and DEBUG_TRACE1 then
 			println("read_TransformTree.start("+x0L+", "+y0L+", "+x0C+", "+y0C+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
 		elsif DEBUG_MODE then
 			println("read_TransformTree.start");
@@ -2435,7 +2430,7 @@ actor Algo_Parser ()
             	cur_intra_pred_mode := intra_pred_mode[ttStack[ttStack_idx][TT_blkIdx]];
             end
     	else
-        	cur_intra_pred_mode := intra_pred_mode[0];
+         	cur_intra_pred_mode := intra_pred_mode[0];
     	end
 		split_transform_flag[ x0L ][ y0L ][ trafoDepth ] := 0;
 		if( log2TrafoSize <= Log2MaxTrafoSize and log2TrafoSize > Log2MinTrafoSize and
@@ -2595,7 +2590,7 @@ actor Algo_Parser ()
 		isFifoFull(fifo),
 		tu_idx = 1
 	do
-		if DEBUG_TRACE1 then
+		if DEBUG_MODE and DEBUG_TRACE1 then
 			println("read_TransformUnit.start("+tu_x0L+", "+tu_y0L+", "+tu_x0C+", "+tu_y0C+", "+
 					tu_log2TrafoSize+", "+tu_log2TrafoSize+", "+tu_trafoDepth+", "+tu_blkIdx+")");
 		elsif DEBUG_MODE then
@@ -2730,7 +2725,7 @@ actor Algo_Parser ()
 		 int(size=16) xC := -1,
 		 int(size=16) yC := -1
 	do	
-		if DEBUG_TRACE1 then
+		if DEBUG_MODE and DEBUG_TRACE1 then
 			if rc_TType = TEXT_LUMA then
 				println("read_ResidualCoding.start cbY("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
 			elsif rc_TType = TEXT_CHROMA_U then
@@ -2753,6 +2748,7 @@ actor Algo_Parser ()
 			get_TRANSFORM_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, rc_TType);
 //			transform_skip_flag := res[0];
 		end
+
 		get_LAST_SIGNIFICANT_COEFF_X_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
 		LastSignificantCoeffX := res[0];
 		get_LAST_SIGNIFICANT_COEFF_Y_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
