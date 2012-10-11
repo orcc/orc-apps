@@ -1,6 +1,7 @@
 package synParser;
 
 import  std.util.Math.*;
+import  std.stdio.Source.*;
 
 import  org.sc29.wg11.common.BitstreamReadUtils.*;
 import  synParser.Algo_ParserUtils.*;
@@ -32,7 +33,8 @@ actor Algo_Parser ()
 	uint(size=10) sps_id;
 	uint(size=10) pps_id;
 	uint(size=32) wp[2][MAX_NUM_REF][3][WP_MAX_STRUCT];
-
+	
+	
 	/**************************************************************************
 	 **************************************************************************
 	 ********        Bitstream Reader                     *********************
@@ -834,13 +836,9 @@ actor Algo_Parser ()
 				//FIXME slice_sao_interleaving_flag := res[0];
 				vld_u_name(  1, fifo, res, "slice_sample_adaptive_offset_flag       "); 
 				slice_sample_adaptive_offset_flag[0] := res[0];
-				if( /*FIXME: slice_sao_interleaving_flag = 1 && */
-					slice_sample_adaptive_offset_flag[0] = 1) then
-					vld_u_name(  1, fifo, res, "sao_chroma_enable_flag                  ");
-					slice_sample_adaptive_offset_flag[1] := res[0];
-//					vld_u_name(  1, fifo, res, "sao_cr_enable_flag                      "); 
-					slice_sample_adaptive_offset_flag[2] := res[0];
-				end
+				vld_u_name(  1, fifo, res, "sao_chroma_enable_flag                  ");
+				slice_sample_adaptive_offset_flag[1] := res[0];
+				slice_sample_adaptive_offset_flag[2] := res[0];
 			end
 //			vld_ue_name(    fifo, res, "aps_id                                  "); 
 		end
@@ -1016,11 +1014,16 @@ actor Algo_Parser ()
 		se_idx = 7
 	do
 		if DEBUG_MODE or DEBUG_CABAC then
+			if DEBUG_CABAC and  poc = 0 then
+				if 	source_isMaxLoopsReached() then
+					source_exit(0);
+				end
+			end
 			println("\tPOC: "+poc);
 		end
 		sliceData_idx := 1;
 		sliceCbAddrZs := 0;
-	end 	
+	end
 
 	/**************************************************************************
 	 **************************************************************************
@@ -1048,7 +1051,6 @@ actor Algo_Parser ()
 	uint(size=16) MinCbAddrZS[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
 	uint(size= 1) skip_flag_tab[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
-	uint(size= 1) inter_pred_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
 	uint(size= 8) intraPredMode[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 
@@ -1091,7 +1093,6 @@ actor Algo_Parser ()
 		Log2MaxTrafoSize  := Log2MinTrafoSize + sps_log2_diff_max_min_transform_block_size[sps_id];
 		
 		skip_flag_tab	  := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
-		inter_pred_flag   := [[0	: for int j in 0 .. CTB_ADDR_TS_MAX-1]	: for int i in 0 .. CTB_ADDR_TS_MAX-1];
 		
 		
 		if num_tile_columns_minus1 >= COLUMN_WIDTH_MAX then
@@ -2094,13 +2095,13 @@ actor Algo_Parser ()
 	 ********        Prediction Unit                      *********************
 	 **************************************************************************
 	 *************************************************************************/
-
 	uint(size= 8) pu_idx;
 	uint(size=16) pu_x0;
 	uint(size=16) pu_y0;
 	uint(size= 8) pu_PbW;
 	uint(size= 8) pu_PbH;
 	uint(size= 1) pcm_flag;
+	uint(size= 8) inter_pred_idc;
 	
 	/**************************************************************************
 	 * read_PredictionUnit.start
@@ -2112,6 +2113,7 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
+		inter_pred_idc := Pred_L0;
 		if ( skip_flag = 1) then
 			if( MaxNumMergeCand > 1 ) then
 				get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res, MaxNumMergeCand);
@@ -2126,11 +2128,11 @@ actor Algo_Parser ()
 				end
 				pu_idx := 7;
 			else
-				inter_pred_flag[pu_x0][pu_y0] := Pred_L0;
 				if( slice_type = B_SLICE ) then
-					//inter_pred_flag[pu_x0][pu_y0] := res[0];
+					get_INTER_PRED_IDC(codIRange, codIOffset, ctxTable, fifo, res, partMode, pu_PbW, pu_PbH, cu_ctDepth);
+					inter_pred_idc := res[0];
 				end
-				if( inter_pred_flag[pu_x0][pu_y0] != Pred_L1 ) then
+				if( inter_pred_idc != Pred_L1 ) then
 					if( num_ref_idx_l0_active_minus1 > 0 ) then
 						get_REF_IDX_L0(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l0_active_minus1);
 						//ref_idx_l0[ x0 ][ y0 ]
@@ -2152,16 +2154,17 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		if( inter_pred_flag[pu_x0][pu_y0] != Pred_L1 ) then
+		if( inter_pred_idc != Pred_L1 ) then
 			get_MVP_IDX(codIRange, codIOffset, ctxTable, fifo, res);
 			//mvp_l0_flag[ x0 ][ y0 ];
 		end	
 		pu_idx := 7;
-		if( inter_pred_flag[pu_x0][pu_y0] != Pred_L0 ) then
+		if( inter_pred_idc != Pred_L0 ) then
 			if( num_ref_idx_l1_active_minus1 > 0 ) then
+				get_REF_IDX_L0(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l1_active_minus1);
 				//ref_idx_l1[ x0 ][ y0 ]
 			end
-			if( mvd_l1_zero_flag = 1 and inter_pred_flag[pu_x0][pu_y0] = Pred_BI ) then
+			if( mvd_l1_zero_flag = 1 and inter_pred_idc = Pred_BI ) then
 				//mvd_l1[ x0 ][ y0 ][ 0 ] = 0
 				//mvd_l1[ x0 ][ y0 ][ 1 ] = 0
 				pu_idx := 6;
