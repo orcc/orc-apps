@@ -66,6 +66,7 @@ actor IntraPrediction()
 	uint(size=4)  PartMode,
 	uint(size=16) PictSize,
 	uint(size=8)  Sample,
+	uint(size=16) SliceAddr,
 	bool          SplitTransform
 		==>
 	uint(size=8) PredSample
@@ -138,6 +139,7 @@ actor IntraPrediction()
 	uint(size=2)  cuMode;
 	uint(size=16) treeAddr[2];
 	uint(size=16) pictSize[3][2];
+	uint(size=16) sliceAddr[3][2];
 	uint(size=3)  numPart;
 	uint(size=3)  numPartDecoded;
 
@@ -172,32 +174,41 @@ actor IntraPrediction()
 	procedure getNeighbSamples(uint(size=16) cuAddr[2], uint(size=2) cIdx,
 		uint(size=7) nS)
 	var
-		int maxVal[2],
-		int xMax,
-		int yMax
+		int minVal[2], int maxVal[2],
+		int xMin, int yMin, int xMax, int yMax
 	begin
-		neighbExist(cuAddr, maxVal, cIdx, nS);
+		neighbExist(cuAddr, minVal, maxVal, cIdx, nS);
+		xMin := minVal[0];
+		yMin := minVal[1];
 		xMax := maxVal[0];
 		yMax := maxVal[1];
-		foreach int x in 0 .. xMax-1
+		foreach uint x in xMin .. xMax-1
 		do
 			pNeighb[ABOVE][x] :=
 				currPict[cIdx][cuAddr[0]+x][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
 		end
-		if(xMax!=0) then
-			foreach int x in xMax .. 2*nS-1
+		if(xMax != xMin) then
+			foreach uint x in 0 .. xMin-1
+			do
+				pNeighb[ABOVE][x] := pNeighb[LEFT][0];
+			end
+			foreach uint x in xMax .. 2*nS-1
 			do
 				pNeighb[ABOVE][x] := pNeighb[ABOVE][xMax-1];
 			end
 		end
 
-		foreach int y in 0 .. yMax-1
+		foreach uint y in yMin .. yMax-1
 		do
 			pNeighb[LEFT][y] :=
 				currPict[cIdx][cuAddr[0]-1][(cuAddr[1]+y)&TABLE_HEIGHT_MASK];
 		end
-		if(yMax!=0) then
-			foreach int y in yMax .. 2*nS-1
+		if(yMax != yMin) then
+			foreach uint y in 0 .. yMin-1
+			do
+				pNeighb[LEFT][y] := pNeighb[LEFT][yMin];
+			end
+			foreach uint y in yMax .. 2*nS-1
 			do
 				pNeighb[LEFT][y] := pNeighb[LEFT][yMax-1];
 			end
@@ -206,44 +217,44 @@ actor IntraPrediction()
 		/* When the neighbours are not available, the nearest valid value is
 		 * propagated to the other neighbours
 		 */
-		if(xMax=0 && yMax=0) then
+		if(xMax=xMin && yMax=yMin) then
 			foreach int idx in 0 .. 2*nS-1
 			do
 				pNeighb[ABOVE][idx] := 128;
 				pNeighb[LEFT][idx]  := 128;
 			end
 			pAboveLeft := 128;
-		else if(xMax =0 && yMax!=0) then
+		else if(xMax=xMin && yMax!=yMin) then
 			foreach int x in 0 .. 2*nS-1
 			do
 				pNeighb[ABOVE][x] := pNeighb[LEFT][0];
 			end
 			pAboveLeft := pNeighb[LEFT][0];
-		else if(xMax!=0 && yMax =0) then
+		else if(xMax!=xMin && yMax=yMin) then
 			foreach int y in 0 .. 2*nS-1
 			do
 				pNeighb[LEFT][y] := pNeighb[ABOVE][0];
 			end
 			pAboveLeft := pNeighb[ABOVE][0];
+		else if(xMin!=0 || yMin != 0) then
+			pAboveLeft := pNeighb[LEFT][0];
 		else
 			pAboveLeft :=
 				currPict[cIdx][cuAddr[0]-1][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
-		end end end
+		end end end end
 	end
 
 	/* Check if the neighbours are available. maxVal contained either 2*nS or
 	 * the index of the first pixel unavailable.
 	 */
-	procedure neighbExist(uint(size=16) cuAddr[2], int maxVal[2], int cIdx,
+	procedure neighbExist(uint(size=16) cuAddr[2], int minVal[2], int maxVal[2], int cIdx,
 		uint(size=7) nS)
 	var
 		uint(size=7) maxCuSize = if(cIdx=0) then 64 else 32 end,
-		int xMax,
-		int yMax,
+		int xMin := 0, int yMin := 0, int xMax := 0, int yMax := 0,
 		int numPixRemain
 	begin
 
-		xMax := 0;
 		if(cuAddr[1]!=0) then
 			numPixRemain :=
 				if((cuAddr[1]&~(maxCuSize-1)) =
@@ -254,9 +265,17 @@ actor IntraPrediction()
 					pictSize[cIdx][0]-cuAddr[0]
 				end;
 			xMax := min(2*nS, numPixRemain);
+			if(cuAddr[1] = sliceAddr[cIdx][1]) then
+				xMin := xMax;
+			else if((cuAddr[1] = sliceAddr[cIdx][1]+maxCuSize) && (cuAddr[0]<sliceAddr[cIdx][0])) then
+				if(sliceAddr[cIdx][0]>cuAddr[0]+2*nS) then
+					xMin := xMax;
+				else if(sliceAddr[cIdx][0]>cuAddr[0]) then
+					xMin := sliceAddr[cIdx][0]-cuAddr[0];
+				end end
+			end end
 		end
 
-		yMax := 0;
 		if(cuAddr[0]!=0) then
 			numPixRemain :=
 				if((cuAddr[0]&~(maxCuSize-1)) =
@@ -266,10 +285,25 @@ actor IntraPrediction()
 					maxCuSize-(cuAddr[1]&(maxCuSize-1))
 				end;
 			yMax := min(min(2*nS, numPixRemain), pictSize[cIdx][1]-cuAddr[1]);
+			if(cuAddr[0] <= sliceAddr[cIdx][0]) then
+				if(sliceAddr[cIdx][1]+maxCuSize>cuAddr[1]+2*nS)then
+					yMin := yMax;
+				else if(sliceAddr[cIdx][1]+maxCuSize>cuAddr[1]) then
+					yMin := sliceAddr[cIdx][1] + maxCuSize - cuAddr[1];
+				end end
+			else
+				if(sliceAddr[cIdx][1]>cuAddr[1]+2*nS) then
+					yMin := yMax;
+				else if(sliceAddr[cIdx][1]>cuAddr[1]) then
+					yMin := sliceAddr[cIdx][1] - cuAddr[1];
+				end end
+			end
 		end
 
 		maxVal[0] := xMax;
 		maxVal[1] := yMax;
+		minVal[0] := xMin;
+		minVal[1] := yMin;
 	end
 
 	/* Filtering process of neighbouring sample. */
@@ -491,10 +525,13 @@ actor IntraPrediction()
 
 	/* Updating the picture size. */
 	isNewSliceOrPict: action PartMode:[partMode],
-		PictSize:[pictSizeVal] repeat 2 ==>
+		PictSize:[pictSizeVal] repeat 2, SliceAddr:[slcAddr] repeat 2 ==>
 	guard
 		partMode = NEW_SLICE || partMode = NEW_PICT
 	do
+		sliceAddr[0] := slcAddr;
+		sliceAddr[1] := [slcAddr[i]>>1:for int i in 0 .. 1];
+		sliceAddr[2] := [slcAddr[i]>>1:for int i in 0 .. 1];
 		pictSize[0] := [pictSizeVal[i]:for int i in 0 .. 1];
 		pictSize[1] := [pictSizeVal[i]>>1:for int i in 0 .. 1];
 		pictSize[2] := [pictSizeVal[i]>>1:for int i in 0 .. 1];
