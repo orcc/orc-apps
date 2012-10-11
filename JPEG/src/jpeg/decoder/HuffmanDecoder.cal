@@ -29,15 +29,12 @@
 /*
  * Author : Felix Abecassis
  * Modified: Abdellah Elguindy, HT tables reduction
+ * Modified: ghislain roquier, remove free actions
  */
   
 package jpeg.decoder;
  
-actor HuffmanDecoder() 
-	int(size=8) Bit, 
-	uint(size=8) HT, int(size=16) SOI
-		==> 
-			int(size=24) Block :
+actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> int(size=24) Block :
 
 	uint(size=3) v_read_HT := 0;
 	uint(size=16) cur_val := 0;
@@ -45,35 +42,34 @@ actor HuffmanDecoder()
 	uint(size=32) to_read := 0;
 	uint(size=32) to_readHT := 0;
 	uint(size=32) cur_HT;
+	int idx;
+	uint code;
+	int count := 0;
+	int mbcount;
+	int bitcount := 0;
+	uint(size=8) bits;
 	
 	// The indexes of each HT.
-	List(type:uint, size=3) dctab = [0, 1, 1];
-	List(type:uint, size=3) actab = [2, 3, 3];
+	int(size=8) dctab[3] = [0, 1, 1];
+	int(size=8) actab[3] = [2, 3, 3];
 	
-	List(type:List(type:uint(size=8), size=256), size=4) ht_lookup_codelen;
 	
+	uint(size=8) ht_lookup_codelen[4][256];
 	// Values have to be adjusted!!!
 	int GUESSEDSIZE = 256;
-	List(type:List(type:int, size=GUESSEDSIZE), size=4) ht_lookup_code_index;
-	List(type:List(type:uint(size=8), size=GUESSEDSIZE), size=4) ht_lookup_code_value;
-	
-	List(type:uint(size=8), size=16) ht_codes_len;
-	List(type:uint(size=8), size=256) ht_codes_list;
+	int ht_lookup_code_index[4][GUESSEDSIZE];
+	int ht_lookup_code_value[4][GUESSEDSIZE];
+
+	uint(size=8) ht_codes_len[16];
+	uint(size=8) ht_codes_list[256];
 	
 	uint cur_count := 0;
-	int(size=32) component := 0;
-	List(type:uint, size=3) subsampling = [4, 1, 1];
-	List(type:int(size=32), size=3) lastDC;
-	List(type:uint(size=24), size=64) block;
-	uint idx;
-	
-	// Utility action to read a specified number of bits.
-	// This is an unnamed action, ie it is always enabled and has highest priority.
-	int bitcount := 0;
-	
-	int(size=8) bits;
-	
-	action Bit:[b] ==>
+	int(size=32) comp := 0;
+	int subsampling[3] = [4, 1, 1];
+	int lastDC[3];
+	uint(size=24) block[64];
+		
+	readbit: action Bit:[b] ==>
 	guard 
 		to_read != 0, bitcount = 0
 	do
@@ -86,7 +82,7 @@ actor HuffmanDecoder()
 	    bitcount := bitcount + 1;
 	end
 
-	action ==>
+	readbit.already_read: action ==>
 	guard 
 		to_read != 0, bitcount != 0
 	do
@@ -94,8 +90,7 @@ actor HuffmanDecoder()
 		cur_val := cur_val * 2 + ((bits >> 7 - bitcount) & 1);
 	   	to_read := to_read - 1;
 	    cur_len := cur_len + 1;
-	    
-	     bitcount := (bitcount + 1) & 7;
+	    bitcount := (bitcount + 1) & 7;
 	end
 	
 	// Procedures
@@ -143,25 +138,18 @@ actor HuffmanDecoder()
 		ht_lookup_code_index[cur_HT][u] := 1000000000;
 	end
 	
-	uint code;
-	
-	// Actions
-	int count := 0;
-	int mbcount;
 	
 	getSOI: action SOI:[w, h] ==>
 	do
 		mbcount := 6 * w * h;
 	end
-	
-	
-	int ht_idx;
+
 	
 	receive_HT_len:action HT:[b] repeat 17 ==>
 	var
 		uint sum := 0
 	do
-		ht_idx := 0;
+		idx := 0;
 		// HT selection
 		cur_HT := (b[0] | (b[0] >> 0x03)) & 0x03;
 	
@@ -176,8 +164,8 @@ actor HuffmanDecoder()
 	receive_code:action HT:[b] ==>
 	guard (to_readHT > 0)
 	do
-		ht_codes_list[ht_idx] := b;
-		ht_idx := ht_idx + 1;
+		ht_codes_list[idx] := b;
+		idx := idx + 1;
 		to_readHT := to_readHT - 1;
 	end
 	
@@ -188,30 +176,18 @@ actor HuffmanDecoder()
 		v_read_HT := v_read_HT + 1;
 	end
 	
-		// All 4 HT were read.
 	done_HT:action ==>
 	guard (v_read_HT = 4)
 	do
 		code := 0xFFFF;
 		// Begin with DC Luminance
-		component := 0;
-		cur_HT := dctab[component];
+		comp := 0;
+		cur_HT := dctab[comp];
 		cur_val := 0;
 		cur_len := 0;
 		to_read := 16;
 	end
-	
-	DC.done_len:action ==>
-	guard (to_read = 0)
-	do
-		// Even if cur_val is of size 16, it is represented by a BigInteger during Orcc simulation.
-		// A bitand is therefore needed to extract only 16 bits.
-		cur_val := cur_val & 0xFFFF;
-		get_HT_val(cur_HT, cur_val);
-		//code := ht_lookup_code[cur_HT][cur_val];
-		to_read := ht_lookup_codelen[cur_HT][code];
-	    cur_len := to_read;
-	end
+
 	
 	// End of DC, proceed with AC.
 	DC.done:action ==>
@@ -219,103 +195,81 @@ actor HuffmanDecoder()
 	var
 		int v
 	do
-		cur_val := cur_val & 0xFFFF;
 		to_read := code & 0xF;
 		cur_len := to_read;
-		// The DC value.
-		v := cur_val >> (16 - to_read);
-	
-		if (v < (1 << (cur_len - 1)))
+
+		v := cur_val >> (16 - to_read);	
+		if (v < (1 << (cur_len - 1))) 
 		then
 			v := v + (-1 << cur_len) + 1;
 		end
-		v := v + lastDC[component];
-		lastDC[component] := v;
-		cur_len := 0;
-		cur_HT := actab[component];
+		
+		v := v + lastDC[comp];
+		lastDC[comp] := v;
+
+		cur_HT := actab[comp];
 		block := [0 : for int i in 0 .. 63];
-		// The position in the current block.
-		idx := 0;
+		idx := 1;
 		block[0] := v;
 	end
 	
-	AC.done_len:action ==>
-	guard (to_read = 0)
+		
+	get_code: action ==>
 	do
-	    cur_val := cur_val & 0xFFFF;
-	    get_HT_val(cur_HT, cur_val);
-		//code := ht_lookup_code[cur_HT][cur_val];
+		get_HT_val(cur_HT, cur_val);
 		to_read := ht_lookup_codelen[cur_HT][code];
-		//println(idx + " " + code);
-		idx := idx + (code >> 4) + 1;
-	
 	    cur_len := to_read;
 	end
+			
+	bool eob := false;
 	
-	AC.done:action ==>
-	guard (to_read = 0)
+  	AC.decode_coef: action ==>
 	var
-		int v
+		int v, int r
 	do
-		cur_val := cur_val & 0xFFFF;
 		to_read := code & 0xF;
 		cur_len := to_read;
-		v := cur_val >> (15 - to_read + 1);
-	
-		if v < (1 << (cur_len - 1)) then
+		r := (code >> 4);
+		idx := idx + r;
+		v := cur_val >> (16 - to_read);	
+		if v < (1 << (cur_len - 1))
+		then
 			v := v + (-1 << cur_len) + 1;
 		end
+		
 		block[idx] := v;
-		cur_len := 0;
+		eob := idx = 63;
+		idx := idx + 1;
 	end
 	
-	// Received code for EOB or read 63 AC values.
-	EOB:action ==> Block:[block] repeat 64
-	guard ((to_read = 0) and (code = 0 or idx = 63))
-	var
-		int v
+  	AC.eob: action ==> Block:[block] repeat 64
+	guard (code = 0 or eob)
 	do
 		cur_count := cur_count + 1;
-		if (cur_count = subsampling[component])
+		if (cur_count = subsampling[comp])
 		then
 			cur_count := 0;
-			component := (component + 1) mod 3;
+			comp := (comp + 1) mod 3;
 		end
-		cur_HT := dctab[component];
+		cur_HT := dctab[comp];
 		cur_len := 0;
 		to_read := 0;
-		if (idx > 63)
-		then
-			println("Invalid !");
-		end
-		if (idx = 63 and code != 0)
-		then
-			cur_val := cur_val & 0xFFFF;
-			to_read := code & 0xF;
-			cur_len := to_read;
-			v := cur_val >> (15 - to_read + 1);
-	
-			if (v < (1 << (cur_len - 1))) then
-				v := v + (-1 << cur_len) + 1;
-			end
-			block[idx] := v;
-			cur_len := 0;
-		end
+
 		count := count + 1;
 	end
 	
 	EOI: action ==>
 	guard count = mbcount
 	do
-	count := 0;
-	bitcount := 0;
-	mbcount := 0;
-	v_read_HT := 0;
-	cur_val := 0;
-	cur_len := 0;
-	to_read := 0;
-	to_readHT := 0;	
-	lastDC := [0, 0, 0];
+		count := 0;
+		bitcount := 0;
+		mbcount := 0;
+		v_read_HT := 0;
+		cur_val := 0;
+		cur_len := 0;
+		to_read := 0;
+		to_readHT := 0;	
+		lastDC := [0, 0, 0];
 	end
 		
 	// Schedule FSM
@@ -323,26 +277,30 @@ actor HuffmanDecoder()
 		waitSOI(getSOI) --> wait_HT;
 		
 		wait_HT(receive_HT_len)-->wait_code;
-		wait_HT(done_HT)-->wait_DC_len;
-		
 		wait_code(receive_code)-->wait_code;
 		wait_code(build_HT)-->wait_HT;
+		wait_HT(done_HT)-->wait_DC_len;
 		
 		wait_DC_len(EOI) --> waitSOI;
-		wait_DC_len(DC.done_len)-->wait_DC;
+		wait_DC_len(readbit) --> wait_DC_len;
+		wait_DC_len(get_code) --> wait_DC;
+		
+		wait_DC(readbit) --> wait_DC;
+		wait_DC(DC.done) --> wait_AC_len;
 
-		wait_DC(DC.done)-->wait_AC_len;
+		wait_AC_len(readbit) --> wait_AC_len;
+		wait_AC_len(get_code) --> wait_AC;
 
-		wait_AC_len(AC.done_len)-->wait_AC;
-
-		wait_AC(EOB)-->wait_DC_len;
-		wait_AC(AC.done)-->wait_AC_len;
+		wait_AC(readbit) --> wait_AC;
+		wait_AC(AC.eob) --> wait_DC_len;
+		wait_AC(AC.decode_coef) --> wait_AC_len;
 	end
 	
 	priority
 		done_HT > receive_HT_len;
-		EOI > DC;
-		EOB > AC.done;
+		EOI > readbit > get_code > DC;
+		readbit > get_code > AC;
+		AC.eob > AC.decode_coef;
 	end
 
 end
