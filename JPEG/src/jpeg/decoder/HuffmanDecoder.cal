@@ -29,18 +29,20 @@
 /*
  * Author : Felix Abecassis
  * Modified: Abdellah Elguindy, HT tables reduction
- * Modified: ghislain roquier, remove free actions
  */
   
 package jpeg.decoder;
  
-actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> int(size=24) Block :
+actor HuffmanDecoder() 
+	uint(size=8) Bit, 
+	uint(size=8) HT, int(size=16) SOI
+		==> 
+			int(size=24) Block :
 
 	uint(size=3) v_read_HT := 0;
 	uint(size=16) cur_val := 0;
 	uint cur_len := 0;
 	uint(size=32) to_read := 0;
-	uint(size=32) to_readHT := 0;
 	uint(size=32) cur_HT;
 	int idx;
 	uint code;
@@ -68,8 +70,8 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 	int subsampling[3] = [4, 1, 1];
 	int lastDC[3];
 	uint(size=24) block[64];
-		
-	readbit: action Bit:[b] ==>
+
+	getbit.read: action Bit:[b] ==>
 	guard 
 		to_read != 0, bitcount = 0
 	do
@@ -82,7 +84,7 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 	    bitcount := bitcount + 1;
 	end
 
-	readbit.already_read: action ==>
+	getbit.noread:action ==>
 	guard 
 		to_read != 0, bitcount != 0
 	do
@@ -90,7 +92,8 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 		cur_val := cur_val * 2 + ((bits >> 7 - bitcount) & 1);
 	   	to_read := to_read - 1;
 	    cur_len := cur_len + 1;
-	    bitcount := (bitcount + 1) & 7;
+	    
+	     bitcount := (bitcount + 1) & 7;
 	end
 	
 	// Procedures
@@ -137,13 +140,11 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 		end
 		ht_lookup_code_index[cur_HT][u] := 1000000000;
 	end
-	
-	
+		
 	getSOI: action SOI:[w, h] ==>
 	do
 		mbcount := 6 * w * h;
 	end
-
 	
 	receive_HT_len:action HT:[b] repeat 17 ==>
 	var
@@ -158,24 +159,25 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 			ht_codes_len[i] := b[i + 1];
 			sum := sum + ht_codes_len[i];
 		end
-		to_readHT := sum;
+		to_read := sum;
 	end
 	
 	receive_code:action HT:[b] ==>
-	guard (to_readHT > 0)
+	guard (to_read > 0)
 	do
 		ht_codes_list[idx] := b;
 		idx := idx + 1;
-		to_readHT := to_readHT - 1;
+		to_read := to_read - 1;
 	end
 	
 	build_HT:action ==>
-	guard (to_readHT = 0)
+	guard (to_read = 0)
 	do
 		generate_HT();
 		v_read_HT := v_read_HT + 1;
 	end
 	
+		// All 4 HT were read.
 	done_HT:action ==>
 	guard (v_read_HT = 4)
 	do
@@ -187,7 +189,18 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 		cur_len := 0;
 		to_read := 16;
 	end
-
+	
+	DC.done_len:action ==>
+	guard (to_read = 0)
+	do
+		// Even if cur_val is of size 16, it is represented by a BigInteger during Orcc simulation.
+		// A bitand is therefore needed to extract only 16 bits.
+		cur_val := cur_val & 0xFFFF;
+		get_HT_val(cur_HT, cur_val);
+		//code := ht_lookup_code[cur_HT][cur_val];
+		to_read := ht_lookup_codelen[cur_HT][code];
+	    cur_len := to_read;
+	end
 	
 	// End of DC, proceed with AC.
 	DC.done:action ==>
@@ -197,53 +210,50 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 	do
 		to_read := code & 0xF;
 		cur_len := to_read;
-
+		// The DC value.
 		v := cur_val >> (16 - to_read);	
-		if (v < (1 << (cur_len - 1))) 
+		if (v < (1 << (cur_len - 1)))
 		then
 			v := v + (-1 << cur_len) + 1;
 		end
-		
 		v := v + lastDC[comp];
 		lastDC[comp] := v;
-
+		cur_len := 0;
 		cur_HT := actab[comp];
 		block := [0 : for int i in 0 .. 63];
-		idx := 1;
+		// The position in the current block.
+		idx := 0;
 		block[0] := v;
 	end
 	
-		
-	get_code: action ==>
+	AC.done_len:action ==>
+	guard (to_read = 0)
 	do
-		get_HT_val(cur_HT, cur_val);
+	    get_HT_val(cur_HT, cur_val);
 		to_read := ht_lookup_codelen[cur_HT][code];
 	    cur_len := to_read;
+		idx := idx + (code >> 4) + 1;
 	end
-			
-	bool eob := false;
 	
-  	AC.decode_coef: action ==>
+	AC.done:action ==>
+	guard (to_read = 0)
 	var
-		int v, int r
+		int v
 	do
 		to_read := code & 0xF;
 		cur_len := to_read;
-		r := (code >> 4);
-		idx := idx + r;
-		v := cur_val >> (16 - to_read);	
-		if v < (1 << (cur_len - 1))
-		then
+		
+		v := cur_val >> (15 - to_read + 1);		
+		if v < (1 << (cur_len - 1)) then
 			v := v + (-1 << cur_len) + 1;
 		end
-		
 		block[idx] := v;
-		eob := idx = 63;
-		idx := idx + 1;
 	end
 	
-  	AC.eob: action ==> Block:[block] repeat 64
-	guard (code = 0 or eob)
+	EOB:action ==> Block:[block] repeat 64
+	guard ((to_read = 0) and (code = 0 or idx = 63))
+	var
+		int v
 	do
 		cur_count := cur_count + 1;
 		if (cur_count = subsampling[comp])
@@ -254,22 +264,32 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 		cur_HT := dctab[comp];
 		cur_len := 0;
 		to_read := 0;
-
+		if (idx = 63 and code != 0)
+		then
+			to_read := code & 0xF;
+			cur_len := to_read;
+			v := cur_val >> (15 - to_read + 1);
+	
+			if (v < (1 << (cur_len - 1))) then
+				v := v + (-1 << cur_len) + 1;
+			end
+			block[idx] := v;
+			cur_len := 0;
+		end
 		count := count + 1;
 	end
 	
 	EOI: action ==>
 	guard count = mbcount
 	do
-		count := 0;
-		bitcount := 0;
-		mbcount := 0;
-		v_read_HT := 0;
-		cur_val := 0;
-		cur_len := 0;
-		to_read := 0;
-		to_readHT := 0;	
-		lastDC := [0, 0, 0];
+	count := 0;
+	bitcount := 0;
+	mbcount := 0;
+	v_read_HT := 0;
+	cur_val := 0;
+	cur_len := 0;
+	to_read := 0;
+	lastDC := [0, 0, 0];
 	end
 		
 	// Schedule FSM
@@ -277,30 +297,30 @@ actor HuffmanDecoder() uint(size=8) Bit, uint(size=8) HT, int(size=16) SOI ==> i
 		waitSOI(getSOI) --> wait_HT;
 		
 		wait_HT(receive_HT_len)-->wait_code;
-		wait_code(receive_code)-->wait_code;
-		wait_code(build_HT)-->wait_HT;
 		wait_HT(done_HT)-->wait_DC_len;
 		
-		wait_DC_len(EOI) --> waitSOI;
-		wait_DC_len(readbit) --> wait_DC_len;
-		wait_DC_len(get_code) --> wait_DC;
+		wait_code(receive_code)-->wait_code;
+		wait_code(build_HT)-->wait_HT;
 		
-		wait_DC(readbit) --> wait_DC;
-		wait_DC(DC.done) --> wait_AC_len;
+		wait_DC_len(EOI) --> waitSOI;
+		wait_DC_len(getbit) --> wait_DC_len;
+		wait_DC_len(DC.done_len)-->wait_DC;
 
-		wait_AC_len(readbit) --> wait_AC_len;
-		wait_AC_len(get_code) --> wait_AC;
+		wait_DC(getbit) --> wait_DC;
+		wait_DC(DC.done)-->wait_AC_len;
 
-		wait_AC(readbit) --> wait_AC;
-		wait_AC(AC.eob) --> wait_DC_len;
-		wait_AC(AC.decode_coef) --> wait_AC_len;
+		wait_AC_len(getbit) --> wait_AC_len;
+		wait_AC_len(AC.done_len)-->wait_AC;
+
+		wait_AC(EOB)-->wait_DC_len;
+		wait_AC(getbit) --> wait_AC;
+		wait_AC(AC.done)-->wait_AC_len;
 	end
 	
 	priority
 		done_HT > receive_HT_len;
-		EOI > readbit > get_code > DC;
-		readbit > get_code > AC;
-		AC.eob > AC.decode_coef;
+		EOI > getbit > DC;
+		getbit > EOB > AC.done;
 	end
 
 end
