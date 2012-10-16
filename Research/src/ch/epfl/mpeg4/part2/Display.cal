@@ -1,20 +1,12 @@
 package ch.epfl.mpeg4.part2;
 import  std.video.Display.*;
+import  std.stdio.Source.*;
 
-
-actor Display(bool isSerial)
+actor Display()
 	uint(size=8) Byte,
 	int(size=16) SIZE
 		==>
 		:
-
-	uint MAX_WIDTH = 1920;
-	uint MAX_HEIGHT = 1080;
-	uint MB_SIZE_LUMA = 16;
-	uint MB_SIZE_CHROMA = 8;
-
-
-
 	/**
 	 * Display flags
 	 */
@@ -58,9 +50,9 @@ actor Display(bool isSerial)
 		yOffChroma := 0;
 	end
 
-	getPixValue.launch.Luma.serial: action Byte :[Bytes] repeat 256 ==>
+	getPixValue.launch.Luma: action Byte :[Bytes] repeat 256 ==>
 	guard
-		nbBlockGot < pictureSizeInMb, isSerial
+		nbBlockGot < pictureSizeInMb
 	var
 		uint(size=8)  buf[256],
 		uint(size=32) yOff := yOffLuma,
@@ -89,27 +81,7 @@ actor Display(bool isSerial)
 		chromaComponent := 0;
 	end
 
-	getPixValue.launch.Luma.parallel: action Byte :[Bytes] repeat 256 ==>
-	guard
-		nbBlockGot < pictureSizeInMb
-	var
-		uint(size=32) yOff := yOffLuma,
-		uint(size=9)  idx  := 0
-	do
-		nbBlockGot := nbBlockGot + 1;
-					
-		foreach int y in 0 .. 15
-		do
-			foreach int x in xIdxLuma .. xIdxLuma + 15
-			do
-				pictureBufferY[yOff +x] := Bytes[idx];
-				idx := idx + 1;
-			end
-			yOff := yOff + pictureWidthLuma;
-		end
-		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
-		chromaComponent := 0;
-	end
+
 	getPixValue.launch.Chroma: action Byte :[Bytes] repeat 64 ==>
 	var
 		uint(size=32) yOff := yOffChroma,
@@ -157,19 +129,27 @@ actor Display(bool isSerial)
 		fpsPrintNewPicDecoded();
 	end
 
+	
+	displayClose: action ==>
+	guard
+		source_isMaxLoopsReached()
+	do
+		source_exit(0);
+	end
+
 	schedule fsm GetPictureSize:
-		GetPictureSize  (getPictureSize                    )--> GetLumaBlock;
+		GetPictureSize  (getPictureSize            )--> GetLumaBlock;
 		GetLumaBlock    (getPixValue.launch.Luma   )--> GetChroma1Block;
 		GetChroma1Block (getPixValue.launch.Chroma )--> GetChroma2Block;
 		GetChroma2Block (getPixValue.launch.Chroma )--> GetLumaBlock;
 		
 		GetLumaBlock    (displayPicture            )--> GetPictureSize;
 		GetLumaBlock    (displayDisable            )--> GetPictureSize;
+		GetLumaBlock    (displayClose              )--> GetPictureSize;
 	end
 
 	priority
 		getPixValue > displayPicture;
 		displayPicture > displayDisable;
-		getPixValue.launch.Luma.serial > getPixValue.launch.Luma.parallel;
 	end
 end
