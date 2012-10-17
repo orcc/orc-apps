@@ -70,6 +70,10 @@ actor SaoFilter(bool DEBUG)
 	uint(size=6)  xCuFilt := 0;
 	uint(size=6)  yCuFilt := 0;
 
+	bool filterAcrossSlc;
+	uint(size=16) begSlcAddr[3][2];
+	uint(size=16) endSlcAddr[3][2];
+
 	procedure nextLcuAddress()
 	begin
 		xCu := xCu + 1;
@@ -99,8 +103,10 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
-	procedure codingTreeBlockModif(uint(size=16) rx, uint(size=16) ry, uint(size=2) cIdx, uint(size=16) picSize[2])
+	procedure codingTreeBlockModif(uint(size=16) rx, uint(size=16) ry,
+		uint(size=2) cIdx, uint(size=16) picSize[2])
 	var
+		uint(size=7) cuSideMax = if(cIdx=0) then 64 else 32 end,
 		uint(size=3) xMax = if(cIdx=0) then 3 else 1 end,
 		uint(size=3) yMax = if(cIdx=0) then 3 else 1 end,
 		uint(size=16) xIdx,
@@ -129,7 +135,17 @@ actor SaoFilter(bool DEBUG)
 							pixIdx[k][1] := yIdx + constVPos0[saoEoClass[xCuFilt][yCuFilt&1][cIdx]][k];
 							if(pixIdx[k][0] >= picSize[0] || pixIdx[k][1]>=picSize[1]) then
 								pixIsInPict := false;
-							end
+							else if(not filterAcrossSlc) then
+								if(pixIdx[k][1]<begSlcAddr[cIdx][1] ||
+									pixIdx[k][1]<begSlcAddr[cIdx][1]+cuSideMax
+									&& pixIdx[k][0]<begSlcAddr[cIdx][0]) then
+									pixIsInPict := false;
+								else if(pixIdx[k][1]>=endSlcAddr[cIdx][1]+cuSideMax
+									|| pixIdx[k][1]>=endSlcAddr[cIdx][1] &&
+									pixIdx[k][0]>=endSlcAddr[cIdx][0]) then
+									pixIsInPict := false;
+								end end
+							end end
 						end
 						if(pixIsInPict) then
 							edgeIdx := 2;
@@ -162,11 +178,11 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
-	procedure sampAdapOffFilt()
+	procedure sampAdapOffFilt(bool isNewSlice)
 	var
 		uint(size=16) picSizeLoc[2]
 	begin
-		while( (yCuFilt<yCu) && (xCuFilt<xCu || xCuFilt>xCu || yCu=picSizeInCu[1]))
+		while( isNewSlice && (yCuFilt!=yCu || xCuFilt!=xCu)  || (yCuFilt<yCu) && (xCuFilt<xCu || xCuFilt>xCu || yCu=picSizeInCu[1]))
 		do
 			picSizeLoc := picSize;
 			foreach uint cIdx in 0 .. 2
@@ -190,12 +206,6 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
-	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu], LFAcrossSlc:[lfAcrossSlc],
-		PicSize:[picWidthInPix, picHeightInPix] ==>
-	guard
-		isNewPicSlcLcu = NEW_SLC
-	end
-
 	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu], LFAcrossSlc:[lfAcrossSlc],
 		PicSize:[picWidthInPix, picHeightInPix], SaoSe:[saoSe] ==>
 	guard
@@ -206,6 +216,28 @@ actor SaoFilter(bool DEBUG)
 		slcSaoCompEn[0] := (saoSe & 1) !=0;
 		slcSaoCompEn[1] := (saoSe & 2) !=0;
 		slcSaoCompEn[2] := slcSaoCompEn[1];
+		filterAcrossSlc := lfAcrossSlc;
+		begSlcAddr[0] := [0, 0];
+		begSlcAddr[1] := [0, 0];
+		begSlcAddr[2] := [0, 0];
+	end
+
+	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu], LFAcrossSlc:[lfAcrossSlc],
+		PicSize:[picWidthInPix, picHeightInPix] ==>
+	guard
+		isNewPicSlcLcu = NEW_SLC
+	do
+		endSlcAddr[0] := [xCu<<6, yCu<<6];
+		endSlcAddr[1] := [xCu<<5, yCu<<5];
+		endSlcAddr[2] := [xCu<<5, yCu<<5];
+		sampAdapOffFilt(true);
+		filterAcrossSlc := lfAcrossSlc;
+		begSlcAddr[0] := [xCu<<6, yCu<<6];
+		begSlcAddr[1] := [xCu<<5, yCu<<5];
+		begSlcAddr[2] := [xCu<<5, yCu<<5];
+		endSlcAddr[0] := [0, picSize[1]];
+		endSlcAddr[1] := [0, picSize[1]>>1];
+		endSlcAddr[2] := [0, picSize[1]>>1];
 	end
 
 	getCuPix.launch: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 64*64 + 32*32*2 ==>
@@ -247,7 +279,7 @@ actor SaoFilter(bool DEBUG)
 	guard
 		yCu = picSizeInCu[1]
 	do
-		sampAdapOffFilt();
+		sampAdapOffFilt(false);
 		xCu := 0;
 		yCu := 0;
 	end
@@ -296,7 +328,7 @@ actor SaoFilter(bool DEBUG)
 				saoLeftClass[xCu][yCu&1][cIdx] := saoLeftClass[xMerge][yMerge&1][cIdx];
 			end
 		end
-		sampAdapOffFilt();
+		sampAdapOffFilt(false);
 		nextLcuAddress();
 	end
 
@@ -384,7 +416,7 @@ actor SaoFilter(bool DEBUG)
 		cIdx = 3
 	do
 		cIdx := 0;
-		sampAdapOffFilt();
+		sampAdapOffFilt(false);
 		nextLcuAddress();
 	end
 
@@ -457,11 +489,11 @@ actor SaoFilter(bool DEBUG)
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewSlice )--> IsNewPict;
-		IsNewPict (isNewPict  )--> GetCuPix;
+		IsNewPict (isNewPict )--> GetCuPix;
 
-		GetCuPix  (getCuPix.launch )--> GetSaoMerge;
-		GetCuPix  (getCuPix.done   )--> SendSamples;
+		GetCuPix (isNewSlice      )--> GetCuPix;
+		GetCuPix (getCuPix.launch )--> GetSaoMerge;
+		GetCuPix (getCuPix.done   )--> SendSamples;
 
 		GetSaoMerge (getSaoMerge.skip    )--> GetCuPix;
 		GetSaoMerge (getSaoMerge.merge   )--> GetCuPix;
