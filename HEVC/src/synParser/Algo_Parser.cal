@@ -15,16 +15,18 @@ actor Algo_Parser ()
 				uint(size= 8) byte
 				==>
 				uint(size=16) CUInfo,
-				uint(size=6)  IntraPredMode,
+				uint(size= 6) IntraPredMode,
 				//bool          IsNewPictOrSlc,
 				uint(size=16) MaxPocLsb,
-				uint(size=8)  NaluType,
-				uint(size=4)  PartMode,
+				uint(size= 8) NaluType,
+				uint(size= 4) PartMode,
 				uint(size=16) PictSize,
 				uint(size=16) Poc,
-				uint(size=2)  SliceType,
+				uint(size= 2) SliceType,
 				bool          Cbf, //Token generation fits with Dbf, it should be modified when residual will be integrated.
-				bool          SplitTransform
+				bool          SplitTransform,
+				uint(size= 8) CUSize,
+				 int(size=16) Coeff
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
@@ -293,6 +295,8 @@ actor Algo_Parser ()
 	 * read_SPS_Header.se_idx_2
 	 *************************************************************************/
 	uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
+	uint(size= 1) sps_bit_depth_luma_minus8[NB_MAX_SPS];
+	uint(size= 1) sps_bit_depth_chroma_minus8[NB_MAX_SPS];
 	uint(size= 1) sps_pcm_enabled_flag[NB_MAX_SPS];
 	uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
 	uint(size=16) max_poc_lsb[NB_MAX_SPS];
@@ -315,7 +319,9 @@ actor Algo_Parser ()
 			vld_ue_name(    fifo, res, "pic_crop_bottom_offset                  "); 
 		end
 		vld_ue_name(    fifo, res, "bit_depth_luma_minus8                   ");
+		sps_bit_depth_luma_minus8[sps_id] := res[0];
 		vld_ue_name(    fifo, res, "bit_depth_chroma_minus8                 ");
+		sps_bit_depth_chroma_minus8[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "pcm_enabled_flag                        ");
 		sps_pcm_enabled_flag[sps_id] := res[0];
 		if sps_pcm_enabled_flag[sps_id] = 1 then
@@ -424,6 +430,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_6
 	 *************************************************************************/
+	uint(size= 1) sps_scaling_list_enabled_flag[NB_MAX_SPS];
 	uint(size= 1) sps_sample_adaptive_offset_enabled_flag[NB_MAX_SPS];
 	uint(size= 8) sps_num_short_term_ref_pic_sets[NB_MAX_SPS];
 	
@@ -434,6 +441,7 @@ actor Algo_Parser ()
 		uint(size=32) res[1]
    	do
 		vld_u_name(  1, fifo, res, "scaling_list_enabled_flag               ");
+		sps_scaling_list_enabled_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "amp_enabled_flag                        "); 
 		vld_u_name(  1, fifo, res, "sample_adaptive_offset_enabled_flag     ");
 		sps_sample_adaptive_offset_enabled_flag[sps_id] := res[0];
@@ -542,6 +550,9 @@ actor Algo_Parser ()
 	uint(size= 1) pps_transform_skip_enabled_flag[NB_MAX_PPS];
 	uint(size= 2) pps_SliceGranularity[NB_MAX_PPS];
 	uint(size=16) pps_diff_cu_qp_delta_depth[NB_MAX_PPS];
+	uint(size=16) pps_cb_qp_offset[NB_MAX_PPS];
+	uint(size=16) pps_cr_qp_offset[NB_MAX_PPS];
+	uint(size= 1) pps_slicelevel_chroma_qp_flag[NB_MAX_PPS];
 	uint(size= 1) pps_output_flag_present_flag[NB_MAX_PPS];
 	uint(size= 1) pps_transquant_bypass_enable_flag[NB_MAX_PPS];
 	uint(size= 1) pps_tile_control_present_flag[NB_MAX_PPS];
@@ -582,8 +593,11 @@ actor Algo_Parser ()
 			pps_diff_cu_qp_delta_depth[pps_id] := 0;
 		end
 		vld_se_name(    fifo, res, "cb_qp_offset                            ");
+		pps_cb_qp_offset[pps_id] := res[0];
 		vld_se_name(    fifo, res, "cr_qp_offset                            ");
+		pps_cr_qp_offset[pps_id] := res[0];
 		vld_u_name(  1, fifo, res, "slicelevel_chroma_qp_flag               ");
+		pps_slicelevel_chroma_qp_flag[pps_id] := res[0];
 		vld_u_name(  1, fifo, res, "weighted_pred_flag                      ");
 		vld_u_name(  1, fifo, res, "weighted_bipred_flag                    ");
 		vld_u_name(  1, fifo, res, "output_flag_present_flag                ");
@@ -894,6 +908,8 @@ actor Algo_Parser ()
 	 * read_SliceHeader.se_idx_3
 	 *************************************************************************/
 	 int(size=32) slice_qp;
+	 int(size=32) slice_cb_qp_offset;
+	 int(size=32) slice_cr_qp_offset;
 	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
 	 	
@@ -913,11 +929,17 @@ actor Algo_Parser ()
 	if(entropy_slice_flag = 0) then
 		vld_se_name(    fifo, res, "slice_qp_delta                          ");
 		slice_qp := pps_pic_init_qp_minus26[pps_id] + 26 +res[0];
+		slice_cb_qp_offset := 0;
+		slice_cr_qp_offset := 0;
+		if pps_slicelevel_chroma_qp_flag[pps_id] = 1 then
+			vld_se_name(    fifo, res, "slice_cb_qp_offset                      ");
+			vld_se_name(    fifo, res, "slice_cr_qp_offset                      ");
+		end
 		if(pps_deblocking_filter_control_present_flag[pps_id] = 1) then	
  			if(deblocking_filter_override_enabled_flag[pps_id] = 1) then
 				vld_u_name(  1, fifo, res, "deblocking_filter_override_flag        ");
 				deblocking_filter_override_flag := res[0];	
-			end
+			end			
 			if(deblocking_filter_override_flag = 0) then
 				vld_u_name(  1, fifo, res, "slice_header_disable_deblocking_filter_flag          ");
 				if( slice_header_disable_deblocking_filter_flag = 0) then
@@ -1321,7 +1343,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_CodingTree_gotoCodingQuadTree
 	 *************************************************************************/	
-	read_CodingTree_gotoCodingQuadTree : action ==>
+	read_CodingTree_gotoCodingQuadTree : action ==> 
 	guard
 		codingTree_idx = 3
 	do
@@ -1683,7 +1705,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_CodingUnit.start
 	 *************************************************************************/
-	read_CodingUnit.start : action ==>
+	read_CodingUnit.start : action ==> CUSize:[1<<cu_log2CbSize]
 	guard 
 		cu_idx = 1 and isFifoFull(fifo)
 	var
@@ -1696,6 +1718,7 @@ actor Algo_Parser ()
 		skip_flag  := 0;
 		merge_flag := 0;
 		intra_pred_mode := [1 : for int i in 0 .. 3];
+	    println("cu_Size = "+(1<<cu_log2CbSize));
 		if DEBUG_MODE and DEBUG_TRACE1 then
 			println("read_CodingUnit.start ("+cu_x0+", "+cu_y0+", "+cu_log2CbSize+")");
 		elsif DEBUG_MODE then
@@ -2868,6 +2891,7 @@ actor Algo_Parser ()
 	uint(size= 8) rc_m;
 	uint(size= 8) coeff_abs_level_greater1_flag[16];
 	uint(size= 8) coeff_abs_level_greater2_flag[16];
+	uint(size= 1) coeff_sign_flag[16];
 	uint(size= 1) rc_signHidden;
 	read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG : action ==>
 	guard 
@@ -2875,8 +2899,6 @@ actor Algo_Parser ()
 	var
 		 int(size=32) res[1] := [0],
 		 int          n,
-//		uint(size=16) xC,
-//		uint(size=16) yC,
 		 int(size= 8) lastSigScanPos  := -1,
 		uint(size= 8) numGreater1Flag :=  0,
 		uint(size= 9) ctxIdxInc[1]
@@ -2888,8 +2910,6 @@ actor Algo_Parser ()
 
 		foreach int m in 0 .. m_end do
   			n  := m_end - m;  
-//			xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
-//			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];			
 			if significant_coeff_flag[ n ] = 1 then
 				if numGreater1Flag < 8 then
 					context_93315(rc_cIdx, rc_i, numGreater1Flag = 0, rc_i = rc_lastSubBlock, rc_ctxSet, rc_greater1Ctx, ctxIdxInc);
@@ -2920,12 +2940,12 @@ actor Algo_Parser ()
 		
 		foreach int m in 0 .. m_end do
   			n  := m_end - m;  
-//			xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
-//			yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];			
 			if significant_coeff_flag[ n ] = 1 and
 				(pps_sign_data_hiding_flag[pps_id] = 0 or rc_signHidden = 0 or n != rc_firstSigScanPos) then
 				get_COEFF_SIGN_FLAG(codIRange, codIOffset, fifo, res);
-//				coeff_sign_flag[ n ] := res[0];
+				coeff_sign_flag[ n ] := res[0];
+			else
+				coeff_sign_flag[ n ] := 0;
 			end
 		end
 		rc_numSigCoeff		:= 0;
@@ -2940,46 +2960,77 @@ actor Algo_Parser ()
 	uint(size= 8) rc_numSigCoeff;
 	uint(size= 8) rc_sumAbsLevel;
 	uint(size= 8) rc_cLastRiceParam;
-	read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL : action ==>
+	read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL : action ==> Coeff:[transCoeffLevel]
 	guard 
-		rc_idx = 4 and isFifoFull(fifo),
-		rc_m <= m_end
+		rc_idx = 4 and isFifoFull(fifo),		
+		rc_m <= 15//m_end
 	var
 		 int(size=32) res[1] := [0],
-		 int          n,
-//		uint(size=16) xC,
-//		uint(size=16) yC,
-//		uint(size= 1) coeff_sign_flag[16] := [ 0 : for int i in 0 .. 15 ],
-		uint(size= 8) coeff_abs_level_remaining[16] := [ 0 : for int i in 0 .. 15 ],
+		 int          n       = 15/*m_end*/ - rc_m,
+		uint(size=16) coeff_abs_level_remaining,
 		uint(size= 8) baseLevel,
-		uint(size= 8) cLastAbsLevel
+		uint(size= 8) cLastAbsLevel,
+		 int(size=16) transCoeffLevel := 0,
+		 //
+		uint(size=16) qp_bd_offset_luma = 6 * sps_bit_depth_luma_minus8[sps_id],
+		uint(size=16) qp_bd_offset_chroma = 6 * sps_bit_depth_chroma_minus8[sps_id],
+		 int qp_y_pred = slice_qp,
+         int qp_y      = ((qp_y_pred + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
+        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
+		 int(size=16) qp,
+		 int(size=16) qp_i,
+		 int(size=16) offset,
+		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
+		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 else sps_bit_depth_chroma_minus8[sps_id] + rc_log2TrafoSize - 5 end
+		 
 	do					
-		n  := m_end - rc_m;  
-//		xC := ( rc_xS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 0 ]; 
-//		yC := ( rc_yS << 2 ) + ScanOrder2[ rc_scanIdx ][ n ][ 1 ];
-		if significant_coeff_flag[ n ] = 1 then
+		if significant_coeff_flag[ n ] = 1 then 
 			baseLevel := 1 + coeff_abs_level_greater1_flag[ n ] + coeff_abs_level_greater2_flag[ n ];
 			if baseLevel = ( if rc_numSigCoeff < 8 then if n = rc_firstGreater1ScanPos then 3 else 2 end else 1 end) then
 				get_COEFF_ABS_LEVEL(codIRange, codIOffset, fifo, res, rc_cLastRiceParam);				
-				coeff_abs_level_remaining[ n ] := res[0];
-				cLastAbsLevel  := baseLevel + coeff_abs_level_remaining[ n ];
+				coeff_abs_level_remaining := res[0];
+				cLastAbsLevel  := baseLevel + coeff_abs_level_remaining;
 				rc_cLastRiceParam := min(if cLastAbsLevel> 3 * ( 1 << rc_cLastRiceParam ) then rc_cLastRiceParam + 1 else rc_cLastRiceParam end, 4);			
 			end
-			//TransCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] := ( coeff_abs_level_remaining[ n ] + baseLevel ) * ( 1 - 2 * coeff_sign_flag[ n ] );
+			transCoeffLevel := ( coeff_abs_level_remaining + baseLevel ) * ( 1 - (coeff_sign_flag[ n ] << 1) );
 			if pps_sign_data_hiding_flag[pps_id] = 1 and rc_signHidden = 1 then
-				rc_sumAbsLevel := rc_sumAbsLevel + coeff_abs_level_remaining[ n ] + baseLevel;
+				rc_sumAbsLevel := rc_sumAbsLevel + coeff_abs_level_remaining + baseLevel;
 				if n = rc_firstSigScanPos and ( rc_sumAbsLevel & 1 ) = 1 then
-					//TransCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ] = − TransCoeffLevel[ rc_x0 ][ rc_y0 ][ rc_cIdx ][ xC ][ yC ]
+					transCoeffLevel := - transCoeffLevel;
 				end
 			end
 			rc_numSigCoeff := rc_numSigCoeff + 1;
 		end
+		
+        if rc_cIdx = 0 then
+            qp := qp_y + qp_bd_offset_luma;
+        else
+            if rc_cIdx = 1 then
+                offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
+            else
+                offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
+            end
+            qp_i := clip_i32(qp_y + offset, - qp_bd_offset_luma, 57);
+            if qp_i < 30 then
+                qp := qp_i;
+            elsif qp_i > 43 then
+                qp := qp_i - 6;
+            else
+                qp := qp_c[qp_i - 30];
+            end
+
+            qp := qp + qp_bd_offset_chroma;
+        end
+
+		transCoeffLevel := clip_i32(( ( transCoeffLevel * 16 * levelScale[ qp mod 6 ] << (qp/6)) + (1 << (shift - 1 )) ) >> shift, -32768, 32767 );
+		
+		println("Coeff["+rc_m+"] = "+transCoeffLevel);
 		rc_m := rc_m + 1;		
 	end
 	read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_end : action ==>
 	guard 
-		rc_idx = 4 and isFifoFull(fifo),
-		rc_m > m_end
+		rc_idx = 4,
+		rc_m > 15//m_end
 	do
 		rc_i	:= rc_i - 1;
 		rc_idx  := 2;
