@@ -31,7 +31,8 @@
 package fr.irisa.mpeg4.part2.sp.tta;
 
 import fr.irisa.mpeg4.part2.sp.tta.Simulation.*;
-import  std.video.Display.*;
+import std.video.Display.*;
+import std.stdio.Source.*;
 
 actor Display()
 	uint(size=8) B,
@@ -40,6 +41,7 @@ actor Display()
 		==>
 		:
 
+	int sum;
 	int (size=32) pictureSizeInMb;
 	int (size=32) nbBlockGot;
 
@@ -48,27 +50,46 @@ actor Display()
 		HEIGHT :[HeightValue]
 			==>
 	do
-		pictureSizeInMb   := WidthValue * HeightValue;
-		nbBlockGot := 0;
+		pictureSizeInMb := WidthValue * HeightValue;
+		tta_print(pictureSizeInMb);
+		nbBlockGot      := 0;
+		sum             := 0;
 	end
 
 	getPixValue.launch.Luma: action B :[Bytes] repeat 256 ==>
 	guard
 		nbBlockGot < pictureSizeInMb
 	do
+		tta_print(nbBlockGot);
+		foreach int i in 0 .. 255
+		do
+			sum := sum + Bytes[i];
+		end
 		nbBlockGot := nbBlockGot + 1;
 	end
 
 	getPixValue.launch.Chroma: action B :[Bytes] repeat 64 ==>
 	do
+		foreach int i in 0 .. 63
+		do
+			sum := sum + Bytes[i];
+		end
 	end
 
-	displayPicture: action ==>
+	checksumPicture: action ==>
 	guard
 		nbBlockGot >= pictureSizeInMb
 	do
+		display_checksum(sum);
 		print_cyclecount();
-	end	
+	end
+	
+	displayClose: action ==>
+	guard
+		source_isMaxLoopsReached()
+	do
+		source_exit(0);
+	end
 	
 
 	schedule fsm GetPictureSize:
@@ -77,11 +98,13 @@ actor Display()
 		GetChroma1Block (getPixValue.launch.Chroma )--> GetChroma2Block;
 		GetChroma2Block (getPixValue.launch.Chroma )--> GetLumaBlock;
 		
-		GetLumaBlock    (displayPicture            )--> GetPictureSize;
+		GetLumaBlock    (checksumPicture            )--> GetPictureSize;
+		GetLumaBlock    (displayClose              )--> GetPictureSize;
 	end
 
 	priority
-		getPixValue > displayPicture;
+		getPixValue > checksumPicture;
+		checksumPicture > displayClose;
 	end
 
 end
