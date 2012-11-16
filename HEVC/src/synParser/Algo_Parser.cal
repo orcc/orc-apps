@@ -2577,7 +2577,6 @@ actor Algo_Parser ()
 		elsif DEBUG_MODE then
 			println("read_TransformUnit.start");
 		end
-		tu_idx := 7;
 		if  cbf_luma[ tu_x0L ][ tu_y0L ][ tu_trafoDepth ] = 1 or
 			cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 or
 			cbf_cr[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
@@ -2585,17 +2584,17 @@ actor Algo_Parser ()
 				//cu_qp_delta
 				IsCuQpDeltaCoded := 1;
 			end
-			tu_idx := 3;			
-			if cbf_luma[ tu_x0L ][ tu_y0L ][ tu_trafoDepth ] = 1 then
-				tu_idx 				:= 2;
-				rc_idx 				:= 1;
-				rc_x0 				:= tu_x0L;
-				rc_y0 				:= tu_y0L;
-				rc_log2TrafoSize	:= tu_log2TrafoSize;
-				rc_scanIdx			:= getScanIdx(predMode, tu_log2TrafoSize, cur_intra_pred_mode);
-				rc_cIdx				:= 0;
-				rc_TType			:= TEXT_LUMA;
-			end
+		end
+		tu_idx				:= 8; // skipResidualCoding
+		rc_idx 				:= 1;
+		rc_x0 				:= tu_x0L;
+		rc_y0 				:= tu_y0L;
+		rc_log2TrafoSize	:= tu_log2TrafoSize;
+		rc_scanIdx			:= getScanIdx(predMode, tu_log2TrafoSize, cur_intra_pred_mode);
+		rc_cIdx				:= 0;
+		rc_TType			:= TEXT_LUMA;
+		if cbf_luma[ tu_x0L ][ tu_y0L ][ tu_trafoDepth ] = 1 then
+			tu_idx 			:= 2;
 		end
 	end
 	/**************************************************************************
@@ -2605,7 +2604,7 @@ actor Algo_Parser ()
 	guard 
 		tu_idx = 3
 	do
-		tu_idx 				:= 7;
+		tu_idx 				:= 5;
 		rc_idx 				:= 1;
 		rc_x0 				:= tu_x0C;
 		rc_y0 				:= tu_y0C;
@@ -2614,15 +2613,15 @@ actor Algo_Parser ()
 		rc_cIdx				:= 1;
 		rc_TType			:= TEXT_CHROMA_U;						
 		if tu_log2TrafoSize > 2 then
-			tu_idx := 5;
+			tu_idx 				:= 10;  // skipResidualCoding
+			rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
 			if cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
-				rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
-				tu_idx				:= 4;				
-			end
+				tu_idx			:= 4;
+			end				
 		elsif tu_blkIdx = 3 then
-			tu_idx := 5;
+			tu_idx 			:= 10;  // skipResidualCoding
 			if cbf_cb[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
-				tu_idx	:= 4;
+				tu_idx		:= 4;
 			end
 		end
 	end
@@ -2638,13 +2637,15 @@ actor Algo_Parser ()
 		rc_cIdx	 := 2;
 		rc_TType := TEXT_CHROMA_V;						
 		if tu_log2TrafoSize > 2 then
+			tu_idx	 			:= 12;  // skipResidualCoding
+			rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
 			if cbf_cr[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
-				rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
-				tu_idx 				:= 6;
+				tu_idx 			:= 6;
 			end
 		elsif tu_blkIdx = 3 then
+			tu_idx	 := 12;  // skipResidualCoding
 			if cbf_cr[ tu_x0C ][ tu_y0C ][ tu_trafoDepth ] = 1 then
-				tu_idx := 6;
+				tu_idx				:= 6;
 			end
 		end
 	end
@@ -2656,6 +2657,24 @@ actor Algo_Parser ()
 		tu_idx = 2 or tu_idx = 4 or tu_idx = 6
 	do	
 		tu_idx := tu_idx + 1;
+	end
+	/**************************************************************************
+	 * read_TransformUnit.skipResidualCoding
+	 *************************************************************************/
+	read_TransformUnit.skipResidualCoding : action ==> TUSize:[1<<rc_log2TrafoSize, 1]
+	guard 
+		tu_idx = 8 or tu_idx = 10 or tu_idx = 12
+	do	
+		tu_idx := tu_idx - 5;
+		if (DEBUG_COEFF) then
+			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
+			println("--------------------------");		
+			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
+			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
+				println("coeff["+i+"]     = 0");
+			end		  
+			println("--------------------------");			  
+        end
 	end
 	/**************************************************************************
 	 * read_TransformUnit_end
@@ -2697,7 +2716,7 @@ actor Algo_Parser ()
 	 int(size= 8) rc_i;
 	 int(size= 16) tabTransCoeffLevel[32*32];
 //	uint(size= 1) transform_skip_flag;
-	read_ResidualCoding.start : action ==>
+	read_ResidualCoding.start : action ==> TUSize:[sz, 0]
 	guard 
 		rc_idx = 1 and isFifoFull(fifo)
 	var
@@ -2834,84 +2853,88 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_ResidualCoding_end
 	 *************************************************************************/
-	read_ResidualCoding_end.xIT4 : action ==> TUSize:[4], 
+	read_ResidualCoding_end.xIT4 : action ==>
 						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1]] repeat 4 * 4
 	guard 
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 2
-	var
-		int sz = 1 << rc_log2TrafoSize
 	do
 		if DEBUG_MODE then
 			println("read_ResidualCoding_end");
 		end
-		if DEBUG_COEFF then
-			println("read_ResidualCoding_end.xIT4");
-			foreach int i in 0 .. sz * sz - 1 do
-				println("tabTransCoeffLevel["+i+"]=" +tabTransCoeffLevel[i]);
-			end 
-		end
+		if (DEBUG_COEFF) then
+			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
+			println("--------------------------");		
+			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
+			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
+				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
+			end		  
+			println("--------------------------");			  
+        end
 	end
 
-	read_ResidualCoding_end.xIT8 : action ==> TUSize:[8], 
+	read_ResidualCoding_end.xIT8 : action ==> 
 						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 8 * 8 - 1]] repeat 8 * 8
 	guard 
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 3
-	var
-		int sz = 1 << rc_log2TrafoSize
 	do
 		if DEBUG_MODE then
 			println("read_ResidualCoding_end");
 		end
-		if DEBUG_COEFF then
-			println("read_ResidualCoding_end.xIT8");
-			foreach int i in 0 .. sz * sz - 1 do
-				println("tabTransCoeffLevel["+i+"]=" +tabTransCoeffLevel[i]);
-			end 
-		end
+		if (DEBUG_COEFF) then
+			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
+			println("--------------------------");		
+			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
+			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
+				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
+			end		  
+			println("--------------------------");			  
+        end
 	end
 
-	read_ResidualCoding_end.xIT16 : action ==> TUSize:[16], 
+	read_ResidualCoding_end.xIT16 : action ==> 
 						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 16 * 16 - 1]] repeat 16 * 16
 	guard 
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 4
-	var
-		int sz = 1 << rc_log2TrafoSize
 	do
 		if DEBUG_MODE then
 			println("read_ResidualCoding_end");
 		end
-		if DEBUG_COEFF then
-			println("read_ResidualCoding_end.xIT16");
-			foreach int i in 0 .. sz * sz - 1 do
-				println("tabTransCoeffLevel["+i+"]=" +tabTransCoeffLevel[i]);
-			end 
-		end
+		if (DEBUG_COEFF) then
+			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
+			println("--------------------------");		
+			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
+			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
+				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
+			end		  
+			println("--------------------------");			  
+        end
 	end
 
-	read_ResidualCoding_end.xIT32 : action ==> TUSize:[32], 
+	read_ResidualCoding_end.xIT32 : action ==> 
 						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 32 * 32 - 1]] repeat 32 * 32
 	guard 
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 5
-	var
-		int sz = 1 << rc_log2TrafoSize
 	do
 		if DEBUG_MODE then
 			println("read_ResidualCoding_end");
 		end
-		if DEBUG_COEFF then
-			println("read_ResidualCoding_end.xIT32");
-			foreach int i in 0 .. sz * sz - 1 do
-				println("tabTransCoeffLevel["+i+"]=" +tabTransCoeffLevel[i]);
-			end 
-		end
+		if (DEBUG_COEFF) then
+			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
+			println("--------------------------");		
+			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
+			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
+				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
+			end		  
+			println("--------------------------");			  
+        end
 	end
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
