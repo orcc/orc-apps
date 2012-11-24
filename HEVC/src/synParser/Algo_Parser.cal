@@ -170,9 +170,9 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	look_for.Slice_header: action ==>
 	guard
-		(nal_unit_type = NAL_UNIT_NON_IDR_AND_NON_CRA or
-		 nal_unit_type = NAL_UNIT_CRA                 or
-		 nal_unit_type = NAL_UNIT_IDR)
+		(nal_unit_type = NAL_IDR_W_DLP or
+		 nal_unit_type = NAL_UNIT_TRAIL_R or
+		 nal_unit_type = NAL_UNIT_TRAIL_N)
 	do
 		if DEBUG_PARSER then
 			println("=========== Slice ===========");
@@ -192,7 +192,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_VPS_Header.se_idx_1
 	 *************************************************************************/
-	uint(size= 3) vps_max_temporal_layers_minus1;
+	uint(size= 3) vps_max_sub_layers_minus1;
 	 
 	read_VPS_Header.se_idx_1 : action ==>
 	guard
@@ -200,21 +200,91 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(  3, fifo, res, "vps_max_temporal_layers_minus1          ");
-		vps_max_temporal_layers_minus1 := res[0];
-		vld_u_name(  5, fifo, res, "vps_max_layers_minus1                   ");
-		vld_ue_name(    fifo, res, "video_parameter_set_id                  ");
+		vld_u_name(  4, fifo, res, "video_parameter_set_id                  ");
 		vld_u_name(  1, fifo, res, "vps_temporal_id_nesting_flag            ");
+		flushBits_name(2, fifo,    "vps_reserved_zero_2bits                 ");
+		flushBits_name(6, fifo,    "vps_reserved_zero_6bits                 ");
+		vld_u_name(  3, fifo, res, "vps_max_sub_layers_minus1               ");
+		vps_max_sub_layers_minus1 := res[0];
 		se_idx := se_idx + 1;
-		cnt_i  := 0;
 	end
 	/**************************************************************************
 	 * read_VPS_Header.se_idx_2
 	 *************************************************************************/
-	read_VPS_Header.se_idx_2.loop : action ==>
+	read_VPS_Header.se_idx_2 : action ==>
 	guard
-		se_idx = 2 and isFifoFull(fifo),
-		cnt_i <= vps_max_temporal_layers_minus1		
+		se_idx = 2 and isFifoFull(fifo)
+	var
+		bool profile_present_flag = true,
+		uint(size = 32) res[1]
+	do
+		if (profile_present_flag) then
+		
+			vld_u_name(  2, fifo, res, "general_profile_space                   ");
+			vld_u_name(  1, fifo, res, "general_tier_flag                       ");
+			vld_u_name(  5, fifo, res, "general_profile_id                      ");
+	        foreach int i in 0 .. 31 do
+				vld_u_name(  1, fifo, res, "general_profile_compatibility_flag[i]   ");
+			end
+		end
+		se_idx := se_idx + 1;
+	end
+	/**************************************************************************
+	 * read_VPS_Header.se_idx_3
+	 *************************************************************************/
+	read_VPS_Header.se_idx_3 : action ==>
+	guard
+		se_idx = 3 and isFifoFull(fifo)
+	var
+		bool profile_present_flag = true,
+		uint(size = 32) res[1],
+		bool sub_layer_profile_present_flag[7],
+		bool sub_layer_level_present_flag[7]
+	do
+		if (profile_present_flag) then
+			flushBits_name(16, fifo,   "general_reserved_zero_16bits            ");
+		end
+		vld_u_name(  8, fifo, res, "general_level_idc                       ");
+		foreach int i in 0 .. vps_max_sub_layers_minus1 - 1 do
+			vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
+			sub_layer_profile_present_flag[i] := (res[0] = 1);
+			vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
+			sub_layer_level_present_flag[i] := (res[0] = 1);
+	        if (profile_present_flag and sub_layer_profile_present_flag[i]) then
+				vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
+				vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
+				vld_u_name(  5, fifo, res, "sub_layer_profile_idc[i]                ");
+				foreach int j in 0 .. 31 do
+					vld_u_name(  1, fifo, res, "sub_layer_profile_compatibility_flags[i][j]");
+				end
+				flushBits_name(16, fifo,    "sub_layer_reserved_zero_16bits[i]         ");
+			end
+	       	if (sub_layer_level_present_flag[i]) then
+				vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
+	       	end
+	    end
+		se_idx := se_idx + 1;
+	end
+
+	/**************************************************************************
+	 * read_VPS_Header.se_idx_4
+	 *************************************************************************/
+	read_VPS_Header.se_idx_4.loop : action ==>
+	guard
+		se_idx = 4 and isFifoFull(fifo)
+	do
+		se_idx := se_idx + 1;
+		flushBits_name(12, fifo, "vps_reserved_zero_12bits");
+		cnt_i  := 0;
+	end
+
+	/**************************************************************************
+	 * read_VPS_Header.se_idx_4
+	 *************************************************************************/
+	read_VPS_Header.se_idx_5.loop : action ==>
+	guard
+		se_idx = 5 and isFifoFull(fifo),
+		cnt_i <= vps_max_sub_layers_minus1		
 	var
 		uint(size=32) res[1]
 	do
@@ -223,10 +293,10 @@ actor Algo_Parser ()
 		vld_ue_name(    fifo, res, "vps_max_latency_increase[i]             ");
 		cnt_i := cnt_i + 1;
 	end
-	read_VPS_Header.se_idx_2.loopEnd : action ==>
+	read_VPS_Header.se_idx_5.loopEnd : action ==>
 	guard
-		se_idx = 2,
-		cnt_i = vps_max_temporal_layers_minus1 + 1
+		se_idx = 5,
+		cnt_i = vps_max_sub_layers_minus1 + 1
 	do
 		se_idx := se_idx + 1;
 	end
@@ -235,10 +305,11 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	read_VPS_Header_done : action ==>
 	guard
-		se_idx = 3 and isFifoFull(fifo)
+		se_idx = 6 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1]
 	do
+		vld_ue_name(    fifo, res, "vps_num_hrd_parameters                  ");
 		vld_u_name(  1, fifo, res, "vps_extension_flag                      ");
 		if res[0] = 1 then
 			println("moreRBSP data VPS");
@@ -253,7 +324,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_1
 	 *************************************************************************/
-	uint(size= 4) sps_max_temporal_layers_minus1[NB_MAX_SPS];
+	uint(size= 4) sps_max_sub_layers_minus1[NB_MAX_SPS];
 	uint(size=16) sps_pic_width_in_luma_samples[NB_MAX_SPS];
 
 	read_SPS_Header.se_idx_1 : action ==>
@@ -262,21 +333,68 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		vld_u_name(  3, fifo, res, "profile_space                           "); 
-		vld_u_name(  5, fifo, res, "profile_idc                             "); 
-		flushBits_name(16, fifo,   "reserved_indicator_flags                ");
-		vld_u_name(  8, fifo, res, "level_idc                               ");
-		se_idx := 10;
+		vld_u_name(  4, fifo, res, "vps_id                                  "); 
+		vld_u_name(  3, fifo, res, "sps_max_sub_layers_minus1               "); 
+		sps_max_sub_layers_minus1[sps_id] := res[0];
+		flushBits_name(1 , fifo,   "sps_reserved_zero_bit                   ");
+		se_idx := 20;
 	end
-	read_SPS_Header.se_idx_1_0 : action ==>
+
+	read_SPS_Header.se_idx_20 : action ==>
 	guard
-		se_idx = 10 and isFifoFull(fifo)
+		se_idx = 20 and isFifoFull(fifo)
 	var
-		uint(size=32) res[1]
+		bool profile_present_flag = true,
+		uint(size = 32) res[1]
 	do
-		vld_u_name( 32, fifo, res, "profile_compatibility                   "); 
+		if (profile_present_flag) then
+		
+			vld_u_name(  2, fifo, res, "general_profile_space                   ");
+			vld_u_name(  1, fifo, res, "general_tier_flag                       ");
+			vld_u_name(  5, fifo, res, "general_profile_id                      ");
+	        foreach int i in 0 .. 31 do
+				vld_u_name(  1, fifo, res, "general_profile_compatibility_flag[i]   ");
+			end
+		end
+		se_idx := se_idx + 1;
+	end
+	/**************************************************************************
+	 * read_SPS_Header.se_idx_21
+	 *************************************************************************/
+	read_SPS_Header.se_idx_21 : action ==>
+	guard
+		se_idx = 21 and isFifoFull(fifo)
+	var
+		bool profile_present_flag = true,
+		uint(size = 32) res[1],
+		bool sub_layer_profile_present_flag[7],
+		bool sub_layer_level_present_flag[7]
+	do
+		if (profile_present_flag) then
+			flushBits_name(16, fifo,   "general_reserved_zero_16bits            ");
+		end
+		vld_u_name(  8, fifo, res, "general_level_idc                       ");
+		foreach int i in 0 .. vps_max_sub_layers_minus1 - 1 do
+			vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
+			sub_layer_profile_present_flag[i] := (res[0] = 1);
+			vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
+			sub_layer_level_present_flag[i] := (res[0] = 1);
+	        if (profile_present_flag and sub_layer_profile_present_flag[i]) then
+				vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
+				vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
+				vld_u_name(  5, fifo, res, "sub_layer_profile_idc[i]                ");
+				foreach int j in 0 .. 31 do
+					vld_u_name(  1, fifo, res, "sub_layer_profile_compatibility_flags[i][j]");
+				end
+				flushBits_name(16, fifo,    "sub_layer_reserved_zero_16bits[i]         ");
+			end
+	       	if (sub_layer_level_present_flag[i]) then
+				vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
+	       	end
+	    end
 		se_idx := 11;
 	end
+
 	read_SPS_Header.se_idx_1_1 : action ==>
 	guard
 		se_idx = 11 and isFifoFull(fifo)
@@ -285,10 +403,7 @@ actor Algo_Parser ()
 	do
 		vld_ue_name(    fifo, res, "seq_parameter_set_id                    ");
 		sps_id := res[0];
-		vld_ue_name(    fifo, res, "video_parameter_set_id                  ");
 		vld_ue_name(    fifo, res, "chroma_format_idc                       ");
-		vld_u_name(  3, fifo, res, "max_temporal_layers_minus1              ");
-		sps_max_temporal_layers_minus1[sps_id] := res[0];
 		vld_ue_name(    fifo, res, "pic_width_in_luma_samples               ");
 		sps_pic_width_in_luma_samples[sps_id] := res[0];
 		se_idx := 2;
@@ -343,7 +458,7 @@ actor Algo_Parser ()
 	read_SPS_Header.se_idx_3.loop : action ==>
 	guard
 		se_idx = 3 and isFifoFull(fifo),
-		cnt_i <= sps_max_temporal_layers_minus1[sps_id]
+		cnt_i <= sps_max_sub_layers_minus1[sps_id]
 	var
 		uint(size=32) res[1]
 	do
@@ -356,7 +471,7 @@ actor Algo_Parser ()
 	read_SPS_Header.se_idx_3.loopEnd : action ==>
 	guard
 		se_idx = 3,
-		cnt_i = sps_max_temporal_layers_minus1[sps_id] + 1
+		cnt_i = sps_max_sub_layers_minus1[sps_id] + 1
 	do
 		se_idx := se_idx + 1;
 	end
@@ -493,9 +608,8 @@ actor Algo_Parser ()
 		sps_long_term_ref_pics_present_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "sps_temporal_mvp_enable_flag            ");
 		sps_temporal_mvp_enable_flag[sps_id] := res[0];
-		foreach int i in 0 .. sps_maxCUDepth[sps_id] do
-			vld_u_name(  1, fifo, res, "AMVP_MODE                               "); 
-		end
+		vld_u_name(  1, fifo, res, "sps_strong_intra_smoothing_enable_flag  "); 
+		vld_u_name(  1, fifo, res, "vui_parameters_present_flag             "); 
 		se_idx := se_idx + 1;
 	end 
 	
@@ -525,7 +639,7 @@ actor Algo_Parser ()
 	 * read_PPS_Header.se_idx_1
 	 *************************************************************************/	
 	uint(size= 8) pps_sps_id[NB_MAX_PPS];
-	uint(size= 2) pps_tiles_or_entropy_coding_sync_idc[NB_MAX_PPS];
+	uint(size= 2) pps_tiles_enabled_flag[NB_MAX_PPS];
 
 	read_PPS_Header.se_idx_1 : action ==>
 	guard
@@ -544,6 +658,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_PPS_Header.se_idx_2
 	 *************************************************************************/
+	uint(size= 1) pps_dependent_slice_segments_enabled_flag[NB_MAX_PPS];
 	uint(size= 1) pps_sign_data_hiding_flag[NB_MAX_PPS];
 	uint(size= 1) pps_cabac_init_present_flag[NB_MAX_PPS];
 	uint(size= 8) pps_num_ref_idx_l0_default_active_minus1[NB_MAX_PPS];
@@ -566,9 +681,10 @@ actor Algo_Parser ()
 	guard
 		se_idx = 2 and isFifoFull(fifo)
 	var
-		uint(size=32) res[1],
-		uint(size= 1) tile_info_present_flag
+		uint(size=32) res[1]
    	do
+		vld_u_name(  1, fifo, res, "dependent_slice_segments_enabled_flag   ");
+		pps_dependent_slice_segments_enabled_flag[pps_id] := res[0];
 		vld_u_name(  1, fifo, res, "sign_data_hiding_flag                   ");
 		pps_sign_data_hiding_flag[pps_id] := res[0];
 		if pps_sign_data_hiding_flag[pps_id] = 1 then
@@ -604,15 +720,15 @@ actor Algo_Parser ()
 		vld_u_name(  1, fifo, res, "weighted_bipred_flag                    ");
 		vld_u_name(  1, fifo, res, "output_flag_present_flag                ");
 		pps_output_flag_present_flag[pps_id]:=res[0];
-		vld_u_name(  1, fifo, res, "dependent_slices_enabled_flag           ");
 		vld_u_name(  1, fifo, res, "transquant_bypass_enable_flag           ");
 		pps_transquant_bypass_enable_flag[pps_id]:=res[0];
-		vld_u_name(  2, fifo, res, "tiles_or_entropy_coding_sync_idc        ");
-		pps_tiles_or_entropy_coding_sync_idc[pps_id]:=res[0];
+		vld_u_name(  1, fifo, res, "tiles_enabled_flag                      ");
+		pps_tiles_enabled_flag[pps_id] := res[0];
+		vld_u_name(  1, fifo, res, "entropy_coding_sync_enabled_flag        ");
 		pps_num_tile_columns_minus1[pps_id] := 0;
 		pps_num_tile_rows_minus1[pps_id]    := 0;
 		pps_uniform_spacing_flag[pps_id]    := 1;
-		if pps_tiles_or_entropy_coding_sync_idc[pps_id] = 1 then
+		if pps_tiles_enabled_flag[pps_id] = 1 then
 			vld_ue_name(    fifo, res, "num_tile_columns_minus1                 "); 
 			pps_num_tile_columns_minus1[pps_id] := res[0];
 			vld_ue_name(    fifo, res, "num_tile_rows_minus1                    ");
@@ -698,12 +814,10 @@ actor Algo_Parser ()
 		uint(size=32) res[1],
 		uint(size= 1) pps_extension_flag
    	do
-   		if (pps_tiles_or_entropy_coding_sync_idc[pps_id] = 1) then
+   		if (pps_tiles_enabled_flag[pps_id] = 1) then
 			if pps_tile_control_present_flag[pps_id] = 1 then
 				vld_u_name(  1, fifo, res, "loop_filter_across_tiles_enabled_flag   ");
 			end
-		elsif (pps_tiles_or_entropy_coding_sync_idc[pps_id] = 2) then
-			vld_ue_name(    fifo, res, "num_substreams_minus1                   ");
 		end
 		vld_u_name(  1, fifo, res, "loop_filter_across_slice_flag           ");
 		pps_loop_filter_across_slice_flag[pps_id] := res[0];
@@ -781,38 +895,34 @@ actor Algo_Parser ()
 		uint(size=32) prev := 0,
 		uint(size=32) j,
 		uint(size= 1) first_slice_in_pic_flag,
-		uint(size= 1) dependent_slice_flag,
+		uint(size= 1) dependent_slice_segment_flag,
 		uint(size=16) pictSize[2]
    	do	
 		vld_u_name(  1, fifo, res, "first_slice_in_pic_flag                 ");
 		first_slice_in_pic_flag := res[0];
-		if nal_unit_type >= NAL_UNIT_CRA and nal_unit_type <= NAL_UNIT_IDR then
+		if nal_unit_type >= 16 and nal_unit_type <= 23 then
 			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
 		end
 		vld_ue_name(    fifo, res, "pic_parameter_set_id                    "); 
 		pps_id := res[0];
 		if first_slice_in_pic_flag = 0 then
+			if (pps_dependent_slice_segments_enabled_flag[pps_id] = 1) then
+				vld_u_name(  1, fifo, res, "dependent_slice_segment_flag                    ");
+				dependent_slice_segment_flag := res[0];
+			end
 			vld_ue_name(    fifo, res, "slice_address                           ");
 			slice_address := res[0];
 		else
 			slice_address := 0;
 		end
-		vld_ue_name(    fifo, res, "slice_type                              ");
-		slice_type := res[0];
-		vld_u_name(  1, fifo, res, "dependent_slice_flag                    ");
-		dependent_slice_flag := res[0];
-		if dependent_slice_flag = 0 then
+		if pps_dependent_slice_segments_enabled_flag[pps_id] = 0 then
 			sps_id := pps_sps_id[pps_id];
 			if(pps_output_flag_present_flag[pps_id] = 1) then	
 				vld_u_name(  1, fifo, res, "pic_output_flag                         ");
 			end
-//			RapPicFlag := if ( nal_unit_type  >=  4  &&  nal_unit_type  <=  8  )  then  1  else  0 end;
-//			if RapPicFlag = 1 then
-//			    vld_ue_name(    fifo, res, "rap_pic_id                              ");
-//	   			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
-//	   			poc:=0;
-//			else
-			if nal_unit_type = NAL_UNIT_IDR then
+			vld_ue_name(    fifo, res, "slice_type                              ");
+			slice_type := res[0];
+			if nal_unit_type = NAL_IDR_W_DLP then
 				poc:=0;
 			else
 				vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       "); 
@@ -850,7 +960,6 @@ actor Algo_Parser ()
 				slice_sample_adaptive_offset_flag[1] := res[0];
 				slice_sample_adaptive_offset_flag[2] := res[0];
 			end
-//			vld_ue_name(    fifo, res, "aps_id                                  "); 
 		end
 		pictSize[0] := sps_pic_width_in_luma_samples[sps_id];
 		pictSize[1] := sps_pic_height_in_luma_samples[sps_id];
@@ -873,12 +982,12 @@ actor Algo_Parser ()
 	   	num_ref_idx_l1_active_minus1 := pps_num_ref_idx_l1_default_active_minus1[pps_id];
 	   	temporal_mvp_enable_flag     := 0;
 	   	mvd_l1_zero_flag             := 0;
+		if sps_temporal_mvp_enable_flag[sps_id] = 1 and nal_unit_type != NAL_IDR_W_DLP then
+			vld_u_name(  1, fifo, res, "temporal_mvp_enable_flag                ");	
+			temporal_mvp_enable_flag := res[0];
+		end	
 		if entropy_slice_flag = 0 then
 			if slice_type = P_SLICE or slice_type = B_SLICE then
-				if sps_temporal_mvp_enable_flag[sps_id] = 1 then
-					vld_u_name(  1, fifo, res, "temporal_mvp_enable_flag                ");	
-					temporal_mvp_enable_flag := res[0];
-				end	
 				vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");		
 	      		if res[0] = 1 then
 					vld_ue_name(    fifo, res, "num_ref_idx_l0_active_minus1            ");
@@ -888,15 +997,15 @@ actor Algo_Parser ()
 						num_ref_idx_l1_active_minus1 := res[0];
 					end
 	      		end
+			    if (sps_lists_modification_present_flag[sps_id] = 1) then
+			    	println("TODO ref_pic_list_modification( )");
+			    	println("TODO ref_pic_list_combination( )");
+			    end
+			    if slice_type = B_SLICE then
+					vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");
+					mvd_l1_zero_flag := res[0];		
+				end	    
 	        end
-		    if (sps_lists_modification_present_flag[sps_id] = 1) then
-		    	println("TODO ref_pic_list_modification( )");
-		    	println("TODO ref_pic_list_combination( )");
-		    end
-		    if slice_type = B_SLICE then
-				vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");
-				mvd_l1_zero_flag := res[0];		
-			end	    
 	    end
 		se_idx := se_idx + 1;
 	end
@@ -918,10 +1027,6 @@ actor Algo_Parser ()
 		uint(size= 1) slice_header_disable_deblocking_filter_flag := 0
    	do	
    		cabac_init_flag := 0;
-		if( pps_cabac_init_present_flag[pps_id] = 1  and  slice_type  !=  I_SLICE )	then
-			vld_u_name(  1, fifo, res, "cabac_init_flag                         ");	
-			cabac_init_flag := res[0];
-		end
 		if(entropy_slice_flag = 0) then
 			vld_se_name(    fifo, res, "slice_qp_delta                          ");
 			slice_qp := pps_pic_init_qp_minus26[pps_id] + 26 +res[0];
@@ -944,18 +1049,24 @@ actor Algo_Parser ()
 					end
 				end
 			end	
-			if temporal_mvp_enable_flag = 1 then
-				res[0] := 1;
-				if( slice_type = B_SLICE ) then	
-					vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
+			if slice_type = P_SLICE or slice_type = B_SLICE then
+				if( pps_cabac_init_present_flag[pps_id] = 1  and  slice_type  !=  I_SLICE )	then
+					vld_u_name(  1, fifo, res, "cabac_init_flag                         ");	
+					cabac_init_flag := res[0];
 				end
-				if ( /*collocated_from_l0_flag*/ res[0] = 1 and num_ref_idx_l0_active_minus1 > 0 ) or ( /*!collocated_from_l0_flag*/ res[0]  =  0 and num_ref_idx_l1_active_minus1 > 0 ) then
-					vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+				if temporal_mvp_enable_flag = 1 then
+					res[0] := 1;
+					if( slice_type = B_SLICE ) then	
+						vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
+					end
+					if ( /*collocated_from_l0_flag*/ res[0] = 1 and num_ref_idx_l0_active_minus1 > 0 ) or ( /*!collocated_from_l0_flag*/ res[0]  =  0 and num_ref_idx_l1_active_minus1 > 0 ) then
+						vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+					end
 				end
+				vld_ue_name(    fifo, res, "5_minus_max_num_merge_cand              ");
+				MaxNumMergeCand := 5 - res[0];
 			end
 		end	
-		vld_ue_name(    fifo, res, "5_minus_max_num_merge_cand              ");
-		MaxNumMergeCand := 5 - res[0];
 	 	if( pps_loop_filter_across_slice_flag[sps_id] = 1  and  (
 	 		slice_sample_adaptive_offset_flag[0] = 1 
 	 		or slice_sample_adaptive_offset_flag[1] = 1 
@@ -1223,8 +1334,8 @@ actor Algo_Parser ()
 		CtbAddrTS := CtbAddrTS + 1;
 		CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
 		if( end_of_slice_flag = 0 and ( 
-			( pps_tiles_or_entropy_coding_sync_idc[pps_id] = 1 and TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1 ] ) or
-			( pps_tiles_or_entropy_coding_sync_idc[pps_id] = 2 and (CtbAddrTS mod PicWidthInCtbsY) = 0 ) 
+			( pps_tiles_enabled_flag[pps_id] = 1 and TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1 ] ) or
+			((CtbAddrTS mod PicWidthInCtbsY) = 0 ) 
 			) ) then
 //			rbsp_trailing_bits( )
 			showBits (24, fifo, res);
