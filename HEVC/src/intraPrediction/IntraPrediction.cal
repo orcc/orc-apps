@@ -547,7 +547,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 	/* Check if all parts of the CU are a square. */
 	getPartMode.isQuadTree: action PartMode:[partMode] ==>
 	guard
-		partMode != PART_MODE_SLICE  && partMode != PART_MODE_PICT,
 		partMode = PART_2Nx2N || partMode = PART_NxN
 	do
 		numPart := partModeToNumPart[partMode];
@@ -559,7 +558,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 	 */
 	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
 	guard
-		numPartDecoded < numPart
+		numPartDecoded < numPart,
+		not EnabSkipInPix || cuInfo[0] != IN_SAMP
 	do
 		cuMode := cuInfo[0];
 		getInSamp := true;
@@ -569,6 +569,23 @@ actor IntraPrediction(bool EnabSkipInPix)
 		end
 		nS := cuInfo[3];
 		cuAddr := [cuInfo[1], cuInfo[2]];
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	/* Get the information concerning the CU to be able to save the values in
+	 * currPict.
+	 */
+	getCuInfo.getInSamp: action CUInfo:[cuInfo] repeat 5 ==>
+	guard
+		numPartDecoded < numPart,
+		EnabSkipInPix && cuInfo[0] = IN_SAMP
+	var
+		uint(size=7) nS = cuInfo[3]
+	do
+		getInSamp := true;
+		treeAddr := [cuInfo[1], cuInfo[2]];
+		idxBlk := 0;
+		numBlkToSend := (nS*nS)/16;
 		numPartDecoded := numPartDecoded + 1;
 	end
 
@@ -608,9 +625,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 		predModeTab[1] := predMode[1];
 		predModeTab[2] := predMode[1];
 
-		if(predMode[1] = 35) then
-			println("Warning : we don't manage Intra_FromLuma yet !!!");
-		end
 		log2NS := 2;
 		while((1<<log2NS) < nS)
 		do
@@ -826,7 +840,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
 	getSamples.launch: action Sample:[sample] repeat 16 + 2*4 ==>
 	guard
-		idxBlk < numBlkToSend
+		idxBlk < numBlkToSend && (EnabSkipInPix || getInSamp)
 	var
 		uint(size=7) idxSample := 0,
 		uint(size=16) blkAddr[2]
@@ -874,8 +888,9 @@ actor IntraPrediction(bool EnabSkipInPix)
 
 		GetCuInfoNonQT (getCuInfo.nonQT )--> GetSplitTrafoInter;
 
-		GetCuInfo (getCuInfo.launch )--> GetCuMode;
-		GetCuInfo (getCuInfo.done   )--> GetPartMode;
+		GetCuInfo (getCuInfo.launch    )--> GetCuMode;
+		GetCuInfo (getCuInfo.getInSamp )--> GetInSamples;
+		GetCuInfo (getCuInfo.done      )--> GetPartMode;
 
 		GetCuMode (getCuMode.isIntra )--> GetSplitTrafoIntra;
 		GetCuMode (getCuMode.isInter )--> GetSplitTrafoInter;
@@ -896,5 +911,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 
 		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
 		GetIntraSamples (getSamples.done   )--> GetSplitTrafoIntra;
+
+		GetInSamples (getSamples.launch )--> GetInSamples;
+		GetInSamples (getSamples.done   )--> GetPartMode;
 	end
 end
