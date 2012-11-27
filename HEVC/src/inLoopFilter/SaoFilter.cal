@@ -99,12 +99,9 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
-	procedure codingTreeBlockModif(uint(size=16) rx, uint(size=16) ry,
-		uint(size=2) cIdx, uint(size=16) picSize[2])
+	procedure codingTreeBlockModifLuma(uint(size=16) rx, uint(size=16) ry,
+		uint(size=16) picSize[2])
 	var
-		uint(size=7) cuSideMax = if(cIdx=0) then 64 else 32 end,
-		uint(size=3) xMax = if(cIdx=0) then 3 else 1 end,
-		uint(size=3) yMax = if(cIdx=0) then 3 else 1 end,
 		uint(size=16) xIdx,
 		uint(size=16) yIdx,
 		uint(size=16) pixIdx[2][2],
@@ -114,12 +111,80 @@ actor SaoFilter(bool DEBUG)
 		uint(size=3) bandTable[32],
 		uint(size=3) bandIdx
 	begin
-		rx := if(cIdx=0) then rx<<2 else rx<<1 end;
-		ry := if(cIdx=0) then ry<<2 else ry<<1 end;
-		foreach uint(size=3) y in 0 .. yMax
+		foreach uint(size=3) y in 0 .. 63
 		do
 			yIdx := ry + y;
-			foreach uint(size=3) x in 0 .. xMax
+			foreach uint(size=3) x in 0 .. 63
+			do
+				xIdx := rx + x;
+				if(xIdx<picSize[0] && yIdx<picSize[1]) then
+					if(saoTypeIdx[xCuFilt][yCuFilt&1][0] = 2) then
+						pixIsInPict := true;
+						foreach uint k in 0 .. 1
+						do
+							pixIdx[k][0] := xIdx + constHPos0[saoEoClass[xCuFilt][yCuFilt&1][0]][k];
+							pixIdx[k][1] := yIdx + constVPos0[saoEoClass[xCuFilt][yCuFilt&1][0]][k];
+							if(pixIdx[k][0] >= picSize[0] || pixIdx[k][1]>=picSize[1]) then
+								pixIsInPict := false;
+							else if(not filterAcrossSlc) then
+								if(pixIdx[k][1]<begSlcAddr[0][1] ||
+									pixIdx[k][1]<begSlcAddr[0][1]+64
+									&& pixIdx[k][0]<begSlcAddr[0][0]) then
+									pixIsInPict := false;
+								else if(pixIdx[k][1]>=endSlcAddr[0][1]+64
+									|| pixIdx[k][1]>=endSlcAddr[0][1] &&
+									pixIdx[k][0]>=endSlcAddr[0][0]) then
+									pixIsInPict := false;
+								end end
+							end end
+						end
+						if(pixIsInPict) then
+							edgeIdx := 2;
+							foreach uint k in 0 .. 1
+							do
+								edgeIdx := edgeIdx + Sign3(OrigPict[0][xIdx][yIdx &(4*64-1)] -
+									OrigPict[0][pixIdx[k][0]][pixIdx[k][1] &(4*64-1)]);
+							end
+							edgeIdx := edgeIdxConv[edgeIdx];
+						else
+							edgeIdx := 0;
+						end
+						FiltPict[0][xIdx][yIdx] := clip_i32(OrigPict[0][xIdx][yIdx &(4*64-1)] +
+							saoOffset[xCuFilt][yCuFilt&1][0][edgeIdx], 0, 255);
+					else
+						foreach uint i in 0 .. 31
+						do
+							bandTable[i] := 0;
+						end
+						foreach uint k in 0 .. 3
+						do
+							bandTable[(k+saoLeftClass[xCuFilt][yCuFilt&1][0]) & 31] := k+1;
+						end
+						bandIdx := bandTable[OrigPict[0][xIdx][yIdx &(4*64-1)]>>bandShift];
+						FiltPict[0][xIdx][yIdx] := clip_i32(OrigPict[0][xIdx][yIdx &(4*64-1)] +
+							saoOffset[xCuFilt][yCuFilt&1][0][bandIdx], 0, 255);
+					end
+				end		
+			end
+		end
+	end
+
+	procedure codingTreeBlockModifChroma(uint(size=16) rx, uint(size=16) ry,
+		uint(size=2) cIdx, uint(size=16) picSize[2])
+	var
+		uint(size=16) xIdx,
+		uint(size=16) yIdx,
+		uint(size=16) pixIdx[2][2],
+		bool pixIsInPict,
+		uint(size=3) edgeIdx,
+		uint(size=3) bandShift = BIT_DEPTH-5,
+		uint(size=3) bandTable[32],
+		uint(size=3) bandIdx
+	begin
+		foreach uint(size=3) y in 0 .. 31
+		do
+			yIdx := ry + y;
+			foreach uint(size=3) x in 0 .. 31
 			do
 				xIdx := rx + x;
 				if(xIdx<picSize[0] && yIdx<picSize[1]) then
@@ -133,10 +198,10 @@ actor SaoFilter(bool DEBUG)
 								pixIsInPict := false;
 							else if(not filterAcrossSlc) then
 								if(pixIdx[k][1]<begSlcAddr[cIdx][1] ||
-									pixIdx[k][1]<begSlcAddr[cIdx][1]+cuSideMax
+									pixIdx[k][1]<begSlcAddr[cIdx][1]+32
 									&& pixIdx[k][0]<begSlcAddr[cIdx][0]) then
 									pixIsInPict := false;
-								else if(pixIdx[k][1]>=endSlcAddr[cIdx][1]+cuSideMax
+								else if(pixIdx[k][1]>=endSlcAddr[cIdx][1]+32
 									|| pixIdx[k][1]>=endSlcAddr[cIdx][1] &&
 									pixIdx[k][0]>=endSlcAddr[cIdx][0]) then
 									pixIsInPict := false;
@@ -182,22 +247,17 @@ actor SaoFilter(bool DEBUG)
 			(yCuFilt<yCu) && (xCuFilt<xCu || yCu=picSizeInCu[1]) ||
 			(yCuFilt<yCu-1))
 		do
-			picSizeLoc := picSize;
+			picSizeLoc := [picSize[0]>>1, picSize[1]>>1];
 			foreach uint cIdx in 0 .. 2
 			do
 				if(saoTypeIdx[xCuFilt][yCuFilt&1][cIdx]!=0) then
-					foreach uint yBlk in 0 .. 15
-					do
-						foreach uint xBlk in 0 .. 15
-						do
-							codingTreeBlockModif((xCuFilt<<4)+xBlk,
-								(yCuFilt<<4)+yBlk, cIdx, picSizeLoc);
-						end
+					if(cIdx=0) then
+						codingTreeBlockModifLuma((xCuFilt<<6),
+							(yCuFilt<<6), picSize);
+					else
+						codingTreeBlockModifChroma((xCuFilt<<5),
+							(yCuFilt<<5), cIdx, picSizeLoc);
 					end
-				end
-				if(cIdx=0) then
-					picSizeLoc[0] := picSizeLoc[0]>>1;
-					picSizeLoc[1] := picSizeLoc[1]>>1;
 				end
 			end
 			nextLcuAddressFilt();
