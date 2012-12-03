@@ -60,7 +60,7 @@ import std.util.Math.*;
 import common.CommonConstantHEVC.*;
 import interPrediction.NaluType.*;
 
-actor IntraPrediction()
+actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=16) CUInfo,
 	uint(size=6)  IntraPredMode,
 	uint(size=4)  PartMode,
@@ -155,6 +155,8 @@ actor IntraPrediction()
 	uint(size=9) numBlkToSend;
 	uint(size=9) idxBlk;
 
+	bool getInSamp;
+
 	function absCoordToRasterScan(uint(size=16) coord[2]) --> uint(size=8)
 	var
 		uint(size=4) xCoordInBlk = coord[0]/4,
@@ -240,6 +242,10 @@ actor IntraPrediction()
 			pNeighb[ABOVE][0] :=
 				currPict[cIdx][cuAddr[0]-1][(cuAddr[1]-1)&TABLE_HEIGHT_MASK];
 		end end end end
+		
+		if(cIdx=0) then
+			filterNeighbSamp(nS);
+		end
 	end
 
 	/* Check if the neighbours are available. maxVal contained either 2*nS or
@@ -252,7 +258,6 @@ actor IntraPrediction()
 		int xMin := 0, int yMin := 0, int xMax := 0, int yMax := 0,
 		int numPixRemain
 	begin
-
 		if(cuAddr[0]!=0) then
 			numPixRemain :=
 				if((cuAddr[0]&~(maxCuSize-1)) =
@@ -545,7 +550,6 @@ actor IntraPrediction()
 	/* Check if all parts of the CU are a square. */
 	getPartMode.isQuadTree: action PartMode:[partMode] ==>
 	guard
-		partMode != PART_MODE_SLICE  && partMode != PART_MODE_PICT,
 		partMode = PART_2Nx2N || partMode = PART_NxN
 	do
 		numPart := partModeToNumPart[partMode];
@@ -557,11 +561,34 @@ actor IntraPrediction()
 	 */
 	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
 	guard
-		numPartDecoded < numPart
+		numPartDecoded < numPart,
+		not EnabSkipInPix || cuInfo[0] != IN_SAMP
 	do
 		cuMode := cuInfo[0];
+		getInSamp := true;
+		if(EnabSkipInPix && (cuMode & NO_IN_SAMP) != 0) then
+			getInSamp := false;
+			cuMode := cuMode - NO_IN_SAMP;
+		end
 		nS := cuInfo[3];
 		cuAddr := [cuInfo[1], cuInfo[2]];
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	/* Get the information concerning the CU to be able to save the values in
+	 * currPict.
+	 */
+	getCuInfo.getInSamp: action CUInfo:[cuInfo] repeat 5 ==>
+	guard
+		numPartDecoded < numPart,
+		EnabSkipInPix && cuInfo[0] = IN_SAMP
+	var
+		uint(size=7) nS = cuInfo[3]
+	do
+		getInSamp := true;
+		treeAddr := [cuInfo[1], cuInfo[2]];
+		idxBlk := 0;
+		numBlkToSend := (nS*nS)/16;
 		numPartDecoded := numPartDecoded + 1;
 	end
 
@@ -572,6 +599,11 @@ actor IntraPrediction()
 	getCuInfo.nonQT.isInter: action CUInfo:[cuInfo] repeat 10 ==>
 	do
 		cuMode := cuInfo[0];
+		getInSamp := true;
+		if(EnabSkipInPix && (cuMode & NO_IN_SAMP) != 0) then
+			getInSamp := false;
+			cuMode := cuMode - NO_IN_SAMP;
+		end
 		nS := max(cuInfo[3], cuInfo[4]);
 		idxBlk := 0;
 		numBlkToSend := nS*nS/16;
@@ -596,9 +628,6 @@ actor IntraPrediction()
 		predModeTab[1] := predMode[1];
 		predModeTab[2] := predMode[1];
 
-		if(predMode[1] = 35) then
-			println("Warning : we don't manage Intra_FromLuma yet !!!");
-		end
 		log2NS := 2;
 		while((1<<log2NS) < nS)
 		do
@@ -699,9 +728,6 @@ actor IntraPrediction()
 
 			getNeighbSamples(locAddr, cIdx, treeNS);
 
-			if(cIdx=0) then
-				filterNeighbSamp(treeNS);
-			end
 			if(predMode = INTRA_PLANAR) then
 				intraPlanarPred(cIdx, treeNS, treeLog2NS);
 			else if(predMode = INTRA_DC) then
@@ -814,7 +840,7 @@ actor IntraPrediction()
 	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
 	getSamples.launch: action Sample:[sample] repeat 16 + 2*4 ==>
 	guard
-		idxBlk < numBlkToSend
+		idxBlk < numBlkToSend && (EnabSkipInPix || getInSamp)
 	var
 		uint(size=7) idxSample := 0,
 		uint(size=16) blkAddr[2]
@@ -852,7 +878,7 @@ actor IntraPrediction()
 
 	getSamples.done: action ==>
 	guard
-		idxBlk = numBlkToSend
+		idxBlk = numBlkToSend || (EnabSkipInPix && not getInSamp)
 	end
 
 	schedule fsm GetPartMode:
@@ -862,8 +888,9 @@ actor IntraPrediction()
 
 		GetCuInfoNonQT (getCuInfo.nonQT )--> GetSplitTrafoInter;
 
-		GetCuInfo (getCuInfo.launch )--> GetCuMode;
-		GetCuInfo (getCuInfo.done   )--> GetPartMode;
+		GetCuInfo (getCuInfo.launch    )--> GetCuMode;
+		GetCuInfo (getCuInfo.getInSamp )--> GetInSamples;
+		GetCuInfo (getCuInfo.done      )--> GetPartMode;
 
 		GetCuMode (getCuMode.isIntra )--> GetSplitTrafoIntra;
 		GetCuMode (getCuMode.isInter )--> GetSplitTrafoInter;
@@ -884,5 +911,8 @@ actor IntraPrediction()
 
 		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
 		GetIntraSamples (getSamples.done   )--> GetSplitTrafoIntra;
+
+		GetInSamples (getSamples.launch )--> GetInSamples;
+		GetInSamples (getSamples.done   )--> GetPartMode;
 	end
 end
