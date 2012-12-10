@@ -28,7 +28,9 @@ actor Algo_Parser ()
 				bool          Cbf, //Token generation fits with Dbf, it should be modified when residual will be integrated.
 				bool          SplitTransform,
 				uint(size= 8) TUSize,
-				 int(size=16) Coeff
+				 int(size=16) Coeff,
+				 bool 		  StrongIntraSmoothing
+				 
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
@@ -361,13 +363,9 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		showBits(8, fifo, res);
-		if res[0] = 0xFF then
-			vld_u_name(  8, fifo, res, "payload_type                            ");
-			sei_payloadType := sei_payloadType + 255;
-		else
-			vld_u_name(  8, fifo, res, "payload_type                            ");
-			sei_payloadType := sei_payloadType + res[0];
+		vld_u_name(  8, fifo, res, "payload_type                            ");
+		sei_payloadType := sei_payloadType + res[0];
+		if res[0] != 0xFF then
 			se_idx := se_idx + 1;
 		end
 	end
@@ -380,13 +378,9 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		showBits(8, fifo, res);
-		if res[0] = 0xFF then
-			vld_u_name(  8, fifo, res, "payload_size                            ");
-			sei_payloadSize := sei_payloadSize + 255;
-		else
-			vld_u_name(  8, fifo, res, "payload_size                            ");
-			sei_payloadSize := sei_payloadSize + res[0];
+		vld_u_name(  8, fifo, res, "payload_size                            ");
+		sei_payloadSize := sei_payloadSize + res[0];
+		if res[0] != 0xFF then
 			// sei_payload( payloadType, payloadSize )
 			se_idx := se_idx + 1;
 		end
@@ -739,7 +733,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_7
 	 *************************************************************************/
-	uint(size=32) pcRPS[NB_MAX_PPS][PC_RPS_STRUCT_SIZE];	
+	int(size=32) pcRPS[NB_MAX_PPS][PC_RPS_STRUCT_SIZE];	
 
 	read_SPS_Header.se_idx_7.loop : action ==>
 	guard
@@ -762,6 +756,7 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	uint(size= 1) sps_long_term_ref_pics_present_flag[NB_MAX_SPS];
 	uint(size= 1) sps_temporal_mvp_enable_flag[NB_MAX_SPS];
+	bool          sps_strong_intra_smoothing_enable_flag[NB_MAX_SPS];
 	
 	read_SPS_Header.se_idx_8 : action ==>
 	guard
@@ -773,7 +768,8 @@ actor Algo_Parser ()
 		sps_long_term_ref_pics_present_flag[sps_id] := res[0];
 		vld_u_name(  1, fifo, res, "sps_temporal_mvp_enable_flag            ");
 		sps_temporal_mvp_enable_flag[sps_id] := res[0];
-		vld_u_name(  1, fifo, res, "sps_strong_intra_smoothing_enable_flag  "); 
+		vld_u_name(  1, fifo, res, "sps_strong_intra_smoothing_enable_flag  ");
+		sps_strong_intra_smoothing_enable_flag[sps_id] := res[0] = 1;
 		vld_u_name(  1, fifo, res, "vui_parameters_present_flag             "); 
 		se_idx := se_idx + 1;
 	end 
@@ -1286,7 +1282,8 @@ actor Algo_Parser ()
 		end
 	end
 	uint(size=16) sliceCbAddrZs;
-	read_SliceHeader_done : action ==> Poc:[poc], MaxPocLsb:[max_poc_lsb[sps_id]]
+	read_SliceHeader_done : action ==> Poc:[poc], MaxPocLsb:[max_poc_lsb[sps_id]], 
+		StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id]]
 	guard
 		se_idx = 4
 	do
@@ -1569,7 +1566,7 @@ actor Algo_Parser ()
 		NumPCMBlock    := 0;
 		xCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0 );
 		yCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1 );
-//		println("CtbAddrRS = "+CtbAddrRS+", CtbSize = "+CtbSize+", pic_width_in_luma_samples = "+sps_pic_width_in_luma_samples[sps_id]+", x_ctb = "+xCtb+", y_ctb = "+yCtb+", log2_ctb_size = "+Log2CtbSize);
+		println("CtbAddrRS = "+CtbAddrRS+", CtbSize = "+CtbSize+", pic_width_in_luma_samples = "+sps_pic_width_in_luma_samples[sps_id]+", x_ctb = "+xCtb+", y_ctb = "+yCtb+", log2_ctb_size = "+Log2CtbSize);
 		
 		CtbAddrInSlice := CtbAddrRS - ( slice_address >> pps_SliceGranularity[pps_id] );
 		codingTree_idx := 2;
@@ -1641,6 +1638,7 @@ actor Algo_Parser ()
 		uint(size= 1) sao_merge_left_flag	:= 0,
 		uint(size= 1) sao_merge_up_flag		:= 0
 	do
+		println("sao_param ("+sao_rx+", "+sao_ry+") : "+CtbAddrInSlice);
 		if sao_rx > 0 then
 			leftCtbInSlice := CtbAddrInSlice > 0;
 			leftCtbInTile  := true; //(TileId[ CtbAddrTS ] = TileId[ ctbAddrRStoTS[ CtbAddrRS - 1 ] ]);
