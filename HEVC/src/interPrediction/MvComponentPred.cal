@@ -149,6 +149,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	int numCandidate;
 	uint sizeOfList;
 	uint nbList;
+	uint(size=5) minSizeRefListX;
 	int(size=16) pocRefListX[2][16];
 	uint(size=2) isBiPredOrLx;
 	uint(size=7) predCuSize;
@@ -161,6 +162,15 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		else
 			false
 		end
+	end
+
+	function getIsAvailable() --> bool
+	var
+		int xN = neighbLocation[0],
+		int yN = neighbLocation[1]
+	:
+		xN >= 0 && yN >= 0 && xN<picSizeInPart[0] && yN<picSizeInPart[1] &&
+			refIdxRef[currIdx][xN][yN][0]!= -1 || refIdxRef[currIdx][xN][yN][1]!= -1
 	end
 
 	/* Indicates if the Cu Orig and Neighb located in the current picture have the same reference indexes and movement vectors. */
@@ -275,12 +285,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			neighbLocation[0] := neighbLocation[0] & ~3;
 			neighbLocation[1] := neighbLocation[1] & ~3;
 		end end end end end end
-		if(location != CENTER && location != RIGHT_BOTTOM) then
-			if(neighbIsAbove && isMerged && (neighbLocation[1]&15)=15) then
-				neighbLocation[0] := (neighbLocation[0] & ~1) +
-					((neighbLocation[0]>>1)&1);
-			end
-		else
+		if(location = CENTER || location = RIGHT_BOTTOM) then
 			if(isMerged && (neighbLocation[1] & 15) = 15 ||
 				(neighbLocation[1]>>4 != partAddr[1]>>4)) then
 				neighbLocation[1] := -1;
@@ -304,12 +309,6 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		int i := 0
 	begin
 		predFlag := false;
-		if(isAboveNeighb && (yN & 15) = 15) then
-			//XXXX0X => XXXX00
-			//XXXX1X => XXXX11
-			xN := (xN & ~1) + ((xN>>1) & 1);
-			neighbLocation[0] := xN;
-		end
 		if(xN >= 0 && yN >= 0 && xN < picSizeInPart[0] &&
 			yN < picSizeInPart[1]) then
 			if(refIdxRef[currIdx][xN][yN][listX] =
@@ -404,12 +403,6 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		int mvParam[2]
 	begin
 		predFlag := false;
-		if(isAboveNeighb && (yN & 15) = 15) then
-			//XXXX0X => XXXX00
-			//XXXX1X => XXXX11
-			xN := (xN & ~1) + ((xN>>1) & 1);
-			neighbLocation[0] := xN;
-		end
 		if(xN>=0 && yN>=0 && xN<picSizeInPart[0] && yN<picSizeInPart[1]) then
 			if(refIdxRef[currIdx][xN][yN][0] != -1 ||
 				refIdxRef[currIdx][xN][yN][1] != -1) then
@@ -657,11 +650,13 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	guard
 		partMode = PART_MODE_SLICE || partMode = PART_MODE_PICT
 	do
-		if(colFromLX!=0)then
-			colFromLX := 1;
-		end
 		isBSlice := sliceType = B_SLICE;
 		colRefIdx := colRefIdxVal & 15;
+		if(isBSlice)then
+			colFromLX := 1-colFromLX;
+		else
+			colFromLX := 0;
+		end
 		colocFromL0 := colFromLX^1;
 		listIdx := 0;
 		maxPoc := MIN_INT16;
@@ -753,7 +748,9 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		int locationUp[2],
 		int locationLeft[2],
 		int refIdxVal := 0,
-		int partIdx = numPartDecoded-1
+		int partIdx = numPartDecoded-1,
+		bool isAvailableA1 := false,
+		bool isAvailableB1 := false
 	do
 		numCandidate := 0;
 		getNeighbAddr(ABOVE, true);
@@ -764,6 +761,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		//A1
 		if(not (cuPartMode = PART_Nx2N || cuPartMode = PART_nLx2N ||
 			cuPartMode = PART_nRx2N) || partIdx!=1) then
+			isAvailableA1 := getIsAvailable();
 			getNeighbourMv(false, 0, false);
 			numNeighbSelect := if(predFlag) then 1 else 0 end;
 		end
@@ -772,9 +770,10 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		if( not(cuPartMode = PART_2NxN || cuPartMode = PART_2NxnU ||
 			cuPartMode = PART_2NxnD) || partIdx != 1) then
 
-			tryGetNeighbour := hasNotSameMvComp(locationUp, locationLeft);
+			tryGetNeighbour := not isAvailableA1 || hasNotSameMvComp(locationUp, locationLeft);
+			neighbLocation := locationUp;
+			isAvailableB1 := getIsAvailable();
 			if(tryGetNeighbour) then
-				neighbLocation := locationUp;
 				getNeighbourMv(false, 0, false);
 				numNeighbSelect := numNeighbSelect +
 					if(predFlag) then 1 else 0 end;
@@ -783,7 +782,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 
 		//B0
 		getNeighbAddr(ABOVE_RIGHT, true);
-		tryGetNeighbour := hasNotSameMvComp(neighbLocation, locationUp);
+		tryGetNeighbour := not isAvailableB1 || hasNotSameMvComp(neighbLocation, locationUp);
 		if(tryGetNeighbour) then
 			getNeighbourMv(false, 0, false);
 			numNeighbSelect := numNeighbSelect +
@@ -792,7 +791,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 
 		//A0
 		getNeighbAddr(LEFT_BOTTOM, true);
-		tryGetNeighbour := hasNotSameMvComp(neighbLocation, locationLeft);
+		tryGetNeighbour := not isAvailableA1 || hasNotSameMvComp(neighbLocation, locationLeft);
 		if(tryGetNeighbour) then
 			getNeighbourMv(false, 0, false);
 			numNeighbSelect := numNeighbSelect +
@@ -801,9 +800,9 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 
 		if(numNeighbSelect<4) then
 			getNeighbAddr(ABOVE_LEFT, true);
-			tryGetNeighbour := hasNotSameMvComp(neighbLocation, locationUp);
+			tryGetNeighbour := not isAvailableB1 || hasNotSameMvComp(neighbLocation, locationUp);
 			tryGetNeighbour := tryGetNeighbour &&
-				hasNotSameMvComp(neighbLocation, locationLeft);
+				(not isAvailableA1 || hasNotSameMvComp(neighbLocation, locationLeft));
 			if(tryGetNeighbour) then
 				getNeighbourMv(false, 0, false);
 			end
@@ -816,7 +815,11 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		do
 			mvPred[i] := [[0,0],[0,0]];
 			refIdxPred[i] := [refIdxVal, refIdxVal];
-			refIdxVal := refIdxVal + 1;
+			if(refIdxVal = minSizeRefListX-1) then
+				refIdxVal := 0;
+			else
+				refIdxVal := refIdxVal + 1;
+			end
 		end
 	end
 
@@ -959,6 +962,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			isRef[i] := isRef[i] and isStillRef[i];
 		end
 		isRef[currIdx] := true;
+		minSizeRefListX := 31;
 	end
 
 	getRpsPoc.launch: action RpsPoc:[pocVal] ==>
@@ -986,6 +990,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		listIdx < 2
 	do
 		listSize := sizeList;
+		minSizeRefListX := min(sizeList, minSizeRefListX);
 		sizeIdx := 0;
 	end
 
