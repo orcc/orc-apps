@@ -27,7 +27,7 @@ actor Algo_Parser ()
 				uint(size= 2) SliceType,
 				bool          Cbf, //Token generation fits with Dbf, it should be modified when residual will be integrated.
 				bool          SplitTransform,
-				uint(size= 8) TUSize,
+				 int(size= 8) TUSize,
 				 int(size=16) Coeff,
 				 bool 		  StrongIntraSmoothing,
 				uint(size=14) DispCoord,
@@ -567,8 +567,8 @@ actor Algo_Parser ()
 	 * read_SPS_Header.se_idx_2
 	 *************************************************************************/
 	uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
-	uint(size= 1) sps_bit_depth_luma_minus8[NB_MAX_SPS];
-	uint(size= 1) sps_bit_depth_chroma_minus8[NB_MAX_SPS];
+	uint(size= 4) sps_bit_depth_luma_minus8[NB_MAX_SPS];
+	uint(size= 4) sps_bit_depth_chroma_minus8[NB_MAX_SPS];
 	uint(size= 1) sps_pcm_enabled_flag[NB_MAX_SPS];
 	uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
 	uint(size=16) max_poc_lsb[NB_MAX_SPS];
@@ -824,8 +824,8 @@ actor Algo_Parser ()
 	uint(size= 1) pps_transform_skip_enabled_flag[NB_MAX_PPS];
 	uint(size= 2) pps_SliceGranularity[NB_MAX_PPS];
 	uint(size=16) pps_diff_cu_qp_delta_depth[NB_MAX_PPS];
-	uint(size=16) pps_cb_qp_offset[NB_MAX_PPS];
-	uint(size=16) pps_cr_qp_offset[NB_MAX_PPS];
+	 int(size= 8) pps_cb_qp_offset[NB_MAX_PPS];
+	 int(size= 8) pps_cr_qp_offset[NB_MAX_PPS];
 	uint(size= 1) pps_slicelevel_chroma_qp_flag[NB_MAX_PPS];
 	uint(size= 1) pps_output_flag_present_flag[NB_MAX_PPS];
 	uint(size= 1) pps_transquant_bypass_enable_flag[NB_MAX_PPS];
@@ -1190,9 +1190,9 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_3
 	 *************************************************************************/
-	 int(size=32) slice_qp;
-	 int(size=32) slice_cb_qp_offset;
-	 int(size=32) slice_cr_qp_offset;
+	 int(size= 8) slice_qp;
+	 int(size= 8) slice_cb_qp_offset;
+	 int(size= 8) slice_cr_qp_offset;
 	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
 	 	
@@ -1229,7 +1229,9 @@ actor Algo_Parser ()
 			slice_cr_qp_offset := 0;
 			if pps_slicelevel_chroma_qp_flag[pps_id] = 1 then
 				vld_se_name(    fifo, res, "slice_cb_qp_offset                      ");
+				slice_cb_qp_offset := res[0];
 				vld_se_name(    fifo, res, "slice_cr_qp_offset                      ");
+				slice_cr_qp_offset := res[0];
 			end
 			if(pps_deblocking_filter_control_present_flag[pps_id] = 1) then	
 	 			if(deblocking_filter_override_enabled_flag[pps_id] = 1) then
@@ -2937,7 +2939,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_TransformUnit.skipResidualCoding
 	 *************************************************************************/
-	read_TransformUnit.skipResidualCoding : action ==> TUSize:[1<<rc_log2TrafoSize, 1, 0, 0]
+	read_TransformUnit.skipResidualCoding : action ==> TUSize:[1<<rc_log2TrafoSize, 1, 0, 0, 0, 0, 0]
 	guard 
 		tu_idx = 8 or tu_idx = 10 or tu_idx = 12
 	do	
@@ -2992,7 +2994,14 @@ actor Algo_Parser ()
 	 int(size= 8) rc_i;
 	 int(size= 16) tabTransCoeffLevel[32*32];
 //	uint(size= 1) transform_skip_flag;
-	read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag]
+	read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag,
+											slice_qp,
+											rc_cIdx,
+											if rc_cIdx = 1 then
+												pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
+	         								else
+												pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
+											end]
 	guard 
 		rc_idx = 1 and isFifoFull(fifo)
 	var
@@ -3127,53 +3136,6 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 2
-	var
-		uint(size=16) qp_bd_offset_luma = 6 * sps_bit_depth_luma_minus8[sps_id],
-		uint(size=16) qp_bd_offset_chroma = 6 * sps_bit_depth_chroma_minus8[sps_id],
-		 int qp_y_pred = slice_qp,
-         int qp_y      = ((qp_y_pred + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
-        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
-		 int(size=16) qp,
-		 int(size=16) qp_i,
-		 int(size=16) offset,
-		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
-		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end
-	do
-        if rc_cIdx = 0 then
-            qp := qp_y + qp_bd_offset_luma;
-        else
-            if rc_cIdx = 1 then
-                offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-            else
-                offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-            end
-            qp_i := clip_i32(qp_y + offset, - qp_bd_offset_luma, 57);
-            if qp_i < 30 then
-                qp := qp_i;
-            elsif qp_i > 43 then
-                qp := qp_i - 6;
-            else
-                qp := qp_c[qp_i - 30];
-            end
-	
-	        qp := qp + qp_bd_offset_chroma;
-	    end
-	
-		foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-			tabTransCoeffLevel[i] := clip_i32(( ( tabTransCoeffLevel[i] * 16 * levelScale[ qp mod 6 ] << (qp/6)) + (1 << (shift - 1 )) ) >> shift, -32768, 32767 );
-		end
-		if DEBUG_CABAC then
-			println("read_ResidualCoding_end");
-		end
-		if (DEBUG_COEFF) then
-			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
-			println("--------------------------");		
-			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
-			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
-			end		  
-			println("--------------------------");			  
-        end
 	end
 
 	read_ResidualCoding_end.xIT8 : action ==> 
@@ -3182,53 +3144,6 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 3
-	var
-		uint(size=16) qp_bd_offset_luma = 6 * sps_bit_depth_luma_minus8[sps_id],
-		uint(size=16) qp_bd_offset_chroma = 6 * sps_bit_depth_chroma_minus8[sps_id],
-		 int qp_y_pred = slice_qp,
-         int qp_y      = ((qp_y_pred + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
-        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
-		 int(size=16) qp,
-		 int(size=16) qp_i,
-		 int(size=16) offset,
-		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
-		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end
-	do
-        if rc_cIdx = 0 then
-            qp := qp_y + qp_bd_offset_luma;
-        else
-            if rc_cIdx = 1 then
-                offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-            else
-                offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-            end
-            qp_i := clip_i32(qp_y + offset, - qp_bd_offset_luma, 57);
-            if qp_i < 30 then
-                qp := qp_i;
-            elsif qp_i > 43 then
-                qp := qp_i - 6;
-            else
-                qp := qp_c[qp_i - 30];
-            end
-	
-	        qp := qp + qp_bd_offset_chroma;
-	    end
-	
-		foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-			tabTransCoeffLevel[i] := clip_i32(( ( tabTransCoeffLevel[i] * 16 * levelScale[ qp mod 6 ] << (qp/6)) + (1 << (shift - 1 )) ) >> shift, -32768, 32767 );
-		end
-		if DEBUG_CABAC then
-			println("read_ResidualCoding_end");
-		end
-		if (DEBUG_COEFF) then
-			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
-			println("--------------------------");		
-			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
-			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
-			end		  
-			println("--------------------------");			  
-        end
 	end
 
 	read_ResidualCoding_end.xIT16 : action ==> 
@@ -3237,53 +3152,6 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 4
-	var
-		uint(size=16) qp_bd_offset_luma = 6 * sps_bit_depth_luma_minus8[sps_id],
-		uint(size=16) qp_bd_offset_chroma = 6 * sps_bit_depth_chroma_minus8[sps_id],
-		 int qp_y_pred = slice_qp,
-         int qp_y      = ((qp_y_pred + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
-        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
-		 int(size=16) qp,
-		 int(size=16) qp_i,
-		 int(size=16) offset,
-		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
-		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end
-	do
-        if rc_cIdx = 0 then
-            qp := qp_y + qp_bd_offset_luma;
-        else
-            if rc_cIdx = 1 then
-                offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-            else
-                offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-            end
-            qp_i := clip_i32(qp_y + offset, - qp_bd_offset_luma, 57);
-            if qp_i < 30 then
-                qp := qp_i;
-            elsif qp_i > 43 then
-                qp := qp_i - 6;
-            else
-                qp := qp_c[qp_i - 30];
-            end
-	
-	        qp := qp + qp_bd_offset_chroma;
-	    end
-	
-		foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-			tabTransCoeffLevel[i] := clip_i32(( ( tabTransCoeffLevel[i] * 16 * levelScale[ qp mod 6 ] << (qp/6)) + (1 << (shift - 1 )) ) >> shift, -32768, 32767 );
-		end
-		if DEBUG_CABAC then
-			println("read_ResidualCoding_end");
-		end
-		if (DEBUG_COEFF) then
-			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
-			println("--------------------------");		
-			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
-			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
-			end		  
-			println("--------------------------");			  
-        end
 	end
 
 	read_ResidualCoding_end.xIT32 : action ==> 
@@ -3292,53 +3160,6 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 5
-	var
-		uint(size=16) qp_bd_offset_luma = 6 * sps_bit_depth_luma_minus8[sps_id],
-		uint(size=16) qp_bd_offset_chroma = 6 * sps_bit_depth_chroma_minus8[sps_id],
-		 int qp_y_pred = slice_qp,
-         int qp_y      = ((qp_y_pred + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
-        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
-		 int(size=16) qp,
-		 int(size=16) qp_i,
-		 int(size=16) offset,
-		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
-		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end
-	do
-        if rc_cIdx = 0 then
-            qp := qp_y + qp_bd_offset_luma;
-        else
-            if rc_cIdx = 1 then
-                offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-            else
-                offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-            end
-            qp_i := clip_i32(qp_y + offset, - qp_bd_offset_luma, 57);
-            if qp_i < 30 then
-                qp := qp_i;
-            elsif qp_i > 43 then
-                qp := qp_i - 6;
-            else
-                qp := qp_c[qp_i - 30];
-            end
-	
-	        qp := qp + qp_bd_offset_chroma;
-	    end
-	
-		foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-			tabTransCoeffLevel[i] := clip_i32(( ( tabTransCoeffLevel[i] * 16 * levelScale[ qp mod 6 ] << (qp/6)) + (1 << (shift - 1 )) ) >> shift, -32768, 32767 );
-		end
-		if DEBUG_CABAC then
-			println("read_ResidualCoding_end");
-		end
-		if (DEBUG_COEFF) then
-			println("Splitter ACTION: split_"+(1<<rc_log2TrafoSize)+"x"+(1<<rc_log2TrafoSize)+" : "+(if rc_TType = TEXT_LUMA then "Y" elsif rc_TType = TEXT_CHROMA_U then "U" else "V" end));		
-			println("--------------------------");		
-			println("sizeOfTU = " + (1<<rc_log2TrafoSize));
-			foreach int i in 0 .. (1<<rc_log2TrafoSize) * (1<<rc_log2TrafoSize) - 1 do
-				println("coeff["+i+"]     = "+tabTransCoeffLevel[i]);
-			end		  
-			println("--------------------------");			  
-        end
 	end
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
