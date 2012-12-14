@@ -1320,7 +1320,6 @@ actor Algo_Parser ()
 	uint(size=16) ctbAddrRStoTS[CTB_ADDR_TS_MAX];
 	uint(size=16) ctbAddrTStoRS[CTB_ADDR_TS_MAX];
 	uint(size=16) TileId[CTB_ADDR_TS_MAX];
-	uint(size=16) MinCbAddrZS[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX];
 	
 	uint(size= 1) skip_flag_tab[CTB_ADDR_TS_MAX][2];
 	
@@ -1446,26 +1445,6 @@ actor Algo_Parser ()
 					end
 				end
 				tIdx := tIdx + 1;
-			end
-		end
-		
-		if PicHeightInMinCbs >= CTB_ADDR_TS_MAX then
-			println("Error read_SliceData.init : MinCbAddrZS y : "+PicHeightInMinCbs+" >= "+CTB_ADDR_TS_MAX);
-		end
-		if PicWidthInMinCbs >= CTB_ADDR_TS_MAX then
-			println("Error read_SliceData.init : MinCbAddrZS x : "+PicWidthInMinCbs+" >= "+CTB_ADDR_TS_MAX);
-		end
-		foreach int y in 0 .. PicHeightInMinCbs-1 do
-			foreach int x in 0 .. PicWidthInMinCbs-1 do
-				tbX := ( x << Log2MinCbSize ) >> Log2CtbSize;
-				tbY := ( y << Log2MinCbSize ) >> Log2CtbSize;
-				ctbAddrRS := PicWidthInCtbsY * tbY + tbX;
-				p := ctbAddrRStoTS[ctbAddrRS] << ( (Log2CtbSize - Log2MinCbSize) * 2 );
-				foreach int i in 0 .. Log2CtbSize - Log2MinCbSize - 1 do
-					m := 1 << i;
-					p := p + if (m & x) != 0 then m*m else 0 end + if (m & y) != 0 then 2 * m * m else 0 end;
-				end
-				MinCbAddrZS[x][y] := p;	
 			end
 		end
 		//
@@ -1739,17 +1718,26 @@ actor Algo_Parser ()
 		uint(size= 8) top_ctDepth	= cu_top_ctDepth[ct_x0 >> Log2MinCbSize],
 		uint(size= 8) left_ctDepth	= cu_left_ctDepth[ct_y0 >> Log2MinCbSize],
 		uint(size= 1) split_coding_unit_flag,
-		uint(size= 8) Log2MinCuQpDeltaSize = Log2CtbSize - pps_diff_cu_qp_delta_depth[pps_id] - pps_SliceGranularity[pps_id]
+		uint(size= 8) Log2MinCuQpDeltaSize = Log2CtbSize - pps_diff_cu_qp_delta_depth[pps_id] - pps_SliceGranularity[pps_id],
+		uint(size=16) tbX = ( (ct_x0>>Log2MinCbSize) << Log2MinCbSize ) >> Log2CtbSize,
+		uint(size=16) tbY = ( (ct_y0>>Log2MinCbSize) << Log2MinCbSize ) >> Log2CtbSize,
+		uint(size=16) ctbAddrRS = PicWidthInCtbsY * tbY + tbX,
+		uint(size=16) MinCbAddrZS := ctbAddrRStoTS[ctbAddrRS] << ( (Log2CtbSize - Log2MinCbSize) * 2 ),
+		uint(size=16) m
 	do
 		if DEBUG_CABAC and DEBUG_TRACE1 then
 			println("read_CodingTree.start ("+ct_x0+", "+ct_y0+", "+(1<<ct_log2CbSize)+", "+ctStack[ctStack_idx][CT_ctDepth]+")");
 		elsif DEBUG_CABAC then
 			println("read_CodingTree.start");
 		end
-		
+		foreach int i in 0 .. Log2CtbSize - Log2MinCbSize - 1 do
+			m := 1 << i;
+			MinCbAddrZS := MinCbAddrZS + if (m & (ct_x0>>Log2MinCbSize)) != 0 then     m * m else 0 end
+									   + if (m & (ct_y0>>Log2MinCbSize)) != 0 then 2 * m * m else 0 end;
+		end		
 		if	ct_x0 + ( 1 << ct_log2CbSize ) <= sps_pic_width_in_luma_samples[sps_id] and
 			ct_y0 + ( 1 << ct_log2CbSize ) <= sps_pic_height_in_luma_samples[sps_id] and
-			MinCbAddrZS[ct_x0>>Log2MinCbSize][ct_y0>>Log2MinCbSize] >= sliceCbAddrZs and
+			MinCbAddrZS >= sliceCbAddrZs and
 			ct_log2CbSize > Log2MinCbSize and NumPCMBlock = 0 then
 			get_SPLIT_CODING_UNIT_FLAG(codIRange, codIOffset, ctxTable, fifo, res, ct_ctDepth, ct_x0 > 0, left_ctDepth, ct_y0 > 0, top_ctDepth);
 			split_coding_unit_flag := res[0];
@@ -1968,8 +1956,7 @@ actor Algo_Parser ()
 		uint(size=32) res[1],
 		uint(size= 8) length 		 = (1 << cu_log2CbSize) >> Log2MinCbSize,
 		uint(size=16) x_cb 			 = cu_x0 >> Log2MinCbSize,
-    	uint(size=16) y_cb 			 = cu_y0 >> Log2MinCbSize//,
-//		uint(size=16) CurrCbAddrTS = MinCbAddrZS[ cu_x0 >> Log2MinCbSize ][ cu_y0 >> Log2MinCbSize ]
+    	uint(size=16) y_cb 			 = cu_y0 >> Log2MinCbSize
 	do
 		skip_flag  := 0;
 		merge_flag := 0;
