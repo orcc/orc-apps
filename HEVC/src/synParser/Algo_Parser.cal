@@ -2540,11 +2540,10 @@ actor Algo_Parser ()
 
 	uint(size= 8) ttStack_idx;
 	uint(size=16) ttStack[10][TT_STRUCT_SIZE];
-	uint(size= 1) split_transform_flag[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
 	bool          lastSplitTransf;
-	uint(size= 1) cbf_cb[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
-	uint(size= 1) cbf_cr[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
-	uint(size= 1) cbf_luma[CTB_ADDR_TS_MAX][CTB_ADDR_TS_MAX][4];
+	uint(size= 1) cbf_cb[MAX_CU_SIZE][MAX_CU_SIZE][4];
+	uint(size= 1) cbf_cr[MAX_CU_SIZE][MAX_CU_SIZE][4];
+	uint(size= 1) cbf_luma;
 	bool          cbfLumaVal;
 	uint(size= 8) cur_intra_pred_mode;
 	/**************************************************************************
@@ -2563,6 +2562,11 @@ actor Algo_Parser ()
 		uint(size=16) yBase				= ttStack[ttStack_idx][TT_yBase],
 		uint(size= 8) log2TrafoSize	    = ttStack[ttStack_idx][TT_log2TrafoSize],
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
+		uint(size=16) cbf_x0			= x0 & ((1<<log2TrafoSize)-1),
+		uint(size=16) cbf_y0			= y0 & ((1<<log2TrafoSize)-1),
+		uint(size=16) cbf_xBase			= xBase & ((1<<log2TrafoSize)-1),
+		uint(size=16) cbf_yBase			= yBase & ((1<<log2TrafoSize)-1),
+		uint(size= 1) split_transform_flag := 0,
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
 		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
@@ -2579,49 +2583,49 @@ actor Algo_Parser ()
     	else
         	cur_intra_pred_mode := intra_pred_mode[0];
     	end
-		split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := 0;
+		split_transform_flag := 0;
 		if( log2TrafoSize <= Log2MaxTrafoSize and log2TrafoSize > Log2MinTrafoSize and
 			trafoDepth < MaxTrafoDepth and not(IntraSplitFlag = 1 and trafoDepth = 0) ) then
 			get_SPLIT_TRANSFORM_FLAG(codIRange, codIOffset, ctxTable, fifo, res, log2TrafoSize);
-			split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := res[0];
+			split_transform_flag := res[0];
 		elsif log2TrafoSize > Log2MaxTrafoSize or (IntraSplitFlag = 1 and trafoDepth = 0) or InterSplitFlag = 1 then
-			split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := 1;							
+			split_transform_flag := 1;							
 		end
 		
-		cbf_cb[ x0 ][ y0 ][ trafoDepth ] := 0;
-		cbf_cr[ x0 ][ y0 ][ trafoDepth ] := 0;
+		cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := 0;
+		cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := 0;
 		if trafoDepth = 0 or log2TrafoSize > 2  then
 			if trafoDepth = 0 then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 			else
-				if cbf_cb[ xBase ][ yBase ][ trafoDepth-1 ] = 1 then
+				if cbf_cb[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ] = 1 then
 					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-					cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
+					cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 				end
-				if cbf_cr[ xBase ][ yBase ][ trafoDepth-1 ] = 1 then
+				if cbf_cr[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ] = 1 then
 					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-					cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
+					cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 				end
 			end
 		end
 		if trafoDepth > 0 and log2TrafoSize = 2  then
-			cbf_cb[ x0 ][ y0 ][ trafoDepth ] := cbf_cb[ xBase ][ yBase ][ trafoDepth-1 ];
-			cbf_cr[ x0 ][ y0 ][ trafoDepth ] := cbf_cr[ xBase ][ yBase ][ trafoDepth-1 ];
+			cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := cbf_cb[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ];
+			cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := cbf_cr[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ];
 		end
 				
-		if split_transform_flag[ x0 ][ y0 ][ trafoDepth ] = 1 then
+		if split_transform_flag = 1 then
 			ttStack[ttStack_idx][TT_x1]  := x0 + ( ( 1 << log2TrafoSize ) >> 1 );
 			ttStack[ttStack_idx][TT_y1]  := y0 + ( ( 1 << log2TrafoSize ) >> 1 );
 			ttStack[ttStack_idx][TT_idx] := 3;
 		else
-			cbf_luma[ x0 ][ y0 ][ trafoDepth ] := 1;
+			cbf_luma := 1;
 			if predMode = MODE_INTRA or trafoDepth != 0 or
-				cbf_cb[ x0 ][ y0 ][ trafoDepth ] = 1 or cbf_cr[ x0 ][ y0 ][ trafoDepth ] = 1 then
+				cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] = 1 or cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] = 1 then
 				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_luma[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				cbf_luma := res[0];
 			end
 			ttStack[ttStack_idx][TT_idx] := 2;
 		end
@@ -2639,6 +2643,11 @@ actor Algo_Parser ()
 		uint(size=16) yBase				= ttStack[ttStack_idx][TT_yBase],
 		uint(size= 8) log2TrafoSize	    = ttStack[ttStack_idx][TT_log2TrafoSize],
 		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
+		uint(size=16) cbf_x0			= x0 & ((1<<log2TrafoSize)-1),
+		uint(size=16) cbf_y0			= y0 & ((1<<log2TrafoSize)-1),
+		uint(size=16) cbf_xBase			= xBase & ((1<<log2TrafoSize)-1),
+		uint(size=16) cbf_yBase			= yBase & ((1<<log2TrafoSize)-1),
+		uint(size= 1) split_transform_flag := 0,		
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = MODE_INTRA and partMode = PART_NxN then 1 else 0 end,
 		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = MODE_INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
@@ -2655,54 +2664,54 @@ actor Algo_Parser ()
     	else
         	cur_intra_pred_mode := intra_pred_mode[0];
     	end
-		split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := 0;
+		split_transform_flag := 0;
 		if( log2TrafoSize <= Log2MaxTrafoSize and log2TrafoSize > Log2MinTrafoSize and
 			trafoDepth < MaxTrafoDepth and not(IntraSplitFlag = 1 and trafoDepth = 0) ) then
 			get_SPLIT_TRANSFORM_FLAG(codIRange, codIOffset, ctxTable, fifo, res, log2TrafoSize);
-			split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := res[0];
+			split_transform_flag := res[0];
 		elsif log2TrafoSize > Log2MaxTrafoSize or (IntraSplitFlag = 1 and trafoDepth = 0) or InterSplitFlag = 1 then
-			split_transform_flag[ x0 ][ y0 ][ trafoDepth ] := 1;							
+			split_transform_flag := 1;							
 		end
 		
-		cbf_cb[ x0 ][ y0 ][ trafoDepth ] := 0;
-		cbf_cr[ x0 ][ y0 ][ trafoDepth ] := 0;
+		cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := 0;
+		cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := 0;
 		if trafoDepth = 0 or log2TrafoSize > 2  then
 			if trafoDepth = 0 then
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 			else
-				if cbf_cb[ xBase ][ yBase ][ trafoDepth-1 ] = 1 then
+				if cbf_cb[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ] = 1 then
 					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-					cbf_cb[ x0 ][ y0 ][ trafoDepth ] := res[0];
+					cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 				end
-				if cbf_cr[ xBase ][ yBase ][ trafoDepth-1 ] = 1 then
+				if cbf_cr[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ] = 1 then
 					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-					cbf_cr[ x0 ][ y0 ][ trafoDepth ] := res[0];
+					cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
 				end
 			end
 		end
 		if trafoDepth > 0 and log2TrafoSize = 2  then
-			cbf_cb[ x0 ][ y0 ][ trafoDepth ] := cbf_cb[ xBase ][ yBase ][ trafoDepth-1 ];
-			cbf_cr[ x0 ][ y0 ][ trafoDepth ] := cbf_cr[ xBase ][ yBase ][ trafoDepth-1 ];
+			cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := cbf_cb[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ];
+			cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := cbf_cr[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ];
 		end
 				
-		if split_transform_flag[ x0 ][ y0 ][ trafoDepth ] = 1 then
+		if split_transform_flag = 1 then
 			ttStack[ttStack_idx][TT_x1]  := x0 + ( ( 1 << log2TrafoSize ) >> 1 );
 			ttStack[ttStack_idx][TT_y1]  := y0 + ( ( 1 << log2TrafoSize ) >> 1 );
 			ttStack[ttStack_idx][TT_idx] := 3;
 		else
-			cbf_luma[ x0 ][ y0 ][ trafoDepth ] := 1;
+			cbf_luma := 1;
 			if predMode = MODE_INTRA or trafoDepth != 0 or
-				cbf_cb[ x0 ][ y0 ][ trafoDepth ] = 1 or cbf_cr[ x0 ][ y0 ][ trafoDepth ] = 1 then
+				cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] = 1 or cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] = 1 then
 				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_luma[ x0 ][ y0 ][ trafoDepth ] := res[0];
+				cbf_luma := res[0];
 			end
 			ttStack[ttStack_idx][TT_idx] := 2;
 		end
-		lastSplitTransf := split_transform_flag[ x0 ][ y0 ][ trafoDepth ] != 0;
-		cbfLumaVal := cbf_luma[ x0 ][ y0 ][ trafoDepth ] != 0;
+		lastSplitTransf := split_transform_flag != 0;
+		cbfLumaVal := cbf_luma != 0;
 	end
 
 	send_Cbf.skip: action ==>
@@ -2799,6 +2808,9 @@ actor Algo_Parser ()
 	guard 
 		isFifoFull(fifo),
 		tu_idx = 1
+	var
+		uint(size=16) cbf_x0			= tu_x0 & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_y0			= tu_y0 & ((1<<tu_log2TrafoSize)-1)
 	do
 		if DEBUG_CABAC and DEBUG_TRACE1 then
 			println("read_TransformUnit.start("+tu_x0+", "+tu_y0+", "+tu_xBase+", "+tu_yBase+", "+
@@ -2806,9 +2818,9 @@ actor Algo_Parser ()
 		elsif DEBUG_CABAC then
 			println("read_TransformUnit.start");
 		end
-		if  cbf_luma[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 or
-			cbf_cb[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 or
-			cbf_cr[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+		if  cbf_luma = 1 or
+			cbf_cb[ cbf_x0 ][ cbf_y0 ][ tu_trafoDepth ] = 1 or
+			cbf_cr[ cbf_x0 ][ cbf_y0 ][ tu_trafoDepth ] = 1 then
 			if pps_diff_cu_qp_delta_depth[pps_id] > 0  and IsCuQpDeltaCoded = 0 then
 				//cu_qp_delta
 				IsCuQpDeltaCoded := 1;
@@ -2822,7 +2834,7 @@ actor Algo_Parser ()
 		rc_scanIdx			:= getScanIdx(predMode, tu_log2TrafoSize, cur_intra_pred_mode);
 		rc_cIdx				:= 0;
 		rc_TType			:= TEXT_LUMA;
-		if cbf_luma[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+		if cbf_luma = 1 then
 			tu_idx 			:= 2;
 		end
 	end
@@ -2832,6 +2844,11 @@ actor Algo_Parser ()
 	read_TransformUnit.retLuma : action ==>
 	guard 
 		tu_idx = 3
+	var
+		uint(size=16) cbf_x0			= tu_x0 & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_y0			= tu_y0 & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_xBase			= tu_xBase & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_yBase			= tu_yBase & ((1<<tu_log2TrafoSize)-1)
 	do
 		tu_idx 				:= 5;
 		rc_idx 				:= 1;
@@ -2844,14 +2861,14 @@ actor Algo_Parser ()
 			rc_x0 				:= tu_x0;
 			rc_y0 				:= tu_y0;
 			rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
-			if cbf_cb[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+			if cbf_cb[ cbf_x0 ][ cbf_y0 ][ tu_trafoDepth ] = 1 then
 				tu_idx			:= 4;
 			end				
 		elsif tu_blkIdx = 3 then
 			tu_idx 			:= 10;  // skipResidualCoding
 			rc_x0    		:= tu_xBase;
 			rc_y0 	 		:= tu_yBase;
-			if cbf_cb[ tu_xBase ][ tu_yBase ][ tu_trafoDepth ] = 1 then
+			if cbf_cb[ cbf_xBase ][ cbf_yBase ][ tu_trafoDepth ] = 1 then
 				tu_idx		:= 4;
 			end
 		end
@@ -2862,6 +2879,11 @@ actor Algo_Parser ()
 	read_TransformUnit.retCb : action ==>
 	guard 
 		tu_idx = 5
+	var
+		uint(size=16) cbf_x0			= tu_x0 & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_y0			= tu_y0 & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_xBase			= tu_xBase & ((1<<tu_log2TrafoSize)-1),
+		uint(size=16) cbf_yBase			= tu_yBase & ((1<<tu_log2TrafoSize)-1)
 	do	
 		tu_idx	 := 7;
 		rc_idx 	 := 1;
@@ -2870,12 +2892,12 @@ actor Algo_Parser ()
 		if tu_log2TrafoSize > 2 then
 			tu_idx	 			:= 12;  // skipResidualCoding
 			rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
-			if cbf_cr[ tu_x0 ][ tu_y0 ][ tu_trafoDepth ] = 1 then
+			if cbf_cr[ cbf_x0 ][ cbf_y0 ][ tu_trafoDepth ] = 1 then
 				tu_idx 			:= 6;
 			end
 		elsif tu_blkIdx = 3 then
 			tu_idx	 := 12;  // skipResidualCoding
-			if cbf_cr[ tu_xBase ][ tu_yBase ][ tu_trafoDepth ] = 1 then
+			if cbf_cr[ cbf_xBase ][ cbf_yBase ][ tu_trafoDepth ] = 1 then
 				tu_idx				:= 6;
 			end
 		end
@@ -3090,6 +3112,10 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 2
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
 	end
 
 	read_ResidualCoding_end.xIT8 : action ==> 
@@ -3098,6 +3124,10 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 3
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
 	end
 
 	read_ResidualCoding_end.xIT16 : action ==> 
@@ -3106,6 +3136,10 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 4
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
 	end
 
 	read_ResidualCoding_end.xIT32 : action ==> 
@@ -3114,6 +3148,10 @@ actor Algo_Parser ()
 		rc_idx = 2,
 		rc_i < 0,
 		rc_log2TrafoSize = 5
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
 	end
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
