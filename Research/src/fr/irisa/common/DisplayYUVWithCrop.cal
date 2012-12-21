@@ -1,0 +1,136 @@
+/*
+ * Copyright (c) 2011, IETR/INSA of Rennes
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IETR/INSA of Rennes nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Damien de Saint Jorre
+// Modified by Herve Yviquel
+package fr.irisa.common;
+
+import fr.irisa.common.Simulation.*;
+import std.video.Display.*;
+import std.stdio.Source.*;
+
+
+actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
+	uint(size=8)  Byte,
+	uint(size=14) DispCoord,
+	uint(size=9)  PicSizeInMb
+		==>
+		:
+
+	uint(size=8) frameSum;
+	int (size=32) pictureSizeInMb;
+	int (size=32) nbBlockGot;
+
+	getPictureSize: action DispCoord:[dispCoord] repeat 4, PicSizeInMb:[picWidth,
+		picHeight] ==>
+	do
+		pictureSizeInMb   := picWidth * picHeight;
+		nbBlockGot := 0;
+	end
+
+	getPixValue.launch.Luma.blk16x16: action Byte :[Bytes] repeat 256 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 16
+	do
+		nbBlockGot := nbBlockGot + 1;
+		
+		foreach int i in 0 .. 255
+		do
+			frameSum := frameSum + Bytes[i];
+		end
+	end
+
+	getPixValue.launch.Luma.blk64x64: action Byte :[Bytes] repeat 4096 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 64
+	do
+		nbBlockGot := nbBlockGot + 1;
+		
+		foreach int i in 0 .. 4095
+		do
+			frameSum := frameSum + Bytes[i];
+		end
+	end
+
+	getPixValue.launch.Chroma.blk16x16: action Byte :[Bytes] repeat 64 ==>
+	guard
+		BLK_SIDE = 16
+	do
+
+		foreach int i in 0 .. 63
+		do
+			frameSum := frameSum + Bytes[i];
+		end
+	end
+
+	getPixValue.launch.Chroma.blk64x64: action Byte :[Bytes] repeat 1024 ==>
+	guard
+		BLK_SIDE = 64
+	do
+	
+		foreach int i in 0 .. 1023
+		do
+			frameSum := frameSum + Bytes[i];
+		end
+	end
+
+	checksumPicture: action ==>
+	guard
+		nbBlockGot >= pictureSizeInMb
+	var
+		uint checksum = frameSum & 255
+	do
+		display_checksum(checksum);
+		print_cyclecount();
+	end
+	
+	displayClose: action ==>
+	guard
+		source_isMaxLoopsReached()
+	do
+		source_exit(0);
+	end
+	
+	schedule fsm GetPictureSize:
+		GetPictureSize  (getPictureSize            )--> GetLumaBlock;
+		GetLumaBlock    (getPixValue.launch.Luma   )--> GetChroma1Block;
+		GetChroma1Block (getPixValue.launch.Chroma )--> GetChroma2Block;
+		GetChroma2Block (getPixValue.launch.Chroma )--> GetLumaBlock;
+		
+		GetLumaBlock    (checksumPicture           )--> GetPictureSize;
+		GetLumaBlock    (displayClose              )--> GetPictureSize;
+	end
+
+	priority
+		getPixValue > checksumPicture > displayClose;
+	end
+
+end
