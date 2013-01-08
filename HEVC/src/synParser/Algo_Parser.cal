@@ -4,6 +4,7 @@ import  std.util.Math.*;
 import  std.stdio.Source.*;
 
 import  org.sc29.wg11.common.BitstreamReadUtils.*;
+import  org.sc29.wg11.common.CabacDecodeBinFunction.*;
 import  synParser.Algo_ParserUtils.*;
 import  common.CommonConstantHEVC.*;
 import  common.CabacDecodeBinFunction.*;
@@ -1272,7 +1273,22 @@ actor Algo_Parser ()
 		StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id]]
 	guard
 		se_idx = 4
+	var
+		uint(size=32) res[1],
+		uint(size=16) num_entry_point_offsets,
+		uint(size=16) offset_len
 	do
+		if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
+			vld_ue_name(    fifo, res, "num_entry_point_offsets                 ");
+    		num_entry_point_offsets := res[0];
+    		if num_entry_point_offsets > 0 then
+				vld_ue_name(    fifo, res, "offset_len_minus1                       ");
+				offset_len := res[0]+1;
+	 			foreach uint(size=8) i in 0 .. num_entry_point_offsets-1 do
+		 			vld_u_name(  offset_len, fifo, res, "entry_point_offset                      ");
+				end
+    		end
+    	end
 		if 	source_isMaxLoopsReached() then
 			source_exit(0);
 		end
@@ -1291,6 +1307,7 @@ actor Algo_Parser ()
 	uint(size= 9) codIRange[1];
 	uint(size=16) codIOffset[1];
 	uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX];
+	uint(size= 9) ctxTableWPP[NB_MAX_SE][NB_MAX_NUM_CTX];
 	uint(size= 8) sliceData_idx;
 
 	/**************************************************************************
@@ -1482,14 +1499,16 @@ actor Algo_Parser ()
 		end_of_slice_flag := res[0];
 		CtbAddrTS := CtbAddrTS + 1;
 		CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
-		if( end_of_slice_flag = 0 and ( 
-			( pps_tiles_enabled_flag[pps_id] = 1 and TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1 ] ) or
-			( pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and (CtbAddrTS mod PicWidthInCtbsY) = 0 ) 
-			) ) then
-			//get_END_OF_SUB_STREAM_ONE_BIT(codIRange, codIOffset, fifo, res);
-			byte_alignment(fifo);
-	 	end
 	 	if end_of_slice_flag = 0 then
+			if (pps_tiles_enabled_flag[pps_id] = 1 and TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1 ]) or
+			   (pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and (CtbAddrTS mod PicWidthInCtbsY) = 0) then
+//				get_END_OF_SUB_STREAM_ONE_BIT(codIRange, codIOffset, fifo, res);
+				decodeInit(codIRange, codIOffset, fifo);
+				ctxTable    := [[ctxTableWPP[i][j]	: for int j in 0 .. NB_MAX_NUM_CTX-1] : for int i in 0 .. NB_MAX_SE-1];
+			end
+			if pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and (CtbAddrTS mod PicWidthInCtbsY) = 2 then
+				ctxTableWPP := [[ctxTable[i][j]	    : for int j in 0 .. NB_MAX_NUM_CTX-1] : for int i in 0 .. NB_MAX_SE-1];
+			end
 			sliceData_idx := 3;
 		else
 			sliceData_idx := 5;
