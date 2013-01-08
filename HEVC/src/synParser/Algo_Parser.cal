@@ -719,14 +719,14 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_7
 	 *************************************************************************/
-	int(size=32) pcRPS[NB_MAX_PPS][PC_RPS_STRUCT_SIZE];	
+	int(size=32) pcRPS[NB_MAX_SPS + 1][NB_MAX_PICS][PC_RPS_STRUCT_SIZE];	
 
 	read_SPS_Header.se_idx_7.loop : action ==>
 	guard
 		se_idx = 7 and isFifoFull(fifo),
 		cnt_i < sps_num_short_term_ref_pic_sets[sps_id]
    	do
-   		parseShortTermRefPicSet(cnt_i, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
+   		parseShortTermRefPicSet(sps_id, cnt_i, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
 		cnt_i := cnt_i + 1;
  	end
  	read_SPS_Header.se_idx_7.loopEnd : action ==>
@@ -1032,6 +1032,7 @@ actor Algo_Parser ()
 		end
 	    poc:= iPOCmsb+iPOClsb;
 	end
+
 	
 	read_SliceHeader.se_idx_1.read : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 63)/64, (pictSize[1] + 63)/64], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT]
@@ -1043,7 +1044,8 @@ actor Algo_Parser ()
 		uint(size=32) j,
 		uint(size= 1) first_slice_in_pic_flag,
 		uint(size= 1) dependent_slice_segment_flag,
-		uint(size=16) pictSize[2]
+		uint(size=16) pictSize[2],
+		int idx
    	do	
 		vld_u_name(  1, fifo, res, "first_slice_in_pic_flag                 ");
 		first_slice_in_pic_flag := res[0];
@@ -1085,15 +1087,19 @@ actor Algo_Parser ()
 				
 				vld_u_name(  1, fifo, res, "short_term_ref_pic_set_sps_flag         ");
 				if res[0] = 0 then
-			   		parseShortTermRefPicSet(pps_id, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
+			   		parseShortTermRefPicSet(NB_MAX_SPS, 0, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
 		   		else
 				    vld_ue_name(    fifo, res, "short_term_ref_pic_set_idx              ");
+				    pcRPS[NB_MAX_SPS][0] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1]; 
 				end
+				printDeltaPOC(NB_MAX_SPS, 0, pcRPS);
+				
 				if sps_long_term_ref_pics_present_flag[sps_id] = 1 then
 //					if( num_long_term_ref_pics_sps > 0 )
 //						num_long_term_sps		ue(v)
 				
-					vld_ue_name(    fifo, res, "num_long_term_pics                      "); pcRPS[pps_id][NUM_LONG_TERM_PICS]	:= res[0];
+					vld_ue_name(    fifo, res, "num_long_term_pics                      "); 
+					// pcRPS[pps_id][NUM_LONG_TERM_PICS]	:= res[0];
 //					for( i = 0; i < num_long_term_sps + num_long_term_pics; i++ ) {
 //						if( i < num_long_term_sps )
 //							lt_idx_sps[ i ]						u(v)
@@ -1106,17 +1112,18 @@ actor Algo_Parser ()
 //							delta_poc_msb_cycle_lt[ i ]			ue(v)
 //					}
 					
-				   	j := res[0] + pcRPS[pps_id][NUM_PICS]-1;
+//				   	j := res[0] + pcRPS[pps_id][NUM_PICS]-1;
 			   		foreach uint(size=8) i in 0 .. res[0]-2 do
 			    		vld_ue_name(    fifo, res, "delta_poc_lsb_lt                        "); prev := prev + res[0] + 1;
-						pcRPS[j][POC] := pcRPS[pps_id][POC] - prev;
+//						pcRPS[j][POC] := pcRPS[pps_id][POC] - prev;
 						vld_u_name(  1, fifo, res, "delta_poc_msb_present_flag              ");
 						if res[0] = 1 then
 			    			vld_ue_name(    fifo, res, "delta_poc_msb_cycle_lt_minus1                "); 
 						end
-						vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_flag                "); pcRPS[pps_id][USED+i]		:= res[0];
+						vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_flag                "); 
+						//pcRPS[pps_id][USED+i]		:= res[0];
 					end
-					pcRPS[pps_id][NUM_PICS] := pcRPS[pps_id][NUM_PICS] + pcRPS[pps_id][NUM_LONG_TERM_PICS];
+					pcRPS[sps_id][0][NUM_PICS] := pcRPS[sps_id][0][NUM_PICS] + pcRPS[sps_id][0][NUM_LONG_TERM_PICS];
 				end
 			end
 			if( sps_sample_adaptive_offset_enabled_flag[sps_id] = 1) then
