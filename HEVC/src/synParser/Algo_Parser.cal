@@ -32,7 +32,10 @@ actor Algo_Parser ()
 				 int(size=16) Coeff,
 				 bool 		  StrongIntraSmoothing,
 				uint(size=14) DispCoord,
-				uint(size=9)  PicSizeInMb
+				uint(size=9)  PicSizeInMb,
+				uint(size= 5) NumRefIdxLxActive,
+				uint(size= 4) RefPicListModif,
+				 int(size=16) RefPoc
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
@@ -1075,7 +1078,7 @@ actor Algo_Parser ()
 		numPic[LT_FOLL] := 0;
 	end
 	
-	read_SliceHeader.se_idx_1.read : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 63)/64, (pictSize[1] + 63)/64], 
+	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 63)/64, (pictSize[1] + 63)/64], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT]
 	guard
 		se_idx = 1 and isFifoFull(fifo)
@@ -1131,7 +1134,7 @@ actor Algo_Parser ()
 				    vld_ue_name(    fifo, res, "short_term_ref_pic_set_idx              ");
 				    pcRPS[NB_MAX_SPS][0] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1]; 
 				end
-				printDeltaPOC(NB_MAX_SPS, 0, pcRPS);
+				//printDeltaPOC(NB_MAX_SPS, 0, pcRPS);
 				setRefTables(NB_MAX_SPS, 0, pcRPS, poc);
 				if sps_long_term_ref_pics_present_flag[sps_id] = 1 then
 //					if( num_long_term_ref_pics_sps > 0 )
@@ -1186,7 +1189,7 @@ actor Algo_Parser ()
 	uint(size= 8) num_ref_idx_l1_active_minus1;
 	uint(size= 1) temporal_mvp_enable_flag;
 	uint(size= 1) mvd_l1_zero_flag;
-	read_SliceHeader.se_idx_2.read : action ==>
+	read_SliceHeader.se_idx_2 : action ==>
 	guard
 		se_idx = 2 and isFifoFull(fifo)
 	var
@@ -1221,7 +1224,64 @@ actor Algo_Parser ()
 				end	    
 	        end
 	    end
-		se_idx := se_idx + 1;
+		se_idx := 10;
+	end
+	/**************************************************************************
+	 * read_SliceHeader.sendRefPOC
+	 *************************************************************************/
+	uint(size= 8) idxNumPic;
+	uint(size= 8) idxRefPoc;
+	read_SliceHeader.sendRefPOC.init : action ==> NumRefIdxLxActive:[num_ref_idx_l0_active, num_ref_idx_l1_active] , RefPicListModif:[0, 0]
+	guard
+		se_idx = 10
+	var
+		uint(size= 5) num_ref_idx_l0_active,
+		uint(size= 5) num_ref_idx_l1_active
+	do
+		if slice_type = I_SLICE then
+   			num_ref_idx_l0_active := 0;
+	   		num_ref_idx_l1_active := 0;
+   		elsif slice_type = P_SLICE then
+   			num_ref_idx_l0_active := num_ref_idx_l0_active_minus1 + 1;
+	   		num_ref_idx_l1_active := 0;
+   		else
+   			num_ref_idx_l0_active := num_ref_idx_l0_active_minus1 + 1;
+	   		num_ref_idx_l1_active := num_ref_idx_l1_active_minus1 + 1;
+   		end
+		idxNumPic := 0;
+		se_idx    := 11;
+	end
+	read_SliceHeader.sendRefPOC.sendSize : action ==> RefPoc:[refPocSize]
+	guard
+		se_idx = 11
+	var
+		uint(size=16) refPocSize = numPic[idxNumPic]
+	do
+		if numPic[idxNumPic] = 0 then
+			idxNumPic := idxNumPic + 1;
+			if idxNumPic = 5 then
+				se_idx := 3;
+			end
+		else
+			idxRefPoc := 0;
+			se_idx    := 12;
+		end
+	end
+	read_SliceHeader.sendRefPOC.sendRefPoc : action ==> RefPoc:[refPoc]
+	guard
+		se_idx = 12
+	var
+		uint(size=16) refPoc = pocTables[idxNumPic][idxRefPoc]
+	do
+		idxRefPoc := idxRefPoc + 1;
+		if idxRefPoc = numPic[idxNumPic] then
+			idxNumPic := idxNumPic + 1;
+			if idxNumPic = 5 then
+				se_idx := 3;
+			else
+				se_idx := 11;
+			end
+		end
 	end
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_3
