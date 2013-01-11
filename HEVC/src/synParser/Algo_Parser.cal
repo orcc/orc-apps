@@ -35,7 +35,9 @@ actor Algo_Parser ()
 				uint(size=9)  PicSizeInMb,
 				uint(size= 5) NumRefIdxLxActive,
 				uint(size= 4) RefPicListModif,
-				 int(size=16) RefPoc
+				 int(size=16) RefPoc,
+				uint(size=3)  ColocInfo,
+				 int(size=16) MvPredSyntaxElem
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
 	uint(size= 2) zeroByte := 0;
@@ -1035,48 +1037,6 @@ actor Algo_Parser ()
 		end
 	    poc:= iPOCmsb+iPOClsb;
 	end
-
-	int(size=16)  pocTables[5][NB_MAX_PICS];
-	uint numPic[5];
-
-	uint(size=3) ST_CURR_BEF = 0;
-	uint(size=3) ST_CURR_AFT = 1;
-	uint(size=3) ST_FOLL = 2;
-	uint(size=3) LT_CURR = 3;
-	uint(size=3) LT_FOLL = 4;
-
-	procedure setRefTables(int sps_id, int idx, int pc_rps[NB_MAX_SPS + 1][NB_MAX_PICS][PC_RPS_STRUCT_SIZE], int poc)
-	begin
-	
-		uint j := 0;
-		uint k := 0;
-		foreach int i in 0 .. pc_rps[sps_id][idx][NUM_NEGATIVE_PICS]-1
-		do
-			if(pc_rps[sps_id][idx][USED+i]=1) then
-				pocTables[ST_CURR_BEF][j] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
-				j := j + 1;
-			else
-				pocTables[ST_FOLL][k] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
-				k := k + 1;
-			end
-		end
-		numPic[ST_CURR_BEF] := j;
-	
-		j:=0;
-    	foreach uint(size=8) i in pc_rps[sps_id][idx][NUM_NEGATIVE_PICS] .. pc_rps[sps_id][idx][NUM_PICS]-1 do
-			if(pc_rps[sps_id][idx][USED+i]=1) then
-				pocTables[ST_CURR_AFT][j] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
-				j := j + 1;
-			else
-				pocTables[ST_FOLL][k] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
-				k := k + 1;
-			end
-		end
-		numPic[ST_CURR_AFT] := j;
-		numPic[ST_FOLL] := k;
-		numPic[LT_CURR] := 0;
-		numPic[LT_FOLL] := 0;
-	end
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 63)/64, (pictSize[1] + 63)/64], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT]
@@ -1134,8 +1094,6 @@ actor Algo_Parser ()
 				    vld_ue_name(    fifo, res, "short_term_ref_pic_set_idx              ");
 				    pcRPS[NB_MAX_SPS][0] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1]; 
 				end
-				//printDeltaPOC(NB_MAX_SPS, 0, pcRPS);
-				setRefTables(NB_MAX_SPS, 0, pcRPS, poc);
 				if sps_long_term_ref_pics_present_flag[sps_id] = 1 then
 //					if( num_long_term_ref_pics_sps > 0 )
 //						num_long_term_sps		ue(v)
@@ -1185,8 +1143,8 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_2
 	 *************************************************************************/
-	uint(size= 8) num_ref_idx_l0_active_minus1;
-	uint(size= 8) num_ref_idx_l1_active_minus1;
+	uint(size= 8) num_ref_idx_l0_active;
+	uint(size= 8) num_ref_idx_l1_active;
 	uint(size= 1) temporal_mvp_enable_flag;
 	uint(size= 1) mvd_l1_zero_flag;
 	read_SliceHeader.se_idx_2 : action ==>
@@ -1195,23 +1153,27 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
    	do
-	   	num_ref_idx_l0_active_minus1 := pps_num_ref_idx_l0_default_active_minus1[pps_id];
-	   	num_ref_idx_l1_active_minus1 := pps_num_ref_idx_l1_default_active_minus1[pps_id];
-	   	temporal_mvp_enable_flag     := 0;
-	   	mvd_l1_zero_flag             := 0;
+	   	num_ref_idx_l0_active    := 0;
+	   	num_ref_idx_l1_active    := 0;
+	   	temporal_mvp_enable_flag := 0;
+	   	mvd_l1_zero_flag         := 0;
 		if sps_temporal_mvp_enable_flag[sps_id] = 1 and nal_unit_type != NAL_IDR_W_DLP then
 			vld_u_name(  1, fifo, res, "temporal_mvp_enable_flag                ");	
 			temporal_mvp_enable_flag := res[0];
 		end	
 		if entropy_slice_flag = 0 then
 			if slice_type = P_SLICE or slice_type = B_SLICE then
+			   	num_ref_idx_l0_active := pps_num_ref_idx_l0_default_active_minus1[pps_id] + 1;
+			   	if slice_type = B_SLICE then
+					num_ref_idx_l1_active := pps_num_ref_idx_l1_default_active_minus1[pps_id] + 1;	
+				end
 				vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");		
 	      		if res[0] = 1 then
 					vld_ue_name(    fifo, res, "num_ref_idx_l0_active_minus1            ");
-					num_ref_idx_l0_active_minus1 := res[0];
+					num_ref_idx_l0_active := res[0] + 1;
 					if slice_type = B_SLICE then
 						vld_ue_name(    fifo, res, "num_ref_idx_l1_active_minus1            ");
-						num_ref_idx_l1_active_minus1 := res[0];
+						num_ref_idx_l1_active := res[0] + 1;
 					end
 	      		end
 			    if (sps_lists_modification_present_flag[sps_id] = 1) then
@@ -1229,25 +1191,55 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.sendRefPOC
 	 *************************************************************************/
+	int(size=16)  pocTables[5][NB_MAX_PICS];
+	uint numPic[5];
 	uint(size= 8) idxNumPic;
 	uint(size= 8) idxRefPoc;
+	uint(size=3) ST_CURR_BEF = 0;
+	uint(size=3) ST_CURR_AFT = 1;
+	uint(size=3) ST_FOLL = 2;
+	uint(size=3) LT_CURR = 3;
+	uint(size=3) LT_FOLL = 4;
+
+	procedure setRefTables(int sps_id, int idx, int pc_rps[NB_MAX_SPS + 1][NB_MAX_PICS][PC_RPS_STRUCT_SIZE], int poc)
+	begin
+	
+		uint j := 0;
+		uint k := 0;
+		foreach int i in 0 .. pc_rps[sps_id][idx][NUM_NEGATIVE_PICS]-1
+		do
+			if(pc_rps[sps_id][idx][USED+i]=1) then
+				pocTables[ST_CURR_BEF][j] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
+				j := j + 1;
+			else
+				pocTables[ST_FOLL][k] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
+				k := k + 1;
+			end
+		end
+		numPic[ST_CURR_BEF] := j;
+	
+		j:=0;
+    	foreach uint(size=8) i in pc_rps[sps_id][idx][NUM_NEGATIVE_PICS] .. pc_rps[sps_id][idx][NUM_PICS]-1 do
+			if(pc_rps[sps_id][idx][USED+i]=1) then
+				pocTables[ST_CURR_AFT][j] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
+				j := j + 1;
+			else
+				pocTables[ST_FOLL][k] := poc + pc_rps[sps_id][idx][DELTAPOC+i];
+				k := k + 1;
+			end
+		end
+		numPic[ST_CURR_AFT] := j;
+		numPic[ST_FOLL] := k;
+		numPic[LT_CURR] := 0;
+		numPic[LT_FOLL] := 0;
+	end
+
 	read_SliceHeader.sendRefPOC.init : action ==> NumRefIdxLxActive:[num_ref_idx_l0_active, num_ref_idx_l1_active] , RefPicListModif:[0, 0]
 	guard
 		se_idx = 10
-	var
-		uint(size= 5) num_ref_idx_l0_active,
-		uint(size= 5) num_ref_idx_l1_active
 	do
-		if slice_type = I_SLICE then
-   			num_ref_idx_l0_active := 0;
-	   		num_ref_idx_l1_active := 0;
-   		elsif slice_type = P_SLICE then
-   			num_ref_idx_l0_active := num_ref_idx_l0_active_minus1 + 1;
-	   		num_ref_idx_l1_active := 0;
-   		else
-   			num_ref_idx_l0_active := num_ref_idx_l0_active_minus1 + 1;
-	   		num_ref_idx_l1_active := num_ref_idx_l1_active_minus1 + 1;
-   		end
+		//printDeltaPOC(NB_MAX_SPS, 0, pcRPS);
+		setRefTables(NB_MAX_SPS, 0, pcRPS, poc);
 		idxNumPic := 0;
 		se_idx    := 11;
 	end
@@ -1292,13 +1284,16 @@ actor Algo_Parser ()
 	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
 	 	
-	read_SliceHeader.se_idx_3 : action ==>
+	read_SliceHeader.se_idx_3 : action ==> ColocInfo:[collocated_from_l0_flag, collocated_ref_idx]
+	
 	guard
 		se_idx = 3 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
 		uint(size= 1) deblocking_filter_override_flag := 0,
-		uint(size= 1) slice_header_disable_deblocking_filter_flag := 0
+		uint(size= 1) slice_header_disable_deblocking_filter_flag := 0,
+		uint(size= 1) collocated_from_l0_flag := 0,
+		uint(size= 3) collocated_ref_idx := 0
    	do	
    		cabac_init_flag := 0;
 		if(entropy_slice_flag = 0) then
@@ -1311,9 +1306,11 @@ actor Algo_Parser ()
 					res[0] := 1;
 					if( slice_type = B_SLICE ) then	
 						vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
+						collocated_from_l0_flag := res[0];
 					end
-					if ( /*collocated_from_l0_flag*/ res[0] = 1 and num_ref_idx_l0_active_minus1 > 0 ) or ( /*!collocated_from_l0_flag*/ res[0]  =  0 and num_ref_idx_l1_active_minus1 > 0 ) then
+					if ( /*collocated_from_l0_flag*/ res[0] = 1 and num_ref_idx_l0_active > 1 ) or ( /*!collocated_from_l0_flag*/ res[0]  =  0 and num_ref_idx_l1_active > 1 ) then
 						vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+						collocated_ref_idx := res[0];
 					end
 				end
 				vld_ue_name(    fifo, res, "5_minus_max_num_merge_cand              ");
@@ -2436,6 +2433,10 @@ actor Algo_Parser ()
 	uint(size= 8) pu_PbH;
 	uint(size= 1) pcm_flag;
 	uint(size= 8) inter_pred_idc;
+	 int(size=16) mergeIdx;
+	 int(size=16) mvp_lx[2];
+	 int(size=16) ref_idx_lx[2];
+	 int(size=16) mvd[4];
 	
 	/**************************************************************************
 	 * read_PredictionUnit.start
@@ -2447,10 +2448,17 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
-		inter_pred_idc := Pred_L0;
+		inter_pred_idc	:= Pred_L0;
+		mergeIdx		:= -1;
+		mvp_lx			:= [-1, -1]; 
+		ref_idx_lx		:= [0, -1];
+		mvd				:= [0, 0, 0, 0];
+		mvd_x			:= 0;
+		mvd_y			:= 0;
 		if ( skip_flag = 1) then
 			if( MaxNumMergeCand > 1 ) then
 				get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res, MaxNumMergeCand);
+				mergeIdx := res[0];
 			end
 			pu_idx := 7;
 		else /* MODE_INTER */
@@ -2459,6 +2467,7 @@ actor Algo_Parser ()
 			if res[0] = 1 then
 				if MaxNumMergeCand > 1 then
 					get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res, MaxNumMergeCand);
+					mergeIdx := res[0];
 				end
 				pu_idx := 7;
 			else
@@ -2467,9 +2476,9 @@ actor Algo_Parser ()
 					inter_pred_idc := res[0];
 				end
 				if( inter_pred_idc != Pred_L1 ) then
-					if( num_ref_idx_l0_active_minus1 > 0 ) then
-						get_REF_IDX_LX(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l0_active_minus1);
-						//ref_idx_l0[ x0 ][ y0 ]
+					if( num_ref_idx_l0_active > 1 ) then
+						get_REF_IDX_LX(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l0_active-1);
+						ref_idx_lx[0] := res[0];
 					end
 					// goto mvd_coding
 					pu_idx := 3;
@@ -2488,15 +2497,20 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
+		mvd[0]	:= mvd_x;
+		mvd[1]	:= mvd_y;
+		mvd_x	:= 0;
+		mvd_y	:= 0;
 		if( inter_pred_idc != Pred_L1 ) then
 			get_MVP_LX_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
-			//mvp_l0_flag[ x0 ][ y0 ];
+			mvp_lx[0] := res[0];
 		end	
 		pu_idx := 7;
 		if( inter_pred_idc != Pred_L0 ) then
-			if( num_ref_idx_l1_active_minus1 > 0 ) then
-				get_REF_IDX_LX(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l1_active_minus1);
-				//ref_idx_l1[ x0 ][ y0 ]
+			ref_idx_lx[1] := 0;
+			if( num_ref_idx_l1_active > 1 ) then
+				get_REF_IDX_LX(codIRange, codIOffset, ctxTable, fifo, res, num_ref_idx_l1_active-1);
+				ref_idx_lx[1] := res[0];
 			end
 			if( mvd_l1_zero_flag = 1 and inter_pred_idc = Pred_BI ) then
 				//mvd_l1[ x0 ][ y0 ][ 0 ] = 0
@@ -2525,25 +2539,34 @@ actor Algo_Parser ()
 	var
 		uint(size=32) res[1]
 	do
+		mvd[2] := mvd_x;
+		mvd[3] := mvd_y;
 		get_MVP_LX_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
-		//mvp_l1_flag[ x0 ][ y0 ]
+		mvp_lx[1] := res[0];
 		pu_idx := 7;
 	end
 	/**************************************************************************
 	 * read_PredictionUnit_end
 	 *************************************************************************/
-	read_PredictionUnit_end : action ==>
+	read_PredictionUnit_end.mergeIdx_Eq_min1 : action ==> MvPredSyntaxElem:[mergeIdx,
+															mvp_lx[0]     , mvp_lx[1],
+															ref_idx_lx[0] , ref_idx_lx[1],
+	 														mvd[0], mvd[1], mvd[2], mvd[3]]
 	guard 
-		pu_idx = 7
+		pu_idx = 7, mergeIdx = -1
 	end
-	
+	read_PredictionUnit_end.mergeIdx_notEq_min1 : action ==> MvPredSyntaxElem:[mergeIdx,
+															mvd[0], mvd[1], mvd[2], mvd[3]]
+	guard 
+		pu_idx = 7, mergeIdx != -1
+	end
 	/**************************************************************************
 	 **************************************************************************
 	 ********        MVD Coding                           *********************
 	 **************************************************************************
 	 *************************************************************************/
-//	uint(size= 8) mvd_x;
-//	uint(size= 8) mvd_y;
+	uint(size=16) mvd_x;
+	uint(size=16) mvd_y;
 	read_MVDCoding.start : action ==>
 	guard
 		isFifoFull(fifo)
@@ -2552,11 +2575,11 @@ actor Algo_Parser ()
 		uint(size= 1) abs_mvd_greater0_flag_0,
 		uint(size= 1) abs_mvd_greater0_flag_1,
 		uint(size= 1) abs_mvd_greater1_flag_0,
-		uint(size= 1) abs_mvd_greater1_flag_1//,
-//		 int(size=32) abs_mvd_minus2_0 := 0,
-//		uint(size= 1) mvd_sign_flag_0  := 0,
-//		 int(size=32) abs_mvd_minus2_1 := 0,
-//		uint(size= 1) mvd_sign_flag_1  := 0
+		uint(size= 1) abs_mvd_greater1_flag_1,
+		 int(size=16) abs_mvd_minus2_0 := 0,
+		uint(size= 1) mvd_sign_flag_0  := 0,
+		 int(size=16) abs_mvd_minus2_1 := 0,
+		uint(size= 1) mvd_sign_flag_1  := 0
 	do
 		get_ABS_MVD_GREATER0_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 		abs_mvd_greater0_flag_0 := res[0];
@@ -2571,24 +2594,25 @@ actor Algo_Parser ()
 			abs_mvd_greater1_flag_1 := res[0];
 		end
 		if abs_mvd_greater0_flag_0 = 1 then
-//			abs_mvd_minus2_0 := -1;
+			abs_mvd_minus2_0 := -1;
 			if abs_mvd_greater1_flag_0 = 1 then
 				get_ABS_MVD_MINUS2(codIRange, codIOffset, fifo, res);
-//				abs_mvd_minus2_0 := res[0];
+				abs_mvd_minus2_0 := res[0];
 			end
 			get_MVD_SIGN_FLAG(codIRange, codIOffset, fifo, res);
-//			mvd_sign_flag_0 := res[0];
+			mvd_sign_flag_0 := res[0];
 		end
 		if abs_mvd_greater0_flag_1 = 1 then
+			abs_mvd_minus2_1 := -1;
 			if abs_mvd_greater1_flag_1 = 1 then
 				get_ABS_MVD_MINUS2(codIRange, codIOffset, fifo, res);
-//				abs_mvd_minus2_1 := res[0];
+				abs_mvd_minus2_1 := res[0];
 			end
 			get_MVD_SIGN_FLAG(codIRange, codIOffset, fifo, res);
-//			mvd_sign_flag_1 := res[0];
+			mvd_sign_flag_1 := res[0];
 		end
-//		mvd_x := abs_mvd_greater0_flag_0 * ( abs_mvd_minus2_0 + 2 ) * ( 1 - (mvd_sign_flag_0 << 1) );
-//		mvd_y := abs_mvd_greater0_flag_1 * ( abs_mvd_minus2_1 + 2 ) * ( 1 - (mvd_sign_flag_1 << 1) );
+		mvd_x := abs_mvd_greater0_flag_0 * ( abs_mvd_minus2_0 + 2 ) * ( 1 - (mvd_sign_flag_0 << 1) );
+		mvd_y := abs_mvd_greater0_flag_1 * ( abs_mvd_minus2_1 + 2 ) * ( 1 - (mvd_sign_flag_1 << 1) );
 	end
 
 	/**************************************************************************
