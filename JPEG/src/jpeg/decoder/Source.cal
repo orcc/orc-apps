@@ -1,0 +1,126 @@
+/*
+ * Copyright (c) 2011, IRISA
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Herve Yvique <herve.yviquel@irisa.fr>
+// Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
+// Modified by Jerome Gorin IETR/INSA of Rennes (France)
+
+package jpeg.decoder;
+import std.stdio.Source.*;
+
+actor Source () ==> uint(size=8) O :
+
+	uint(size=8) bytesRead[NB_TOKEN_TO_SENT];
+
+	uint(size=32) iterationLoop := 0;
+	uint(size=32) nbByteLeft;
+	uint(size=13) nbByteToSend := 0;
+	uint(size=13) nbByteSent := 0;
+	uint(size=32) nbIteration;
+	
+	initialize ==>
+	do
+		source_init();
+	end
+	
+	getFileSize: action ==>
+	guard
+		source_sizeOfFile() > 0,
+		not source_isMaxLoopsReached()
+	var
+		uint(size=32) nbBytes
+	do
+		nbBytes := source_sizeOfFile();
+		nbIteration := nbBytes / NB_TOKEN_TO_SENT;
+		nbByteLeft := nbBytes mod NB_TOKEN_TO_SENT;
+	end
+	
+	readNBytes: action ==>
+	guard
+		iterationLoop < nbIteration
+	do
+		source_readNBytes(bytesRead, NB_TOKEN_TO_SENT);
+		nbByteToSend := NB_TOKEN_TO_SENT;
+		nbByteSent := 0;
+		iterationLoop := iterationLoop + 1;
+	end
+	
+	readEndOfFile: action ==>
+	guard
+		nbByteLeft > 0
+	do
+		source_readNBytes(bytesRead, nbByteLeft);
+		nbByteToSend := nbByteLeft;
+		nbByteSent := 0;
+	end
+	
+	readFileDone: action ==>
+	do
+		iterationLoop := 0;
+		source_decrementNbLoops();
+		source_rewind();
+	end
+	
+	sendData.launch: action ==> O:[ Out ]
+	guard
+		nbByteToSend > nbByteSent
+	var
+		uint(size=8) Out
+	do
+		Out := bytesRead[nbByteSent];
+		nbByteSent := nbByteSent + 1;
+	end
+	
+	sendData.done: action ==>
+	guard
+		nbByteToSend = nbByteSent
+	end
+	
+	schedule fsm ReadInit :
+		ReadInit (getFileSize) --> ReadFile;
+	
+		ReadFile (readNBytes   ) --> SendData;
+		ReadFile (readEndOfFile) --> SendLastData;
+		ReadFile (readFileDone ) --> ReadFile;
+	
+		SendData (sendData.launch) --> SendData;
+		SendData (sendData.done  ) --> ReadFile;
+	
+		SendLastData (sendData.launch) --> SendLastData;
+		SendLastData (sendData.done  ) --> ReadFileDone;
+	
+		ReadFileDone (readFileDone) --> ReadInit;
+	end
+	
+	priority
+		readNBytes > readEndOfFile > readFileDone;
+		sendData.launch > sendData.done;
+	end
+
+end
