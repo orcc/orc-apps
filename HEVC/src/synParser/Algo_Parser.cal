@@ -2167,10 +2167,13 @@ actor Algo_Parser ()
 		predMode != MODE_INTRA
 	end
 
-	sendIntraPredMode.part2Nx2N: action ==> IntraPredMode:[intra_pred_mode[0], predMode_v]
+	sendIntraPredMode.part2Nx2N: action ==> IntraPredMode:[intra_pred_mode[0], predMode_v], CUInfo:[cuInfo] repeat 5
 	guard
 		partModeToNumPart[partMode] = 1 and predMode = MODE_INTRA
 	var
+		uint(size=16) cuInfo[5] =
+			[predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+				1<<cu_log2CbSize, 1<<cu_log2CbSize],
 		uint(size=6) predMode_v,
 		uint(size=3) idx
 	do	
@@ -2193,10 +2196,16 @@ actor Algo_Parser ()
 		end
 	end
 
-	sendIntraPredMode.partNxN: action ==> IntraPredMode:[intraPredMode] repeat 8
+	sendIntraPredMode.partNxN: action ==> IntraPredMode:[intraPredMode] repeat 8, CUInfo:[cuInfo] repeat 20
 	guard
 		partModeToNumPart[partMode] != 1 and predMode = MODE_INTRA
 	var
+		uint(size=7) CUSize = (1<<(cu_log2CbSize-1)),
+		uint(size=16) cuInfo[20] =
+			[predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0], CUSize, CUSize,
+			 predMode, ctStack[ctStack_idx][CT_x0]+CUSize, ctStack[ctStack_idx][CT_y0], CUSize, CUSize,
+			 predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0]+CUSize, CUSize, CUSize,
+			 predMode, ctStack[ctStack_idx][CT_x0]+CUSize, ctStack[ctStack_idx][CT_y0]+CUSize, CUSize, CUSize],
 		uint(size=6) intraPredMode[8],
 		uint(size=3) idx
 	do
@@ -2224,35 +2233,6 @@ actor Algo_Parser ()
 		end
 	end
 
-	sendCUInfo.has1Part: action ==> CUInfo:[cuInfo] repeat 5
-	guard
-		partModeToNumPart[partMode] = 1
-	var
-		uint(size=16) cuInfo[5] =
-			[predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
-				1<<cu_log2CbSize, 1<<cu_log2CbSize]
-	end
-
-	sendCUInfo.has2Part: action ==> CUInfo:[cuInfo] repeat 10
-	guard
-		partModeToNumPart[partMode] = 2
-	var
-		uint(size=16) cuInfo[10] =
-			[predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0], 1<<cu_log2CbSize, 1<<cu_log2CbSize,
-			 predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0], 1<<cu_log2CbSize, 1<<cu_log2CbSize]
-	end
-
-	sendCUInfo.has4Part: action ==> CUInfo:[cuInfo] repeat 20
-	guard
-		partModeToNumPart[partMode] = 4
-	var
-		uint(size=7) CUSize = (1<<(cu_log2CbSize-1)),
-		uint(size=16) cuInfo[20] =
-			[predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0], CUSize, CUSize,
-			 predMode, ctStack[ctStack_idx][CT_x0]+CUSize, ctStack[ctStack_idx][CT_y0], CUSize, CUSize,
-			 predMode, ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0]+CUSize, CUSize, CUSize,
-			 predMode, ctStack[ctStack_idx][CT_x0]+CUSize, ctStack[ctStack_idx][CT_y0]+CUSize, CUSize, CUSize]
-	end
 	/**************************************************************************
 	 * read_CodingUnit_gotoPCMSample
 	 *************************************************************************/
@@ -2266,16 +2246,17 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_CodingUnit_gotoPredictionUnit.goto2
 	 *************************************************************************/
-	read_CodingUnit_gotoPredictionUnit.goto2 : action ==>
+	read_CodingUnit_gotoPredictionUnit.goto2 : action ==> CUInfo:[predMode, x0, y0, pu_PbW, pu_PbH]
 	guard 
 		cu_idx = 4 or cu_idx = 5 or
 		cu_idx = 6 or cu_idx = 7
 	var
 		uint(size= 8) nCbS_2   = cu_nCbS >> 1,
 		uint(size= 8) nCbS_4   = cu_nCbS >> 2,
-		uint(size= 8) nCbS_3_4 = cu_nCbS - nCbS_4
+		uint(size= 8) nCbS_3_4 = cu_nCbS - nCbS_4,
+		int x0 := ctStack[ctStack_idx][CT_x0],
+		int y0 := ctStack[ctStack_idx][CT_y0]
 	do
-	
 		pu_idx := 1;
 		pu_PbW := cu_nCbS;
 		pu_PbH := cu_nCbS;
@@ -2290,6 +2271,7 @@ actor Algo_Parser ()
 			else
 				//prediction_unit( x0, y0 + ( nCbS / 2 ), nCbS, nCbS / 2 )
 				cu_idx := 8;
+				y0 := y0  + nCbS_2;
 			end
 		elsif partMode = PART_Nx2N then
 			pu_PbW := nCbS_2;
@@ -2299,6 +2281,7 @@ actor Algo_Parser ()
 			else
 				//prediction_unit( x0 + ( nCbS / 2 ), y0, nCbS / 2, nCbS )
 				cu_idx := 8;
+				x0 := x0 + nCbS_2;
 			end
 		elsif partMode = PART_2NxnU then
 			pu_PbH := nCbS_4;
@@ -2309,6 +2292,7 @@ actor Algo_Parser ()
 				//prediction_unit( x0, y0 + ( nCbS / 4 ), nCbS, nCbS *3 / 4 )
 				pu_PbH := nCbS_3_4;
 				cu_idx := 8;
+				y0 := y0  + nCbS_4;
 			end
 		elsif partMode = PART_2NxnD then
 			if cu_idx = 4 then
@@ -2319,6 +2303,7 @@ actor Algo_Parser ()
 				//prediction_unit( x0, y0 + ( nCbS * 3 / 4 ), nCbS, nCbS / 4 )
 				pu_PbH := nCbS_4;
 				cu_idx := 8;
+				y0 := y0  + nCbS_3_4;
 			end
 		elsif partMode = PART_nLx2N then
 			if cu_idx = 4 then
@@ -2328,6 +2313,7 @@ actor Algo_Parser ()
 			else
 				//prediction_unit( x0 + ( nCbS / 4 ), y0, nCbS *3 / 4, nCbS)
 				pu_PbW := nCbS_3_4;
+				x0 := x0  + nCbS_4;
 				cu_idx := 8;
 			end
 		elsif partMode = PART_nRx2N then
@@ -2338,6 +2324,7 @@ actor Algo_Parser ()
 			else
 				//prediction_unit( x0 + ( nCbS * 3 / 4 ), y0, nCbS / 4, nCbS )
 				pu_PbW := nCbS_4;
+				x0 := x0  + nCbS_3_4;
 				cu_idx := 8;
 			end
 		else /* PART_NxN */
@@ -2348,12 +2335,16 @@ actor Algo_Parser ()
 				cu_idx := 5;
 			elsif cu_idx = 5 then
 				//prediction_unit( x0 + ( nCbS / 2 ), y0, nCbS / 2, nCbS / 2 )
+				x0 := x0  + nCbS_2;
 				cu_idx := 6;
 			elsif cu_idx = 6 then
 				//prediction_unit( x0, y0 + ( nCbS / 2 ), nCbS / 2, nCbS / 2 )
+				y0 := y0  + nCbS_2;
 				cu_idx := 5;
 			else
 				//prediction_unit( x0 + ( nCbS / 2 ), y0 + ( nCbS / 2 ), nCbS / 2, nCbS / 2 )
+				x0 := x0  + nCbS_2;
+				y0 := y0  + nCbS_2;
 				cu_idx := 8;
 			end
 		end
@@ -3429,8 +3420,7 @@ actor Algo_Parser ()
 		read_CodingUnit				    ( read_CodingUnit_gotoTransformTree ) --> read_TransformTree;
 		read_CodingUnit				    ( read_CodingUnit_end				) --> read_CodingQuadTree;
 
-		send_IntraPredMode              (sendIntraPredMode                  )-->  send_CUInfo;
-		send_CUInfo                     (sendCUInfo                         ) --> read_CodingUnit;
+		send_IntraPredMode              (sendIntraPredMode                  ) --> read_CodingUnit;
 		// read_PredictionUnit
 		read_PredictionUnit			    ( read_PredictionUnit	  			) --> read_PredictionUnit;
 		read_PredictionUnit			    ( read_PredictionUnit_gotoMVDCoding ) --> read_MVDCoding;
