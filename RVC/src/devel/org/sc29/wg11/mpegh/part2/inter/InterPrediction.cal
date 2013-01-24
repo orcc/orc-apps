@@ -121,6 +121,7 @@ actor InterPrediction()
 	//uint(size=16) refSamples[3][64+7][64+7];
 	uint(size=16) refSamples[3][128][128];
 	int (size=16) predSamples[3][64][64];
+	int (size=16) intermSamples[3][64+7][64+7];
 
 /* Coefficients used for the 8-tap filter (luma component) and 4-tap filter
  * (chroma component).
@@ -280,7 +281,6 @@ int(size=8) interPredCoeff[3][8][8] =
 		uint(size=4) numCoeff, uint(size=2) component
 	)
 	var
-		int(size=16) sampleTab[8],
 		uint(size=2) idxOff[3] = [3,1,1],
 		int (size=32) coord[2]
 	begin
@@ -299,19 +299,6 @@ int(size=8) interPredCoeff[3][8][8] =
 			predictionFiltering(false, coord, mvQuartPix[1], 0, 0,
 				component);
 		else
-			/* if quartPix (or eighthPix for chroma) is not equal to 0 for both
-			 * x and y, we realize the interpolation in 2 steps.
-			 */
-			/* We do the horizontal interpolation for all the samples which
-			 * will be needed for the vertical interpolation.
-			 */
-			foreach int idxSample in 0 .. numCoeff-1
-			do
-				coord := [x, y+idxSample];
-				predictionFiltering(true, coord,  mvQuartPix[0],
-					-8192, 0, component);
-				sampleTab[idxSample] := pixVal;
-			end
 			pixVal := 0;
 			/* Then we do the vertical interpolation with the result from the
 			 * previous part.
@@ -319,7 +306,7 @@ int(size=8) interPredCoeff[3][8][8] =
 			foreach int idx in 0 .. numCoeff-1
 			do
 				pixVal := pixVal +  interPredCoeff[component][mvQuartPix[1]]
-					[idx] * sampleTab[idx];
+					[idx] * intermSamples[component][x][y+idx];
 			end
 			pixVal := (pixVal + 524288) >> 6;
 		end end end
@@ -771,6 +758,7 @@ int(size=8) interPredCoeff[3][8][8] =
 
 	interpolateSamples: action ==>
 	var
+		int coord[2],
 		uint maskMv[3] = [3, 7, 7],
 		uint(size=4) numCoeff[3] = [8, 4, 4],
 		int mvQuartPix[2],
@@ -778,6 +766,7 @@ int(size=8) interPredCoeff[3][8][8] =
 	do
 		if( not (refIdxLx[listIdx] = -1 || listIdx = 1 && numList = 1 &&
 			refIdxLx[0]!=-1)) then
+
 			foreach int component in 0 .. 2 /* Y, Cb, Cr */
 			do
 				/* We just need to do the fractionnal part of the movement
@@ -785,7 +774,29 @@ int(size=8) interPredCoeff[3][8][8] =
 				 */
 				mvQuartPix := [mvLx[listIdx][i] & maskMv[component]:
 					for int i in 0 .. 1];
-	
+
+
+				/* if quartPix (or eighthPix for chroma) is not equal to 0 for both
+				 * x and y, we realize the interpolation in 2 steps.
+				 */
+				/* We do the horizontal interpolation for all the samples which
+				 * will be needed for the vertical interpolation.
+				 */
+				if(mvQuartPix[0]!=0 && mvQuartPix[1]!=0) then
+					foreach int y in 0 .. (cuSize[1]>>componentShift[component])-1
+						+(numCoeff[component]-1)
+					do
+						foreach int x in 0 ..
+							(cuSize[0]>>componentShift[component])-1
+						do
+							coord := [x, y];
+							predictionFiltering(true, coord,  mvQuartPix[0],
+								-8192, 0, component);
+							intermSamples[component][x][y] := pixVal;
+						end
+					end
+				end
+
 				/* We realize the interpolation then the weighted prediction
 				 * for all pixel of the Cu.
 				 */
