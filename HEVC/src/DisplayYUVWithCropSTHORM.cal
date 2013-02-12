@@ -1,0 +1,124 @@
+  // Author: Damien de Saint Jorre
+import  std.video.Display.*;
+import  std.util.Math.*;
+import  std.stdio.Source.*;
+
+
+actor DisplayYUVWithCropSTHORM(uint(size=8) BLK_SIDE)
+	uint(size=8)  Byte,
+	uint(size=14) DispCoord,
+	uint(size=9)  PicSizeInMb
+		==>
+		:
+
+	int (size=32) pictureSizeInMb;
+	int (size=32) nbBlockGot;
+	uint(size=2)  chromaComponent;
+	uint(size=16) pictureWidthLuma;
+	uint(size=12) xIdxLuma;
+	uint(size=12) yIdxLuma;
+	uint(size=12) xIdxChroma;
+	uint(size=32) yIdxChroma;
+	uint(size=14) xMin;
+	uint(size=14) xMax;
+	uint(size=14) yMin;
+	uint(size=14) yMax;
+
+		
+	int count := 0;
+	
+	getPictureSize: action DispCoord:[dispCoord] repeat 4, PicSizeInMb:[picWidth,
+		picHeight] ==>
+	guard
+		(DISP_READY) != 0
+	do
+
+		pictureWidthLuma  := picWidth * BLK_SIDE;
+		pictureSizeInMb   := picWidth * picHeight;
+		xMin := dispCoord[0];
+		xMax := dispCoord[1];
+		yMin := dispCoord[2];
+		yMax := dispCoord[3];
+		println("xMin "+xMin +" xMax " + xMax +" yMin " + yMin + " yMax " + yMax);
+		nbBlockGot := 0;
+		xIdxLuma   := 0;
+		yIdxLuma   := 0;
+		xIdxChroma := 0;
+		yIdxChroma := 0;
+		
+		println(count);
+		count := count + 1;
+	end
+
+	getPixValue.launch.Luma.blk16x16: action Byte :[Bytes] repeat 256 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 16
+	do
+		nbBlockGot := nbBlockGot + 1;
+		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
+		chromaComponent := 0;
+	end
+
+	getPixValue.launch.Luma.blk64x64: action Byte :[Bytes] repeat 4096 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 64
+	do
+		nbBlockGot := nbBlockGot + 1;
+		xIdxLuma := xIdxLuma + 64;
+		chromaComponent := 0;
+	end
+
+	getPixValue.launch.Chroma.blk16x16: action Byte :[Bytes] repeat 64 ==>
+	guard
+		BLK_SIDE = 16
+	do
+		if chromaComponent != 0 then
+			xIdxChroma := xIdxChroma + MB_SIZE_CHROMA;
+			if xIdxLuma = pictureWidthLuma then
+				xIdxLuma   := 0;
+				xIdxChroma := 0;
+				yIdxLuma   := yIdxLuma + MB_SIZE_LUMA;
+				yIdxChroma := yIdxChroma + MB_SIZE_CHROMA;
+			end
+		end
+		chromaComponent := 1;
+	end
+
+	getPixValue.launch.Chroma.blk64x64: action Byte :[Bytes] repeat 1024 ==>
+	guard
+		BLK_SIDE = 64
+	do
+		if chromaComponent != 0 then
+			xIdxChroma := xIdxChroma + 32;
+			if xIdxLuma = pictureWidthLuma then
+				xIdxLuma   := 0;
+				xIdxChroma := 0;
+				yIdxLuma   := yIdxLuma + 64;
+				yIdxChroma := yIdxChroma + 32;
+			end
+		end
+		chromaComponent := 1;
+	end
+
+	displayPicture: action ==>
+	guard
+		nbBlockGot >= pictureSizeInMb
+	end
+	
+	
+	schedule fsm GetPictureSize:
+		GetPictureSize  (getPictureSize            )--> GetLumaBlock;
+		GetLumaBlock    (getPixValue.launch.Luma   )--> GetChroma1Block;
+		GetChroma1Block (getPixValue.launch.Chroma )--> GetChroma2Block;
+		GetChroma2Block (getPixValue.launch.Chroma )--> GetLumaBlock;
+		
+		GetLumaBlock    (displayPicture            )--> GetPictureSize;
+	end
+
+	priority
+		getPixValue > displayPicture;
+	end
+
+end
