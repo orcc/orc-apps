@@ -2645,20 +2645,19 @@ actor Algo_Parser ()
 
 	uint(size= 8) ttStack_idx;
 	uint(size=16) ttStack[10][TT_STRUCT_SIZE];
-	bool          lastSplitTransf;
 	uint(size= 1) cbf_cb[MAX_TU_SIZE][MAX_TU_SIZE][4];
 	uint(size= 1) cbf_cr[MAX_TU_SIZE][MAX_TU_SIZE][4];
 	uint(size= 1) cbf_luma;
 	uint(size= 8) cur_intra_pred_mode;
+	uint(size= 1) split_transform_flag;
+	
 	/**************************************************************************
 	 * read_TransformTree.start
 	 *************************************************************************/
-	 /**************** CLEAN ME !! *************/
-	read_TransformTree.start.partNxN : action ==>
+	read_TransformTree.start : action ==>
 	guard 
 		isFifoFull(fifo),
-		ttStack[ttStack_idx][TT_idx] = 1,
-		partMode = PART_NxN and ttStack[ttStack_idx][TT_trafoDepth] = 0
+		ttStack[ttStack_idx][TT_idx] = 1
 	var
 		uint(size=16) x0				= ttStack[ttStack_idx][TT_x0],
 		uint(size=16) y0				= ttStack[ttStack_idx][TT_y0],
@@ -2670,7 +2669,6 @@ actor Algo_Parser ()
 		uint(size=16) cbf_y0			= y0 & ((1<<log2TrafoSize)-1),
 		uint(size=16) cbf_xBase			= xBase & ((1<<log2TrafoSize)-1),
 		uint(size=16) cbf_yBase			= yBase & ((1<<log2TrafoSize)-1),
-		uint(size= 1) split_transform_flag := 0,
 		uint(size=32) res[1] := [0],
 		uint(size= 1) IntraSplitFlag   = if predMode = INTRA and partMode = PART_NxN then 1 else 0 end,
 		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
@@ -2733,99 +2731,16 @@ actor Algo_Parser ()
 			end
 			ttStack[ttStack_idx][TT_idx] := 2;
 		end
+		if 	not(partMode = PART_NxN and ttStack[ttStack_idx][TT_trafoDepth] = 0) then
+            ttStack[ttStack_idx][TT_idx] := 10;		
+		end
 	end
-	int cnt := 0;
 
-	read_TransformTree_start.nonPartNxN : action ==> SplitTransform:[(split_transform_flag !=0)]
+	read_TransformTree.start_nonPartNxN : action ==> SplitTransform:[(split_transform_flag != 0)]
 	guard 
-		isFifoFull(fifo),
-		ttStack[ttStack_idx][TT_idx] = 1,
-		not(partMode = PART_NxN and ttStack[ttStack_idx][TT_trafoDepth] = 0)
-	var
-		uint(size=16) x0				= ttStack[ttStack_idx][TT_x0],
-		uint(size=16) y0				= ttStack[ttStack_idx][TT_y0],
-		uint(size=16) xBase				= ttStack[ttStack_idx][TT_xBase],
-		uint(size=16) yBase				= ttStack[ttStack_idx][TT_yBase],
-		uint(size= 8) log2TrafoSize	    = ttStack[ttStack_idx][TT_log2TrafoSize],
-		uint(size= 8) trafoDepth		= ttStack[ttStack_idx][TT_trafoDepth],
-		uint(size=16) cbf_x0			= x0 & ((1<<log2TrafoSize)-1),
-		uint(size=16) cbf_y0			= y0 & ((1<<log2TrafoSize)-1),
-		uint(size=16) cbf_xBase			= xBase & ((1<<log2TrafoSize)-1),
-		uint(size=16) cbf_yBase			= yBase & ((1<<log2TrafoSize)-1),
-		uint(size= 1) split_transform_flag := 0,		
-		uint(size=32) res[1] := [0],
-		uint(size= 1) IntraSplitFlag   = if predMode = INTRA and partMode = PART_NxN then 1 else 0 end,
-		uint(size= 1) InterSplitFlag   = if sps_max_transform_hierarchy_depth_inter[sps_id] = 0 and predMode = INTER and partMode != PART_2Nx2N and trafoDepth = 0 then 1 else 0 end
+		ttStack[ttStack_idx][TT_idx] = 10
 	do	
-		if DEBUG_CABAC and DEBUG_TRACE1 then
-			println("read_TransformTree.start("+x0+", "+y0+", "+xBase+", "+yBase+", "+log2TrafoSize+", "+trafoDepth+", "+ttStack[ttStack_idx][TT_blkIdx]+")");
-		elsif DEBUG_CABAC then
-			println("read_TransformTree.start");
-		end
-		if IntraSplitFlag = 1 then
-        	if trafoDepth = 1 then
-            	cur_intra_pred_mode := intra_pred_mode[ttStack[ttStack_idx][TT_blkIdx]];
-            end
-    	else
-        	cur_intra_pred_mode := intra_pred_mode[0];
-    	end
-		split_transform_flag := 0;
-		if( log2TrafoSize <= Log2MaxTrafoSize and log2TrafoSize > Log2MinTrafoSize and
-			trafoDepth < MaxTrafoDepth and not(IntraSplitFlag = 1 and trafoDepth = 0) ) then
-			get_SPLIT_TRANSFORM_FLAG(codIRange, codIOffset, ctxTable, fifo, res, log2TrafoSize);
-			split_transform_flag := res[0];
-		elsif log2TrafoSize > Log2MaxTrafoSize or (IntraSplitFlag = 1 and trafoDepth = 0) or InterSplitFlag = 1 then
-			split_transform_flag := 1;							
-		end
-		
-		cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := 0;
-		cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := 0;
-		if trafoDepth = 0 or log2TrafoSize > 2  then
-			if trafoDepth = 0 then
-				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
-				get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
-			else
-				if cbf_cb[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ] = 1 then
-					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-					cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
-				end
-				if cbf_cr[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ] = 1 then
-					get_CBF_CB_CR(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-					cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := res[0];
-				end
-			end
-		end
-		if trafoDepth > 0 and log2TrafoSize = 2  then
-			cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := cbf_cb[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ];
-			cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] := cbf_cr[ cbf_xBase ][ cbf_yBase ][ trafoDepth-1 ];
-		end
-				
-		if split_transform_flag = 1 then
-			ttStack[ttStack_idx][TT_x1]  := x0 + ( ( 1 << log2TrafoSize ) >> 1 );
-			ttStack[ttStack_idx][TT_y1]  := y0 + ( ( 1 << log2TrafoSize ) >> 1 );
-			ttStack[ttStack_idx][TT_idx] := 3;
-		else
-			cbf_luma := 1;
-			if predMode = INTRA or trafoDepth != 0 or
-				cbf_cb[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] = 1 or cbf_cr[ cbf_x0 ][ cbf_y0 ][ trafoDepth ] = 1 then
-				get_CBF_LUMA(codIRange, codIOffset, ctxTable, fifo, res, trafoDepth);
-				cbf_luma := res[0];
-			end
-			ttStack[ttStack_idx][TT_idx] := 2;
-		end
-		cnt := cnt + 1;
-	end
-
-	send_Cbf.skip: action ==>
-	guard
-		lastSplitTransf
-	end
-	
-	send_Cbf.launch: action ==> 
-	guard
-		not lastSplitTransf
+        ttStack[ttStack_idx][TT_idx] := 2 + split_transform_flag;
 	end
 	/**************************************************************************
 	 * read_TransformTree_gotoTransformUnit
@@ -3438,11 +3353,8 @@ actor Algo_Parser ()
 		read_PCMSample				    ( read_PCMSample	  				) --> undefined;//read_PredictionUnit;
 		// read_TransformTree
 		read_TransformTree			    ( read_TransformTree	  			) --> read_TransformTree;
-		read_TransformTree              (read_TransformTree_start           ) --> send_Cbf;
 		read_TransformTree			    ( read_TransformTree_gotoTransformUnit) --> read_TransformUnit;
 		read_TransformTree			    ( read_TransformTree_end	  		) --> read_CodingUnit;
-
-		send_Cbf                        (send_Cbf                           ) --> read_TransformTree;
 		// read_TransformUnit
 		read_TransformUnit			    ( read_TransformUnit	  			) --> read_TransformUnit;
 		read_TransformUnit			    ( read_TransformUnit_gotoResidualCoding) --> read_ResidualCoding;
