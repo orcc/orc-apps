@@ -1,0 +1,114 @@
+/*
+ * Copyright (c) 2011, IRISA
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Herve Yvique <herve.yviquel@irisa.fr>
+package fr.irisa.common;
+
+import fr.irisa.common.Foreman_qcif.*;
+
+actor ChecksumLeds ()
+	uint(size=8) B,
+	int(size=16) WIDTH,
+	int(size=16) HEIGHT
+		==>
+	@native uint(size=8) leds,
+	@native uint(size=1) top_frame
+		:
+		
+	int frameCount := 0;
+	int frameSum := 0;
+		
+	int (size=32) pictureSizeInMb;
+	int (size=32) nbBlockGot;
+	
+	init: action ==> leds :[0], top_frame :[0]
+	end
+
+	getPictureSize: action
+		WIDTH  :[WidthValue],
+		HEIGHT :[HeightValue]
+			==>
+		top_frame :[0]
+	do
+		pictureSizeInMb   := WidthValue * HeightValue;
+		nbBlockGot := 0;
+	end
+
+	getPixValue.launch.Luma: action B :[Bytes] repeat 256 ==>
+	guard
+		nbBlockGot < pictureSizeInMb
+	do
+		nbBlockGot      := nbBlockGot + 1;
+		foreach int j in 0 .. 255
+		do
+			frameSum := frameSum + Bytes[j];
+		end
+	end
+
+	getPixValue.launch.Chroma: action B :[Bytes] repeat 64 ==>
+	do
+		foreach int j in 0 .. 63
+		do
+			frameSum := frameSum + Bytes[j];
+		end
+	end
+
+	checksumPicture: action ==> leds : [output], top_frame : [1]
+	guard
+		nbBlockGot >= pictureSizeInMb
+	var
+		uint checkSum = frameSum & 255,
+		uint checkVal = CHECKSUM[frameCount],
+		int output
+	do	
+		frameCount := frameCount + 1;
+		if(checkSum != checkVal) then
+			output := frameCount + 128;
+		else
+			output := frameCount;
+		end
+		frameSum := 0;
+	end
+
+	schedule fsm ChecksumInit:
+		ChecksumInit    (init                      )--> GetPictureSize;
+
+		GetPictureSize  (getPictureSize            )--> GetLumaBlock;
+		GetLumaBlock    (getPixValue.launch.Luma   )--> GetChroma1Block;
+		GetChroma1Block (getPixValue.launch.Chroma )--> GetChroma2Block;
+		GetChroma2Block (getPixValue.launch.Chroma )--> GetLumaBlock;
+
+		GetLumaBlock    (checksumPicture           )--> GetPictureSize;
+	end
+
+	priority
+		getPixValue > checksumPicture;
+	end
+	
+end
