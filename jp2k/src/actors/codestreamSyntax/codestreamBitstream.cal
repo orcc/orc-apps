@@ -1,0 +1,136 @@
+package actors.codestreamSyntax;
+import utils.codestreamPackage.*;
+import utils.commonPackage.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+actor codestreamBitstream () uint(size= 8) CD,
+							 uint(size= 8) entropyInfo
+							 ==>
+:
+	@native procedure compare_init() end
+	@native procedure compare_NBytes(uint(size=8) outTable[4], uint(size=12) nbTokenToRead) end
+	@native procedure compare_NBytesNext(uint(size=8) outTable[4], uint(size=12) nbTokenToRead, uint(size=8) display) end
+/******************************************************************************
+ * Globale variables
+ *****************************************************************************/
+	uint(size=16) cpt_v;
+	uint(size= 8) cptSeg;
+	uint(size= 8) cocSP3;
+/******************************************************************************
+ * GetParam
+ *****************************************************************************/
+	GetParamSkip : action entropyInfo:[data_p] repeat 12 ==>
+	guard
+		(data_p[10]<<8) + data_p[11] = 0
+	end
+	GetParam : action entropyInfo:[data_p] repeat 12 ==>
+	guard
+		(data_p[10]<<8) + data_p[11] != 0
+	var
+		uint(size= 8) cb_w    = data_p[0],
+		uint(size= 8) cb_h    = data_p[1],
+		uint(size= 8) npasses = data_p[2],
+		uint(size= 8) subband = data_p[3],
+		uint(size= 8) zeroBP  = data_p[4],
+		uint(size= 8) c       = data_p[5],
+		uint(size= 8) r       = data_p[6],
+		uint(size= 8) w       = data_p[7],
+		uint(size= 8) h       = data_p[8],
+		uint(size=16) nbData  = (data_p[10]<<8) + data_p[11],
+		uint(size= 8) tmp[4]
+	do
+ 		compare_init();
+ 		cocSP3 := data_p[9];
+ 		tmp[1] := 0;
+ 		tmp[2] := 0;
+		tmp[0] := 1;
+ 		tmp[3] := cb_w;
+ 		if DEBUG_BITSTREAM then
+		 	compare_NBytesNext(tmp,4, 255);
+	 		println("# CodeBlock("+cb_w+", "+cb_h+") c = "+c+" r = "+r+" s = "+subband+" w = "+w+" h = "+h+" : number of coding passes = "+npasses+" : length = "+nbData+" : zeroBitPlane = "+zeroBP);	
+	 		println(((1<<24)|cb_w)+" ");
+ 			println(((2<<24)|cb_h)+" ");
+ 			println(((3<<24)|subband)+" ");
+	 		println(((4<<24)|npasses)+" ");
+ 			println(((5<<24)|zeroBP)+" ");
+ 		else
+ 		 	compare_NBytesNext(tmp,4, 0);
+	 		println("# CodeBlock("+cb_w+", "+cb_h+") c = "+c+" r = "+r+" s = "+subband+" w = "+w+" h = "+h+" : number of coding passes = "+npasses+" : length = "+nbData+" : zeroBitPlane = "+zeroBP);	
+ 		end
+ 		tmp[0] := 2;
+ 		tmp[3] := cb_h;
+		compare_NBytes(tmp,4);
+		tmp[0] := 3;
+ 		tmp[3] := subband;
+ 		compare_NBytes(tmp,4);
+ 		tmp[0] := 4;
+ 		tmp[3] := npasses;
+		compare_NBytes(tmp,4);
+		tmp[0] := 5;
+ 		tmp[3] := zeroBP;
+		compare_NBytes(tmp,4);
+ 		cpt_v  := nbData;
+ 		if (cocSP3 & TermCodingPass) != 0 then
+ 			cptSeg := npasses;
+ 		else
+ 			cptSeg := 1;
+ 		end
+	end
+/******************************************************************************
+ * loopSegStart
+ *****************************************************************************/
+	loopSegStart.default : action entropyInfo:[data_p] repeat 2 ==>
+	guard
+		cptSeg != 0 && (cocSP3 & TermCodingPass) != 0
+	do
+ 		cpt_v  := (data_p[0]<<8) + data_p[1];
+	end
+	loopSegStart.onlyOne : action ==>
+	guard
+		cptSeg != 0 && (cocSP3 & TermCodingPass)  = 0
+	end
+	loopSegEnd : action ==>
+	guard
+		cptSeg = 0
+	end
+/******************************************************************************
+ * GetData
+ *****************************************************************************/
+	GetData : action CD:[cd] ==>
+	guard
+		cpt_v != 0
+	var
+		uint(size=8) tmp[4]
+	do
+		if DEBUG_BITSTREAM then
+			println(cd+" ");
+		end
+		tmp[0] := 0;
+ 		tmp[1] := 0;
+ 		tmp[2] := 0;
+ 		tmp[3] := cd;
+		if (cocSP3 & TermCodingPass) = 0 then
+			compare_NBytes(tmp,4);
+ 		end
+ 		cpt_v  := cpt_v - 1;
+	end
+	GetDataEnd : action ==>
+	guard
+		cpt_v = 0
+	do
+		cptSeg := cptSeg - 1;
+	end
+/******************************************************************************
+ * Scheduler
+ *****************************************************************************/	
+	schedule fsm getParam_st:
+		getParam_st   (GetParam        ) --> loopSeg_st;
+		getParam_st   (GetParamSkip    ) --> getParam_st;
+		loopSeg_st    (loopSegStart    ) --> getData_st;
+		loopSeg_st    (loopSegEnd      ) --> getParam_st;
+		getData_st    (GetData         ) --> getData_st;
+		getData_st    (GetDataEnd      ) --> loopSeg_st;
+	end
+
+end

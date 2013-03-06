@@ -1,0 +1,540 @@
+package V2.transformation;
+import  std.util.Math.*;
+import  V2.common.commonPackage.*;
+import  V2.transformation.packages.transformationPackage.*;
+/******************************************************************************
+ * Actor description
+ *****************************************************************************/
+actor TraBlock()
+					int(size=DATA_SIZE+1) Coeff,
+					uint(size=8)		TraCBInfo,
+					uint(size=8) 		TraPictureInfo,
+					uint(size=8)		TraTileInfo
+					==>
+					uint(size=PIXEL_SIZE) Image
+:
+/******************************************************************************
+ * Global variables
+ *****************************************************************************/
+	uint(size=16) 		TileSizeX									;
+	uint(size=16) 		TileSizeY									;			
+	uint(size=16) 		x											;
+	uint(size=16) 		y											;
+	uint(size=16) 		icb											;// x, inside a code-block
+	uint(size=16) 		jcb											; // y, inside a code-block
+	uint(size=6)		lev											; //Current decomposition level => 1 to NL
+	uint(size=6)		NL											;
+	uint(size=16)		xglo										;
+	uint(size=16)		yglo										;
+	uint(size=16)		XBandSize1									;
+	uint(size=16)		YBandSize1									;
+	uint(size=16)		XBandSize2									;
+	uint(size=16)		YBandSize2									;
+	uint(size=2)		IdxComponent								;
+	uint(size=2)		nbComponent									;
+	uint(size=8)		XCbSize										;
+	uint(size=8)		YCbSize										;
+	uint(size=16)		i1											;
+	uint(size=16)		u											;
+	uint(size=16)		v											;
+	int(size=64)		future_tab	[TABTILESIZEX][TABTILESIZEY]	;
+	int(size=64)		past_tab	[TABTILESIZEX][TABTILESIZEY]	;
+	int(size=64)		FilterInput[TABTILESIZEX+EXTD_ADDENDA]		;
+	int(size=64)		FilterOutput[TABTILESIZEY+EXTD_ADDENDA]		;
+	int(size=64)		YUVmax[NB_COMPONENT_MAX]					;
+	int(size=64)		YUVmin[NB_COMPONENT_MAX]					;
+	bool				rev[NB_COMPONENT_MAX]						;
+	uint(size=16)	 	BandSizes[BANDSIZESDATANUMBER][NLMAX]		;
+	uint(size= 8)       tmpIdx[4];
+/*****************************************************************************
+ * Action Init
+ *****************************************************************************/ 
+ 	Init.isNewTile : action 	Coeff:[Coeff_p],
+ 					TraPictureInfo:[Csiz, MSBTileSizeX,LSBTileSizeX,MSBTileSizeY,LSBTileSizeY]
+ 					==>
+ 					Image:[PIXEL_NEW_TILE_MASK] 			
+ 	guard
+ 	 	Coeff_p = COEFF_NEW_TILE_MASK
+	do
+		nbComponent  :=  Csiz;		
+		TileSizeX	 :=	(MSBTileSizeX<<8)+LSBTileSizeX;
+		TileSizeY	 :=	(MSBTileSizeY<<8)+LSBTileSizeY;
+		YUVmax	     := [-256 : for int i in 0 .. NB_COMPONENT_MAX-1];
+		YUVmin	     := [ 255 : for int i in 0 .. NB_COMPONENT_MAX-1];
+		tmpIdx	     := [ 0 : for int i in 0 .. 3];
+		xglo		 := 0;
+		yglo		 := 0;
+		x			 := 0;
+		y			 := 0;
+		icb			 := 0;
+		jcb			 := 0;
+		IdxComponent := 0;
+		XCbSize      := 0;
+		YCbSize      := 0;
+		FilterOutput := [0: for int j in 0 .. TABTILESIZEY+EXTD_ADDENDA-1]; //# INCREDIBLE WITH TABTILESIZEX IT DOESN'T WORK !
+		FilterInput	 := [0: for int j in 0 .. TABTILESIZEX+EXTD_ADDENDA-1]; //# TO DO : SIZES AT FIRST
+		foreach int i in 0 .. TileSizeX-1 do
+			foreach int j in 0 .. TileSizeY-1 do
+				future_tab[i][j] := 0;
+				past_tab[i][j]   := 0;
+			end
+		end
+	end
+	Init.isNewPic : action 	Coeff:[Coeff_p] ==>	Image:[PIXEL_NEW_PIC_MASK]
+ 	guard
+ 	 	Coeff_p = COEFF_NEW_PIC_MASK
+	end
+/*****************************************************************************
+ * Action Init
+ *****************************************************************************/ 
+ GetTileInfo : action TraTileInfo:[NL_p, reversible_p] ==> 			
+	guard 
+ 		IdxComponent != nbComponent
+ 	do
+ 		NL				  := NL_p;
+		lev				  := NL;
+		rev[IdxComponent] := reversible_p != 0;
+		IdxComponent      := IdxComponent + 1;
+	end
+ EndGetTileInfo : action ==>
+ 	guard 
+ 		IdxComponent = nbComponent
+	do
+		BandSizes[0][0]	:= ceilp2(TileSizeX,1);
+		BandSizes[1][0]	:= TileSizeX>>1;
+		BandSizes[2][0]	:= ceilp2(TileSizeY,1);
+		BandSizes[3][0]	:= TileSizeY>>1;
+		foreach int m in 1 .. NL-1
+		do
+			BandSizes[0][m] :=	ceilp2(BandSizes[0][m-1],1); //XBandsize1
+			BandSizes[1][m]	:=	BandSizes[0][m-1]>>1; //XBandSize2
+			BandSizes[2][m]	:=	ceilp2(BandSizes[2][m-1],1); //YBandSize1
+			BandSizes[3][m]	:=	BandSizes[2][m-1]>>1; //YBandSize2
+		end
+		XBandSize1		:=	BandSizes[0][NL-1];
+		XBandSize2		:=	BandSizes[1][NL-1];
+		YBandSize1		:=	BandSizes[2][NL-1];
+		YBandSize2		:=	BandSizes[3][NL-1];
+		IdxComponent 	:=  0;
+	end
+/******************************************************************************
+ * Action getCoeff 
+ *****************************************************************************/
+ 	getCoeff.default : action Coeff:[Coeff_p] ==> 
+	guard 
+		jcb != YCbSize
+	do
+		past_tab[x+icb][y+jcb]:=Coeff_p;
+		icb     := icb + 1;
+		if icb = XCbSize then
+			jcb := jcb + 1;
+			if jcb != YCbSize then 
+				icb := 0;
+			end
+		end
+	end
+/*****************************************************************************
+ * Action new Code-block
+ *****************************************************************************/ 
+ 	getCoeff.newCB : action Coeff:[Coeff_p],
+ 							TraCBInfo:[Component_p,CBWidth_p,CBHeight_p] ==> 			
+	guard
+		Coeff_p = COEFF_NEW_CB_MASK,
+		(x+icb != XBandSize1+XBandSize2 || y+jcb != YBandSize1+YBandSize2)
+	var
+		uint(size=16) xSize        = x + XCbSize,
+		uint(size=16) ySize        = y + YCbSize,
+		uint(size=16) XBandSize1_2 = XBandSize1 + XBandSize2,
+		uint(size=16) YBandSize1_2 = YBandSize1 + YBandSize2
+	do
+		if xSize = 0 && ySize = 0 then
+			tmpIdx[0] := 0;
+		else if xSize = XBandSize1 && ySize = YBandSize1 then
+			x     := XBandSize1;
+			y     := 0;
+			tmpIdx[1] := 1;
+			tmpIdx[2] := 0;
+			tmpIdx[3] := 0;
+		else if xSize = XBandSize1_2 && ySize = YBandSize1 then
+			x     := 0;
+			y     := YBandSize1;
+			tmpIdx[1] := 2;
+			tmpIdx[2] := 0;
+			tmpIdx[3] := 0;
+		else if xSize = XBandSize1 && ySize = YBandSize1_2 then
+			x     := XBandSize1;
+			y     := YBandSize1;
+			tmpIdx[1] := 3;
+			tmpIdx[2] := 0;
+			tmpIdx[3] := 0;
+		else 
+			if ( xSize = XBandSize1 || xSize = XBandSize1_2 ) && ( ySize != YBandSize1 || ySize != YBandSize1_2 ) then
+				y     := y + YCbSize;
+				tmpIdx[2] := tmpIdx[2] + 1;
+				tmpIdx[3] := 0;
+				if x<XBandSize1 then
+					x := 0;
+				else
+					x := XBandSize1;
+				end						
+			else
+				x     := x + XCbSize;
+				tmpIdx[3] := tmpIdx[3] + 1;						
+			end
+		end end end end
+		icb       := 0;
+		jcb       := 0;
+		XCbSize   := CBWidth_p;
+		YCbSize   := CBHeight_p;
+//		println("# CodeBlock("+CBWidth_p+", "+CBHeight_p+") c = "+IdxComponent+" r = "+tmpIdx[0]+" s = "+tmpIdx[1]+" w = "+tmpIdx[2]+" h = "+tmpIdx[3]+" x = "+x+" y = "+y);	
+	end
+/******************************************************************************
+ * Action 2D_Interleave  test lev=0 (IDWT)-> test 1
+ *****************************************************************************/
+	To2D_Interleave : action ==> 
+	guard
+		x+icb = XBandSize1+XBandSize2 && y+jcb = YBandSize1+YBandSize2
+	var
+		uint(size=16) tmp
+	do
+		// LL & HL
+		foreach uint(size=16) vb in 0 .. YBandSize1-1 do
+			tmp := vb<<1;
+			// LL
+			foreach uint(size=16) ub in 0 .. XBandSize1-1 do
+				future_tab[ub<<1][tmp] := past_tab[ub][vb];
+			end
+			// HL
+			foreach uint(size=16) ub in XBandSize1 .. XBandSize1+XBandSize2-1 do
+				future_tab[((ub-XBandSize1)<<1)+1][tmp]:=past_tab[ub][vb];
+			end
+		end
+		// LH & HH
+		foreach uint(size=16) vb in YBandSize1 .. YBandSize1+YBandSize2-1 do
+			tmp := ((vb-YBandSize1)<<1)+1;
+			// LH
+			foreach uint(size=16) ub in 0 .. XBandSize1-1 do
+				future_tab[ub<<1][tmp]:=past_tab[ub][vb];
+			end
+			// HH
+			foreach uint(size=16) ub in XBandSize1 .. XBandSize1+XBandSize2-1 do
+				future_tab[((ub-XBandSize1)<<1)+1][tmp]:=past_tab[ub][vb];
+			end
+		end	
+		// InterToHORSR
+		v  := 0;
+		i1 := XBandSize1+XBandSize2;
+		foreach int i in 0 .. (i1-1)
+		do
+			FilterInput[i+EXTD_ADDENDA] := future_tab[i][0];
+		end
+	end
+/******************************************************************************
+* Action 1D_SR  (ID_EXTR and 1D_FILTR)
+*****************************************************************************/
+ D_SR: action  ==> 
+ 	var
+ 		uint(size= 4)		eastcount,									
+		uint(size= 4)		westcount,									
+		uint(size= 3)		ileft,										
+		uint(size= 3)		iright,
+		 int(size=16)		n_v,				
+		 int(size=16)		n_v2,				
+		uint(size=16)		tmp1 = EXTD_ADDENDA+i1-1
+	do
+		if (i1-1) = 0 then // if signal's length is 1
+			FilterOutput[0] := FilterInput[EXTD_ADDENDA];
+		else
+			if rev[IdxComponent] = true then
+				ileft  := 1;
+				iright := 2 - (i1&1);
+			else
+				ileft  := 3;
+				iright := 4 - (i1&1);
+			end
+			//expansion
+			eastcount:=1;
+			westcount:=1;
+			while (eastcount<=iright || westcount<=ileft) do
+					FilterInput[tmp1+eastcount]:= FilterInput[tmp1-eastcount];
+					eastcount:=eastcount+1;
+					FilterInput[EXTD_ADDENDA-westcount]:= FilterInput[EXTD_ADDENDA+westcount];
+					westcount:=westcount+1;
+			end			
+			if rev[IdxComponent]=true then
+				n_v  := 0;
+				FilterOutput[n_v ] := FilterInput[n_v +EXTD_ADDENDA]-((FilterInput[n_v+EXTD_ADDENDA-1]+FilterInput[n_v+EXTD_ADDENDA+1]+2)>>2);
+				foreach int n in 0 .. (i1>>1)-1 do
+					n_v  := (n+1)<<1;
+					n_v2 := n_v-1;
+					FilterOutput[n_v ] := FilterInput[n_v +EXTD_ADDENDA]-((FilterInput[n_v-1+EXTD_ADDENDA]+FilterInput[n_v+1+EXTD_ADDENDA]+2)>>2);
+					FilterOutput[n_v2] := FilterInput[n_v2+EXTD_ADDENDA]+((FilterOutput[n<<1]+FilterOutput[n_v])>>1);
+				end	
+			else // irreversible
+/*
+				// Step1 & Step2
+				foreach int n in -1 .. ((i1>>1)+1)
+				do													 
+					n_v  := EXTD_ADDENDA+(n<<1);
+					n_v2 := n_v-1;
+					FilterInput[n_v ] := KEIGHT      * FilterInput[n_v ]; //=>2^8
+					FilterInput[n_v2] := ONEONKEIGHT * FilterInput[n_v2]; //=>2^8			
+				end
+				// Step3 & Step4
+				n_v  := EXTD_ADDENDA-2;
+				FilterInput[n_v] := (FilterInput[n_v]<<8) - ( (DELTAEIGHT* (FilterInput[n_v-1] + FilterInput[n_v+1]) ) );  //=>2^16
+				foreach int n in -1 .. (i1>>1)
+				do
+					n_v  := EXTD_ADDENDA+((n+1)<<1);
+					n_v2 := n_v-1;
+					FilterInput[n_v ] := (FilterInput[n_v ]<< 8) - ( (DELTAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ) );  //=>2^16
+					FilterInput[n_v2] := (FilterInput[n_v2]<<16) - ( (GAMMAEIGHT * (FilterInput[n_v-2] + FilterInput[n_v  ]) ) ); //=>2^24
+				end
+ 				// Step5 & Step6
+				n_v  := EXTD_ADDENDA;
+				FilterInput[n_v  ] := (FilterInput[n_v  ]<<16) + (MINUSBETAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ); //=>2^32
+				foreach int n in 0 .. (i1>>1)-1
+				do		
+					n_v  := EXTD_ADDENDA + ((n+1)<<1);
+					n_v2 := n_v-1;
+					FilterInput[n_v ] := (FilterInput[n_v ]<<16) + (MINUSBETAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ); //=>2^32
+					FilterInput[n_v2] := (FilterInput[n_v2]<<16) + (MINUSALPHAEIGHT* (FilterInput[n_v-2] + FilterInput[n_v  ]) ); //=>2^40
+				end
+*/
+				// Step1 & Step2 & Step3 & Step4 &  Step5 & Step6
+				n_v  := EXTD_ADDENDA-2;
+				n_v2 := n_v-1;
+				FilterInput[n_v ] := KEIGHT      * FilterInput[n_v ]; //=>2^8
+				FilterInput[n_v2] := ONEONKEIGHT * FilterInput[n_v2]; //=>2^8			
+				foreach int n in 0 .. (i1>>1)+1
+				do													 
+					// Step1 & Step2
+					n_v  := EXTD_ADDENDA+(n<<1);
+					n_v2 := n_v-1;
+					FilterInput[n_v ] := KEIGHT      * FilterInput[n_v ]; //=>2^8
+					FilterInput[n_v2] := ONEONKEIGHT * FilterInput[n_v2]; //=>2^8
+					// Step3 & Step4
+					n_v  := n_v-2;
+					n_v2 := n_v-1;
+					FilterInput[n_v ] := (FilterInput[n_v ]<< 8) - ( (DELTAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ) ); //=>2^16
+					FilterInput[n_v2] := (FilterInput[n_v2]<<16) - ( (GAMMAEIGHT * (FilterInput[n_v-2] + FilterInput[n_v  ]) ) ); //=>2^24
+					// Step5 & Step6
+					n_v  := n_v-2;
+					n_v2 := n_v-1;
+					FilterInput[n_v ] := (FilterInput[n_v ]<<16) + (MINUSBETAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ); //=>2^32
+					FilterInput[n_v2] := (FilterInput[n_v2]<<16) + (MINUSALPHAEIGHT* (FilterInput[n_v-2] + FilterInput[n_v  ]) ); //=>2^40
+				end
+				// Step3 & Step4
+				n_v  := EXTD_ADDENDA+(((i1>>1)+1)<<1);
+				n_v2 := n_v-1;
+				FilterInput[n_v ] := (FilterInput[n_v ]<< 8) - ( (DELTAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ) ); //=>2^16
+				FilterInput[n_v2] := (FilterInput[n_v2]<<16) - ( (GAMMAEIGHT * (FilterInput[n_v-2] + FilterInput[n_v  ]) ) ); //=>2^24
+				// Step5 & Step6
+				n_v  := n_v-2;
+				n_v2 := n_v-1;
+				FilterInput[n_v ] := (FilterInput[n_v ]<<16) + (MINUSBETAEIGHT * (FilterInput[n_v-1] + FilterInput[n_v+1]) ); //=>2^32
+				FilterInput[n_v2] := (FilterInput[n_v2]<<16) + (MINUSALPHAEIGHT* (FilterInput[n_v-2] + FilterInput[n_v  ]) ); //=>2^40
+				// +5 => 0 inverse lifting
+				foreach int n in 0 .. i1>>1
+				do
+					n_v  := n<<1;
+					n_v2 := n_v+1;
+					FilterOutput[n_v ] := FilterInput[n_v +EXTD_ADDENDA]>>32; //32
+					FilterOutput[n_v2] := FilterInput[n_v2+EXTD_ADDENDA]>>40; //40
+				end
+			end
+		end
+	end
+/******************************************************************************
+* Action 1D_SR end -> HOR_SR test
+*****************************************************************************/			
+ HOR_SR_NextRow: action  ==> 		
+	do
+		foreach int i in 0 .. (i1-1)
+		do
+			future_tab[i][v]:=FilterOutput[i] ; // 5-shifting to prevent from going into table's negative indices (tpast_tab[-1]..)
+		end
+		v            := v + 1;
+		FilterOutput := [0: for int j in 0 .. TABTILESIZEY+EXTD_ADDENDA-1]; 
+		FilterInput	 := [0: for int j in 0 .. TABTILESIZEX+EXTD_ADDENDA-1]; //# TO DO : SIZES AT FIRST
+	end
+/******************************************************************************
+* Action HOR_SR test -> HOR_SR beginning
+*****************************************************************************/	
+ HOR_SR_NotLastRow: action  ==> 
+	//guard v<v1
+	guard v<(YBandSize1+YBandSize2)
+	do
+		foreach int i in 0 .. (i1-1)
+		do
+			FilterInput[i+EXTD_ADDENDA]:= future_tab[i][v]; // 5-shifting to prevent from having table's negative indices (tpast_tab[-1]..)
+		end
+	end
+/******************************************************************************
+* Action HOR_SR test -> VER_SR beginning
+*****************************************************************************/
+ HOR_SRtoVER_SR: action  ==> 
+	//guard v>=v1
+	guard v>=(YBandSize1+YBandSize2)
+	do
+		u  := 0;
+		i1 := YBandSize1+YBandSize2;
+		foreach int i in 0 .. (i1-1)
+		do
+			FilterInput[i+EXTD_ADDENDA]:= future_tab[u][i]; // 5-shifting to prevent from having table's negative indices (tpast_tab[-1]..)
+		end
+	end
+/******************************************************************************
+* Action 1D_SR end -> VER_SR test 
+*****************************************************************************/			
+ VER_SR_NextColumn: action  ==> 		
+	do
+		foreach int i in 0 .. (i1-1)
+		do
+			future_tab[u][i] := FilterOutput[i] ; // 5-shifting to prevent from having table's negative indices (tpast_tab[-1]..)
+		end
+		u            := u + 1;
+		FilterOutput := [0: for int j in 0 .. TABTILESIZEY+EXTD_ADDENDA-1]; //# INCREDIBLE WITH TABTILESIZEX IT DOESN'T WORK !
+		FilterInput	 := [0: for int j in 0 .. TABTILESIZEX+EXTD_ADDENDA-1]; //# TO DO : SIZES AT FIRST
+	end
+/******************************************************************************
+* Action VER_SR test -> VER_SR beginning
+*****************************************************************************/	
+ VER_SR_NotLastColumn: action  ==> 
+	//guard u<u1
+	guard u<(XBandSize1+XBandSize2)	 //#THERE
+	do
+		foreach int i in 0 .. (i1-1)
+		do
+			FilterInput[i+EXTD_ADDENDA]:= future_tab[u][i]; // 5-shifting to prevent from having table's negative indices (tpast_tab[-1]..)
+		end
+	end
+/******************************************************************************
+* Action return to coeffmemorization
+*****************************************************************************/ 
+ End2D_SR: action  ==> 
+	guard u>=(XBandSize1+XBandSize2) //THERE
+	do
+		XCbSize      := 0;
+		YCbSize      := 0;
+		icb          := 0;
+		jcb          := 0;
+		lev          := lev - 1;
+	end
+/******************************************************************************
+ * Action newLevel 
+ *****************************************************************************/
+ 	newLevel : action ==> 
+	guard 
+		lev != 0 && y+jcb != TileSizeY
+	do
+		foreach int recountx in 0 .. XBandSize1+XBandSize2-1
+		do
+			foreach int recounty in 0 .. YBandSize1+YBandSize2-1
+			do
+				past_tab[recountx][recounty]:=future_tab[recountx][recounty];
+			end
+		end
+		XBandSize1   := BandSizes[0][lev-1];
+		XBandSize2   := BandSizes[1][lev-1];
+		YBandSize1   := BandSizes[2][lev-1];
+		YBandSize2   := BandSizes[3][lev-1];
+		x            := XBandSize1;
+		y            := 0;
+		tmpIdx[0] := tmpIdx[0] + 1;
+		tmpIdx[1] := 1;
+		tmpIdx[2] := 0;
+		tmpIdx[3] := 0;
+	end
+/******************************************************************************
+ * Final action, image sending
+ *****************************************************************************/ 
+ 	final: action  ==> Image:[Image_o]
+	guard
+		lev = 0 && yglo != TileSizeY
+	var
+		uint(size=PIXEL_SIZE)		Image_o						
+	do
+		Image_o := clip_i32(future_tab[xglo][yglo]+128, 0, 255);
+
+		if future_tab[xglo][yglo] < YUVmin[IdxComponent] then
+			YUVmin[IdxComponent] := future_tab[xglo][yglo];
+		end
+		if future_tab[xglo][yglo] > YUVmax[IdxComponent] then
+			YUVmax[IdxComponent] := future_tab[xglo][yglo];
+		end
+		
+		if xglo != TileSizeX-1 then
+			xglo:=xglo+1;
+		else
+			yglo:=yglo+1;
+			xglo:=0;
+		end
+	end
+/******************************************************************************
+ * Action newComponent
+ *****************************************************************************/
+ 	newComponent : action ==> 
+	guard 
+		lev = 0 && IdxComponent != nbComponent-1 && yglo = TileSizeY
+	do
+		IdxComponent := IdxComponent + 1;
+		lev          := NL;
+		XBandSize1   := BandSizes[0][lev-1];
+		XBandSize2   := BandSizes[1][lev-1];
+		YBandSize1   := BandSizes[2][lev-1];
+		YBandSize2   := BandSizes[3][lev-1];
+		x            := 0;
+		y            := 0;
+		tmpIdx	     := [ 0 : for int i in 0 .. 3];
+		xglo         := 0;
+		yglo         := 0;
+		foreach int i in 0 .. TileSizeX-1 do
+			foreach int j in 0 .. TileSizeY-1 do
+				future_tab[i][j] := 0;
+				past_tab[i][j]   := 0;
+			end
+		end
+	end
+/******************************************************************************
+ * Action newTile
+ *****************************************************************************/
+ 	newTile : action ==> 
+	guard 
+		lev = 0 && IdxComponent = nbComponent-1 && yglo = TileSizeY
+	do
+//		println(" Y : "+YUVmax[0]+" "+YUVmin[0]);
+//		println(" U : "+YUVmax[1]+" "+YUVmin[1]);
+//		println(" V : "+YUVmax[2]+" "+YUVmin[2]);
+	end
+/******************************************************************************
+ * FSM
+ *****************************************************************************/
+	schedule fsm Init_st:
+		Init_st         (Init.isNewPic        ) --> Init_st;
+		Init_st         (Init.isNewTile       ) --> GetTileInfo_st;
+		//GetTileInfo
+		GetTileInfo_st  (GetTileInfo          ) --> GetTileInfo_st;
+		GetTileInfo_st  (EndGetTileInfo       ) --> GetCoeff_st;
+		// GetCoeff
+		GetCoeff_st     (getCoeff             ) --> GetCoeff_st;
+		GetCoeff_st     (To2D_Interleave      ) --> HORSR1_st;
+		// HORSR
+		HORSR1_st       (D_SR                 ) --> HORSR2_st;
+		HORSR2_st       (HOR_SR_NextRow       ) --> HORSR3_st;
+		HORSR3_st       (HOR_SR_NotLastRow    ) --> HORSR1_st;
+		HORSR3_st       (HOR_SRtoVER_SR       ) --> VERSR1_st;
+		// VERSR
+		VERSR1_st       (D_SR                 ) --> VERSR2_st;
+		VERSR2_st       (VER_SR_NextColumn    ) --> VERSR3_st;
+		VERSR3_st       (VER_SR_NotLastColumn ) --> VERSR1_st;
+		VERSR3_st       (End2D_SR             ) --> NewLevel_st;
+		// Level_Change
+		NewLevel_st     (newLevel             ) --> GetCoeff_st;
+		NewLevel_st	    (final                ) --> NewComponent_st;
+		// final
+		NewComponent_st (final                ) -->	NewComponent_st;
+		NewComponent_st (newComponent         )	-->	GetCoeff_st;
+		NewComponent_st	(newTile              )	-->	Init_st;
+	end
+end

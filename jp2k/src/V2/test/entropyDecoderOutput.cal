@@ -1,0 +1,114 @@
+package V2.test;
+
+import  std.stdio.Source.*;
+import  std.video.Display.*;
+import  std.util.Compare.*;
+
+import  V2.common.commonPackage.*;
+import  V2.decoder.packages.decoderPackage.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+actor entropyDecoderOutput () 	uint(size=DATA_SIZE) Coeff,
+						 		uint(size= 8) deqCBInfo
+						 		==>
+:	
+/******************************************************************************
+ * Globale variables
+ *****************************************************************************/
+	uint(size= 8) cb_height;
+	uint(size= 8) cb_width;
+	//
+	uint(size= 8) idxLine;
+	uint(size= 8) idxColumn;
+	bool          isFrist := true;
+/******************************************************************************
+ * init
+ *****************************************************************************/
+	init_isNewCB : action 	Coeff:[cd],
+							deqCBInfo:[sb, cb_w, cb_h, c, r, w, h] ==>
+	guard
+		cd = COEFF_NEW_CB_MASK	
+	do
+		cb_height := cb_h;
+		cb_width  := cb_w;
+		//
+		idxLine   := 0;
+		idxColumn := 0;
+		if COMPARE_ENABLE then
+			compare_init();
+			println("# CodeBlock("+cb_w+", "+cb_h+") c = "+c+" r = "+r+" s = "+sb+" w = "+w+" h = "+h);
+		end
+	end
+	init.isNewPic : action Coeff:[cd] ==>
+	guard
+		cd = COEFF_NEW_PIC_MASK
+	do
+		if source_isMaxLoopsReached() then
+			source_exit(0);
+		end
+		if isFrist then
+			fpsPrintInit();
+			isFrist := false;
+		end	
+	end
+	init.isNewTile : action Coeff:[cd] ==>
+	guard
+		cd = COEFF_NEW_TILE_MASK
+	do
+		fpsPrintNewPicDecoded();
+	end
+/******************************************************************************
+ * getValues
+ *****************************************************************************/
+	getValues : action 	Coeff:[ data_p ] ==>
+	guard
+ 		idxLine != cb_height
+  	var
+ 		uint(size=8)  tmp[4]
+ 	do 
+		if idxColumn = 0 and idxLine = 0 then
+			data_p := data_p + COEFF_NEW_CB_MASK;
+		end
+		if DEBUG_BITSTREAM then
+	 		print((data_p>>1)+" ");
+	 	end
+ 		tmp[0] := 0;
+ 		tmp[1] := 0;
+ 		tmp[2] := (data_p>> 9) & 0x00ff;
+ 		tmp[3] := (data_p>> 1) & 0x00ff;
+		if COMPARE_ENABLE then
+	 		compare_NBytes(tmp,4);
+	 	end
+ 		
+ 		if idxColumn < cb_width-1 then
+ 			idxColumn := idxColumn + 1;
+ 		else
+ 			idxColumn := 0;
+ 			idxLine   := idxLine + 1;
+			if DEBUG_BITSTREAM then
+				println();
+			end
+ 		end	 
+	end		
+/******************************************************************************
+ * endRead
+ *****************************************************************************/
+	endRead : action ==>
+	guard
+ 		idxLine = cb_height
+ 	do
+		if DEBUG_BITSTREAM then
+		 	println();
+		end
+ 	end		
+/******************************************************************************
+ * Scheduler
+ *****************************************************************************/	
+	schedule fsm init_st:
+		init_st      (init        ) --> init_st;
+		init_st      (init_isNewCB) --> getValues_st;
+		getValues_st (getValues   ) --> getValues_st;
+		getValues_st (endRead     ) --> init_st;
+	end
+end

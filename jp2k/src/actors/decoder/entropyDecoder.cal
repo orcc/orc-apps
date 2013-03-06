@@ -1,0 +1,869 @@
+package actors.decoder;
+import utils.commonPackage.*;
+import utils.codestreamPackage.*;
+import utils.decoderPackage.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+actor entropyDecoder () uint(size= 8) entropyInfo,
+						uint(size= 8) D
+						==>
+						uint(size= 8) CTX,
+						uint(size=16) NB_DATA_out,
+						uint(size= 8) deqCBInfo,
+						uint(size= 8) traCBInfo,
+						uint(size=DATA_SIZE) DATA_out
+:
+/******************************************************************************
+ * Globale variables
+ *****************************************************************************/
+	uint(size=16) state[CB_HEIGHT_MAX+2][CB_WIDTH_MAX+2];
+	uint(size=DATA_SIZE) data[CB_HEIGHT_MAX][CB_WIDTH_MAX];
+	uint(size= 8) bitPlane;
+	uint(size= 8) cb_height;
+	uint(size= 8) cb_width;
+	uint(size= 8) subband;
+	uint(size= 8) nbPasses;
+	uint(size=16) nbData;
+	//
+	bool          isFirstPass;
+	uint(size= 8) stripeHeight;
+	uint(size= 8) idxStripe;
+	uint(size= 8) idxLine;
+	uint(size= 8) idxColumn;
+	uint(size= 8) idxCoef;
+	//
+	uint(size= 8) uint_ret;
+	bool          bool_ret;
+	uint(size= 8) cocSP3;
+	
+/******************************************************************************
+ * sumOneBit
+ *****************************************************************************/
+	procedure sumOneBit ( uint(size=32) bin )
+	var
+		uint(size=32) tmp := bin
+	begin
+		uint_ret := 0;
+		while (tmp!=0)
+		do
+			uint_ret := uint_ret + (tmp & 0x1);
+			tmp      := tmp >> 1;
+		end
+	end	
+/******************************************************************************
+ * getEndStripe 
+ *****************************************************************************/
+	function getEndStripe () --> uint(size=8) :
+		(cb_height + STRIPE_HEIGHT -1) / STRIPE_HEIGHT
+	end
+/******************************************************************************
+ * initState
+ *****************************************************************************/
+	procedure initState ()
+	begin
+		state     := [[0: for int c in 0 .. CB_WIDTH_MAX + 1] : for int l in 0 .. CB_HEIGHT_MAX + 1];
+	end
+/******************************************************************************
+ * getNextState
+ *****************************************************************************/
+	function getNextState () --> uint(size=16) :
+		if idxCoef = stripeHeight then
+			state[idxLine-stripeHeight+1][idxColumn+2]
+		else
+			state[idxLine+2][idxColumn+1]
+		end
+	end
+/******************************************************************************
+ * setStateUnvisited
+ *****************************************************************************/
+	procedure setStateUnvisited ( )
+	var
+		uint(size=16) tmp = state[idxLine+1][idxColumn+1]
+	begin
+		state[idxLine+1][idxColumn+1] := tmp & (~STATE_VISITED);
+	end
+/******************************************************************************
+ * setStateMR
+ *****************************************************************************/
+	procedure setStateMR ( )
+	var
+		uint(size=16) tmp = state[idxLine+1][idxColumn+1]
+	begin
+		state[idxLine+1][idxColumn+1] := tmp | STATE_PREV_MR;
+	end
+/******************************************************************************
+ * setStateSIG
+ *****************************************************************************/
+	procedure setStateSIG ( uint(size=8) sig)
+	var
+		uint(size=16) stateD0 = state[idxLine  ][idxColumn  ],
+		uint(size=16) stateV0 = state[idxLine  ][idxColumn+1],
+		uint(size=16) stateD1 = state[idxLine  ][idxColumn+2],
+		uint(size=16) stateH0 = state[idxLine+1][idxColumn  ],
+		uint(size=16) stateX := state[idxLine+1][idxColumn+1],
+		uint(size=16) stateH1 = state[idxLine+1][idxColumn+2],
+		uint(size=16) stateD2 = state[idxLine+2][idxColumn  ],
+		uint(size=16) stateV1 = state[idxLine+2][idxColumn+1],
+		uint(size=16) stateD3 = state[idxLine+2][idxColumn+2]
+	begin
+		if sig != 0 then
+			state[idxLine  ][idxColumn  ] := stateD0 | STATE_NZ_CTXT | STATE_D3;
+			state[idxLine  ][idxColumn+1] := stateV0 | STATE_NZ_CTXT | STATE_V1;
+			state[idxLine  ][idxColumn+2] := stateD1 | STATE_NZ_CTXT | STATE_D2;
+			state[idxLine+1][idxColumn  ] := stateH0 | STATE_NZ_CTXT | STATE_H1;
+			stateX                        := stateX  | STATE_SIG;
+			state[idxLine+1][idxColumn+2] := stateH1 | STATE_NZ_CTXT | STATE_H0;
+			state[idxLine+2][idxColumn  ] := stateD2 | STATE_NZ_CTXT | STATE_D1;
+			state[idxLine+2][idxColumn+1] := stateV1 | STATE_NZ_CTXT | STATE_V0;
+			state[idxLine+2][idxColumn+2] := stateD3 | STATE_NZ_CTXT | STATE_D0;
+		end
+		state[idxLine+1][idxColumn+1] := stateX  | STATE_VISITED;
+	end
+/******************************************************************************
+ * setStateSIGN
+ *****************************************************************************/
+	procedure setStateSIGN ( uint(size=8) sign )
+	var
+		uint(size=16) stateV0 = state[idxLine  ][idxColumn+1],
+		uint(size=16) stateH0 = state[idxLine+1][idxColumn  ],
+		uint(size=16) stateH1 = state[idxLine+1][idxColumn+2],
+		uint(size=16) stateV1 = state[idxLine+2][idxColumn+1]		
+	begin
+		if sign != 0 then 
+			state[idxLine  ][idxColumn+1] := stateV0 | STATE_V1_SIGN;
+			state[idxLine+1][idxColumn  ] := stateH0 | STATE_H1_SIGN;
+			state[idxLine+1][idxColumn+2] := stateH1 | STATE_H0_SIGN;
+			state[idxLine+2][idxColumn+1] := stateV1 | STATE_V0_SIGN;
+		end
+	end
+/******************************************************************************
+ * initData
+ *****************************************************************************/
+	procedure initData ()
+	begin
+		bitPlane := 0;
+		data     := [[0: for int c in 0 .. CB_WIDTH_MAX - 1] : for int l in 0 .. CB_HEIGHT_MAX - 1];
+	end
+/******************************************************************************
+ * setDataSIGN
+ *****************************************************************************/
+	procedure setDataSIGN ( uint(size=8) sign )
+	begin
+		data[idxLine][idxColumn] := (sign<<(DATA_SIZE-1)) | ((3 << bitPlane)>>1);
+	end
+/******************************************************************************
+ * setDataMR
+ *****************************************************************************/
+	procedure setDataMR ( uint(size=8) mr )
+	var
+		uint(size=DATA_SIZE) tmp = data[idxLine][idxColumn],
+		uint(size=DATA_SIZE) msk = (-1 << (bitPlane+1)) & ((1<<DATA_SIZE)-1)
+	begin
+		data[idxLine][idxColumn] := (tmp & msk) | ( (mr<<bitPlane) | ((1<<bitPlane)>>1));
+	end
+/******************************************************************************
+ * ifStartRLmode 
+ *****************************************************************************/
+	procedure ifStartRLmode ()
+	var
+		uint(size=8) l := idxStripe * STRIPE_HEIGHT,
+		uint(size=8) c  = idxColumn + 1
+	begin
+		bool_ret := true;
+		foreach uint(size=8) i in 0 .. STRIPE_HEIGHT-1 do
+			l := l + 1;
+			if i < stripeHeight then
+				if (state[l][c] & STATE_SIG) != 0 then
+	 				bool_ret := false;
+				end
+			end
+		end
+	end	
+/******************************************************************************
+ * ifFourStateZero 
+ *****************************************************************************/
+	procedure ifFourStateZero ()
+	var
+		uint(size=8) l := idxStripe * STRIPE_HEIGHT,
+		uint(size=8) c  = idxColumn + 1
+	begin
+		bool_ret := true;
+		foreach uint(size=8) i in 0 .. STRIPE_HEIGHT-1 do
+			l := l + 1;
+			if state[l][c] != 0 then
+ 				bool_ret := false;
+			end
+		end
+	end	
+/******************************************************************************
+ * getTableD1 
+ *****************************************************************************/
+	procedure getTableD1 ()
+	var
+		uint(size=16) currentState = state[idxLine+1][idxColumn+1],
+		uint(size= 8) h,
+		uint(size= 8) v,
+		uint(size= 8) d
+	begin
+		sumOneBit((currentState>>STATE_H_SHIFT)& STATE_H_MASK);
+		h        := uint_ret;
+		sumOneBit((currentState>>STATE_V_SHIFT)& STATE_V_MASK);
+		v        := uint_ret;
+		sumOneBit((currentState>>STATE_D_SHIFT)& STATE_D_MASK);
+		d        := uint_ret;
+		uint_ret := tableD1ctxLL_LH[h][v][d];
+		if subband = 1 then
+			uint_ret := tableD1ctxHL[h][v][d];
+		end
+		if subband = 3 then
+			uint_ret := tableD1ctxHH[h+v][d];
+		end			
+	end
+/******************************************************************************
+ * getTableD2_V 
+ *****************************************************************************/
+	procedure getTableD2_V ()
+	var
+		uint(size=16) currentState = state[idxLine+1][idxColumn+1],
+		uint(size=16) tmp0,
+		uint(size=16) tmp1
+	begin
+		sumOneBit(currentState & (STATE_V0_SIGN | STATE_V0));
+		tmp0     := uint_ret;
+		sumOneBit(currentState & (STATE_V1_SIGN | STATE_V1));
+		tmp1     := uint_ret;
+		uint_ret := tableD2[tmp0][tmp1];			
+	end
+/******************************************************************************
+ * getTableD2_H
+ *****************************************************************************/
+	procedure getTableD2_H ()
+	var
+		uint(size=16) currentState = state[idxLine+1][idxColumn+1],
+		uint(size=16) tmp0,
+		uint(size=16) tmp1
+	begin
+		sumOneBit(currentState & (STATE_H0_SIGN | STATE_H0));
+		tmp0     := uint_ret;
+		sumOneBit(currentState & (STATE_H1_SIGN | STATE_H1));
+		tmp1     := uint_ret;
+		uint_ret := tableD2[tmp0][tmp1];			
+	end
+/******************************************************************************
+ * getTableD3
+ *****************************************************************************/
+	procedure getTableD3 ()
+	var
+		uint(size=8) h,
+		uint(size=8) v 
+	begin
+		getTableD2_H();
+		h        := uint_ret;
+		getTableD2_V();
+		v        := uint_ret;
+		uint_ret := tableD3ctx[h][v]; 			
+	end
+/******************************************************************************
+ * getTableD4
+ *****************************************************************************/
+	procedure getTableD4 ()
+	var
+		uint(size=16) currentState = state[idxLine+1][idxColumn+1]
+	begin
+		if (currentState & STATE_PREV_MR) != 0 then
+			uint_ret := MR2_CTX;
+		else
+			if (currentState & MR_MASK) != 0 then
+				uint_ret := MR1_CTX;
+			else
+				uint_ret := MR0_CTX;	
+			end
+		end
+	end
+/******************************************************************************
+ * reset
+ *****************************************************************************/
+	procedure reset () 
+	begin
+		if cb_height > STRIPE_HEIGHT then
+			stripeHeight := STRIPE_HEIGHT;
+		else
+			stripeHeight := cb_height;
+		end
+		idxStripe    := 0;
+		idxLine      := 0;
+		idxColumn    := 0;
+		idxCoef      := 0;
+		isFirstPass  := false;
+		//println("nbPasse = "+nbPasses+" stripe = "+idxStripe+" column = "+idxColumn);
+	end
+/******************************************************************************
+ * init
+ *****************************************************************************/
+ 	init : action entropyInfo:[data_p] repeat 12 ==>
+				  CTX:[START_CTX | (TermCodingPass & cocSP3)],
+				  deqCBInfo:[subband, cb_width, cb_height, c, r, w, h],
+				  traCBInfo:[c, cb_width, cb_height],
+				  NB_DATA_out:[nbData]
+	var
+		uint(size= 8) zeroBitPlane  = data_p[4],
+		uint(size= 8) c             = data_p[5],
+		uint(size= 8) r             = data_p[6],
+		uint(size= 8) w             = data_p[7],
+		uint(size= 8) h             = data_p[8]
+	do
+		cb_width    :=  data_p[0];
+		cb_height   :=  data_p[1];
+		nbPasses    :=  data_p[2];
+		subband     :=  data_p[3];
+		cocSP3      :=  data_p[9];
+		nbData      := (data_p[10]<<8) + data_p[11];
+//		println("# CodeBlock("+cb_width+", "+cb_height+") c = "+c+" r = "+r+" s = "+subband+" w = "+w+" h = "+h);		
+		isFirstPass := true;
+		initState();
+		initData();
+		bitPlane    := DATA_SIZE - 2- zeroBitPlane;
+	end
+/******************************************************************************
+ * isSkip
+ *****************************************************************************/
+	isSkip : action ==>
+	guard
+		nbData = 0 && (  (cocSP3 & TermCodingPass)  = 0 ||
+						((cocSP3 & TermCodingPass) != 0 && nbPasses = 0))
+	do
+		reset();
+	end
+/******************************************************************************
+ * isD0
+ *****************************************************************************/
+	isD0.default : action ==>
+	guard
+		isFirstPass = true && nbData != 0 && (cocSP3 & TermCodingPass) = 0
+	do
+		reset();
+		ifFourStateZero();
+	end
+	isD0.TermCodingPass : action entropyInfo:[data_p] repeat 2 
+								 ==>
+								 CTX:[INIT_DEC_ctx],
+								 NB_DATA_out:[(data_p[0]<<8) + data_p[1]]
+	guard
+		isFirstPass = true && ((data_p[0]<<8) + data_p[1]) != 0 && (cocSP3 & TermCodingPass) != 0
+	do
+		nbData := (data_p[0]<<8) + data_p[1];
+		reset();
+		ifFourStateZero();
+	end
+	isD0No.default : action ==>
+	guard
+		isFirstPass = false && (cocSP3 & TermCodingPass) = 0
+	do
+		if bitPlane != 0 then
+			bitPlane := bitPlane-1;
+		else
+			if DEBUG_ARRAY = true then	
+				println ("entropyDecoder isD0No bitPlane error !!! : bitPlane < 0");
+			end
+		end
+		reset();
+	end
+	isD0No.TermCodingPass : action entropyInfo:[data_p] repeat 2
+								   ==>
+								   CTX:[INIT_DEC_ctx],
+								   NB_DATA_out:[(data_p[0]<<8) + data_p[1]]
+	guard
+		isFirstPass = false && (cocSP3 & TermCodingPass) != 0
+	do
+		nbData   := (data_p[0]<<8) + data_p[1];
+		if bitPlane != 0 then
+			bitPlane := bitPlane-1;
+		else
+			if DEBUG_ARRAY = true then	
+				println ("entropyDecoder isD0No bitPlane error !!! : bitPlane < 0");
+			end
+		end
+		reset();
+	end
+/******************************************************************************
+ * isD1
+ *****************************************************************************/
+	isD1 : action ==>
+	guard
+		(state[idxLine+1][idxColumn+1] & STATE_SIG) != 0
+	end
+/******************************************************************************
+ * isD2
+ *****************************************************************************/
+	isD2No_C1 : action ==> CTX:[ctx]
+	guard
+		(state[idxLine+1][idxColumn+1] & STATE_NZ_CTXT) != 0
+	var
+		uint(size=8) ctx
+	do
+		getTableD1();
+		ctx := uint_ret;
+	end
+/******************************************************************************
+ * isD3
+ *****************************************************************************/
+	isD3_C2 : action ==> CTX:[ctx]
+	guard
+		uint_ret != 0
+	var
+		uint(size=8) ctx
+	do
+		getTableD3();
+		ctx := uint_ret;
+	end
+/******************************************************************************
+ * isD4_D7_D12
+ *****************************************************************************/
+	isD4_D7_D12_C0 : action ==>
+	guard
+		(idxCoef != stripeHeight-1) || (idxColumn != cb_width-1) || (idxStripe != getEndStripe()-1)
+	do
+		C0();
+	end
+	isD4_D7_D12_C0_D8 : action ==>
+	guard
+		(idxCoef != stripeHeight-1) || (idxColumn != cb_width-1) || (idxStripe != getEndStripe()-1)
+	do
+		C0();
+		ifFourStateZero();
+	end
+/******************************************************************************
+ * isD5
+ *****************************************************************************/
+	isD5 : action ==>
+	guard
+		(state[idxLine+1][idxColumn+1] & STATE_SIG) = 0
+	end
+/******************************************************************************
+ * isD6
+ *****************************************************************************/
+	isD6No_C3 : action ==> CTX:[ctx]
+	guard
+		(state[idxLine+1][idxColumn+1] & STATE_VISITED) = 0
+	var
+		uint(size=8) ctx
+	do
+		getTableD4();
+		ctx := uint_ret;
+	end
+/******************************************************************************
+ * isD8
+ *****************************************************************************/
+	isD8_C4 : action ==> CTX:[RL_CTX]
+	guard
+		stripeHeight = STRIPE_HEIGHT && bool_ret
+	end	
+/******************************************************************************
+ * isD9
+ *****************************************************************************/
+	isD9No_C1 : action ==> CTX:[ctx]
+	guard
+		(state[idxLine+1][idxColumn+1] & (STATE_SIG | STATE_VISITED)) = 0
+	var
+		uint(size=8) ctx 
+	do
+		getTableD1();
+		ctx := uint_ret; 
+	end
+/******************************************************************************
+ * isD10
+ *****************************************************************************/
+	isD10_1 : action ==>
+	guard
+		((getNextState() & (STATE_SIG | STATE_VISITED)) = 0) &&
+		(idxCoef != stripeHeight-1)
+	do
+		setStateUnvisited();
+		ifStartRLmode();
+	end
+	isD10_C0 : action ==>
+	guard
+		(idxColumn != cb_width-1) || (bool_ret = true)
+	do
+		C0();	 
+	end
+	isD10_C0_C1 : action ==> CTX:[ctx]
+	guard
+		(idxColumn != cb_width-1) || (bool_ret = true)
+	var
+		uint(size=8) ctx 
+	do
+		C0();	
+		getTableD1();
+		ctx := uint_ret; 
+	end
+	isNotD10 : action ==>
+	do
+		setStateUnvisited();
+	end
+/******************************************************************************
+ * isD11
+ *****************************************************************************/
+	isD11No_C5 : action ==> CTX:[UNI_CTX, UNI_CTX]
+	guard
+		uint_ret != 0
+	end
+/******************************************************************************
+ * isEndPass
+ *****************************************************************************/
+	isEndPass.default : action ==>
+	guard
+		(cocSP3 & PredTerm) = 0
+	end
+	isEndPass.PredTerm : action ==> CTX:[CheckPredTerm_ctx]
+	guard
+		(cocSP3 & PredTerm) != 0
+	end
+	isEndCleanPass.default : action ==>
+	guard
+		(cocSP3 & (PredTerm|SegSymbol)) = 0
+	end
+	isEndCleanPass.PredTerm : action ==> CTX:[CheckPredTerm_ctx]
+	guard
+		(cocSP3 & (PredTerm|SegSymbol)) = PredTerm
+	end
+	isEndCleanPass.SegSymbol : action ==> CTX:[UNI_CTX, UNI_CTX, UNI_CTX, UNI_CTX]
+	guard
+		(cocSP3 & SegSymbol) != 0
+	end
+/******************************************************************************
+ * getSegSymbol
+ *****************************************************************************/
+	getSegSymbol.default : action ==>
+	guard
+		(cocSP3 & (PredTerm|SegSymbol)) = 0
+	end
+	getSegSymbol.SegSymbol : action D:[d] repeat 4 ==>
+	guard
+		(cocSP3 & (PredTerm|SegSymbol)) = SegSymbol
+	var
+		uint(size=8) syn = (d[0]<<3)+(d[1]<<2)+(d[2]<<1)+d[3]
+	do
+		if syn != 10 then
+			println ("entropyDecoder SegSymbol error");
+		end
+	end
+	getSegSymbol.CheckPredTerm : action D:[d] repeat 4 ==> CTX:[CheckPredTerm_ctx]
+	guard
+		(cocSP3 & (PredTerm|SegSymbol)) = (PredTerm|SegSymbol)
+	var
+		uint(size=8) syn = (d[0]<<3)+(d[1]<<2)+(d[2]<<1)+d[3]
+	do
+		if syn != 10 then
+			println ("entropyDecoder SegSymbol error");
+		end
+	end
+/******************************************************************************
+ * isEndCB
+ *****************************************************************************/
+	isEndCB.default : action ==> CTX:[FLUSH_ctx]
+	guard
+		(cocSP3 & PredTerm) = 0 && nbPasses = 1
+	do
+		idxLine   := 0;
+		idxColumn := 0;
+	end
+	isEndCB.PredTerm : action D:[d] ==> CTX:[FLUSH_ctx]
+	guard
+		(cocSP3 & PredTerm) != 0 && nbPasses = 1
+	do
+		idxLine   := 0;
+		idxColumn := 0;
+	end
+/******************************************************************************
+ * nextPasses
+ *****************************************************************************/
+	nextPasse.default : action ==>
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = 0
+	do
+		nbPasses := nbPasses - 1;
+		reset();
+	end
+	nextPasse.PredTerm : action D:[d] ==>
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = PredTerm
+	do
+		nbPasses := nbPasses - 1;
+		reset();
+	end
+	nextPasse.TermCodingPass : action entropyInfo:[data_p] repeat 2
+									  ==>
+									  CTX:[INIT_DEC_ctx],
+									  NB_DATA_out:[(data_p[0]<<8) + data_p[1]]
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = TermCodingPass
+	do
+		nbData   := (data_p[0]<<8) + data_p[1];
+		nbPasses := nbPasses - 1;
+		reset();
+	end
+	nextPasse.PredTerm_TermCodingPass : action D:[d], entropyInfo:[data_p] repeat 2
+									  ==>
+									  CTX:[INIT_DEC_ctx],
+									  NB_DATA_out:[(data_p[0]<<8) + data_p[1]]
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = (PredTerm|TermCodingPass)
+	do
+		nbData   := (data_p[0]<<8) + data_p[1];
+		nbPasses := nbPasses - 1;
+		reset();
+	end
+/******************************************************************************
+ * nextPasses_D0
+ *****************************************************************************/
+	nextPasse_D0.default : action ==>
+	guard
+		(cocSP3 & PredTerm) = 0 && nbPasses != 1
+	do
+		nbPasses := nbPasses - 1;
+	end
+	nextPasse_D0.PredTerm : action D:[d] ==>
+	guard
+		(cocSP3 & PredTerm) != 0 && nbPasses != 1
+	do
+		nbPasses := nbPasses - 1;
+	end
+/******************************************************************************
+ * nextPasses_D0
+ *****************************************************************************/
+	nextPasse_D8.default : action ==>
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = 0
+	do
+		nbPasses := nbPasses - 1;
+		reset();
+		ifFourStateZero();		
+	end
+	nextPasse_D8.PredTerm : action D:[d] ==>
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = PredTerm
+	do
+		nbPasses := nbPasses - 1;
+		reset();
+		ifFourStateZero();		
+	end
+	nextPasse_D8.PredTerm_TermCodingPass : action D:[d], entropyInfo:[data_p] repeat 2
+									  ==>
+									  CTX:[INIT_DEC_ctx],
+									  NB_DATA_out:[(data_p[0]<<8) + data_p[1]]
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = (PredTerm|TermCodingPass)
+	do
+		nbData   := (data_p[0]<<8) + data_p[1];
+		nbPasses := nbPasses - 1;
+		reset();
+		ifFourStateZero();
+	end
+	nextPasse_D8.TermCodingPass : action entropyInfo:[data_p] repeat 2
+										 ==>
+										 CTX:[INIT_DEC_ctx],
+										 NB_DATA_out:[(data_p[0]<<8) + data_p[1]]
+	guard
+		nbPasses != 1 && (cocSP3 & (PredTerm|TermCodingPass)) = TermCodingPass
+	do
+		nbData   := (data_p[0]<<8) + data_p[1];
+		nbPasses := nbPasses - 1;
+		reset();
+		ifFourStateZero();
+	end
+/******************************************************************************
+ * C0
+ *****************************************************************************/
+	procedure C0 ()
+	begin 
+		if idxCoef < stripeHeight-1 then
+			idxCoef := idxCoef + 1;
+		else
+			idxCoef := 0;
+ 			if idxColumn < cb_width-1 then
+ 				idxColumn := idxColumn + 1;
+ 			else
+ 				idxColumn := 0;
+ 				idxStripe := idxStripe + 1;
+ 			end
+			//println("nbPasse = "+nbPasses+" stripe = "+idxStripe+" column = "+idxColumn);
+ 		end
+ 		idxLine      := idxStripe * STRIPE_HEIGHT + idxCoef;
+ 		stripeHeight := cb_height - idxStripe * STRIPE_HEIGHT;
+ 		if (stripeHeight > STRIPE_HEIGHT) then
+			stripeHeight := STRIPE_HEIGHT;
+		end
+	end
+/******************************************************************************
+ * C1
+ *****************************************************************************/
+	C1 : action D:[d] ==>
+	do
+		uint_ret := d;
+		setStateSIG(d); 
+	end
+/******************************************************************************
+ * C2
+ *****************************************************************************/
+	C2 : action D:[d] ==>
+	var
+		uint(size=8) h,
+		uint(size=8) v 
+	do
+		getTableD2_H();
+		h   := uint_ret;
+		getTableD2_V();
+		v   := uint_ret;
+		uint_ret := d ^ tableD3xorbit[h][v]; 
+		setStateSIGN(uint_ret);
+		setDataSIGN(uint_ret);
+	end
+/******************************************************************************
+ * C3
+ *****************************************************************************/
+	C3 : action D:[d] ==> 
+	do
+		uint_ret := d; 
+		setStateMR();
+		setDataMR(uint_ret);
+	end
+/******************************************************************************
+ * C4
+ *****************************************************************************/
+	C4 : action D:[d] ==> 
+	do
+		idxCoef  := 3;
+		idxLine  := idxStripe * STRIPE_HEIGHT + idxCoef;
+		uint_ret := d; 
+	end
+/******************************************************************************
+ * C5
+ *****************************************************************************/
+	C5_C2 : action D:[d] repeat 2 ==> CTX:[ctx]
+	var
+		uint(size=8) ctx
+	do
+		idxCoef  := (d[0]<<1) + d[1];
+		idxLine  := idxStripe * STRIPE_HEIGHT + idxCoef;
+		setStateSIG(1);
+		// C2
+		getTableD3();
+		ctx := uint_ret;
+	end
+/******************************************************************************
+ * Idle
+ *****************************************************************************/
+ 	idle: action ==> 
+ 	end
+/******************************************************************************
+ * sendData
+ *****************************************************************************/
+ 	sendData: action ==> DATA_out:[d]
+ 	guard
+ 		idxLine != cb_height
+ 	var
+ 		uint(size=DATA_SIZE) d := (data[idxLine][idxColumn]>>1) & ((1<<(DATA_SIZE-1))-1)
+ 	do 
+ 		if idxColumn = 0 && idxLine = 0 then
+ 			d := d + (1<<(DATA_SIZE-1));
+ 		end
+ 		if idxColumn < cb_width-1 then
+ 			idxColumn := idxColumn + 1;
+ 		else
+ 			idxColumn := 0;
+ 			idxLine   := idxLine + 1;
+ 		end
+ 	end
+ /******************************************************************************
+ * Scheduler
+ *****************************************************************************/	
+	schedule fsm init_st:
+		init_st         ( init              ) --> isD0_st;
+		isD0_st         ( isSkip            ) --> sendData_st;
+		isD0_st         ( isD0              ) --> isD8_st;
+		isD0_st         ( isD0No            ) --> isD1_st4;
+		// cleanupPass
+		isD8_st         ( isD8_C4           ) --> C4_st1;
+		isD8_st         ( idle              ) --> isD9_st2;
+		//
+		C4_st1          ( C4                ) --> isD11_st1;
+		isD11_st1       ( isD11No_C5        ) --> C5_st1;
+		isD11_st1       ( idle              ) --> isD12_st3;
+		C5_st1          ( C5_C2             ) --> C2_st1;
+		C2_st1          ( C2                ) --> isD10_1_st1;
+		isD10_1_st1     ( isD10_1           ) --> isD10_2_st1;
+		isD10_1_st1     ( isNotD10          ) --> isD12_st3;
+		isD10_2_st1     ( isD10_C0_C1       ) --> C1_st1;
+		isD10_2_st1     ( isNotD10          ) --> isD12_st3;
+		C1_st1          ( C1                ) --> isD3_st1;
+		isD3_st1        ( isD3_C2           ) --> C2_st1;
+		isD3_st1        ( idle              ) --> isD10_1_st1;
+		//
+		isD9_st2        ( isD9No_C1         ) --> C1_st2;
+		isD9_st2        ( idle              ) --> isD10_1_st2;
+		C1_st2          ( C1                ) --> isD3_st2;
+		isD3_st2        ( isD3_C2           ) --> C2_st2;
+		isD3_st2        ( idle              ) --> isD10_1_st2;
+		C2_st2          ( C2                ) --> isD10_1_st2;
+		isD10_1_st2     ( isD10_1           ) --> isD10_2_st2;
+		isD10_1_st2     ( isNotD10          ) --> isD12_st3;
+		isD10_2_st2     ( isD10_C0          ) --> isD9_st2;
+		isD10_2_st2     ( isNotD10          ) --> isD12_st3;
+		//
+		isD12_st3       ( isD4_D7_D12_C0_D8 ) --> isD8_st;
+		isD12_st3       ( isEndCleanPass    ) --> endCleanPass_st;
+		endCleanPass_st ( getSegSymbol      ) --> goto_D0_st;
+		goto_D0_st      ( nextPasse_D0      ) --> isD0_st;
+		goto_D0_st      ( isEndCB           ) --> sendData_st;
+		// significance propagation passe
+		isD1_st4        ( isD1              ) --> isD4_st4;
+		isD1_st4        ( idle              ) --> isD2_st4;
+		isD2_st4        ( isD2No_C1         ) --> C1_st4;
+		isD2_st4        ( idle              ) --> isD4_st4;
+		C1_st4          ( C1                ) --> isD3_st4;
+		isD3_st4        ( isD3_C2           ) --> C2_st4;
+		isD3_st4        ( idle              ) --> isD4_st4;
+		C2_st4          ( C2                ) --> isD4_st4;
+		//
+		isD4_st4        ( isD4_D7_D12_C0    ) --> isD1_st4;
+		isD4_st4        ( isEndPass         ) --> goto_D5_st;
+		goto_D5_st      ( nextPasse         ) --> isD5_st5;
+		goto_D5_st      ( isEndCB           ) --> sendData_st;
+		// magnitude refinement passe
+		isD5_st5        ( isD5              ) --> isD7_st5;
+		isD5_st5        ( idle              ) --> isD6_st5;
+		isD6_st5        ( isD6No_C3         ) --> C3_st5;
+		isD6_st5        ( idle              ) --> isD7_st5;
+		C3_st5          ( C3                ) --> isD7_st5;
+		//
+		isD7_st5        ( isD4_D7_D12_C0    ) --> isD5_st5;
+		isD7_st5        ( isEndPass         ) --> goto_D8_st;
+		goto_D8_st      ( nextPasse_D8      ) --> isD8_st;
+		goto_D8_st      ( isEndCB           ) --> sendData_st;
+		// sendData
+		sendData_st     ( sendData          ) --> sendData_st;
+		sendData_st     ( idle              ) --> init_st;
+	end
+/******************************************************************************
+ * Priority
+ *****************************************************************************/	
+	priority
+		isD1              > idle;
+		isD2No_C1         > idle;
+		isD3_C2           > idle;
+		isD4_D7_D12_C0    > isEndCleanPass;
+		isD4_D7_D12_C0    > isEndPass;
+		isD4_D7_D12_C0_D8 > isEndPass;
+		isD5              > idle;
+		isD6No_C3         > idle;
+		isD8_C4           > idle;
+		isD9No_C1         > idle;
+		isD10_1           > isNotD10;
+		isD10_C0          > isNotD10;
+		isD10_C0_C1       > isNotD10;
+		isD11No_C5        > idle;
+		sendData          > idle;
+	end
+end
