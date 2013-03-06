@@ -16,10 +16,10 @@ actor IT_Merger()  int(size=8)   Size,
                    int(size=16)  Block  
                    :
  
- 	int block[16];
- 	int firstPassBlk[16];
+ 	int(size=16) block[32*32];
+ 	int(size=16) firstPassBlk[32*32];
  
- 	procedure it4x4_1d(int input[16], int output[16], int shift)
+ 	procedure it4x4_1d(int(size=16) input[32*32], int(size=16) output[32*32], int shift)
  	var    
  		int x0, int x1, int x2, int x3,
 		int rounding = 1 << (shift - 1)
@@ -35,7 +35,43 @@ actor IT_Merger()  int(size=8)   Size,
 			output[4*i + 3] := (x0 - x1 + rounding) >> shift;
 		end
 	end
- 
+
+	procedure it8x8_1d(int(size=16) input[32*32], int(size=16) output[32*32], int shift)
+	var
+		int(size=26) even[4],
+		int(size=26) odd[4],
+		int(size=26) rounding = 1 << shift - 1
+	begin
+		foreach int i in 0 .. 7 do
+			even[0] := input[i + 8*0] * g_aiT8[0][0] + input[i + 8*4] * g_aiT8[4][0] +
+			           input[i + 8*2] * g_aiT8[2][0] + input[i + 8*6] * g_aiT8[6][0];
+			even[1] := input[i + 8*0] * g_aiT8[0][1] + input[i + 8*4] * g_aiT8[4][1] +
+			           input[i + 8*2] * g_aiT8[2][1] + input[i + 8*6] * g_aiT8[6][1];
+			even[2] := input[i + 8*0] * g_aiT8[0][1] + input[i + 8*4] * g_aiT8[4][1] -
+			          (input[i + 8*2] * g_aiT8[2][1] + input[i + 8*6] * g_aiT8[6][1]);
+			even[3] := input[i + 8*0] * g_aiT8[0][0] + input[i + 8*4] * g_aiT8[4][0] -
+			          (input[i + 8*2] * g_aiT8[2][0] + input[i + 8*6] * g_aiT8[6][0]);
+	
+			odd[0]  := input[i + 8*1] * g_aiT8[1][0] + input[i + 8*3] * g_aiT8[3][0] +
+			           input[i + 8*5] * g_aiT8[5][0] + input[i + 8*7] * g_aiT8[7][0];
+			odd[1]  := input[i + 8*1] * g_aiT8[1][1] + input[i + 8*3] * g_aiT8[3][1] +
+			           input[i + 8*5] * g_aiT8[5][1] + input[i + 8*7] * g_aiT8[7][1];
+			odd[2]  := input[i + 8*1] * g_aiT8[1][2] + input[i + 8*3] * g_aiT8[3][2] +
+			           input[i + 8*5] * g_aiT8[5][2] + input[i + 8*7] * g_aiT8[7][2];
+			odd[3]  := input[i + 8*1] * g_aiT8[1][3] + input[i + 8*3] * g_aiT8[3][3] +
+			           input[i + 8*5] * g_aiT8[5][3] + input[i + 8*7] * g_aiT8[7][3];
+	
+			output[8*i +  0] := (even[0] + odd[0] + rounding) >> shift;
+			output[8*i +  1] := (even[1] + odd[1] + rounding) >> shift;
+			output[8*i +  2] := (even[2] + odd[2] + rounding) >> shift;
+			output[8*i +  3] := (even[3] + odd[3] + rounding) >> shift;
+			output[8*i +  4] := (even[3] - odd[3] + rounding) >> shift;
+			output[8*i +  5] := (even[2] - odd[2] + rounding) >> shift;
+			output[8*i +  6] := (even[1] - odd[1] + rounding) >> shift;
+			output[8*i +  7] := (even[0] - odd[0] + rounding) >> shift;
+		end
+	end
+
 	block.is4x4.IT: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
 		Block_4x4_IT:[coeff] repeat 4*4
@@ -47,6 +83,19 @@ actor IT_Merger()  int(size=8)   Size,
 		block := [coeff[i]: for int i in 0 .. 15];
 		it4x4_1d(block, firstPassBlk, 7);
 		it4x4_1d(firstPassBlk, block, 12);
+	end
+
+	block.is8x8: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Block_8x8:[coeff] repeat 8*8
+			==>
+		Block:[block] repeat 8*8
+	guard
+		sizeOfTU = 8 and RCskip = 0 and transfSkipFlag = 0
+	do
+		block := [coeff[i]: for int i in 0 .. 8*8-1];
+		it8x8_1d(block, firstPassBlk, 7);
+		it8x8_1d(firstPassBlk, block, 12);
 	end
 
 	merge_4x4.trans_skip: action Size:[ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset ], 
