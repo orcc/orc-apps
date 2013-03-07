@@ -289,7 +289,7 @@ actor IT_Merger()
 			output[32*j +  31] := (even[0]  - odd[0] + rounding) >> shift;
 		end
 	end
-uint numPu := 0;
+
 	procedure incIdx(int(size=7) tuSize)
 	begin
 		if(tuSize = 4 and cIdx = 0) then
@@ -297,15 +297,9 @@ uint numPu := 0;
 			if(blk4x4Idx = 4) then
 				blk4x4Idx := 0;
 				cIdx := cIdx + 1;
-				if(cIdx = 1) then
-					numPu := numPu + 1;
-				end
 			end
 		else
 			cIdx := cIdx + 1;
-			if(cIdx = 1) then
-				numPu := numPu + 1;
-			end
 		end
 	end
 
@@ -573,18 +567,22 @@ uint numPu := 0;
 		incIdx(sizeOfTU);
 	end
 
-	sendToken.launch.launch: action ==>
+
+
+	getCoeff_is64x64.skip: action
+		Size:[param] repeat 7*3
+			==>
 	guard
-		true,
-		cIdx = 3
+		param[0] = 64 //sizeOfTU = 64
 	do
-		cIdx    := 0;
 		partIdx := 0;
+		numPartToSend := 256;
 	end
 
-	sendToken.launch.skip: action ==>
+
+
+	sendToken.launch.launch: action ==>
 	guard
-		false,
 		cIdx = 3
 	do
 		cIdx    := 0;
@@ -596,12 +594,18 @@ uint numPu := 0;
 		cIdx < 3
 	end
 
-	getCoeff.is64x64.skip: action
-		Size:[param] repeat 7*3
-			==>
-		Block:[[0: for int i in 1 .. 64*64 + 2*32*32]] repeat 64*64 + 2*32*32
+	sendEmptyBlock.launch: action ==> Block:[[0: for int i in 0 .. 23]] repeat 24
 	guard
-		param[0] = 64 //sizeOfTU = 64
+		partIdx < numPartToSend
+	do
+		partIdx := partIdx + 1;
+	end
+
+	sendEmptyBlock.done: action ==>
+	guard
+		partIdx = numPartToSend
+	do
+		partIdx := 0;
 	end
 
 	sendBlock.launch: action ==> Block:[out] repeat 16 + 2*4
@@ -632,11 +636,14 @@ uint numPu := 0;
 
 	schedule fsm GetCoeff:
 		GetCoeff  (getCoeff         )--> SendToken;
+		GetCoeff  (getCoeff_is64x64 )--> SendEmptyBlock;
 		SendToken (sendToken.skip   )--> GetCoeff;
-		SendToken (sendToken.launch.launch )--> SendBlock;
-		SendToken (sendToken.launch.skip )--> GetCoeff;
+		SendToken (sendToken.launch )--> SendBlock;
 
 		SendBlock (sendBlock.launch )--> SendBlock;
 		SendBlock (sendBlock.done   )--> GetCoeff;
+
+		SendEmptyBlock (sendEmptyBlock.launch )--> SendEmptyBlock;
+		SendEmptyBlock (sendEmptyBlock.done   )--> GetCoeff;
 	end
 end
