@@ -1,0 +1,80 @@
+actor SourceSTHORM () ==> uint(size=1) O :
+
+	int BUFFER_SIZE = 128;
+	
+	int curr := 0;
+	int next := 0;
+	int nb_iterations;
+	int byte_left;
+	int iteration_count;
+	int count;
+	int seg_size;
+		
+	uint(size=8) buffer[2][BUFFER_SIZE];
+
+	@native
+	function get_size() --> int
+	end
+
+	@native
+	procedure dma_wait()
+	end
+	
+	@native
+	procedure dma_ext2loc_memcpy(uint(size=8) current_buffer[2][BUFFER_SIZE], int buf_idx, int buf_size)
+	end
+	
+	initialize ==>
+	do
+		iteration_count := 0;
+		nb_iterations := get_size() / BUFFER_SIZE;
+		byte_left := get_size() mod BUFFER_SIZE;
+		dma_ext2loc_memcpy(buffer, curr, BUFFER_SIZE);
+	end
+		
+	copy.segment: action ==>
+	guard iteration_count < nb_iterations
+	do
+		next := curr ^ 1;
+		dma_wait();
+		dma_ext2loc_memcpy(buffer, next, BUFFER_SIZE);
+		seg_size := BUFFER_SIZE;
+	end
+
+	copy.left: action ==> 
+	guard byte_left > 0
+	do
+		next := curr ^ 1;
+		dma_wait();
+		dma_ext2loc_memcpy(buffer, next, byte_left);
+		seg_size := byte_left;
+		byte_left := 0;
+	end
+	
+	send: action ==> O:[out]
+	var uint(size=1) out
+	do
+		out := buffer[curr][count];
+		count := count + 1;
+	end	
+	
+	done: action ==>
+	guard count = seg_size
+	do
+		curr := curr ^ 1;
+		count := 0;
+		iteration_count := iteration_count + 1;
+	end 
+	
+	schedule fsm init :
+		init(copy)-->send;
+		send(send)-->send;
+		send(done)-->init;
+	end
+	
+	priority 
+		copy.segment > copy.left;
+		done > send;
+	end
+
+end

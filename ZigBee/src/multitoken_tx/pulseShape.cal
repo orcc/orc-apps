@@ -1,0 +1,141 @@
+// pulseShape.cal
+//
+// Copyright (c) 2013 University of Oulu, Finland
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+//
+// Author: 
+// Jani Boutellier (jani.boutellier@ee.oulu.fi)
+// Department of Computer Science and Engineering
+// University of Oulu, Finland
+//
+// Description:
+// Half-sine pulse shaper for IEEE 802.15.4 (ZigBee) Baseband
+// transmission. Based on the C code implementation written
+// by Amanullah Ghazi. Described in SDR-WInnComm 2012 paper
+// "Low-complexity SDR Implementation of IEEE 802.15.4 (ZigBee)
+// Baseband Transceiver on Application Specific Processor" 
+//
+// Changelog:
+// - initial version 01/10/2012
+// - cleanup for release 08/10/2012
+// - multitoken-version 04/03/2013
+
+package multitoken_tx;
+
+import multitoken_tx.constants.*;
+
+actor pulseShape() 
+// Inputs:
+int(size=SYMB_SZ) symb,             // I-Q symbols from QPSK modulator 
+uint(size=PAYLOAD_LEN_SZ) len       // Payload length
+// Outputs:
+==> 
+int(size=HSP_SZ) hsp                // Half-sine pulse samples
+:
+
+	int(size=SYMB_SZ) symb_mem;     // Temporary storage for symbol values during transmission
+                                    // the current hsp. range: [0...8] 
+	int body_iterations;            // Number of times the "body" part of the transmission has to be repeated 
+	int body_index;                 // Number of times the "body" part of the transmission has been repeated
+
+    int FILT_COEFF0 = 0x00;         // Static filter coefficients for half-sine pulse generation
+    int FILT_COEFF1 = 0x31;
+    int FILT_COEFF2 = 0x5a;
+    int FILT_COEFF3 = 0x76;
+    int FILT_COEFF4 = 0x7f;
+
+	// fixed-point multiplication with shift
+	function mul8( int x, int y ) --> int :
+		(x * y) >> 7
+	end
+
+	// init action
+	// Fired when payload length is known
+	init: action len:[len_in] ==>
+	do
+		body_iterations := (len_in * 32); 
+		body_index := 0;
+		symb_mem := 0x7F;
+	end
+
+	// tx-body action
+	// Consumes 2, produces 16 samples
+	tx_body: action symb:[ symb_1, symb_2 ] ==> hsp:[ hsps ] repeat 16
+	guard
+		body_index < body_iterations
+	var
+		List(type: int(size=HSP_SZ), size=16) hsps
+	do	
+		hsps[0] := mul8(FILT_COEFF0, symb_1);
+		hsps[1] := mul8(FILT_COEFF4, symb_mem);
+	
+		hsps[2] := mul8(FILT_COEFF1, symb_1);
+		hsps[3] := mul8(FILT_COEFF3, symb_mem);
+	
+		hsps[4] := mul8(FILT_COEFF2, symb_1);
+		hsps[5] := mul8(FILT_COEFF2, symb_mem);
+	
+		hsps[6] := mul8(FILT_COEFF3, symb_1);
+		hsps[7] := mul8(FILT_COEFF1, symb_mem);
+	
+		hsps[8] := mul8(FILT_COEFF4, symb_1);
+		hsps[9] := mul8(FILT_COEFF0, symb_2);
+	
+		hsps[10] := mul8(FILT_COEFF3, symb_1);
+		hsps[11] := mul8(FILT_COEFF1, symb_2);
+	
+		hsps[12] := mul8(FILT_COEFF2, symb_1);
+		hsps[13] := mul8(FILT_COEFF2, symb_2);
+	
+		hsps[14] := mul8(FILT_COEFF1, symb_1);
+		hsps[15] := mul8(FILT_COEFF3, symb_2);
+	
+		symb_mem := symb_2;
+		body_index := body_index + 1; 
+	end
+
+	// tx_tail action
+	// Finalizes the transmission signal with the fixed 0x7F value
+	tx_tail: action ==> hsp:[ hsps ] repeat 8
+	guard
+		body_index = body_iterations
+	var
+		List(type: int(size=HSP_SZ), size=8) hsps
+	do
+		hsps[0] := mul8(FILT_COEFF0, 0x7F);
+		hsps[1] := mul8(FILT_COEFF4, symb_mem);
+	
+		hsps[2] := mul8(FILT_COEFF1, 0x7F);
+		hsps[3] := mul8(FILT_COEFF3, symb_mem);
+	
+		hsps[4] := mul8(FILT_COEFF2, 0x7F);
+		hsps[5] := mul8(FILT_COEFF2, symb_mem);
+	
+		hsps[6] := mul8(FILT_COEFF3, 0x7F);
+		hsps[7] := mul8(FILT_COEFF1, symb_mem);
+	end
+
+	schedule fsm s_start :
+		s_start ( init ) --> s_idle;
+		s_idle ( tx_body ) --> s_idle;
+		s_idle ( tx_tail ) --> s_start;
+	end
+
+end

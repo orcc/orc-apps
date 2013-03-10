@@ -1,0 +1,689 @@
+package V2.decoder;
+//import  V2.common.BitstreamReadUtils.*;
+import  V2.common.commonPackage.*;
+import  V2.decoder.packages.decoderPackage.*;
+import  V2.decoder.tools.BitstreamReadUtilsEntropy.*;
+import  V2.decoder.tools.decoderTop.*;
+import  V2.decoder.tools.entropyDecoderState.*;
+import  V2.decoder.tools.entropyDecoderData.*;
+import  V2.decoder.tools.entropyDecoderCtx.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+actor entropyDecoder () uint(size= 8) entropyInfo,
+						uint(size=CODESTREAM_SIZE) CD
+						==>
+						uint(size= 8) deqCBInfo,
+						uint(size= 8) traCBInfo,
+						uint(size=DATA_SIZE) Coeff
+:
+	int DEBUG = 0;
+	/**************************************************************************
+	 **************************************************************************
+	 ********        Bitstream Reader                     *********************
+	 **************************************************************************
+	 *************************************************************************/
+	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
+ 	action CD:[ b ] ==>
+	guard 
+		not isFifoFull(fifo)
+	do
+		setData(b, fifo);
+	end
+	/**************************************************************************
+	 **************************************************************************
+	 ********       DecoderTop Data                       *********************
+	 **************************************************************************
+	 *************************************************************************/
+	uint(size=32) DecoderData[DECODER_SIZE];
+	uint(size= 8) I[NB_CTX];
+	uint(size= 1) mPS[NB_CTX];
+/******************************************************************************
+ * Globale variables
+ *****************************************************************************/
+	uint(size=16) state[CB_HEIGHT_MAX+2][CB_WIDTH_MAX+2];
+	uint(size=DATA_SIZE) data[CB_HEIGHT_MAX][CB_WIDTH_MAX];
+	uint(size= 8) bitPlane;
+	uint(size= 8) cb_height;
+	uint(size= 8) cb_width;
+	uint(size= 8) subband;
+	uint(size= 8) nbPasses;
+	uint(size=16) nbData;
+	//
+	uint(size= 8) stripeHeight;
+	uint(size= 8) idxStripe;
+	uint(size= 8) idxLine;
+	uint(size= 8) idxColumn;
+	uint(size= 8) idxCoef;
+	uint(size= 8) numPass;
+	//
+	uint(size= 8) uint_ret;
+	uint(size= 8) cocSP3;
+	uint(size= 2) d4_d7_d12;
+	uint(size= 2) d10_d13;
+/******************************************************************************
+ * init
+ *****************************************************************************/
+ 	init_isNewCB : action entropyInfo:[data_p] repeat 12 ==>
+				  deqCBInfo:[subband, cb_width, cb_height, c, r, w, h],
+				  traCBInfo:[c, cb_width, cb_height],
+				  Coeff:[COEFF_NEW_CB_MASK]
+	guard
+		isNewCB(fifo),
+		fifo[FIFO_CPT_BITS] != 0
+	var
+		uint(size= 8) zeroBitPlane  = data_p[4],
+		uint(size= 8) c             = data_p[5],
+		uint(size= 8) r             = data_p[6],
+		uint(size= 8) w             = data_p[7],
+		uint(size= 8) h             = data_p[8]
+	do
+		flushData(fifo);
+		cb_width    :=  data_p[0];
+		cb_height   :=  data_p[1];
+		nbPasses    :=  data_p[2];
+		subband     :=  data_p[3];
+		cocSP3      :=  data_p[9];
+		nbData      := (data_p[10]<<8) + data_p[11];
+		if DEBUG > 0 then 
+			println("# CodeBlock("+cb_width+", "+cb_height+") c = "+c+" r = "+r+" s = "+subband+" w = "+w+" h = "+h+" : number of coding passes = "+nbPasses+" : length = "+nbData+" : zeroBitPlane = "+zeroBitPlane);
+			println("nbPasse = "+nbPasses+" stripe = 0 column = 0");
+		end	
+		initState(state);
+		initData(data);
+		bitPlane    := COEFF_DATA_SIZE - 1 - zeroBitPlane;
+		decoderReset(DecoderData, I, mPS, nbData);
+	end
+	init.isNewPicNewTile : action ==> Coeff:[coeff_p]
+	guard
+		isNewPic(fifo) or isNewTile(fifo),
+		fifo[FIFO_CPT_BITS] != 0
+	var
+		uint(size=DATA_SIZE) coeff_p
+	do
+		if isNewPic(fifo) then
+			coeff_p := COEFF_NEW_PIC_MASK;
+		else
+			coeff_p := COEFF_NEW_TILE_MASK;
+		end
+		flushData(fifo);
+	end
+	init.none : action ==>
+	guard
+		not (isNewPic(fifo) or isNewTile(fifo)),
+		fifo[FIFO_CPT_BITS] != 0
+	do
+		flushData(fifo);
+	end
+/******************************************************************************
+ * resetLoop
+ *****************************************************************************/
+	procedure resetLoop () 
+	begin
+		if (cocSP3 & TermCodingPass) != 0 then
+	 		DecoderData[CPT_DATA] := nbData;
+			initDec(DecoderData, fifo);
+		end
+		stripeHeight := if cb_height > STRIPE_HEIGHT then
+			 				STRIPE_HEIGHT
+						else
+							cb_height
+						end;
+		idxStripe    := 0;
+		idxLine      := 0;
+		idxColumn    := 0;
+		idxCoef      := 0;
+		if DEBUG > 0 then 
+			if numPass != 0 then 
+				println("nbPasse = "+nbPasses+" stripe = "+idxStripe+" column = "+idxColumn);
+			end
+		end
+	end
+/******************************************************************************
+ * runInit
+ *****************************************************************************/
+ 	runInit.default : action ==>
+	guard
+		nbData != 0 && (cocSP3 & TermCodingPass) = 0,
+		fifo[FIFO_CPT_BITS] != 0
+	do
+		initDec(DecoderData, fifo);
+		numPass   := 0;
+		resetLoop();
+		d4_d7_d12 := 1;
+		d10_d13   := 0;
+	end
+ 	runInit.TermCodingPass : action entropyInfo:[data_p] repeat 2 ==>
+	guard
+		((data_p[0]<<8) + data_p[1]) != 0 && (cocSP3 & TermCodingPass) != 0,
+		fifo[FIFO_CPT_BITS] != 0
+	do
+		nbData    := (data_p[0]<<8) + data_p[1];
+		numPass   := 0;
+		resetLoop();
+		d4_d7_d12 := 1;
+		d10_d13   := 0;
+	end
+/******************************************************************************
+ * runSkip
+ *****************************************************************************/
+ 	runSkip : action ==>
+	guard
+		nbData = 0 && (  (cocSP3 & TermCodingPass)  = 0 ||
+						((cocSP3 & TermCodingPass) != 0 && nbPasses = 0))
+	do
+		idxLine      := 0;
+		idxColumn    := 0;	
+	end
+/******************************************************************************
+ * runLoop_1
+ *****************************************************************************/
+ 	runLoop_1.default : action ==>
+ 	guard
+ 		nbPasses != 1,
+		(cocSP3 & TermCodingPass) = 0,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		numPass     := numPass + 1;
+		nbPasses    := nbPasses - 1;
+		if bitPlane != 0 then
+      		bitPlane := bitPlane - 1;
+    	else
+      		println("entropyDecoderData incBitPlane error !!! : bitPlane < 0");
+    	end
+		resetLoop();
+		d4_d7_d12 := 1;
+	end
+ 	runLoop_1.TermCodingPass : action entropyInfo:[data_p] repeat 2 ==>
+ 	guard
+ 		nbPasses != 1,
+ 		(cocSP3 & TermCodingPass) != 0,
+		fifo[FIFO_CPT_BITS] > 15 or (data_p[0]<<8) + data_p[1] < 2
+	do
+		numPass     := numPass + 1;
+		nbPasses    := nbPasses - 1;
+    	nbData      := (data_p[0]<<8) + data_p[1];
+		if bitPlane != 0 then
+      		bitPlane := bitPlane - 1;
+    	else
+      		println("entropyDecoderData incBitPlane error !!! : bitPlane < 0");
+    	end
+		resetLoop();
+		d4_d7_d12   := 1;
+	end
+/******************************************************************************
+ * runLoop_2
+ *****************************************************************************/
+ 	runLoop_2.default : action ==>
+ 	guard
+ 		nbPasses != 1,
+		(cocSP3 & TermCodingPass) = 0,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		numPass     := numPass + 1;
+		nbPasses    := nbPasses - 1;
+		resetLoop();
+		d4_d7_d12   := 1;
+	end
+	runLoop_2.TermCodingPass : action entropyInfo:[data_p] repeat 2 ==>
+	guard
+ 		nbPasses != 1,
+		(cocSP3 & TermCodingPass) != 0,
+		fifo[FIFO_CPT_BITS] > 15 or (data_p[0]<<8) + data_p[1] < 2
+	do
+		numPass     := numPass + 1;
+		nbPasses    := nbPasses - 1;
+		nbData      := (data_p[0]<<8) + data_p[1];
+		resetLoop();
+		d4_d7_d12   := 1;
+	end
+/******************************************************************************
+ * runLoop_end
+ *****************************************************************************/
+	runLoop_end : action ==>
+ 	guard
+ 		nbPasses = 1
+	do
+		idxLine      := 0;
+		idxColumn    := 0;
+	end
+/******************************************************************************
+ * sigProgPass.start
+ *****************************************************************************/
+ 	sigProgPass.start : action ==>
+	guard
+		d4_d7_d12 = 1,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		if not isD1() then
+			if DEBUG > 1 then println("D1 ==> No"); end
+			if not isD2() then
+				if DEBUG > 1 then println("D2 ==> No"); end
+				C1();
+				if isD3() then
+					if DEBUG > 1 then println("D3 ==> Yes"); end
+					C2();
+				end
+			end
+		end
+		if isD4_isD7_isD12() then
+			if DEBUG > 1 then println("D4_D7_D12 ==> Yes"); end
+			C0();
+		else
+			if DEBUG > 1 then println("D4 ==> No"); end
+			d4_d7_d12 := 0;
+		end
+	end
+/******************************************************************************
+ * sigProgPass_end
+ *****************************************************************************/
+ 	sigProgPass_end : action ==>
+	guard
+		d4_d7_d12 = 0,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		if (cocSP3 & PredTerm) != 0 then
+			checkPredTerm(DecoderData, fifo);
+		end
+	end
+/******************************************************************************
+ * magRefPass.start
+ *****************************************************************************/
+ 	magRefPass.start : action ==>
+	guard
+		d4_d7_d12 = 1,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		if not isD5() then
+			if DEBUG > 1 then println("D5 ==> No"); end
+			if not isD6() then
+				if DEBUG > 1 then println("D6 ==> No"); end
+				C3();
+			end
+		end
+		if isD4_isD7_isD12() then
+			if DEBUG > 1 then println("D4_D7_D12 ==> Yes"); end
+			C0();
+		else
+			if DEBUG > 1 then println("D7 ==> No"); end
+			d4_d7_d12 := 0;
+		end
+	end
+/******************************************************************************
+ * magRefPass_end
+ *****************************************************************************/
+ 	magRefPass_end : action ==>
+	guard
+		d4_d7_d12 = 0,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		if (cocSP3 & PredTerm) != 0 then
+			checkPredTerm(DecoderData, fifo);
+		end
+	end
+/******************************************************************************
+ * cleanupPass.start
+ *****************************************************************************/
+ 	cleanupPass.start : action ==>
+	guard
+		d4_d7_d12 = 1,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	var
+		bool d8[1]
+	do
+		d4_d7_d12 := 2;
+		isD8(d8);
+		if d8[0] then
+			if DEBUG > 1 then println("D8 ==> Yes"); end
+			C4();
+			if not isD11() then
+				if DEBUG > 1 then println("D11 ==> No"); end
+				C5();
+				d10_d13 := 2;
+			end
+		else
+			if DEBUG > 1 then println("D8 ==> No"); end
+			d10_d13 := 1;
+		end
+	end
+/******************************************************************************
+ * cleanupPass.d13
+ *****************************************************************************/
+ 	cleanupPass.d13 : action ==>
+	guard
+		d10_d13 = 2,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		C2();
+		d10_d13 := 3;
+	end
+/******************************************************************************
+ * cleanupPass.d13_d10
+ *****************************************************************************/
+ 	cleanupPass.d13_d10 : action ==>
+	guard
+		d10_d13 = 3,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	var
+		bool d10[1]
+	do
+		isD10(d10);
+		if d10[0] then
+			if DEBUG > 1 then println("D10 ==> Yes : c0 c1"); end
+			C0();
+			C1();
+			if isD3() then
+				if DEBUG > 1 then println("D3 ==> Yes"); end
+				d10_d13 := 2;
+			end
+		else
+			if DEBUG > 1 then println("D10 ==> No"); end
+			d10_d13 := 0;
+		end
+	end
+/******************************************************************************
+ * cleanupPass.d10
+ *****************************************************************************/
+ 	cleanupPass.d10 : action ==>
+	guard
+		d10_d13 = 1,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	var
+		bool d10[1]
+	do
+		if not isD9() then
+			if DEBUG > 1 then println("D9 ==> No"); end
+			C1();
+			if isD3() then
+				if DEBUG > 1 then println("D3 ==> Yes"); end
+				C2();
+			end
+		end
+		isD10(d10);
+		if d10[0] then
+			if DEBUG > 1 then println("D10 ==> Yes : c0"); end
+			C0();
+		else
+			if DEBUG > 1 then println("D10 ==> No"); end
+			d10_d13 := 0;
+		end
+	end
+/******************************************************************************
+ * cleanupPass.endLoop
+ *****************************************************************************/
+ 	cleanupPass.endLoop : action ==>
+	guard
+		d4_d7_d12 = 2 and d10_d13 = 0,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	do
+		d4_d7_d12 := 1;
+		if isD4_isD7_isD12() then
+			if DEBUG > 1 then println("D4_D7_D12 ==> Yes"); end
+			C0();
+		else
+			if DEBUG > 1 then println("D12 ==> No"); end
+			d4_d7_d12 := 0;
+		end
+	end
+/******************************************************************************
+ * cleanupPass_end
+ *****************************************************************************/
+ 	cleanupPass_end : action ==>
+	guard
+		d4_d7_d12 = 0,
+		fifo[FIFO_CPT_BITS] != 0 or DecoderData[CPT_DATA] = 0
+	var
+		uint(size=8) res[1],
+		uint(size=8) syn
+	do
+		if (cocSP3 & SegSymbol) != 0 then
+			decode(DecoderData, fifo, I, mPS, UNI_CTX, res); syn :=         res[0]<<3;
+			decode(DecoderData, fifo, I, mPS, UNI_CTX, res); syn := syn | (res[0]<<2);
+			decode(DecoderData, fifo, I, mPS, UNI_CTX, res); syn := syn | (res[0]<<1);
+			decode(DecoderData, fifo, I, mPS, UNI_CTX, res); syn := syn | res[0];
+			if syn != 10 then
+				println ("entropyDecoder SegSymbol error");
+			end
+		end
+		if (cocSP3 & PredTerm) != 0 then
+			checkPredTerm(DecoderData, fifo);
+		end
+	end
+/******************************************************************************
+ * isD1
+ *****************************************************************************/
+	function isD1() --> bool :
+		isStateSig(state, idxLine, idxColumn)
+	end
+/******************************************************************************
+ * isD2
+ *****************************************************************************/
+	function isD2() --> bool :
+		not isStateNZctx(state, idxLine, idxColumn)
+	end
+/******************************************************************************
+ * isD3
+ *****************************************************************************/
+	function isD3() --> bool :
+		uint_ret != 0
+	end
+/******************************************************************************
+ * isD4_D7_D12
+ *****************************************************************************/
+	function isD4_isD7_isD12() --> bool :
+		if idxCoef != stripeHeight-1 then
+			true
+		elsif idxColumn != cb_width-1 then
+			true
+		elsif idxStripe != ((cb_height + STRIPE_HEIGHT -1) / STRIPE_HEIGHT)-1 then
+			true
+		else
+			false
+		end
+	end
+/******************************************************************************
+ * isD5
+ *****************************************************************************/
+	function isD5() --> bool :
+		not isStateSig(state, idxLine, idxColumn)
+	end
+/******************************************************************************
+ * isD6
+ *****************************************************************************/
+	function isD6() --> bool :
+		isStateVisited(state, idxLine, idxColumn)
+	end
+/******************************************************************************
+ * isD8
+ *****************************************************************************/
+	procedure isD8(bool res[1])
+	begin
+		if stripeHeight = STRIPE_HEIGHT then
+			ifFourStateZero(state, idxLine-idxCoef, idxColumn, res);
+		else
+			res[0]:= false;
+		end
+	end	
+/******************************************************************************
+ * isD9
+ *****************************************************************************/
+	function isD9() --> bool :
+		isStateSigVisited(state, idxLine, idxColumn)
+	end
+/******************************************************************************
+ * isD10
+ *****************************************************************************/
+	procedure isD10(bool res[1])
+	begin
+		setStateUnvisited(state, idxLine, idxColumn);
+		res[0] := false;
+		if not isNextStateSigVisited(state, idxLine, idxColumn, idxCoef, stripeHeight) then
+			if idxCoef != stripeHeight-1 then
+				if idxColumn != cb_width-1 then
+					res[0] := true;
+				else
+					ifFourStateNoSig(state, idxLine-idxCoef, idxColumn, stripeHeight, res);
+				end
+			end
+		end
+	end
+/******************************************************************************
+ * isD11
+ *****************************************************************************/
+	function isD11() --> bool :
+		uint_ret = 0
+	end
+/******************************************************************************
+ * C0
+ *****************************************************************************/
+	procedure C0 ()
+	begin 
+		if idxCoef < stripeHeight-1 then
+			idxCoef := idxCoef + 1;
+		else
+			idxCoef := 0;
+ 			if idxColumn < cb_width-1 then
+ 				idxColumn := idxColumn + 1;
+ 			else
+ 				idxColumn := 0;
+ 				idxStripe := idxStripe + 1;
+ 			end
+			if DEBUG > 0 then  println("nbPasse = "+nbPasses+" stripe = "+idxStripe+" column = "+idxColumn); end
+ 		end
+ 		idxLine      := idxStripe * STRIPE_HEIGHT + idxCoef;
+ 		stripeHeight := cb_height - idxStripe * STRIPE_HEIGHT;
+ 		if (stripeHeight > STRIPE_HEIGHT) then
+			stripeHeight := STRIPE_HEIGHT;
+		end
+	end
+/******************************************************************************
+ * C1
+ *****************************************************************************/
+	procedure C1()
+	var
+		uint(size=8) ctx[1],
+		uint(size=8) d[1]
+	begin
+		getTableD1(state, idxLine, idxColumn, subband, ctx);
+		decode(DecoderData, fifo, I, mPS, ctx[0], d);
+		uint_ret := d[0];
+		setStateSIG(state, idxLine, idxColumn, d[0]); 
+	end
+/******************************************************************************
+ * C2
+ *****************************************************************************/
+	procedure C2()
+	var
+		uint(size=8) h[1],
+		uint(size=8) v[1], 
+		uint(size=8) d[1]
+	begin
+		getTableD2_H(state, idxLine, idxColumn, h);
+		getTableD2_V(state, idxLine, idxColumn, v);
+		decode(DecoderData, fifo, I, mPS, tableD3ctx[h[0]][v[0]], d);
+		uint_ret := d[0] ^ tableD3xorbit[h[0]][v[0]]; 
+		setStateSIGN(state, idxLine, idxColumn, uint_ret);
+		setDataSIGN(data, idxLine, idxColumn, bitPlane, uint_ret);
+	end
+/******************************************************************************
+ * C3
+ *****************************************************************************/
+	procedure C3()
+	var
+		uint(size=8) ctx = getTableD4(state, idxLine, idxColumn),
+		uint(size=8) d[1]
+	begin
+		decode(DecoderData, fifo, I, mPS, ctx, d);
+		uint_ret := d[0]; 
+		setStateMR(state, idxLine, idxColumn);
+		setDataMR(data, idxLine, idxColumn, bitPlane, d[0]);
+	end
+/******************************************************************************
+ * C4
+ *****************************************************************************/
+	procedure C4()
+	var
+		uint(size=8) d[1]
+	begin
+		decode(DecoderData, fifo, I, mPS, RL_CTX, d);
+		idxCoef  := 3;
+		idxLine  := idxStripe * STRIPE_HEIGHT + idxCoef;
+		uint_ret := d[0]; 
+	end
+/******************************************************************************
+ * C5
+ *****************************************************************************/
+	procedure C5()
+	var
+		uint(size=8) d[1]		
+	begin
+		decode(DecoderData, fifo, I, mPS, UNI_CTX, d);
+		idxCoef  := d[0];
+		decode(DecoderData, fifo, I, mPS, UNI_CTX, d);
+		idxCoef  := (idxCoef<<1) + d[0];
+		idxLine  := idxStripe * STRIPE_HEIGHT + idxCoef;
+		setStateSIG(state, idxLine, idxColumn, 1);
+	end
+/******************************************************************************
+ * flush
+ *****************************************************************************/
+	flush : action ==>
+ 	guard
+ 		fifo[FIFO_CPT_BITS] != 0 and DecoderData[CPT_DATA] != 0
+	do
+		flushData(fifo);
+		DecoderData[CPT_DATA] := DecoderData[CPT_DATA]-1;
+	end
+	flush_end : action ==>
+ 	guard
+ 		DecoderData[CPT_DATA] = 0
+	end
+/******************************************************************************
+ * sendData
+ *****************************************************************************/
+ 	sendData: action ==> Coeff:[d]
+ 	guard
+ 		idxLine != cb_height
+ 	var
+ 		uint(size=DATA_SIZE) d := (data[idxLine][idxColumn]>>1) & COEFF_VALUE_MASK
+ 	do 
+  		if idxColumn < cb_width-1 then
+ 			idxColumn := idxColumn + 1;
+ 		else
+ 			idxColumn := 0;
+ 			idxLine   := idxLine + 1;
+ 		end
+ 	end
+ /******************************************************************************
+ * Idle
+ *****************************************************************************/
+ 	idle: action ==> 
+ 	end
+ /******************************************************************************
+ * Scheduler
+ *****************************************************************************/	
+	schedule fsm init:
+		init        ( init            ) --> init;
+		init        ( init_isNewCB    ) --> runInit;
+		runInit     ( runInit         ) --> cleanupPass;
+		runInit     ( runSkip         ) --> sendData;
+		cleanupPass ( cleanupPass     ) --> cleanupPass;
+		cleanupPass ( cleanupPass_end ) --> runLoop_1;
+		runLoop_1   ( runLoop_1       ) --> sigProgPass;
+		runLoop_1   ( runLoop_end     ) --> flush;
+		sigProgPass ( sigProgPass     ) --> sigProgPass;
+		sigProgPass ( sigProgPass_end ) --> runLoop_2;
+		runLoop_2   ( runLoop_2       ) --> magRefPass;
+		runLoop_2   ( runLoop_end     ) --> flush;
+		magRefPass  ( magRefPass      ) --> magRefPass;
+		magRefPass  ( magRefPass_end  ) --> runLoop_3;
+		runLoop_3   ( runLoop_2       ) --> cleanupPass;
+		runLoop_3   ( runLoop_end     ) --> flush;
+		// flush
+		flush       ( flush           ) --> flush;
+		flush       ( flush_end       ) --> sendData;
+		//sendData
+		sendData    ( sendData        ) --> sendData;
+		sendData    ( idle            ) --> init;
+	end
+end

@@ -1,0 +1,435 @@
+package V2.parser.tools;
+import  V2.common.BitstreamReadUtils.*;
+import  V2.common.commonPackage.*;
+import  V2.parser.packages.markerPackage.*;
+import  V2.parser.packages.parserPackage.*;
+import  V2.parser.tools.parserPrinter.*;
+
+/******************************************************************************
+ * Unit decription
+ *****************************************************************************/
+unit parserFunction :
+	/**************************************************************************
+ 	 * procedure parseSOC
+ 	 *************************************************************************/
+	procedure parseSOC ()
+	begin
+		printSOC();	
+	end
+	/**************************************************************************
+ 	 * procedure parseSIZ
+ 	 *************************************************************************/
+	procedure parseSIZ (uint(size=32) siz[SIZ_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res); length       := res[0] - 38;
+		getBytes(2, fifo, res); siz[R_SIZ]   := res[0];
+		getBytes(4, fifo, res); siz[X_SIZ]   := res[0];
+		getBytes(4, fifo, res); siz[Y_SIZ]   := res[0];
+		getBytes(4, fifo, res); siz[XO_SIZ]  := res[0];
+		getBytes(4, fifo, res); siz[YO_SIZ]  := res[0];
+		getBytes(4, fifo, res); siz[XT_SIZ]  := res[0];
+		getBytes(4, fifo, res); siz[YT_SIZ]  := res[0];
+		getBytes(4, fifo, res); siz[XTO_SIZ] := res[0];
+		getBytes(4, fifo, res); siz[YTO_SIZ] := res[0];
+		getBytes(2, fifo, res); siz[C_SIZ]   := res[0];
+		while length > 0 do
+			getBytes(1, fifo, res); siz[S_SIZ  + cpt] := res[0];
+			getBytes(1, fifo, res); siz[XR_SIZ + cpt] := res[0];
+			getBytes(1, fifo, res); siz[YR_SIZ + cpt] := res[0];
+			length     := length - 3;
+			cpt        := cpt + 1;
+		end
+		printSIZ(siz, cpt);	
+	end
+	/**************************************************************************
+ 	 * procedure parseCOD
+ 	 *************************************************************************/
+	procedure parseCOD (uint(size= 8) HeaderIdx,
+						bool          cocExists[2][NB_COMPONENT_MAX],
+						uint(size=32) coc[2][COC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=32) res1[1],
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res); length := res[0] - 7;
+		coc[0][C_COC] := 0xFFFF;
+		getBytes(1, fifo, res);
+		getBytes(4, fifo, res1);
+		foreach uint(size=8) c in 0 .. NB_COMPONENT_MAX-1 do
+    		cocExists[HeaderIdx][c] := true;
+			coc[HeaderIdx][S_COC  + c] := res[0];
+			coc[HeaderIdx][SG_COC + c] := res1[0];
+		end
+		while length > 0 do
+			getBytes(1, fifo, res); 
+			foreach uint(size=8) c in 0 .. NB_COMPONENT_MAX-1 do
+				coc[HeaderIdx][SP_COC + c * COD_MAX + cpt] := res[0];
+			end
+			length := length - 1;
+			cpt    := cpt + 1;
+		end
+		printCOD(true, HeaderIdx, coc, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseCOC
+ 	 *************************************************************************/
+	procedure parseCOC (uint(size=32) Csiz,
+						uint(size= 8) HeaderIdx,
+						bool          cocExists[2][NB_COMPONENT_MAX],
+						uint(size=32) coc[2][COC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 2) size_v = if Csiz < 257 then 1 else 2 end, 
+		uint(size=32) Ccoc,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res); 
+		length := res[0] - 3 - size_v;
+		getBytes(size_v, fifo, res); Ccoc := res[0]; 
+		coc[0][C_COC] := Ccoc;
+		cocExists[HeaderIdx][Ccoc] := true;
+		getBytes(1, fifo, res); 
+		coc[HeaderIdx][S_COC  + Ccoc] := (coc[HeaderIdx][S_COC  + Ccoc] & 0xFE) | res[0];
+		while length > 0 do
+			getBytes(1, fifo, res);
+			coc[HeaderIdx][SP_COC + Ccoc * COD_MAX + cpt] := res[0];
+			length := length - 1;
+			cpt    := cpt + 1;
+		end
+		printCOD(false, HeaderIdx, coc, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseQCD
+ 	 *************************************************************************/
+	procedure parseQCD (uint(size= 8) HeaderIdx,
+						bool          qccExists[2][NB_COMPONENT_MAX],
+						uint(size=16) qcc[2][QCC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size= 8) isQCD  = 1,
+		uint(size= 2) size_v,
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res); length := res[0] - 3;
+		qcc[0][C_QCC] := 0;
+		getBytes(1, fifo, res); 
+		size_v := if (res[0] & 0x1f) = 0 then 1 else 2 end;
+		foreach uint(size=8) c in 0 .. NB_COMPONENT_MAX-1 do
+    		qccExists[HeaderIdx][c] := true;
+			qcc[HeaderIdx][S_QCC  + c] := res[0];
+		end
+		while length > 0 do
+			getBytes(size_v, fifo, res); 
+			length := length - size_v;
+			foreach uint(size=8) c in 0 .. NB_COMPONENT_MAX-1 do
+				qcc[HeaderIdx][SP_QCC + c * QCD_MAX + cpt] := res[0];
+			end
+			cpt    := cpt + 1;
+		end
+		printQCD(isQCD, HeaderIdx, qcc, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseQCC
+ 	 *************************************************************************/
+	procedure parseQCC (uint(size=32) Csiz,
+						uint(size= 8) HeaderIdx,
+						bool          qccExists[2][NB_COMPONENT_MAX],
+						uint(size=16) qcc[2][QCC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size= 8) isQCD   = 0,
+		uint(size= 2) size_v := if Csiz < 257 then 1 else 2 end, 
+		uint(size=16) length,
+		uint(size=16) Cqcc,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 3 - size_v;
+		getBytes(size_v, fifo, res); Cqcc := res[0]; 
+		qcc[0][C_QCC] := Cqcc;
+		qccExists[HeaderIdx][Cqcc] := true;
+		getBytes(1, fifo, res); qcc[HeaderIdx][S_QCC  + Cqcc] := res[0];
+		size_v := if (qcc[HeaderIdx][S_QCC + Cqcc] & 0x1f) = 0 then 1 else 2 end;
+		while length > 0 do
+			getBytes(size_v, fifo, res); 
+			length := length - size_v;
+			qcc[HeaderIdx][SP_QCC + Cqcc * QCD_MAX + cpt] := res[0];
+			cpt    := cpt + 1;
+		end
+		printQCD(isQCD, HeaderIdx, qcc, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseRGN
+ 	 *************************************************************************/
+	procedure parseRGN (uint(size=32) Csiz,
+						uint(size= 8) HeaderIdx,
+						uint(size=16) rgn[2][RGN_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size= 2) size_v := if Csiz < 257 then 1 else 2 end
+	begin
+		getBytes(2     , fifo, res);
+		getBytes(size_v, fifo, res); rgn[HeaderIdx][C_RGN]  := res[0]; 
+		getBytes(1     , fifo, res); rgn[HeaderIdx][S_RGN]  := res[0];
+		getBytes(1     , fifo, res); rgn[HeaderIdx][SP_RGN] := res[0];
+		printRGN(HeaderIdx, rgn);
+	end
+	/**************************************************************************
+ 	 * procedure parsePOC
+ 	 *************************************************************************/
+	procedure parsePOC (uint(size=32) Csiz,
+						uint(size= 8) HeaderIdx,
+						uint(size=16) poc[2][POC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size= 2) size_v = if Csiz < 257 then 1 else 2 end,
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 2;
+		while length > 0 do
+			getBytes(1     , fifo, res); poc[HeaderIdx][RS_POC  + cpt] := res[0];
+			getBytes(size_v, fifo, res); poc[HeaderIdx][CS_POC  + cpt] := res[0]; 
+			getBytes(2     , fifo, res); poc[HeaderIdx][LYE_POC + cpt] := res[0];
+			getBytes(1     , fifo, res); poc[HeaderIdx][RE_POC  + cpt] := res[0];
+			getBytes(size_v, fifo, res); poc[HeaderIdx][CE_POC  + cpt] := res[0];
+			getBytes(1     , fifo, res); poc[HeaderIdx][P_POC   + cpt] := res[0];
+			length := length - 5 - (size_v<<1);
+			cpt    := cpt + 1;
+		end
+		printPOC(HeaderIdx, poc, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parsePPM
+ 	 *************************************************************************/
+	procedure parsePPM (uint(size=32) ppm[PPM_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1]
+	begin
+		getBytes(2, fifo, res);
+		getBytes(1, fifo, res); ppm[Z_PPM] := res[0];
+		foreach uint(size=8) z in 0 .. ppm[Z_PPM]-1 do
+			getBytes(4, fifo, res); ppm[N_PPM + z] := res[0];
+			foreach uint(size=32) n in 0 .. ppm[N_PPM + z]-1 do
+				getBytes(1, fifo, res); ppm[I_PPM  + z * PPM_N_MAX + n] := res[0]; 
+			end
+		end
+		printPPM(ppm);
+	end
+	/**************************************************************************
+ 	 * procedure parseTLM
+ 	 *************************************************************************/
+	procedure parseTLM (uint(size=32) tlm[TLM_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 8) size_t = ((tlm[S_TLM]>>4)&0x3)<<3,
+		uint(size= 8) size_p = 16<<((tlm[S_TLM]>>6)&0x3),
+		uint(size= 8) decr   = (size_t + size_p) >> 3,
+		uint(size= 8) cpt   := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 4;
+		getBytes(1, fifo, res); tlm[Z_TLM] := res[0];
+		getBytes(1, fifo, res); tlm[S_TLM] := res[0];
+		while length > 0 do
+			if size_t != 0 then
+				getBits(size_t, fifo, res); tlm[T_TLM + cpt] := res[0];	
+			end
+			getBits(size_p, fifo, res); tlm[P_TLM + cpt] := res[0];
+			length := length - decr;
+			cpt    := cpt + 1;
+		end
+		printTLM(tlm, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parsePLM
+ 	 *************************************************************************/
+	procedure parsePLM (uint(size= 8) plm[PLM_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1]
+	begin
+		getBytes(2, fifo, res);
+		getBytes(1, fifo, res); plm[Z_PPM] := res[0];
+		foreach uint(size=8) z in 0 .. plm[Z_PLM]-1 do
+			getBytes(1, fifo, res); plm[N_PLM + z] := res[0];
+			foreach uint(size=8) n in 0 .. plm[N_PLM + z]-1 do
+				getBytes(1, fifo, res); plm[I_PLM  + z * PLM_N_MAX + n] := res[0]; 
+			end
+		end
+		printPLM(plm);
+	end
+	/**************************************************************************
+ 	 * procedure parseCRG
+ 	 *************************************************************************/
+	procedure parseCRG (uint(size=16) crg[CRG_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 8) cpt   := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 2;
+		while length > 0 do
+			getBytes(2, fifo, res); crg[X_CRG + cpt] := res[0];
+			getBytes(2, fifo, res); crg[Y_CRG + cpt] := res[0];
+			length := length - 4;
+			cpt    := cpt + 1;
+		end
+		printCRG(crg, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseCOM
+ 	 *************************************************************************/
+	procedure parseCOM (uint(size= 8) HeaderIdx,
+						uint(size=16) com[2][COM_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 4;
+		getBytes(2, fifo, res); com[HeaderIdx][R_COM] := res[0];
+		while length > 0 do
+			getBytes(1, fifo, res); com[HeaderIdx][C_COM  + cpt] := res[0];
+			length := length - 1;
+			cpt    := cpt + 1;
+		end
+		printCOM(HeaderIdx, com, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseSOT
+ 	 *************************************************************************/
+	procedure parseSOT (uint(size=32) sot[SOT_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1]
+	begin
+		getBytes(2, fifo, res);
+		getBytes(2, fifo, res); sot[I_SOT]  := res[0];
+		getBytes(4, fifo, res); sot[P_SOT]  := res[0];
+		getBytes(1, fifo, res); sot[TP_SOT] := res[0];
+		getBytes(1, fifo, res); sot[TN_SOT] := res[0];
+		printSOT(sot);
+	end
+	/**************************************************************************
+ 	 * procedure parsePPT
+ 	 *************************************************************************/
+	procedure parsePPT (uint(size= 8) ppt[PPT_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 3;
+		getBytes(1, fifo, res); ppt[Z_PPT] := res[0];
+		while length > 0 do
+			getBytes(1, fifo, res); ppt[I_PPT  + cpt] := res[0];
+			length := length - 1;
+			cpt    := cpt + 1;
+		end
+		printPPT(ppt, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parsePLT
+ 	 *************************************************************************/
+	procedure parsePLT (uint(size= 8) plt[PLT_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1],
+		uint(size=16) length,
+		uint(size= 8) cpt := 0
+	begin
+		getBytes(2, fifo, res);
+		length := res[0] - 3;
+		getBytes(1, fifo, res); plt[Z_PLT] := res[0];
+		while length > 0 do
+			getBytes(1, fifo, res); plt[I_PLT  + cpt] := res[0];
+			length := length - 1;
+			cpt    := cpt + 1;
+		end
+		printPLT(plt, cpt);
+	end
+	/**************************************************************************
+ 	 * procedure parseSOD
+ 	 *************************************************************************/
+	procedure parseSOD ()
+	begin
+		printSOD();
+	end
+	/**************************************************************************
+ 	 * procedure parseSOP
+ 	 *************************************************************************/
+	procedure parseSOP (uint(size=16) idx[IDX_STRUCT_SIZE],
+						uint(size=32) coc[COC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	var
+		uint(size=32) res[1]
+	begin
+		if (coc[S_COC + idx[C_IDX]] & Scod_SOP_en) != 0 then
+			flushBytes(4, fifo);
+			getBytes(2, fifo, res);
+			printSOP(res[0]);
+ 		end
+	end
+	/**************************************************************************
+ 	 * procedure parseEPH
+ 	 *************************************************************************/
+	procedure parseEPH (uint(size=16) idx[IDX_STRUCT_SIZE],
+						uint(size=32) coc[COC_STRUCT_SIZE],
+						uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]
+	)
+	begin
+		if (coc[S_COC + idx[C_IDX]] & Scod_EPH_en) != 0 then
+			flushBytes(2, fifo);
+			printEPH();
+ 		end
+	end
+	/**************************************************************************
+ 	 * procedure parseEOC
+ 	 *************************************************************************/
+	procedure parseEOC ()
+	begin
+		printEOC();
+	end	
+end

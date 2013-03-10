@@ -1,0 +1,228 @@
+package actors.dequantization;
+import utils.codestreamPackage.*;
+import utils.decoderPackage.*;
+import utils.dequantizationPackage.*;
+
+// Numbers of Pages refer to JPEG2000 Image Coding System ISO/IEC 15444-1 : 2002 book 
+
+/******************************************************************************
+ * Actor description
+ *****************************************************************************/
+actor dequantizationbox()	uint(size=DATA_SIZE) Coeff, // sb | MSB page 11
+							uint(size=8) DeqCBInfo,
+							uint(size=8) DeqTileInfo 
+							==>
+							int(size=16)	Rqb					  
+:
+//	native procedure compare_init() end
+//	native procedure compare_NBytes(uint(size=8) outTable[8], uint(size=12) nbTokenToRead) end
+/******************************************************************************
+ * Global variables
+ *****************************************************************************/
+    uint(size=32) 			Deltab				:=0; //page 113
+    uint(size=8) 			Epsilonb[NB_COMPONENT_MAX+1][QCD_MAX]	;
+    uint(size=16) 			Mu[NB_COMPONENT_MAX+1][QCD_MAX]			;
+    uint(size=16) 			Mb[NB_COMPONENT_MAX+1][QCD_MAX]			;// page 113
+    uint(size=7)			SubbandCount		:=0;
+    uint(size=8)			NL                  :=0;
+    uint(size=8)			Csiz                :=0;
+    uint(size=8)			component			:=0;
+    uint(size=7)			sblevel				:=0;
+    uint(size=8)			Guard[NB_COMPONENT_MAX+1];
+    uint(size=16) 			signbit				:=0; //sign of coefficients
+    uint(size=DATA_SIZE-1) 	MSBCoeffValue		:=0; // unsigned coefficient value
+	bool 					rev[NB_COMPONENT_MAX+1]; // Reversibility indicator
+	uint(size=8) 			Range_pixels[NB_COMPONENT_MAX+1];
+	uint(size=2)			band				:=0;
+	uint(size=8)			Sqcd                :=0;
+/******************************************************************************
+* Init action
+*****************************************************************************/
+    Init : action DeqTileInfo:[Csiz_p] ==>
+	do
+		sblevel	  := 0;
+		band	  := 0;
+		component := 0;
+		Csiz      := Csiz_p;
+	//	compare_init();
+    end
+/******************************************************************************
+ * GetCoeff_NewCB, GetCoeff actions
+ *****************************************************************************/
+    GetCoeff_NewCB : action Coeff:[Coeff_p] ==>
+    guard
+    	(Coeff_p&(1<<(DATA_SIZE-1))) != 0
+    var
+    	uint(size=16) b=1<<(DATA_SIZE-2)
+	do
+	    signbit       := Coeff_p &  b;
+	    MSBCoeffValue := Coeff_p & (b-1) ;
+    end
+    GetCoeff : action Coeff:[Coeff_p] ==>
+    guard
+    	(Coeff_p&(1<<(DATA_SIZE-1))) = 0 
+    var
+    	uint(size=16) b=1<<(DATA_SIZE-2)
+	do
+	    signbit	      := Coeff_p &  b;
+	    MSBCoeffValue := Coeff_p & (b-1);
+    end
+ /******************************************************************************
+ * GetInfoCodeBlock action
+ *****************************************************************************/
+    GetInfoCodeBlock : action DeqCBInfo:[b_p, cb_w, cb_h, c, r, w, h] ==>
+	guard
+		b_p != 0 || c != 0 || w != 0 || h != 0
+	do
+		if b_p!=band then
+			sblevel    := sblevel+1;
+		end
+		band	       := b_p;		//type of quarter, 0LL 1HL 2LH 3HH
+		if component != c then
+			sblevel    := 0;
+		end
+		component      := c;
+		Mb[c][sblevel] := Guard[c]-1+Epsilonb[c][sblevel];
+	//	println("# CodeBlock("+cb_w+", "+cb_h+") c = "+c+" r = "+r+" s = "+b_p+" w = "+w+" h = "+h);	
+    end
+/******************************************************************************
+ * GotoInfoTile action
+ *****************************************************************************/
+    GotoInfoTile : action DeqCBInfo:[b_p, cb_w, cb_h, c, r, w, h] ==>
+	guard
+		b_p = 0 && c = 0 && w = 0 && h = 0
+	do
+		component := 0;
+		sblevel	  := 0;
+		band	  := 0;
+	//	println("# CodeBlock("+cb_w+", "+cb_h+") c = "+c+" r = "+r+" s = "+b_p+" w = "+w+" h = "+h);	
+    end
+/******************************************************************************
+* GetInfoTile action
+*****************************************************************************/
+    GetInfoTile : action DeqTileInfo:[G_p,NL_p,R_p,reversible_p] ==>
+    guard
+		component != Csiz
+	do
+		Sqcd                    :=  G_p     & 0x1f;
+		Guard[component]	    := (G_p>>5) & 0x7; // Guard page 39
+		NL          		    := NL_p;		 // levels number
+		Range_pixels[component] := R_p+1;         // page 28, from 1 to 38
+  		SubbandCount            := 0;
+  		if reversible_p = 1 then		     //reversibility indicator, page 33
+  			rev[component]	    := true;
+  		else
+  			rev[component]	    := false;
+  		end
+    end
+    EndGetInfoTile : action ==>
+    guard
+		component = Csiz
+	do
+		component := 0;
+    end
+/******************************************************************************
+* GetInfoTileLoop, EndGetInfoTileLoop actions
+*****************************************************************************/
+    GetInfoTileLoop : action DeqTileInfo:[data_0, data_1] ==> // page 114, and page 39
+    guard 
+    	SubbandCount!=3*NL+1
+    var
+    	uint(size=16) data = (data_0<<8)+data_1
+	do
+		if Sqcd = 0 then
+			Epsilonb[component][SubbandCount] := (data>>3)&0x01f;
+			Mu[component][SubbandCount]	      := 0;
+      	else 
+			Epsilonb[component][SubbandCount] := (data>>11)&0x01f;
+			Mu[component][SubbandCount]       :=  data & 0x7ff;
+      	end
+      	Mb[component][SubbandCount] := Guard[component]-1+Epsilonb[component][SubbandCount];
+   		SubbandCount                := SubbandCount + 1;
+    end
+    EndGetInfoTileLoop : action ==>
+    guard 
+    	SubbandCount=3*NL+1
+    do
+   		component := component + 1;
+    end    
+/******************************************************************************
+ * Rqb calculation, for irreversible transformation
+ *****************************************************************************/
+	RqbiCalc : action ==> Rqb:[Rqb_o]
+	guard 
+		rev[component]=false
+	var
+		uint(size=8) 			log2gainb, //page 114
+	    int(size=DATA_SIZE-1)  	qb,   // transform coefficient value (Equation E.2, page 113)
+	    uint(size=16) 			Rb,   // page 114
+	    int(size=16)  			Rqb_o,
+	//    uint(size=8)  			tmp[4],
+	    uint(size=8) 			shifter
+	do
+		shifter   := (DATA_SIZE-2)-Mb[component][sblevel];
+		if shifter != 0 then
+			shifter := shifter-1;
+		end
+		qb        := MSBCoeffValue>>shifter;
+		if band > 1 then
+			log2gainb := band -1;
+		else
+			log2gainb := band;
+		end
+		Rb        := Range_pixels[component]+log2gainb;
+		Deltab    := ((1<<11)+Mu[component][sblevel]);
+		Rqb_o     := ((Deltab*qb)>>(12+Epsilonb[component][sblevel]-Rb)); //16
+		if signbit!=0 then
+			Rqb_o := -Rqb_o;
+		end
+		//println(Rqb_o);
+		//tmp[0] := ((Rqb_o>>24)	& 0x00ff);
+		//tmp[1] := ((Rqb_o>>16)	& 0x00ff);
+	 	//tmp[2] := ((Rqb_o>>8)		& 0x00ff);
+		//tmp[3] := ((Rqb_o) 		& 0x00ff);
+		//compare_NBytes(tmp,4); 
+	end
+/******************************************************************************
+ * Rqb calculation, for reversible transformation
+ *****************************************************************************/
+	RqbrCalc : action ==> Rqb:[Rqb_o]
+    
+	guard 
+		rev[component]=true
+	var
+		int(size=32) qb,    // transform coefficient value (Equation E.2, page 113)
+		int(size=16)  			Rqb_o
+		//uint(size=8)  tmp[4]		
+	do
+		qb        := MSBCoeffValue>>((DATA_SIZE-2)-Mb[component][sblevel]);
+		Deltab    := 1;
+		if signbit != 0 then
+			Rqb_o := -qb;
+		else
+			Rqb_o := qb;
+		end
+	//	println(qb);
+		//	tmp[0] := ((qb>>24)	& 0x00ff);
+	//		tmp[1] := ((qb>>16)	& 0x00ff);
+	//	 	tmp[2] := ((qb>>8)	& 0x00ff);
+	//		tmp[3] := ((qb) 		& 0x00ff);
+	//	compare_NBytes(tmp,4);
+	end
+/******************************************************************************
+ * Finite-state machine
+ *****************************************************************************/
+	schedule fsm Init_st:
+		Init_st					(Init)					-->	Get_Coeff_st;
+		Get_Coeff_st			(GetCoeff)				--> Taken_Coeff_st;
+		Get_Coeff_st			(GetCoeff_NewCB)		--> Get_Info_CB_st;
+		Get_Info_CB_st			(GetInfoCodeBlock)		-->	Taken_Coeff_st;
+		Get_Info_CB_st			(GotoInfoTile)			--> Get_Info_Tile_st;
+		Get_Info_Tile_st		(GetInfoTile)			--> Get_Info_Tile_Loop_st;
+		Get_Info_Tile_st		(EndGetInfoTile)	    --> Taken_Coeff_st;
+		Get_Info_Tile_Loop_st 	(GetInfoTileLoop)		--> Get_Info_Tile_Loop_st;
+		Get_Info_Tile_Loop_st 	(EndGetInfoTileLoop)	--> Get_Info_Tile_st;
+		Taken_Coeff_st  		(RqbrCalc)				--> Get_Coeff_st;
+		Taken_Coeff_st  		(RqbiCalc)				--> Get_Coeff_st;
+	end
+end

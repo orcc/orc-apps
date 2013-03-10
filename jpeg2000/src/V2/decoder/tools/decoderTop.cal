@@ -1,0 +1,233 @@
+package V2.decoder.tools;
+import  V2.decoder.packages.decoderPackage.*;
+import  V2.decoder.tools.BitstreamReadUtilsEntropy.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+unit decoderTop :
+/******************************************************************************
+ * Globale variables
+ *****************************************************************************/
+ 	bool DEBUG_ENTROPY 		   = false;
+ 	uint(size= 8) C            = 0;
+	uint(size= 8) CT           = 1;
+	uint(size= 8) A            = 2;
+	uint(size= 8) B            = 3;
+	uint(size= 8) IS_FINISH    = 4;
+	uint(size= 8) CPT_DATA     = 5;
+	uint(size= 8) DECODER_SIZE = 6;
+/******************************************************************************
+ * decoderReset
+ *****************************************************************************/
+	procedure decoderReset (uint(size=32) DecoderData[DECODER_SIZE],
+							uint(size= 8) I[NB_CTX],
+							uint(size= 1) mPS[NB_CTX],
+							uint(size=16) nb_data)
+	begin
+ 		DecoderData[CPT_DATA]   := nb_data;
+ 		foreach uint(size=8) i in 0 .. NB_CTX - 1 do
+ 			I[i]   := MQ_INIT[i];
+ 			mPS[i] := 0;
+		end
+	end
+/******************************************************************************
+ * initDec
+ *****************************************************************************/
+	procedure initDec(uint(size=32) DecoderData[DECODER_SIZE],
+					  uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL])
+	begin
+ 		DecoderData[B]         := 0;
+ 		DecoderData[C]         := 0;
+ 		DecoderData[IS_FINISH] := 0;
+		// Read first byte
+		byteIn(DecoderData, fifo);
+        // Software conventions decoder
+        DecoderData[C]  := (0xFF0000 - (DecoderData[B]<<16)) & 0xFFFFFFFF;
+		// Read second byte
+		byteIn(DecoderData, fifo);
+        DecoderData[C]  := (DecoderData[C] << 7) & 0xFFFFFFFF;
+        DecoderData[CT] := DecoderData[CT] - 7;
+        DecoderData[A]  := 0x8000;
+	end
+/******************************************************************************
+ * byteIn
+ *****************************************************************************/
+	procedure byteIn (uint(size=32) DecoderData[DECODER_SIZE],
+					  uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL])
+	var
+		uint(size=FIFO_DEPTH) res[1],
+		uint(size= 8) b_1T     = DecoderData[B]
+  	begin
+ 		DecoderData[CT]     := 8;
+ 		DecoderData[B]      := 0xFF;
+ 		if DecoderData[IS_FINISH] = 0 && DecoderData[CPT_DATA] != 0 then
+	 		getData(fifo, res);
+ 			DecoderData[B]        := res[0] & 0xFF;
+ 			DecoderData[CPT_DATA] := DecoderData[CPT_DATA] - 1; 
+ 			if b_1T = 0xFF then
+		 		if DecoderData[B] > 0x8F then
+		 			DecoderData[IS_FINISH] := 1;
+ 				else
+ 					DecoderData[C]  := DecoderData[C] + (0xFE00 - (DecoderData[B] <<9));
+ 					DecoderData[CT] := 7;
+ 				end
+ 			else
+ 				DecoderData[C] := DecoderData[C] + (0xFF00 - (DecoderData[B] << 8));
+ 			end
+ 		end
+		if DEBUG_ENTROPY then
+			println(DecoderData[B]);
+		end
+ 	end
+ /******************************************************************************
+ * decode
+ *****************************************************************************/
+	procedure decode(uint(size=32) DecoderData[DECODER_SIZE],
+					 uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL],
+					 uint(size= 8) I[NB_CTX],
+					 uint(size= 1) mPS[NB_CTX],
+					 uint(size=8) ctx,
+					 uint(size=8) res[1])
+	var
+		uint(size=32) a     := DecoderData[A],
+		uint(size= 8) index = I[ctx],
+		uint(size=16) q     = QE_INIT[index],
+		uint(size=16) cHigh = (DecoderData[C] >> 16) & 0xFFFF
+	begin
+  		a := a - q;
+		DecoderData[A] := a;
+  		if ( cHigh >= a ) then
+  			DecoderData[C] := DecoderData[C] - (a << 16);
+  			lpsExchange(DecoderData, ctx, I, mPS, res);
+  			renormd(DecoderData, fifo);
+  		else
+  			if ((a & 0x8000) = 0) then
+	  			mpsExchange(DecoderData, ctx, I, mPS, res);
+	  			renormd(DecoderData, fifo);
+  			else
+  				res[0] := mPS[ctx];
+  			end
+  		end
+		if DEBUG_ENTROPY then
+			println("ctx="+ctx+"  I(ctx)="+index+"  Qe="+q+"  a="+DecoderData[A]+"  c="+(DecoderData[C]>>4)+"  decision="+res[0]);
+		end
+	end
+/******************************************************************************
+ * mpsExchange
+ *****************************************************************************/
+	procedure mpsExchange (uint(size=32) DecoderData[DECODER_SIZE],
+						   uint(size= 8) ctx,
+						   uint(size= 8) I[NB_CTX],
+					 	   uint(size= 1) mPS[NB_CTX],
+						   uint(size= 8) res[1])
+	var
+		uint(size= 8) index = I[ctx],
+		uint(size=16) q     = QE_INIT[index]
+ 	begin
+ 		if ( DecoderData[A] < q ) then
+ 			res[0] := 1 - mPS[ctx];
+ 			if SWITCH[index] = true then
+ 				mPS[ctx] := 1 - mPS[ctx];
+ 			end
+ 			I[ctx] := nLPS[index];
+ 		else
+ 		 	res[0] := mPS[ctx];
+ 		 	I[ctx] := nMPS[index];
+ 		end
+ 	end
+/******************************************************************************
+ * lpsExchange
+ *****************************************************************************/
+ 	procedure lpsExchange (uint(size=32) DecoderData[DECODER_SIZE],
+						   uint(size= 8) ctx,
+						   uint(size= 8) I[NB_CTX],
+					 	   uint(size= 1) mPS[NB_CTX],
+						   uint(size= 8) res[1])
+	var
+		uint(size= 8) index = I[ctx],
+		uint(size=16) q     = QE_INIT[index]
+ 	begin
+ 		if ( DecoderData[A] < q ) then
+ 		  	DecoderData[A] := q;
+ 		 	res[0]         := mPS[ctx];
+	  		I[ctx]         := nMPS[index];
+ 		else
+ 		  	DecoderData[A] := q;
+ 			res[0]         := 1 - mPS[ctx];
+ 			if SWITCH[index] = true then
+ 				mPS[ctx]   := 1 - mPS[ctx];
+ 			end
+  			I[ctx]         := nLPS[index];
+ 		end
+ 	end
+/******************************************************************************
+ * renormd
+ *****************************************************************************/
+ 	procedure renormd (uint(size=32) DecoderData[DECODER_SIZE],
+ 					   uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL]) 
+	var
+		uint(size=32) a := 0
+	begin
+ 		while (a & 0x8000) = 0
+ 		do
+ 			if DecoderData[CT] = 0 then
+ 				byteIn(DecoderData, fifo);
+ 			end
+ 			DecoderData[A]  := (DecoderData[A]  << 1) & 0xFFFF;
+ 			DecoderData[C]  := (DecoderData[C]  << 1) & 0xFFFFFFFF;
+ 			DecoderData[CT] := (DecoderData[CT]  - 1) & 0xFF;
+ 			a               :=  DecoderData[A];
+ 		end
+ 	end
+/******************************************************************************
+ * CheckPredTerm
+ *****************************************************************************/
+	procedure checkPredTerm(uint(size=32) DecoderData[DECODER_SIZE],
+ 					        uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL])
+ 	var
+ 		uint(size=FIFO_DEPTH) tmp[1],
+ 		uint(size= 2) res := 2,
+ 		uint(size=16) q
+	begin
+//		println("CheckPredTerm");
+		if DecoderData[IS_FINISH] = 0 && DecoderData[CPT_DATA] != 0 then
+			if (DecoderData[B] != 0xFF) || (DecoderData[CT] != 0) then
+      			res := 1;
+      		end 
+    	end
+    	if DecoderData[CT] = 1 && res = 2 then
+    		res := 0;
+    	end
+    
+    	if DecoderData[CT] = 0 && res = 2  then
+    		if DecoderData[IS_FINISH] = 0 && DecoderData[CPT_DATA] != 0 then
+		 		getData(fifo, tmp);
+ 				DecoderData[B]        := tmp[0] & 0xFF;
+ 				DecoderData[CPT_DATA] := DecoderData[CPT_DATA]-1; 
+				if DecoderData[B] <= 0x8F then
+					res := 1;
+				else
+					DecoderData[CT] := 8;
+				    DecoderData[A]  := DecoderData[A] - 100;
+				end
+			end
+    	end
+	  
+	  	if res = 2 then
+    		q   := 0x8000>>(DecoderData[CT]-1);
+    		DecoderData[A] := DecoderData[A] - q;
+			if (DecoderData[C]>>16) < DecoderData[A] then
+	    		res := 1;
+    		end
+    	end
+    	if res = 2 then
+    		DecoderData[C] := DecoderData[C] - (DecoderData[A]<<16);
+    		DecoderData[A] := q;
+    		renormd(DecoderData, fifo);
+    		res := 0;
+    	end
+		if DEBUG_ENTROPY then
+			println("ctx=0  I(ctx)=0  Qe=0  a="+DecoderData[A]+"  c="+(DecoderData[C]>>4)+"  decision="+res);
+		end
+	end	
+end

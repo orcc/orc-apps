@@ -1,0 +1,778 @@
+package V2.parser;
+import  V2.common.BitstreamReadUtils.*;
+import  V2.common.commonPackage.*;
+import  V2.parser.packages.parserPackage.*;
+import  V2.parser.packages.markerPackage.*;
+import  V2.parser.tools.parserFunction.*;
+import  V2.parser.tools.tagTree.*;
+import  V2.parser.tools.codeBlockTools.*;
+import  V2.parser.tools.parserTools.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+actor parserHeader ()	uint(size= 8) codestream,
+						bool          CBlkInfoReady
+						==>
+						uint(size= 8) deqTileInfo,
+						uint(size= 8) traTileInfo,
+						uint(size= 8) cbInfo,
+						uint(size= 8) cbInfoSegSize,
+						uint(size= 8) traPictureInfo,
+						uint(size=CODESTREAM_SIZE) CD,
+						uint(size=16) pictureSize
+:
+/******************************************************************************
+ ******************************************************************************
+ ************        Bitstream Reader                     *********************
+ ******************************************************************************
+ *****************************************************************************/
+	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
+ 	action codestream:[ b ] ==>
+	guard 
+		not isFifoFull(fifo)
+	do
+		pushByte(b, fifo);
+	end
+	/**************************************************************************
+	 * waitCBlkInfoReady
+	 *************************************************************************/
+	waitCBlkInfoReady : action CBlkInfoReady:[ready] ==>
+	end 
+	/**************************************************************************
+	 * readByte
+	 *************************************************************************/
+	uint(size=16) buffer_v := 0;
+	readByte : action ==>
+	guard 
+		isFifoFull(fifo)
+	var
+		uint(size=32) res[1]
+	do
+		getBytes(1, fifo, res);
+		buffer_v := ((buffer_v & 0x00FF) << 8 ) + res[0];
+	end
+/******************************************************************************
+ ******************************************************************************
+ ************                                             *********************
+ ******************************************************************************
+ *****************************************************************************/
+
+	/**************************************************************************
+	 * Globale variables
+	 *************************************************************************/
+	uint(size= 8) HeaderIdx;
+	uint(size=32) siz[SIZ_STRUCT_SIZE];
+	uint(size=32) coc[2][COC_STRUCT_SIZE];
+	bool          cocExists[2][NB_COMPONENT_MAX];
+	uint(size=16) qcc[2][QCC_STRUCT_SIZE];
+	bool          qccExists[2][NB_COMPONENT_MAX];
+ 	uint(size=16) rgn[2][RGN_STRUCT_SIZE];
+	uint(size=16) poc[2][POC_STRUCT_SIZE];
+	uint(size=32) ppm[PPM_STRUCT_SIZE];
+	uint(size=32) tlm[TLM_STRUCT_SIZE];
+	uint(size= 8) plm[PLM_STRUCT_SIZE];
+	uint(size=16) crg[CRG_STRUCT_SIZE];
+	uint(size=16) com[2][COM_STRUCT_SIZE];
+	uint(size=32) sot[SOT_STRUCT_SIZE];
+	uint(size= 8) ppt[PPT_STRUCT_SIZE];
+	uint(size= 8) plt[PLT_STRUCT_SIZE];
+	uint(size= 8) Cqcc;
+	uint(size= 8) cpt;
+	uint(size= 8) cptEnd;
+	/**************************************************************************
+	 * SOC action
+	 *************************************************************************/
+	readMarker.isSOC : action ==>
+	guard
+		buffer_v = SOC_MKR
+	do
+		parseSOC();
+		buffer_v     := 0;
+	end
+	/**************************************************************************
+	 * SIZ action
+	 *************************************************************************/
+	readMarker.isSIZ : action ==> 	deqTileInfo:[siz[C_SIZ]],
+									pictureSize:[siz[X_SIZ], siz[Y_SIZ]],
+									CD:[CD_NEW_PIC_MASK]
+	guard
+		buffer_v = SIZ_MKR,
+		isFifoFull(fifo)		
+	do
+		parseSIZ(siz, fifo);
+		buffer_v     := 0;
+		HeaderIdx    := 0;
+		cocExists[0] := [false: for int c in 0 .. NB_COMPONENT_MAX - 1];
+		qccExists[0] := [false: for int c in 0 .. NB_COMPONENT_MAX - 1];
+	end
+	/**************************************************************************
+	 * COD COC action
+	 *************************************************************************/
+	readMarker.isCOD : action ==>
+	guard
+		buffer_v = COD_MKR,
+		isFifoFull(fifo)
+	do
+		parseCOD (HeaderIdx, cocExists, coc, fifo);
+		buffer_v        := 0;
+	end
+	readMarker.isCOC : action ==>
+	guard
+		buffer_v = COC_MKR,
+		isFifoFull(fifo)
+	do
+		parseCOC (siz[C_SIZ], HeaderIdx, cocExists, coc, fifo);	
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * QCD QCC action
+	 *************************************************************************/
+	readMarker.isQCD : action ==>
+	guard
+		buffer_v = QCD_MKR,
+		isFifoFull(fifo)
+	do
+		parseQCD(HeaderIdx, qccExists, qcc, fifo);
+		buffer_v        := 0;
+	end
+	readMarker.isQCC : action ==>
+	guard
+		buffer_v = QCC_MKR,
+		isFifoFull(fifo)
+	do
+		parseQCC(siz[C_SIZ], HeaderIdx, qccExists, qcc, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * RGN action
+	 *************************************************************************/
+ 	readMarker.isRGN : action ==>
+	guard
+		buffer_v = RGN_MKR,
+		isFifoFull(fifo)
+	do
+		parseRGN(siz[C_SIZ], HeaderIdx, rgn, fifo);
+		buffer_v        := 0;	
+	end
+	/**************************************************************************
+	 * POC action
+	 *************************************************************************/
+	readMarker.isPOC : action ==>
+	guard
+		buffer_v = POC_MKR,
+		isFifoFull(fifo)
+	do
+		parsePOC(siz[C_SIZ], HeaderIdx, poc, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * PPM action
+	 *************************************************************************/
+	readMarker.isPPM : action ==>
+	guard
+		buffer_v = PPM_MKR,
+		isFifoFull(fifo)
+	do
+		parsePPM(ppm, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * TLM action
+	 *************************************************************************/
+	readMarker.isTLM : action ==>
+	guard
+		buffer_v = TLM_MKR,
+		isFifoFull(fifo)
+	do
+		parseTLM(tlm, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * PLM action
+	 *************************************************************************/
+	readMarker.isPLM : action ==>
+	guard
+		buffer_v = PLM_MKR,
+		isFifoFull(fifo)
+	do
+		parsePLM(plm, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * CRG action
+	 *************************************************************************/
+	readMarker.isCRG : action ==>
+	guard
+		buffer_v = CRG_MKR,
+		isFifoFull(fifo)
+	do
+		parseCRG(crg, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * COM action
+	 *************************************************************************/
+	readMarker.isCOM : action ==>
+	guard
+		buffer_v = COM_MKR,
+		isFifoFull(fifo)
+	do
+		parseCOM(HeaderIdx, com, fifo);
+		buffer_v        := 0;
+	end
+	/**************************************************************************
+	 * SOT action
+	 *************************************************************************/
+	readMarker.isSOT : action ==> CD:[CD_NEW_TILE_MASK]
+	guard
+		buffer_v = SOT_MKR,
+		isFifoFull(fifo)
+	do
+		parseSOT(sot, fifo);
+		buffer_v     := 0;
+		HeaderIdx    := 1;
+		cocExists[1] := [false: for int c in 0 .. NB_COMPONENT_MAX - 1];
+		qccExists[1] := [false: for int c in 0 .. NB_COMPONENT_MAX - 1];
+		foreach uint(size=8) c in 0 .. NB_COMPONENT_MAX-1 do
+			coc[1][SG_COC + c] := coc[0][SG_COC + c];
+		end
+	end
+	/**************************************************************************
+	 * PPT action
+	 *************************************************************************/
+	readMarker.isPPT : action ==>
+	guard
+		buffer_v = PPT_MKR,
+		isFifoFull(fifo)
+	do
+		parsePPT(ppt, fifo);
+		buffer_v     := 0;
+	end
+	/**************************************************************************
+	 * PLT action
+	 *************************************************************************/
+	readMarker.isPLT : action ==>
+	guard
+		buffer_v = PLT_MKR,
+		isFifoFull(fifo)
+	do
+		parsePLT(plt, fifo);
+		buffer_v     := 0;
+	end
+	/**************************************************************************
+	 * SOD action
+	 *************************************************************************/
+	readMarker_isSOD : action ==> 
+	guard
+		buffer_v = SOD_MKR
+	do
+		parseSOD();
+		buffer_v      := 0;
+		coc[0][C_COC] := 0;
+	end
+	/**************************************************************************
+	 * EOC action
+	 *************************************************************************/
+	readMarker.isEOC : action ==> 
+	guard
+		buffer_v = EOC_MKR
+	do
+		parseEOC();
+		buffer_v := 0;
+	end
+	/**************************************************************************
+	 * writeDeqTileInfo action
+	 *************************************************************************/
+	writeDeqTileInfo : action ==> deqTileInfo:[G, NL, siz[S_SIZ + Cqcc], Revers],
+								  traTileInfo:[NL, Revers]
+	guard
+		Cqcc != siz[C_SIZ]
+	var
+		uint(size= 8) G,
+		uint(size= 8) NL,
+		uint(size= 8) Revers,
+		uint(size= 8) idx := 0
+	do
+		if qccExists[1][Cqcc] then
+			idx := 1;
+		end
+		G       :=  qcc[idx][S_QCC + Cqcc];
+		if cocExists[1][Cqcc] then
+			idx := 1;
+		else
+			idx := 0;
+		end
+		NL      := coc[idx][SP_COC + Cqcc * COD_MAX];
+		Revers  := coc[idx][SP_COC + Cqcc * COD_MAX + 4];
+		cpt     := 0;
+		cptEnd  := 3*NL;
+	end
+	writeDeqTileInfoEnd : action ==>
+	guard
+		Cqcc = siz[C_SIZ]
+	do
+		Cqcc   := 0;
+	end
+	writeDeqTileInfoLoop : action ==> deqTileInfo:[SP_0, SP_1]
+	guard
+		cpt <= cptEnd
+	var
+		uint(size=16) SP,
+		uint(size= 8) SP_0,
+		uint(size= 8) SP_1,
+		uint(size= 8) idx  := 0
+	do
+		if cocExists[1][Cqcc] then
+			idx := 1;
+		end
+		SP     := qcc[idx][SP_QCC + Cqcc * QCD_MAX + cpt];
+		SP_1   :=  SP & 0xff;
+		SP_0   := (SP>>8) & 0xff;
+		cpt    :=  cpt + 1;
+	end
+	writeDeqTileInfoLoopEnd : action ==>
+	guard
+		cpt > cptEnd
+	do
+		Cqcc := Cqcc + 1;
+	end
+/******************************************************************************
+ ******************************************************************************
+ ******************************************************************************
+ * Codestream decription
+ ******************************************************************************
+ ******************************************************************************
+ *****************************************************************************/
+ 
+	/**************************************************************************
+	 * TagTree Globale variables
+	 *************************************************************************/
+	uint(size= 8) tt_lvls[TT_C_MAX][TT_R_MAX][TT_P_MAX][TT_S_MAX];
+	uint(size= 8) tt_InclV[TT_C_MAX][TT_R_MAX][TT_P_MAX][TT_S_MAX][TT_LEVEL_MAX][TT_INDEX_MAX];
+    uint(size= 8) tt_InclS[TT_C_MAX][TT_R_MAX][TT_P_MAX][TT_S_MAX][TT_LEVEL_MAX][TT_INDEX_MAX];
+    uint(size= 8) tt_BdV[TT_C_MAX][TT_R_MAX][TT_P_MAX][TT_S_MAX][TT_LEVEL_MAX][TT_INDEX_MAX];
+    uint(size= 8) tt_BdS[TT_C_MAX][TT_R_MAX][TT_P_MAX][TT_S_MAX][TT_LEVEL_MAX][TT_INDEX_MAX];
+	/**************************************************************************
+	 * CodeBlock Globale variables
+	 *************************************************************************/
+ 	bool          cblk_exists[CB_C_MAX][CB_R_MAX][CB_S_MAX][CB_W_MAX][CB_H_MAX];
+ 	uint(size= 8) cblk_lblock[CB_C_MAX][CB_R_MAX][CB_S_MAX][CB_W_MAX][CB_H_MAX];
+ 	uint(size= 8) cblk_nbCodingPasses[CB_S_MAX][CB_W_MAX][CB_H_MAX];
+    uint(size= 8) cblk_zeroBitPlane[CB_S_MAX][CB_W_MAX][CB_H_MAX];
+    uint(size=16) cblk_size[CB_S_MAX][CB_W_MAX][CB_H_MAX];
+    uint(size= 8) cblk_w[CB_S_MAX][CB_W_MAX][CB_H_MAX];
+    uint(size= 8) cblk_h[CB_S_MAX][CB_W_MAX][CB_H_MAX];
+	/**************************************************************************
+	 * Globale variables
+	 *************************************************************************/
+	uint(size=16) idx[IDX_STRUCT_SIZE];
+  	uint(size=16) idxEnd[IDX_STRUCT_SIZE];
+  	uint(size=16) csl[CSL_STRUCT_SIZE];
+  	uint(size=16) cst[CST_STRUCT_SIZE];
+  	uint(size=32) coc_2[COC_STRUCT_SIZE];
+  	uint(size=32) ret[1];
+  	uint(size=32) tmp;
+  	
+ 	/**************************************************************************
+	 * LoopInit_main
+	 *************************************************************************/
+  	LoopInit_main : action ==>
+  						   traPictureInfo:[
+  						   	siz[C_SIZ] ,
+  						   	(sizeTileX >> 8) & 0xff, sizeTileX & 0xff,
+  						   	(sizeTileY >> 8) & 0xff, sizeTileY & 0xff
+  						   ]
+   	var
+		uint(size= 2) idxCoc = getCOCidx(cocExists, coc[0][C_COC]),
+		uint(size=16) sizeTileX,
+		uint(size=16) sizeTileY
+  	do
+  		coc_2 := [coc[idxCoc][i] : for int i in 0 .. COC_STRUCT_SIZE - 1];
+ 		loopInit_main(idx, idxEnd, siz, sot, coc_2, cst);
+ 		TagTreeNew(tt_lvls);
+  		CodeBlockNew(cblk_exists, cblk_lblock, cblk_nbCodingPasses, cblk_w, cblk_h);		
+		sizeTileX   := cst[TCX1] - cst[TCX0];
+		sizeTileY   := cst[TCY1] - cst[TCY0];
+	end
+	/**************************************************************************
+	 * LoopStart_main
+	 *************************************************************************/
+ 	LoopStart_main : action ==>
+ 	guard
+ 		idx[C_IDX] != idxEnd[C_IDX] &&
+ 		idx[L_IDX] != idxEnd[L_IDX] &&
+ 		idx[R_IDX] != idxEnd[R_IDX] &&
+ 		ifPrecValid(siz, coc_2, idx, cst)
+ 	do
+  		loopStart_main(idx, idxEnd, siz, coc_2, csl, cst);
+ 	end
+	/**************************************************************************
+	 * LoopIncr_main
+	 *************************************************************************/
+ 	LoopIncr_main : action ==>
+ 	guard
+ 		idx[C_IDX] != idxEnd[C_IDX] &&
+ 		idx[L_IDX] != idxEnd[L_IDX] &&
+ 		idx[R_IDX] != idxEnd[R_IDX]
+ 	do
+  		loopIncr_main(idx, idxEnd, siz, coc_2, cst);		
+ 	end
+	/**************************************************************************
+	 * LoopEnd_main
+	 *************************************************************************/
+ 	LoopEnd_main : action ==> CD:[CD_END_TILE_MASK]
+ 	guard
+ 		idx[C_IDX] = idxEnd[C_IDX] ||
+ 		idx[L_IDX] = idxEnd[L_IDX] ||
+ 		idx[R_IDX] = idxEnd[R_IDX]
+ 	end
+	/**************************************************************************
+	 * LoopInit_swh1
+	 *************************************************************************/
+ 	LoopInit_swh1 : action ==>
+ 	guard
+ 		isFifoFull(fifo)
+  	do
+ 		CodeBlockInit(cblk_zeroBitPlane, cblk_size);
+ 		loopInit_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);
+ 		parseSOP(idx, coc_2, fifo);
+ 		//getBits(1, fifo, ret);
+ 		showBits(1, fifo, ret);
+		flushBits(1, fifo);
+ 	end  
+ 	LoopInit_swh2 : action ==>
+ 	guard
+ 		isFifoFull(fifo)
+ 	do
+  		parseEPH(idx, coc_2, fifo);
+ 		loopInit_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);
+  	 	if isByteAlign(fifo) then	
+	 		// read stuffing byte
+ 			if getByteIdxMinusOne(fifo) = 0x00FF then
+ 				if DEBUG_TRACE = true then
+	 				println("stuffingByte");
+	 			end
+	 			flushBits(8, fifo);
+ 			end
+ 		else
+	  	 	byteAlign(fifo);
+ 		end
+ 	end
+	 /*************************************************************************
+	 * IsZeroLength
+	 *************************************************************************/
+ 	IsZeroLength : action ==>
+ 	guard
+ 		ret[0] = 0
+ 	do
+ 		if DEBUG_TRACE = true then
+ 			println("# CodeBlock c = "+idx[C_IDX]+" r = "+idx[R_IDX]+" : skip");
+ 		end
+  	 	byteAlign(fifo);		
+ 		loopIncr_main(idx, idxEnd, siz, coc_2, cst);
+ 	end
+	IsNotZeroLength : action ==>
+ 	guard
+ 		ret[0] = 1
+ 	do
+ 		if TagTreeIfExists(tt_lvls, idx) = false then
+ 			TagTreeAdd(tt_lvls, tt_InclV, tt_InclS, tt_BdV, tt_BdS, idx, idxEnd);
+ 		end
+ 	end
+	/**************************************************************************
+	 * LoopStart_swh
+	 *************************************************************************/
+	LoopStart_swh1 : action ==>
+ 	guard
+ 		idx[S_IDX] != idxEnd[S_IDX]
+ 	do
+ 		if (idx[W_IDX] = 0) && (idx[H_IDX] = 0) then
+	 		if TagTreeIfExists(tt_lvls, idx) = false then
+ 				TagTreeAdd(tt_lvls, tt_InclV, tt_InclS, tt_BdV, tt_BdS, idx, idxEnd);
+ 			end
+ 		end
+ 	end
+ 	LoopStart_swh2 : action ==>
+	guard
+ 		idx[S_IDX] != idxEnd[S_IDX]
+ 	end
+ 	LoopEnd_swh2 : action ==>
+ 	do
+ 		loopIncr_main(idx, idxEnd, siz, coc_2, cst);
+ 	end
+	/**************************************************************************
+	 * checkCBsizeNoNull
+	 *************************************************************************/
+ 	checkCBsizeNoNull : action ==>
+ 	guard
+ 		CodeBlockGetW(cblk_w, idx) != 0 &&
+ 		CodeBlockGetH(cblk_h, idx) != 0
+ 	end
+ 	checkCBsizeNull : action ==>
+ 	guard
+ 		CodeBlockGetW(cblk_w, idx) = 0 ||
+ 		CodeBlockGetH(cblk_h, idx) = 0
+ 	do
+ 		loopIncr_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);	
+ 	end
+	/**************************************************************************
+	 * CodeBlockExists
+	 *************************************************************************/
+ 	CodeBlockExists : action ==>
+ 	guard
+ 		isFifoFull(fifo),
+ 		CodeBlockIfExists(cblk_exists, idx) = true
+ 	do
+		getBits(1, fifo, ret);
+ 	end
+	CodeBlockNotExists : action ==>
+ 	guard
+ 		isFifoFull(fifo),
+ 		CodeBlockIfExists(cblk_exists, idx) = false
+  	do
+ 		tagTreeUpdateIncl(tt_lvls, tt_InclV, tt_InclS, idx, idxEnd[H_IDX]+1, fifo, ret);
+  	end
+ 	CodeBlockExistsGONext : action ==>
+ 	guard
+ 		ret[0] = 0
+ 	var
+ 		uint(size=8) w,
+ 		uint(size=8) h
+ 	do
+ 		if DEBUG_TRACE = true then
+ 			w := CodeBlockGetW(cblk_w, idx);
+ 			h := CodeBlockGetH(cblk_h, idx);
+ 			println("# CodeBlock("+w+", "+h+") c = "+idx[C_IDX]+" r = "+idx[R_IDX]+" p = "+idx[P_IDX]+" s = "+idx[S_IDX]+" w = "+idx[W_IDX]+" h = "+idx[H_IDX]+" : skip");
+ 		end
+ 		loopIncr_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);	
+ 	end
+ 	CodeBlockExistsContinu : action ==>
+ 	guard
+ 		ret[0] = 1
+ 	end
+	/**************************************************************************
+	 * ZeroBitPlane
+	 *************************************************************************/
+ 	ZeroBitPlane : action ==>
+ 	guard
+  		isFifoFull(fifo),
+  		ret[0] <= idx[L_IDX] + 1
+  	var
+  		uint(size= 8) tmp := 1
+  	do
+  		ret[0] := 1;
+  		while ret[0] >= tmp do
+	 		tagTreeUpdateBD(tt_lvls, tt_BdV, tt_BdS, idx, idxEnd[H_IDX]+1, tmp, fifo, ret);
+			tmp := tmp + 1;
+  		end
+  		CodeBlockSetZeroBitPlane(ret[0], cblk_zeroBitPlane, idx);
+ 	end
+ 	ZeroBitPlaneGONext : action ==>
+ 	guard
+  		ret[0] > idx[L_IDX] + 1
+  	var
+ 		uint(size=8) w,
+ 		uint(size=8) h
+ 	do
+ 		if DEBUG_TRACE = true then
+ 			w := CodeBlockGetW(cblk_w, idx);
+ 			h := CodeBlockGetH(cblk_h, idx);
+ 			println("# CodeBlock("+w+", "+h+") c = "+idx[C_IDX]+" r = "+idx[R_IDX]+" p = "+idx[P_IDX]+" s = "+idx[S_IDX]+" w = "+idx[W_IDX]+" h = "+idx[H_IDX]+" : skip");
+		end	
+ 		loopIncr_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);	
+ 	end
+	/**************************************************************************
+	 * GetNumCodingPasse
+	 *************************************************************************/
+ 	GetNumCodingPasse : action ==>
+ 	guard
+  		isFifoFull(fifo)
+   	do
+   		getNumberOfCodingPasses(fifo, ret);
+  		CodeBlockSetNbPass(ret[0], cblk_exists, cblk_nbCodingPasses, idx);
+  		tmp := ret[0];
+  		getNbOneBit(fifo, ret);
+  		CodeBlockSetLBlock(ret[0],cblk_lblock, idx);
+ 	end
+	/**************************************************************************
+	 * GetSize
+	 *************************************************************************/
+	GetSize.default : action ==>
+ 	guard
+  		isFifoFull(fifo),
+ 	 	(coc_2[SP_COC + idx[C_IDX] * COD_MAX + 3] & TermCodingPass) = 0
+ 	var
+ 		uint(size= 8) h,
+ 		uint(size= 8) w,
+ 		uint(size= 8) npasses,
+ 		uint(size= 8) zeroBP
+ 	do
+		npasses := CodeBlockGetNbPass(cblk_nbCodingPasses, idx);
+  		getBits( CodeBlockGetLBlock(cblk_lblock, idx) + LOG2[npasses], fifo, ret);
+		CodeBlockSetSize(ret[0], cblk_size, idx);
+		if DEBUG_TRACE = true then
+  			w       := CodeBlockGetW(cblk_w, idx);
+ 			h       := CodeBlockGetH(cblk_h, idx);
+			zeroBP  := CodeBlockGetZeroBitPlane(cblk_zeroBitPlane, idx);
+ 			println("# CodeBlock("+w+", "+h+") c = "+idx[C_IDX]+" r = "+idx[R_IDX]+" p = "+idx[P_IDX]+" s = "+idx[S_IDX]+" w = "+idx[W_IDX]+" h = "+idx[H_IDX]+" : number of coding passes = "+npasses+" : length = "+ret[0]+" : zeroBitPlane = "+zeroBP);
+		end
+ 		loopIncr_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);	
+ 	end
+	GetSize.TermCP : action ==> cbInfoSegSize:[(segSize>>8 & 0xff), segSize&0xff]
+ 	guard
+ 	 	isFifoFull(fifo),
+ 	 	(coc_2[SP_COC + idx[C_IDX] * COD_MAX + 3] & TermCodingPass) != 0,
+ 	 	tmp = 1
+ 	var
+ 		uint(size= 8) h,
+ 		uint(size= 8) w,
+ 		uint(size= 8) npasses,
+ 		uint(size= 8) zeroBP,
+ 		uint(size=16) segSize
+ 	do
+  		getBits(CodeBlockGetLBlock(cblk_lblock, idx), fifo, ret);
+		CodeBlockSetSize(ret[0], cblk_size, idx);
+		segSize    := ret[0];
+		if DEBUG_TRACE = true then
+  			w       := CodeBlockGetW(cblk_w, idx);
+ 			h       := CodeBlockGetH(cblk_h, idx);
+ 			npasses := CodeBlockGetNbPass(cblk_nbCodingPasses, idx);
+			zeroBP  := CodeBlockGetZeroBitPlane(cblk_zeroBitPlane, idx);
+ 			println("# CodeBlock("+w+", "+h+") c = "+idx[C_IDX]+" r = "+idx[R_IDX]+" p = "+idx[P_IDX]+" s = "+idx[S_IDX]+" w = "+idx[W_IDX]+" h = "+idx[H_IDX]+" : number of coding passes = "+npasses+" : length = "+CodeBlockGetSize(cblk_size, idx)+" : zeroBitPlane = "+zeroBP);
+		end
+ 		loopIncr_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);	
+ 	end
+ 	GetSize_TermCPloop : action ==> cbInfoSegSize:[(segSize>>8 & 0xff), segSize&0xff]
+ 	guard
+ 	 	isFifoFull(fifo),
+ 	 	(coc_2[SP_COC + idx[C_IDX] * COD_MAX + 3] & TermCodingPass) != 0,
+ 	 	tmp != 1
+ 	var
+ 		uint(size=16) segSize
+ 	do
+  		getBits(CodeBlockGetLBlock(cblk_lblock, idx), fifo, ret);
+		CodeBlockSetSize(ret[0], cblk_size, idx);
+		segSize    := ret[0];
+		tmp        := tmp - 1;
+ 	end 	
+/******************************************************************************
+ * WriteData
+ *****************************************************************************/
+  	WriteInit : action  ==> 
+  						cbInfo:[
+  							idx_0, idx_1, idx_2, idx_3,
+  							cb_w, cb_h, npasses, zeroBP,
+  							cb_size_0, cb_size_1,
+  							coc_2[SP_COC + idx[C_IDX] * COD_MAX + 3]
+  						],
+  						CD:[CD_NEW_CB_MASK]
+	var
+ 		uint(size= 8) idx_0     =   idx[C_IDX],  
+ 		uint(size= 8) idx_1     = ((idx[R_IDX]&0xf)<<4) + (idx[S_IDX]&0xf), 
+ 		uint(size= 8) idx_2     =   idx[W2_IDX]&0xff, 
+ 		uint(size= 8) idx_3     =   idx[H2_IDX]&0xff, 
+ 		uint(size= 8) cb_w      = CodeBlockGetW(cblk_w, idx),
+ 		uint(size= 8) cb_h      = CodeBlockGetH(cblk_h, idx),
+ 		uint(size= 8) npasses  := CodeBlockGetNbPass(cblk_nbCodingPasses, idx),
+ 		uint(size= 8) zeroBP    = CodeBlockGetZeroBitPlane(cblk_zeroBitPlane, idx),
+ 		uint(size=16) cb_size   = CodeBlockGetSize(cblk_size, idx),
+ 		uint(size= 8) cb_size_0 = (cb_size>>8) & 0xff,
+ 		uint(size= 8) cb_size_1 =  cb_size     & 0xff
+ 	do
+ 	 	if cb_size = 0 then
+ 	 		npasses := 0;
+ 	 	end
+ 	end
+ 	WriteData : action ==> CD:[ret[0]]
+	guard
+ 		CodeBlockGetSize(cblk_size, idx) != 0,
+ 		isFifoFull(fifo)
+  	do
+		CodeBlockSetSize(-1, cblk_size, idx);
+		getBytes(1, fifo, ret);
+ 	end
+ 	WriteDataEnd : action ==>
+ 	guard
+ 		CodeBlockGetSize(cblk_size, idx) = 0
+ 	do
+ 		loopIncr_swh(idx, idxEnd, coc_2, csl, cst, cblk_w, cblk_h);	
+ 	end  
+	/**************************************************************************
+	 * Idle action
+	 *************************************************************************/
+	Idle : action ==> 
+	end
+	
+/******************************************************************************
+ ******************************************************************************
+ ******************************************************************************
+ * Scheduler
+ ******************************************************************************
+ ******************************************************************************
+ *****************************************************************************/
+	schedule fsm waitCBlkInfoReady_st:
+		// waitCBlkInfoReady
+		waitCBlkInfoReady_st    (waitCBlkInfoReady       ) --> readMarker_st;
+		// wait Next Marker state
+		readMarker_st           (readMarker              ) --> readMarker_st;
+		readMarker_st           (readMarker_isSOD        ) --> writeDeqTileInfo_st;
+		readMarker_st           (readByte                ) --> readMarker_st;
+		// writeDeqTileInfo
+		writeDeqTileInfo_st     (writeDeqTileInfo        ) --> writeDeqTileInfoLoop_st;
+		writeDeqTileInfo_st     (writeDeqTileInfoEnd     ) --> loopInit_main_st;
+		writeDeqTileInfoLoop_st (writeDeqTileInfoLoop    ) --> writeDeqTileInfoLoop_st;
+		writeDeqTileInfoLoop_st (writeDeqTileInfoLoopEnd ) --> writeDeqTileInfo_st;
+		//
+		//
+		// loopmain 1 
+		loopInit_main_st        ( LoopInit_main          ) --> loopStart_main_st;
+		loopStart_main_st       ( LoopStart_main         ) --> loopInit_swh_st1;
+		loopStart_main_st       ( LoopIncr_main          ) --> loopStart_main_st;
+		loopStart_main_st       ( LoopEnd_main           ) --> waitCBlkInfoReady_st;
+		// loopSWH 1
+		loopInit_swh_st1        ( LoopInit_swh1          ) --> isZeroLength_st;
+		loopStart_swh_st1       ( LoopStart_swh1         ) --> checkCBsizeNoNull_st;
+		loopStart_swh_st1       ( Idle	                 ) --> loopInit_swh_st2;
+		// isZeroLength
+		isZeroLength_st         ( IsZeroLength           ) --> loopStart_main_st;
+		isZeroLength_st         ( IsNotZeroLength        ) --> checkCBsizeNoNull_st;
+		// checkCBsizeNoNull
+		checkCBsizeNoNull_st    ( checkCBsizeNoNull      ) --> ifCodeBlockExists_st;
+		checkCBsizeNoNull_st    ( checkCBsizeNull        ) --> loopStart_swh_st1;
+		// ifCodeBlockExists
+		ifCodeBlockExists_st    ( CodeBlockExists        ) --> ifCodeBlockExists2_st;
+		ifCodeBlockExists_st    ( CodeBlockNotExists     ) --> zeroBitPlane_st;
+		ifCodeBlockExists2_st   ( CodeBlockExistsGONext  ) --> loopStart_swh_st1;
+		ifCodeBlockExists2_st   ( CodeBlockExistsContinu ) --> getNumCodingPasse_st;
+		// get number of bit plane
+		zeroBitPlane_st         ( ZeroBitPlane           ) --> getNumCodingPasse_st;
+		zeroBitPlane_st         ( ZeroBitPlaneGONext     ) --> loopStart_swh_st1;
+		// get number of coding passe
+		getNumCodingPasse_st    ( GetNumCodingPasse      ) --> getSize_st;
+		// get size of codec block data
+		getSize_st              ( GetSize_TermCPloop     ) --> getSize_st;
+		getSize_st              ( GetSize                ) --> loopStart_swh_st1;
+		//
+		//
+		// loopSWH 2
+		loopInit_swh_st2        ( LoopInit_swh2          ) --> checkCBsizeNoNull_st2;
+		loopStart_swh_st2       ( LoopStart_swh2         ) --> checkCBsizeNoNull_st2;
+		loopStart_swh_st2       ( LoopEnd_swh2           ) --> loopStart_main_st;
+		// checkCBsizeNoNull
+		checkCBsizeNoNull_st2   ( checkCBsizeNoNull      ) --> writeInit_st;
+		checkCBsizeNoNull_st2   ( checkCBsizeNull        ) --> loopStart_swh_st2;
+		// writeInit
+		writeInit_st            ( WriteInit              ) --> writeData_st;
+		// writeData
+		writeData_st            ( WriteData              ) --> writeData_st;
+		writeData_st            ( WriteDataEnd           ) --> loopStart_swh_st2;
+	end
+/******************************************************************************
+ * Priority
+ *****************************************************************************/	
+	priority
+		readMarker       > readByte;
+		//
+		LoopStart_swh1   > Idle;
+	end
+end

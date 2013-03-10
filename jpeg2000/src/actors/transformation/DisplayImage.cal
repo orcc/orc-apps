@@ -1,0 +1,209 @@
+/***********************************************************************
+
+This software module was originally developed by Damien de Saint Jorre IETR/INSA of Rennes (France), in the course of development of the <standard> for reference purposes and its performance may not have been optimized. This software module is an implementation of one or more tools as specified by the MPEG-C part 4.
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works of this software module or modifications thereof for use in implementations of the <standard>  in products that satisfy conformance criteria (if any).
+Those intending to use this software module in products are advised that its use may infringe existing patents. ISO/IEC have no liability for use of this software module or modifications thereof.
+Copyright is not released for products that do not conform to audiovisual and image-coding related ITU Recommendations and/or ISO/IEC International Standards.
+Assurance that the originally developed software module can be used (1) in the <standard> once the <standard> has been adopted; and (2) to develop the MPEG-C part 4:
+
+IETR/INSA of Rennes (France) grants ISO/IEC all rights necessary to include the originally developed software module or modifications thereof in the <standard> and to permit ISO/IEC to offer You a royalty-free, worldwide, non-exclusive, copyright license to copy, distribute, and make derivative works for use in implementations of the MPEG-C part 4 in products that satisfy conformance criteria (if any), and to the extent that such originally developed software module or portions of it are included in the MPEG-C part 4.  To the extent that IETR/INSA of Rennes (France) owns patent rights that would be required to make, use, or sell the originally developed software module or portions thereof included in the MPEG-C part 4 in a conforming product,  IETR/INSA of Rennes (France) will assure the ISO/IEC that it is willing to negotiate licenses under reasonable and non-discriminatory terms and conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications thereof for the sole  purpose of developing the MPEG-C part 4
+
+IETR/INSA of Rennes (France) retains full right to modify and use the code for its own purpose, assign or donate the code to a third party and to inhibit third parties from using the code for products that do not conform to MPEG-related ITU Recommendations and/or ISO/IEC International Standards.
+This copyright notice must be included in all copies or derivative works. Copyright (c) ISO/IEC 2008.
+***********************************************************************/
+package actors.transformation;
+
+actor DisplayImage() 	uint(size=8) Byte,
+						uint(size=8) TraPictureInfo,
+						uint(size=8) SIZ
+						==>
+	:
+
+/******************************************************************************
+ * CONSTANT
+ *****************************************************************************/
+	uint MAX_WIDTH      = 3000;
+	uint MAX_HEIGHT     = 2000;
+	uint WIN_MAX_WIDTH  = 1024;
+	uint WIN_MAX_HEIGHT =  768;
+	/*Inits the given display. */
+	@native procedure displayYUV444_init(int(size=16) winWidth, int(size=16) winHeight,
+										int(size=16) pictureWidth, int(size=16) pictureHeight
+										) end
+	/*get event. */
+	@native procedure displayYUV_getEvent() end
+	/* Displays a picture. Sizes are in pixels. */
+	@native procedure displayYUV444_displayPicture(uint(size=8) pictureBufferY[MAX_WIDTH * MAX_HEIGHT],
+											      uint(size=8) pictureBufferU[MAX_WIDTH * MAX_HEIGHT],
+	                                              uint(size=8) pictureBufferV[MAX_WIDTH * MAX_HEIGHT],
+	                                              int(size=16) pictureWidth, int(size=16) pictureHeight) end
+	@native procedure fpsPrintInit() end
+	@native procedure fpsPrintNewPicDecoded() end
+	
+/******************************************************************************
+ * GLOBAL
+ *****************************************************************************/
+	uint(size=8)  pictureBufferY[MAX_WIDTH * MAX_HEIGHT];
+	uint(size=8)  pictureBufferU[MAX_WIDTH * MAX_HEIGHT];
+	uint(size=8)  pictureBufferV[MAX_WIDTH * MAX_HEIGHT];
+	uint(size=16) pictureWidth;
+	uint(size=16) pictureHeight;
+	uint(size=16) tileWidth;
+	uint(size=16) tileHeight;
+	uint(size=16) cptTileWidth;
+	uint(size=16) cptTileHeight;
+	uint(size=32) offsetTileWidth;
+	uint(size=32) offsetTileHeight;
+	uint(size=32) idxOffset;
+	bool          displayTile;
+	uint(size= 2) nbComponent;
+/******************************************************************************
+ * getSIZ action
+ *****************************************************************************/
+	getSIZ : action SIZ:[ siz_p ] repeat 38 ==>
+	do
+//		pictureWidth     := (siz_p[ 4] << 24) + (siz_p[ 5] << 16) + (siz_p[ 6] <<  8) +  siz_p[ 7];
+//		pictureHeight    := (siz_p[ 8] << 24) + (siz_p[ 9] << 16) + (siz_p[10] <<  8) +  siz_p[11];
+		pictureWidth     := (siz_p[ 6] <<  8) +  siz_p[ 7];
+		pictureHeight    := (siz_p[10] <<  8) +  siz_p[11];
+		offsetTileWidth  := 0;
+		offsetTileHeight := 0;
+		displayTile      := false;
+		if pictureWidth < WIN_MAX_WIDTH && pictureHeight < WIN_MAX_HEIGHT then
+			displayYUV444_init(pictureWidth, pictureHeight, pictureWidth, pictureHeight);
+		else
+			displayYUV444_init(WIN_MAX_WIDTH, WIN_MAX_HEIGHT, pictureWidth, pictureHeight);
+		end
+		pictureBufferU := [128: for int i in 0 .. (MAX_WIDTH * MAX_HEIGHT)-1];
+		pictureBufferV := [128: for int i in 0 .. (MAX_WIDTH * MAX_HEIGHT)-1];
+		fpsPrintInit();		
+	end
+/******************************************************************************
+ * getEvent action
+ *****************************************************************************/
+	getEvent : action ==>
+	guard
+		displayTile = true
+	do
+		displayYUV_getEvent();
+	end
+/******************************************************************************
+ * getTileSize action
+ *****************************************************************************/
+	getTileSize : action TraPictureInfo:[Csiz,
+									  MSBTileSizeX,   LSBTileSizeX,
+									  MSBTileSizeY,   LSBTileSizeY]
+									 ==>
+	do
+		nbComponent		:= Csiz;
+		tileWidth  		:= (MSBTileSizeX<<8)+LSBTileSizeX;
+		tileHeight 		:= (MSBTileSizeY<<8)+LSBTileSizeY;
+		if offsetTileWidth = pictureWidth then
+			offsetTileWidth := 0;
+		end
+		idxOffset       := offsetTileHeight + offsetTileWidth;
+		cptTileWidth    := 0;
+		cptTileHeight   := 0;
+		displayTile     := false;
+	end
+/******************************************************************************
+ * procedure incrCpt
+ *****************************************************************************/
+  	procedure incrCpt ()
+  	begin
+		if cptTileWidth < tileWidth-1 then
+			cptTileWidth  := cptTileWidth + 1;
+		else
+			idxOffset     := idxOffset + pictureWidth;
+			cptTileHeight := cptTileHeight + 1;
+			cptTileWidth  := 0;
+		end
+  	end
+/******************************************************************************
+ * getLuma action
+ *****************************************************************************/
+	getLuma : action Byte:[Bytes] ==>
+	guard
+ 		cptTileHeight != tileHeight
+	do
+		pictureBufferY[idxOffset+cptTileWidth] := Bytes;
+		incrCpt();
+	end
+/******************************************************************************
+ * isNoChroma action
+ *****************************************************************************/
+	isNoChroma : action ==>
+	guard
+		cptTileHeight = tileHeight && nbComponent != 3
+	end
+/******************************************************************************
+ * getChromaU action
+ *****************************************************************************/
+	getChromaU : action Byte :[Bytes] ==>
+	guard
+ 		cptTileHeight != tileHeight && nbComponent = 3
+	do
+		pictureBufferU[idxOffset+cptTileWidth] := Bytes;
+		incrCpt();
+	end
+/******************************************************************************
+ * getChromaV action
+ *****************************************************************************/
+	getChromaV : action Byte :[Bytes] ==>
+	guard
+ 		cptTileHeight != tileHeight && nbComponent = 3 
+	do
+		pictureBufferV[idxOffset+cptTileWidth] := Bytes;
+		if offsetTileWidth + cptTileWidth = pictureWidth -1 then
+			offsetTileHeight := offsetTileHeight + pictureWidth;
+		end
+		incrCpt();
+	end
+/******************************************************************************
+ * ResetCounts action
+ *****************************************************************************/
+	ResetCounts : action ==>
+	guard
+		cptTileHeight = tileHeight && nbComponent = 3
+	do
+		idxOffset     := offsetTileHeight + offsetTileWidth;
+		cptTileHeight := 0;
+	end
+/******************************************************************************
+ * displayPicture action
+ *****************************************************************************/
+	displayPicture : action ==>
+	guard
+		cptTileHeight = tileHeight
+	do
+		fpsPrintNewPicDecoded();	
+		offsetTileWidth  := offsetTileWidth + tileWidth;
+		displayYUV444_displayPicture(pictureBufferY, pictureBufferU, pictureBufferV,
+								  	pictureWidth,   pictureHeight);
+		displayTile := true;
+	end
+ /******************************************************************************
+ * schedule
+ *****************************************************************************/
+	schedule fsm getSIZ_st :
+		getSIZ_st       (getSIZ        ) --> getTileSize_st;
+		getTileSize_st  (getTileSize   ) --> getLuma_st;
+		getTileSize_st  (getEvent      ) --> getTileSize_st;
+		getLuma_st 		(getLuma       ) --> getLuma_st;
+		getLuma_st 		(isNoChroma    ) --> display_st;
+		getLuma_st 		(ResetCounts   ) --> getChromaU_st;
+		getChromaU_st	(getChromaU    ) --> getChromaU_st;
+		getChromaU_st	(ResetCounts   ) --> getChromaV_st;
+		getChromaV_st	(getChromaV    ) --> getChromaV_st;
+		getChromaV_st	(displayPicture) --> getTileSize_st;
+		display_st	    (displayPicture) --> getTileSize_st;
+	end
+/******************************************************************************
+ * Priority
+ *****************************************************************************/	
+	priority
+		getTileSize > getEvent;
+	end
+end

@@ -1,0 +1,364 @@
+package actors.decoder;
+import utils.codestreamPackage.*;
+import utils.decoderPackage.*;
+/******************************************************************************
+ * Actor decription
+ *****************************************************************************/
+actor decoderTop () uint(size=16) NB_DATA,
+					uint(size= 8) CD,
+					uint(size= 8) CTX	
+					==>
+					uint(size= 8) D
+:
+//	native procedure compare_init() end
+//	native procedure compare_NBytes(uint(size=8) outTable[8], uint(size=12) nbTokenToRead) end
+/******************************************************************************
+ * Globale variables
+ *****************************************************************************/
+ 	uint(size= 8) ctx;
+ 	uint(size= 8) index;
+ 	uint(size=16) q;
+    /** The current index of each context */
+    uint(size= 8) I[NB_CTX];
+    uint(size= 1) mPS[NB_CTX];
+    /** The current bit code */
+    uint(size=32) c;
+    /** The bit code counter */
+    uint(size= 8) cT;
+    /** The current interval */
+    uint(size=16) a;
+    /** The last byte read */
+    uint(size= 8) b;
+    /** The decoded symbol */
+    uint(size= 8) d;
+    bool          isRenormd;
+    /** Flag indicating if a marker has been found */
+    bool          isFinish;	
+	uint(size=16) nbData;
+/******************************************************************************
+ * procedure ByteIn
+ *****************************************************************************/
+	procedure ByteIn (uint(size=8) CD_p)
+	var
+		uint(size= 8) b_1T = b
+  	begin
+ 		cT     := 8;
+ 		nbData := nbData-1; 
+ 		b      := CD_p & 0xFF;
+		//println(b);
+ 		if b_1T = 0xFF then
+	 		if b > 0x8F then
+	 			isFinish := true;
+ 			else
+ 				c  := c + (0xFE00 - (b <<9));
+ 				cT := 7;
+ 			end
+ 		else
+ 			c  := c + (0xFF00 - (b << 8));
+ 		end
+ 	end
+/******************************************************************************
+ * MPS_EXCHANGE
+ *****************************************************************************/
+	procedure MPS_EXCHANGE () 
+ 	begin
+ 		if ( a < q ) then
+ 			d := 1 - mPS[ctx];
+ 			if SWITCH[index] = true then
+ 				mPS[ctx] := 1 - mPS[ctx];
+ 			end
+ 			I[ctx] := nLPS[index];
+ 		else
+ 		 	d      := mPS[ctx];
+ 		 	I[ctx] := nMPS[index];
+ 		end
+ 	end
+/******************************************************************************
+ * LPS_EXCHANGE
+ *****************************************************************************/
+ 	procedure LPS_EXCHANGE ()
+ 	begin
+ 		if ( a < q ) then
+ 		  	a      := q;
+ 		 	d      := mPS[ctx];
+	  		I[ctx] := nMPS[index];
+ 		else
+ 		  	a := q;
+ 			d := 1 - mPS[ctx];
+ 			if SWITCH[index] = true then
+ 				mPS[ctx] := 1 - mPS[ctx];
+ 			end
+  			I[ctx] := nLPS[index];
+ 		end
+ 	end
+/******************************************************************************
+ * RENORMD
+ *****************************************************************************/
+ 	procedure RENORMD () 
+ 	begin
+ 		a  := (a  << 1) & 0xFFFF;
+ 		c  := (c  << 1) & 0xFFFFFFFF;
+ 		cT := (cT  - 1) & 0xFF;
+ 	end
+
+/******************************************************************************
+ * RESET_CTX
+ *****************************************************************************/
+	RESET_CTX : action CTX:[CTX_p], NB_DATA:[nb_data] ==>
+	guard
+		CTX_p = START_CTX && nb_data != 0
+	do
+ 		nbData   := nb_data;
+ 		foreach uint(size=8) i in 0 .. NB_CTX - 1 do
+ 			I[i]   := MQ_INIT[i];
+ 			mPS[i] := 0;
+		end
+//		compare_init();
+	end
+	RESET_CTX_TermCodingPass : action CTX:[CTX_p], NB_DATA:[nb_data] ==>
+	guard
+		CTX_p = TermCodingPass_ctx && nb_data != 0
+	do
+ 		nbData   := nb_data;
+ 		foreach uint(size=8) i in 0 .. NB_CTX - 1 do
+ 			I[i]   := MQ_INIT[i];
+ 			mPS[i] := 0;
+		end
+//		compare_init();
+	end
+	CB_SKIP : action CTX:[CTX_p], NB_DATA:[nb_data] ==>
+	guard
+		(CTX_p & START_CTX) != 0 && CTX_p != FLUSH_ctx && nb_data = 0
+	end
+	INIT_DEC : action CTX:[CTX_p], NB_DATA:[nb_data] ==>
+	guard
+		CTX_p = INIT_DEC_ctx && nb_data != 0
+	do
+ 		nbData   := nb_data;
+	end
+/******************************************************************************
+ * INITDEC
+ *****************************************************************************/
+	INITDEC.sup1 : action CD:[CD_p] repeat 2 ==>
+	guard
+		nbData > 1
+	do
+ 		b        := 0;
+ 		c        := 0;
+ 		isFinish := false;
+		// Read first byte
+		ByteIn(CD_p[0]);
+        // Software conventions decoder
+        c  := (0xFF0000 - (b<<16)) & 0xFFFFFFFF;
+		// Read second byte
+		ByteIn(CD_p[1]);
+        c  := (c << 7) & 0xFFFFFFFF;
+        cT := cT - 7;
+        a  := 0x8000;
+	end
+	INITDEC.eq1 : action CD:[CD_p] ==>
+	guard
+		nbData = 1
+	do
+ 		b        := 0;
+ 		c        := 0;
+ 		isFinish := false;
+		// Read first byte
+		ByteIn(CD_p);
+        // Software conventions decoder
+        c  := (0xFF0000 - (b<<16)) & 0xFFFFFFFF;
+		// Read second byte
+		b  := 255;
+		//println(b);
+		cT := 8;
+		//
+        c  := (c << 7) & 0xFFFFFFFF;
+        cT := cT - 7;
+        a  := 0x8000;
+	end
+/******************************************************************************
+ * DECODE
+ *****************************************************************************/
+	DECODE : action CTX:[CTX_p] ==> D:[d]
+	guard
+		(CTX_p & START_CTX) = 0
+	var
+		uint(size=16)cHigh = (c >> 16) & 0xFFFF
+	do
+		ctx   := CTX_p;
+		index := I[ctx];
+		q     := QE_INIT[index];
+  		a     := a - q;
+  		isRenormd := false;
+  		if ( cHigh >= a ) then
+  			c := c - (a << 16);
+  			LPS_EXCHANGE();
+  			isRenormd := true;
+  		else
+  			if ((a & 0x8000) = 0) then
+	  			MPS_EXCHANGE();
+	  			isRenormd := true;
+  			else
+  				d := mPS[ctx];
+  			end
+  		end
+	end
+ /******************************************************************************
+ * BYTEIN_READ
+ *****************************************************************************/
+ 	BYTEIN.read: action CD:[CD_p] ==> 
+ 	guard
+ 		isRenormd = true && cT = 0 && isFinish = false && nbData > 0 
+ 	do
+ 		ByteIn(CD_p);
+ 		RENORMD();
+ 	end
+ /******************************************************************************
+ * BYTEIN_READ
+ *****************************************************************************/
+ 	BYTEIN.noread: action ==> 
+ 	guard
+ 		isRenormd = true && cT = 0 && (isFinish = true || nbData = 0)
+ 	do
+ 		cT := 8;
+ 		b  := 0xff;
+ 		//println(b);
+ 		RENORMD();
+ 	end
+ /******************************************************************************
+ * BYTEIN_NOREAD2
+ *****************************************************************************/
+ 	BYTEIN.noread2: action ==> 
+ 	guard
+ 		isRenormd = true && cT != 0
+ 	do
+ 		RENORMD();
+ 	end
+ /******************************************************************************
+ * LOOP_RENORMD
+ *****************************************************************************/
+ 	LOOP_RENORMD: action ==> 
+ 	guard
+ 		(a & 0x8000) = 0
+ 	end
+/******************************************************************************
+ * Compare
+ *****************************************************************************/
+ 	Compare: action ==>
+// 	var
+// 		uint(size=8)  tmp[8]
+ 	do
+		//println("ctx="+ctx+"  I(ctx)="+index+"  Qe="+q+"  a="+a+"  c="+((c>>4)&0xfffffff)+"  decision="+d);
+// 		tmp[0] := ((d<<7)+ctx) & 0x00ff;
+// 		tmp[1] := index  & 0x00ff;
+// 		tmp[2] := (q>>8) & 0x00ff;
+// 		tmp[3] := q & 0x00ff;
+// 		tmp[4] := (a>>8) & 0x00ff;
+// 		tmp[5] := a & 0x00ff;
+// 		tmp[6] := (c>>24) & 0x00ff;
+//		tmp[7] := (c>>16) & 0x00ff;
+//		compare_NBytes(tmp, 8);
+  	end
+/******************************************************************************
+ * CheckPredTerm
+ *****************************************************************************/
+	CheckPredTerm_a : action CTX:[CTX_p] ==>
+	guard
+		CTX_p = CheckPredTerm_ctx
+	end
+	CheckPredTerm1.a1 : action ==> D:[1]
+	guard
+		isFinish = false && nbData != 0 && (b != 0xff || cT != 0)
+	end
+	CheckPredTerm1.a2 : action ==> D:[0]
+	guard
+		cT = 1
+	end
+	CheckPredTerm1.a3 : action CD:[CD_p] ==> D:[1]
+	guard
+		cT = 0 && isFinish = false && nbData != 0 && CD_p <= 0x8f
+	do
+		b := CD_p;
+		//println(b);
+	end
+	CheckPredTerm2.a4 : action CD:[CD_p] ==>
+	guard
+		cT = 0 && isFinish = false && nbData != 0 && CD_p > 0x8f
+	do
+		b  := CD_p;
+		//println(b);
+		cT := 8;
+		a  := a - (0x8000 >> (cT-1));
+	end
+	CheckPredTerm2.a5 : action ==>
+	guard
+		cT != 0 || isFinish != false || nbData = 0
+	do
+		a := a - (0x8000 >> (cT-1));
+	end
+	CheckPredTerm_a6 : action ==> D:[1]
+	guard
+		(c >> 16) < a
+	end
+	CheckPredTerm_a7 : action ==> D:[0]
+	guard
+		(c >> 16) >= a
+	do
+		c := c - (a << 16);
+		a := (0x8000 >> (cT-1));
+	end
+/******************************************************************************
+ * Flush
+ *****************************************************************************/
+	FlushStart : action CTX:[CTX_p] ==>
+	guard
+		CTX_p = FLUSH_ctx
+	end
+	Flush : action CD:[CD_p] ==>
+	guard
+		nbData != 0
+	do
+	 	nbData := nbData-1; 
+	end
+	FlushEnd : action ==>
+	guard
+		nbData = 0
+	end
+/******************************************************************************
+ * Scheduler
+ *****************************************************************************/	
+	schedule fsm decode_st:
+		// wait Next Marker state
+		decode_st           (DECODE                  ) --> ByteRead_st;
+		decode_st           (RESET_CTX               ) --> initDec_st;
+		decode_st           (RESET_CTX_TermCodingPass) --> decode_st;
+		decode_st           (CB_SKIP                 ) --> decode_st;
+		decode_st           (INIT_DEC                ) --> initDec_st;
+		decode_st           (CheckPredTerm_a         ) --> CheckPredTerm_st;
+		decode_st           (FlushStart              ) --> Flush_st;
+		// initDec
+		initDec_st          (INITDEC                 ) --> decode_st;
+		// ByteRead
+		ByteRead_st         (BYTEIN                  ) --> endRenormd_st;
+		ByteRead_st         (Compare                 ) --> decode_st;
+		// endRenormd
+		endRenormd_st       (LOOP_RENORMD            ) --> ByteRead_st;
+		endRenormd_st       (Compare                 ) --> decode_st;
+		// CheckPredTerm
+		CheckPredTerm_st    (CheckPredTerm1          ) --> decode_st;
+		CheckPredTerm_st    (CheckPredTerm2          ) --> CheckPredTerm2_st;
+		CheckPredTerm2_st   (CheckPredTerm_a6        ) --> decode_st;
+		CheckPredTerm2_st   (CheckPredTerm_a7        ) --> endRenormd_st;
+		// Flush
+		Flush_st            ( Flush                  ) --> Flush_st;
+		Flush_st            ( FlushEnd               ) --> decode_st;
+	end
+/******************************************************************************
+ * Priority
+ *****************************************************************************/	
+	priority
+		LOOP_RENORMD > Compare;
+		BYTEIN > Compare;
+	end
+	
+end

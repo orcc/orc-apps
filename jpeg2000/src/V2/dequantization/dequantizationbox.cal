@@ -1,0 +1,194 @@
+package V2.dequantization;
+import  V2.common.commonPackage.*;
+// Numbers of Pages refer to JPEG2000 Image Coding System ISO/IEC 15444-1 : 2002 book 
+
+/******************************************************************************
+ * Actor description
+ *****************************************************************************/
+actor dequantizationbox()	uint(size=DATA_SIZE) Coeff, // sb | MSB page 11
+							uint(size=8) DeqCBInfo,
+							uint(size=8) DeqTileInfo 
+							==>
+							int(size=DATA_SIZE+1)	Rqb					  
+:
+/******************************************************************************
+ * Global variables
+ *****************************************************************************/
+    uint(size=8) 			Epsilonb[NB_COMPONENT_MAX+1][QCD_MAX];
+    uint(size=16) 			Mu[NB_COMPONENT_MAX+1][QCD_MAX];
+    uint(size=16) 			Mb[NB_COMPONENT_MAX+1][QCD_MAX];// page 113
+    uint(size=7)			SubbandCount		:=0;
+    uint(size=8)			NL                  :=0;
+    uint(size=8)			Csiz                :=0;
+    uint(size=8)			component			:=0;
+    uint(size=7)			sblevel				:=0;
+    uint(size=8)			Guard[NB_COMPONENT_MAX+1];
+    uint(size=COEFF_DATA_SIZE) 	 signbit		:=0; //sign of coefficients
+    uint(size=COEFF_DATA_SIZE-1) MSBCoeffValue	:=0; // unsigned coefficient value
+	bool 					rev[NB_COMPONENT_MAX+1]; // Reversibility indicator
+	uint(size=8) 			Range_pixels[NB_COMPONENT_MAX+1];
+	uint(size=2)			band				:=0;
+	uint(size=8)			Sqcd                :=0;
+/******************************************************************************
+ * GetCoeff actions
+ *****************************************************************************/
+    GetCoeff.default : action Coeff:[Coeff_p] ==>
+    guard
+    	(Coeff_p & COEFF_NEW_FLAG_MASK) = 0
+	do
+	    signbit	      := Coeff_p & COEFF_SIGN_BIT_MASK;
+	    MSBCoeffValue := Coeff_p & COEFF_ABS_VALUE_MASK;
+    end
+/******************************************************************************
+ * GetCoeff.isNewCB actions
+ *****************************************************************************/
+    GetCoeff.isNewCB : action Coeff:[Coeff_p],
+    						DeqCBInfo:[b_p, cb_w, cb_h, c, r, w, h]
+    						==>
+    						Rqb:[COEFF_NEW_CB_MASK]
+    guard
+    	Coeff_p = COEFF_NEW_CB_MASK
+    do
+		if b_p!=band then
+			sblevel    := sblevel+1;
+		end
+		band	       := b_p;		//type of quarter, 0LL 1HL 2LH 3HH
+		if component != c then
+			sblevel    := 0;
+		end
+		component      := c;
+		Mb[c][sblevel] := Guard[c]-1+Epsilonb[c][sblevel];
+    end
+/******************************************************************************
+ * GetCoeff.NewTile action
+ *****************************************************************************/
+    GetCoeff.isNewTile : action Coeff:[Coeff_p] ==> Rqb:[COEFF_NEW_TILE_MASK]
+	guard
+    	Coeff_p = COEFF_NEW_TILE_MASK
+	do
+		component := 0;
+		sblevel	  := 0;
+		band	  := 0;
+    end
+/******************************************************************************
+ * GetCoeff.NewPic action
+ *****************************************************************************/
+    GetCoeff.isNewPic : action 	Coeff:[Coeff_p],
+    							DeqTileInfo:[Csiz_p]
+    							==>
+       							Rqb:[COEFF_NEW_PIC_MASK] 						 
+	guard
+    	Coeff_p = COEFF_NEW_PIC_MASK
+	do
+		Csiz := Csiz_p;
+    end
+/******************************************************************************
+* GetInfoTile action
+*****************************************************************************/
+    GetInfoTile : action DeqTileInfo:[G_p,NL_p,R_p,reversible_p] ==>
+    guard
+		component != Csiz
+	do
+		Sqcd                    :=  G_p     & 0x1f;
+		Guard[component]	    := (G_p>>5) & 0x07;  // Guard page 39
+		NL          		    := 3 * NL_p + 1;     // levels number
+		Range_pixels[component] := R_p + 1;          // page 28, from 1 to 38
+  		SubbandCount            := 0;
+  		rev[component]	        := reversible_p = 1; //reversibility indicator, page 33
+    end
+    EndGetInfoTile : action ==>
+    guard
+		component = Csiz
+	do
+		component := 0;
+    end
+/******************************************************************************
+* GetInfoTileLoop, EndGetInfoTileLoop actions
+*****************************************************************************/
+    GetInfoTileLoop : action DeqTileInfo:[data_0, data_1] ==> // page 114, and page 39
+    guard 
+    	SubbandCount != NL
+    var
+    	uint(size=16) data = (data_0<<8)+data_1
+	do
+		if Sqcd = 0 then
+			Epsilonb[component][SubbandCount] := (data>>3)&0x01f;
+			Mu[component][SubbandCount]	      := 0;
+      	else 
+			Epsilonb[component][SubbandCount] := (data>>11)&0x01f;
+			Mu[component][SubbandCount]       :=  data & 0x7ff;
+      	end
+      	Mb[component][SubbandCount] := Guard[component]-1+Epsilonb[component][SubbandCount];
+   		SubbandCount                := SubbandCount + 1;
+    end
+    EndGetInfoTileLoop : action ==>
+    guard 
+    	SubbandCount = NL
+    do
+   		component := component + 1;
+    end    
+/******************************************************************************
+ * Rqb calculation, for irreversible transformation
+ *****************************************************************************/
+	RqbiCalc : action ==> Rqb:[Rqb_o]
+	guard 
+		rev[component]=false
+	var
+	     int(size=COEFF_DATA_SIZE)  qb,   // transform coefficient value (Equation E.2, page 113)
+	    uint(size=16) 			Rb,   // page 114
+	     int(size=DATA_SIZE+1)  Rqb_o,
+	    uint(size=32) 			Deltab, //page 113
+	    uint(size= 8) 			shifter
+	do
+		shifter   := (COEFF_DATA_SIZE-1)-Mb[component][sblevel];
+		if shifter != 0 then
+			shifter := shifter-1;
+		end
+		qb := MSBCoeffValue>>shifter;
+		Rb := Range_pixels[component]+band;
+		if band > 1 then // page 114
+			Rb := Rb -1;
+		end
+		Deltab := ((1<<11)+Mu[component][sblevel]);
+		Rqb_o  := ((Deltab*qb)>>(12+Epsilonb[component][sblevel]-Rb)); //16
+		if signbit != 0 then
+			Rqb_o := -Rqb_o;
+		end
+	end
+/******************************************************************************
+ * Rqb calculation, for reversible transformation
+ *****************************************************************************/
+	RqbrCalc : action ==> Rqb:[Rqb_o]
+    
+	guard 
+		rev[component]=true
+	var
+		 int(size=COEFF_DATA_SIZE) qb,    // transform coefficient value (Equation E.2, page 113)
+		 int(size=DATA_SIZE+1) Rqb_o
+	do
+		qb := MSBCoeffValue>>((COEFF_DATA_SIZE-1)-Mb[component][sblevel]);
+		if signbit != 0 then
+			Rqb_o := -qb;
+		else
+			Rqb_o := qb;
+		end
+	end
+/******************************************************************************
+ * Finite-state machine
+ *****************************************************************************/
+	schedule fsm Get_Coeff_st:
+		Get_Coeff_st		  ( GetCoeff.default   ) --> Taken_Coeff_st;
+		Get_Coeff_st		  ( GetCoeff.isNewCB   ) --> Get_Coeff_st;
+		Get_Coeff_st		  ( GetCoeff.isNewTile ) --> Get_Info_Tile_st;
+		Get_Coeff_st		  ( GetCoeff.isNewPic  ) --> Get_Coeff_st;
+		//
+		Get_Info_Tile_st	  ( GetInfoTile        ) --> Get_Info_Tile_Loop_st;
+		Get_Info_Tile_st	  ( EndGetInfoTile     ) --> Get_Coeff_st;
+		//
+		Get_Info_Tile_Loop_st ( GetInfoTileLoop    ) --> Get_Info_Tile_Loop_st;
+		Get_Info_Tile_Loop_st ( EndGetInfoTileLoop ) --> Get_Info_Tile_st;
+		//
+		Taken_Coeff_st  	  ( RqbrCalc           ) --> Get_Coeff_st;
+		Taken_Coeff_st  	  ( RqbiCalc           ) --> Get_Coeff_st;
+	end
+end
