@@ -158,7 +158,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=32) neighChromaIdxOff;
 	uint(size=7)  neighbBlkSz;
 
-	uint(size=8) result[3][64][64];
+	uint(size=8) lumaComp[64][64];
+	uint(size=8) chrComp[2][32][32];
 	uint(size=9) numBlkToSend;
 	uint(size=9) idxBlk;
 
@@ -420,9 +421,15 @@ actor IntraPrediction(bool EnabSkipInPix)
 		do
 			foreach uint x in 0 .. nS-1
 			do
-				result[cIdx][x][y] := ((nS-1-x)*pNeighb[LEFT][y+1] +
-					(x+1)*pUpRight + (nS-1-y)*pNeighb[ABOVE][x+1] +
-					(y+1)*pBottomLeft + nS) >> (log2NS+1);
+				if(cIdx = 0) then
+					lumaComp[x][y] := ((nS-1-x)*pNeighb[LEFT][y+1] +
+						(x+1)*pUpRight + (nS-1-y)*pNeighb[ABOVE][x+1] +
+						(y+1)*pBottomLeft + nS) >> (log2NS+1);
+				else
+					chrComp[cIdx-1][x][y] := ((nS-1-x)*pNeighb[LEFT][y+1] +
+						(x+1)*pUpRight + (nS-1-y)*pNeighb[ABOVE][x+1] +
+						(y+1)*pBottomLeft + nS) >> (log2NS+1);
+				end
 			end
 		end
 	end
@@ -447,22 +454,22 @@ actor IntraPrediction(bool EnabSkipInPix)
 		if(cIdx=0) then // Luma component
 			minVal := if(nS>16) then 0 else 1 end;
 			if(nS<=16) then
-				result[cIdx][0][0] := (pNeighb[LEFT][0+1] + 2*dcVal +
+				lumaComp[0][0] := (pNeighb[LEFT][0+1] + 2*dcVal +
 					pNeighb[ABOVE][0+1] + 2)>>2;
 				foreach uint x in 1 .. nS-1
 				do
-					result[cIdx][x][0] := (pNeighb[ABOVE][x+1] + 3*dcVal + 2)>>2;
+					lumaComp[x][0] := (pNeighb[ABOVE][x+1] + 3*dcVal + 2)>>2;
 				end
 				foreach uint y in 1 .. nS-1
 				do
-					result[cIdx][0][y] := (pNeighb[LEFT][y+1] + 3*dcVal + 2)>>2;
+					lumaComp[0][y] := (pNeighb[LEFT][y+1] + 3*dcVal + 2)>>2;
 				end
 			end
 			foreach uint y in minVal .. nS-1
 			do
 				foreach uint x in minVal .. nS-1
 				do
-					result[cIdx][x][y] := dcVal;
+					lumaComp[x][y] := dcVal;
 				end
 			end
 		else // Chroma component
@@ -470,7 +477,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 			do
 				foreach uint x in 0 .. nS-1
 				do
-					result[cIdx][x][y] := dcVal;
+					chrComp[cIdx-1][x][y] := dcVal;
 				end
 			end
 		end
@@ -518,12 +525,22 @@ actor IntraPrediction(bool EnabSkipInPix)
 					iFact := ((y+1)*intraPredAngle[angle])&31;
 					foreach uint x in 0 .. nS-1
 					do
-						if(iFact!=0) then
-							result[cIdx][x][y] :=
-								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
-								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						if(cIdx = 0) then
+							if(iFact!=0) then
+								lumaComp[x][y] :=
+									((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+									iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							else
+								lumaComp[x][y] := refMain[x+iIdx+1 +OFFSET];
+							end
 						else
-							result[cIdx][x][y] := refMain[x+iIdx+1 +OFFSET];
+							if(iFact!=0) then
+								chrComp[cIdx-1][x][y] :=
+									((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+									iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							else
+								chrComp[cIdx-1][x][y] := refMain[x+iIdx+1 +OFFSET];
+							end
 						end
 					end
 				end
@@ -534,12 +551,22 @@ actor IntraPrediction(bool EnabSkipInPix)
 					iFact := ((y+1)*intraPredAngle[angle])&31;
 					foreach uint x in 0 .. nS-1
 					do
-						if(iFact!=0) then
-							result[cIdx][y][x] :=
-								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
-								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						if(cIdx = 0) then
+							if(iFact!=0) then
+								lumaComp[y][x] :=
+									((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+									iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							else
+								lumaComp[y][x] := refMain[x+iIdx+1 +OFFSET];
+							end
 						else
-							result[cIdx][y][x] := refMain[x+iIdx+1 +OFFSET];
+							if(iFact!=0) then
+								chrComp[cIdx-1][y][x] :=
+									((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+									iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							else
+								chrComp[cIdx-1][y][x] := refMain[x+iIdx+1 +OFFSET];
+							end
 						end
 					end
 				end
@@ -560,7 +587,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 				if(minVal!=0) then
 					foreach uint y in 0 .. nS-1
 					do
-						result[cIdx][0][y] := clip_i32(pNeighb[ABOVE][0+1]+
+						lumaComp[0][y] := clip_i32(pNeighb[ABOVE][0+1]+
 							((pNeighb[LEFT][y+1]-pNeighb[ABOVE][0])>>1), 0, 255);
 					end
 				end
@@ -568,14 +595,14 @@ actor IntraPrediction(bool EnabSkipInPix)
 				do
 					foreach uint y in 0 .. nS-1
 					do
-						result[cIdx][x][y] := pNeighb[ABOVE][x+1];
+						lumaComp[x][y] := pNeighb[ABOVE][x+1];
 					end
 				end
 			else
 				if(minVal!=0) then
 					foreach uint x in 0 .. nS-1
 					do
-						result[cIdx][x][0] := clip_i32(pNeighb[LEFT][0+1]+
+						lumaComp[x][0] := clip_i32(pNeighb[LEFT][0+1]+
 							((pNeighb[ABOVE][x+1]-pNeighb[ABOVE][0])>>1), 0, 255);
 					end
 				end
@@ -583,7 +610,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 				do
 					foreach uint y in minVal .. nS-1
 					do
-						result[cIdx][x][y] := pNeighb[LEFT][y+1];
+						lumaComp[x][y] := pNeighb[LEFT][y+1];
 					end
 				end
 			end
@@ -593,9 +620,9 @@ actor IntraPrediction(bool EnabSkipInPix)
 				foreach uint y in 0 .. nS-1
 				do
 					if(neighbIdx=0) then
-						result[cIdx][x][y] := pNeighb[ABOVE][x+1];
+						chrComp[cIdx-1][x][y] := pNeighb[ABOVE][x+1];
 					else
-						result[cIdx][y][x] := pNeighb[LEFT][x+1];
+						chrComp[cIdx-1][y][x] := pNeighb[LEFT][x+1];
 					end
 				end
 			end
@@ -850,13 +877,13 @@ actor IntraPrediction(bool EnabSkipInPix)
 			 */
 			off := [(treeAddr[i]>>1)&2: for int i in 0 .. 1];
 			if(off[0]!=0 || off[1]!=0) then
-				foreach uint comp in 1 .. 2
+				foreach uint comp in 0 .. 1
 				do
 					foreach int y in 0 .. 1
 					do
 						foreach int x in 0 .. 1
 						do
-							result[comp][x][y] := result[comp][x+off[0]][y+off[1]];
+							chrComp[comp][x][y] := chrComp[comp][x+off[0]][y+off[1]];
 						end
 					end
 				end
@@ -918,19 +945,19 @@ actor IntraPrediction(bool EnabSkipInPix)
 		do
 			foreach uint x in blkAddr[0] .. blkAddr[0]+3
 			do
-				sampleVal[idxSample] := result[0][x][y];
+				sampleVal[idxSample] := lumaComp[x][y];
 				idxSample := idxSample + 1;
 			end
 		end
 		blkAddr[0] := blkAddr[0]>>1;
 		blkAddr[1] := blkAddr[1]>>1;
-		foreach uint comp in 1 .. 2
+		foreach uint comp in 0 .. 1
 		do
 			foreach uint y in blkAddr[1] .. blkAddr[1]+1
 			do
 				foreach uint x in blkAddr[0] .. blkAddr[0]+1
 				do
-					sampleVal[idxSample] := result[comp][x][y];
+					sampleVal[idxSample] := chrComp[comp][x][y];
 					idxSample := idxSample + 1;
 				end
 			end
