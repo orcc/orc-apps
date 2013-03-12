@@ -63,14 +63,15 @@ package devel.org.sc29.wg11.mpegh.part2.common;
 import  org.sc29.wg11.common.BitstreamReadUtils.*;
 
 
-actor padding () uint LENGTH, uint(size=8) DATA ==> uint (size=8) OUT, uint NEWLENGTH:
+actor padding () uint(size=64) LENGTH, uint(size=8) DATA ==> uint (size=8) OUT, uint NEWLENGTH:
 
-	uint length;
-	uint new_len;
-	uint counter:=0;
+	uint(size=64) length;
+	uint(size=64) new_len;
+	uint(size=64) counter:=0;
 	
-	computeNewLength: action LENGTH : [length] ==> NEWLENGTH:[new_len]
+	computeNewLength: action LENGTH:[len] ==> NEWLENGTH:[new_len]
 	do
+	    length  := len;
 		new_len := (length << 3) + 1;
 		while ((new_len & 511)!=448) do
 			new_len := new_len + 1;
@@ -87,7 +88,7 @@ actor padding () uint LENGTH, uint(size=8) DATA ==> uint (size=8) OUT, uint NEWL
 	
 	copyData: action DATA:[i] ==> OUT:[i]
 	do
-		counter := counter +1;
+        counter := counter +1;
 	end
 	
 	endCopy: action ==> OUT:[128] // padding "10000000"
@@ -99,29 +100,34 @@ actor padding () uint LENGTH, uint(size=8) DATA ==> uint (size=8) OUT, uint NEWL
 	
 	zeroPadding: action ==> OUT:[0]
 	do
-		counter := counter +1;
+		counter := counter + 1;
 	end
 	
-	endZeroPadding: action ==> OUT:[chunkedLength] repeat 4
+	endZeroPadding: action ==> OUT:[chunkedLength] repeat 8
 	guard
-		counter = (new_len+8)-(length + 5) // new + 8 bytes to get in bits a multiple of 512 // length + 1 (128) + 4 (32 bits for the length)
+		counter = (new_len+8)-(length + 9) // new + 8 bytes to get in bits a multiple of 512 // length + 1 (128) + 8 (64 bits for the length)
 	var
-		List (type : uint, size = 4) chunkedLength
+		uint(size= 8) chunkedLength[8],
+		uint(size=64) length_tmp = length<<3
 	do
 		 counter := 0; // reset counter
-		 //send length of 32 bits in a set of 4 bytes
-		 chunkedLength [0] := length >> 24;
-		 chunkedLength [1] := (length >> 16) & 255;
-		 chunkedLength [2] := (length >> 8) & 255;
-		 chunkedLength [3] := length & 255;
+         //send length of 64 bits in a set of 8 bytes
+         chunkedLength [7] := (length_tmp >> 56) & 255;
+         chunkedLength [6] := (length_tmp >> 48) & 255;
+         chunkedLength [5] := (length_tmp >> 40) & 255;
+         chunkedLength [4] := (length_tmp >> 32) & 255;
+         chunkedLength [3] := (length_tmp >> 24) & 255;
+         chunkedLength [2] := (length_tmp >> 16) & 255;
+         chunkedLength [1] := (length_tmp >>  8) & 255;
+         chunkedLength [0] := (length_tmp >>  0) & 255;
 	end
 	
 	schedule fsm initLength:
-		initLength (computeNewLength) --> copy;
-		copy(copyData)-->copy;
-		copy(endCopy)-->padding;
-		padding(zeroPadding)-->padding;
-		padding(endZeroPadding)-->initLength;
+		initLength ( computeNewLength ) --> copy;
+		copy       ( copyData         ) --> copy;
+		copy       ( endCopy          ) --> padding;
+		padding    ( zeroPadding      ) --> padding;
+		padding    ( endZeroPadding   ) --> initLength;
 	end
 	
 	priority
