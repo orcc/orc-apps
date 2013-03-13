@@ -23,6 +23,7 @@ actor Algo_Parser ()
 				uint(size= 4) PartMode,
 				uint(size=16) PictSize,
 				uint(size=16) Poc,
+				 int(size= 9) SaoSe,
 				uint(size= 8) SEI_MD5,
 				uint(size= 2) SliceType,
 				bool          SplitTransform,
@@ -1226,7 +1227,7 @@ actor Algo_Parser ()
 	end
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 63)/64, (pictSize[1] + 63)/64], 
-		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT]
+		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT], SaoSe:[slice_sample_adaptive_offset_flag[0], slice_sample_adaptive_offset_flag[1]]
 	guard
 		se_idx = 1 and isFifoFull(fifo)
 	var
@@ -1254,6 +1255,11 @@ actor Algo_Parser ()
 		pps_id := res[0];
 		sps_id := pps_sps_id[pps_id];
 		dependent_slice_segment_flag := pps_dependent_slice_segments_enabled_flag[pps_id];
+
+        slice_sample_adaptive_offset_flag[0] := 0;
+        slice_sample_adaptive_offset_flag[1] := 0;
+        slice_sample_adaptive_offset_flag[2] := 0;
+
 		if first_slice_segment_in_pic_flag = 0 then
 			if (pps_dependent_slice_segments_enabled_flag[pps_id] = 1) then
 				vld_u_name(  1, fifo, res, "dependent_slice_segment_flag                    ");
@@ -1899,7 +1905,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SaoParam.start
 	 *************************************************************************/	
-	read_SaoParam.start : action ==>
+	read_SaoParam.start : action ==> SaoSe:[sao_merge]
 	guard
 		sao_idx = 1 and isFifoFull(fifo)
 	var
@@ -1909,7 +1915,8 @@ actor Algo_Parser ()
 		bool		  upCtbInSlice,
 		bool		  upCtbInTile,
 		uint(size= 1) sao_merge_left_flag	:= 0,
-		uint(size= 1) sao_merge_up_flag		:= 0
+		uint(size= 1) sao_merge_up_flag		:= 0,
+		 int(size= 9) sao_merge             := SAO_NO_MERGE
 	do
 		if sao_rx > 0 then
 			leftCtbInSlice := CtbAddrInSlice > 0;
@@ -1917,6 +1924,7 @@ actor Algo_Parser ()
 			if leftCtbInSlice and leftCtbInTile then
 				get_SAO_MERGE_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 				sao_merge_left_flag := res[0];
+				sao_merge           := SAO_MERGE_LEFT;
 			end
 		end
 		if sao_ry > 0 and sao_merge_left_flag = 0 then
@@ -1925,6 +1933,7 @@ actor Algo_Parser ()
 			if upCtbInSlice and upCtbInTile then
 				get_SAO_MERGE_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 				sao_merge_up_flag := res[0];
+                sao_merge         := SAO_MERGE_UP;
 			end
 		end
 		sao_idx  := 2;
@@ -1938,19 +1947,29 @@ actor Algo_Parser ()
 	 * read_SaoParam.loop
 	 *************************************************************************/	
 	uint(size= 8) sao_typeIdx;
-	read_SaoParam.loop : action ==>
-	guard
-		sao_idx  = 2 and isFifoFull(fifo),
-		sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
-	var
-		uint(size= 8) offsetTh = (1<<3)-1,
-		 int(size=16) offset[4],
-		 int(size=32) res[1] := [0]
-	do
-		if sao_cIdx != 2 then
-			get_SAO_TYPE_IDX(codIRange, codIOffset, ctxTable, fifo, res);
-			sao_typeIdx := res[0];
+    read_SaoParam.loop1 : action ==> SaoSe:[sao_typeIdx]
+    guard
+        sao_idx  = 2 and isFifoFull(fifo),
+        sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
+    var
+         int(size=32) res[1]
+    do
+        if sao_cIdx != 2 then
+            sao_typeIdx := 0;
+            get_SAO_TYPE_IDX(codIRange, codIOffset, ctxTable, fifo, res);
+            sao_typeIdx := res[0];
         end
+        sao_idx := 3;
+    end
+	read_SaoParam.loop2 : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo]
+	guard
+		sao_idx  = 3 and isFifoFull(fifo)
+	var
+		uint(size= 8) offsetTh   = (1<<3)-1,
+		 int(size= 9) offset[4] := [0, 0, 0, 0],
+		 int(size= 9) sao_eo    := 0,
+		 int(size=32) res[1]    := [0]
+	do
 		if sao_typeIdx != SAO_NOT_APPLIED then
 			foreach int i in 0 .. 3 do
 				get_SAO_OFFSET_ABS(offsetTh, codIRange, codIOffset, fifo, res);
@@ -1969,10 +1988,12 @@ actor Algo_Parser ()
 			else
 				if sao_cIdx != 2 then
 					get_SAO_EO(codIRange, codIOffset, fifo, res);
+					sao_eo := res[0];
 				end
 			end
 		end 
 		sao_cIdx := sao_cIdx + 1;
+        sao_idx  := 2;
 	end
 	read_SaoParam.nextLoop : action ==>
 	guard
