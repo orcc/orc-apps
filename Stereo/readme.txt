@@ -56,7 +56,7 @@ void source_init1() {
 
 into source.c
 
-4. Add -i ../imL.PPM -m ../imR.PPM into Commands Arguments
+4. Add -i ../data/imL.PPM -m ../data/imR.PPM into Commands Arguments
 
 5. In the function of initialize_instances()
 For two images left and right
