@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, EPFL
+ * Copyright (c) 2013, EPFL
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -26,91 +26,59 @@
  * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
- 
-// Author: Endri Bezati <endri.bezati@epfl.ch>
+package jpeg.encoder.common;
 
-package jpeg.encoder.hw;
+actor EndOfStream(int nbFramesToEncode)
+	uint(size=8) In
+		==>
+			uint(size=8) Out,
+			bool pEOF:
 
-import jpeg.encoder.common.Tables.QT;
-import jpeg.encoder.common.Tables.zigzag;
-import jpeg.encoder.common.Tables.DivTab;
-
-actor Quantization()
-	int(size=32) In
-		==> 
-			int(size=32) Out:		
-	int Block_Type := 0; // Block_Type = 0,1,2,3 (Luma), Block_Type = 4,5 (Chroma)
+	int frames := 1;
 	
-	int data[64];
 	
-	int Counter := 0;
-	
-	read: action In:[token] ==>
-	do
-		data[Counter] := token;
-		Counter := Counter + 1;
-	end
-	
-	finish: action ==>
+	startMarker: action In:[token] ==> Out:[token],pEOF:[false]
 	guard
-		Counter = 64
-	do
-		Counter := 0;
+		token = 0xFF
 	end
 	
-	int divTab;
-	int dataCounter;
-	bool negative := false;
+	notStartMarker: action In:[token] ==> Out:[token],pEOF:[false]
+	guard
+		token != 0xFF
+	end	
 	
-	send: action ==> 
-	var
-		int qt
-	do
-		qt := QT[Block_Type >> 2][Counter];
-		dataCounter := data[zigzag[Counter]];
-		if dataCounter > 0 then
-			dataCounter := dataCounter + (qt >> 2);
-			negative := false;
-		else 
-			dataCounter := -(dataCounter - (qt >> 2));
-			negative := true;
-		end
-		divTab := DivTab[qt - 1];
+	
+	noEof: action In:[token] ==> Out:[token], pEOF:[false]
+	guard
+		 token != 0xD9
 	end
 	
 	
-	
-	division: action ==> Out:[out]
-	var
-		int out
-	do
-		out := (dataCounter * divTab) >> 16;
-		if negative then
-			out := -out;
-		end
-		Counter := Counter + 1;
-	end
-		
-	changeBlock: action ==>
-	do
-		Block_Type := (Block_Type + 1);
-		if Block_Type = 6 then
-			Block_Type := 0;
-		end
+	eofFinal: action In:[token] ==> Out:[token], pEOF:[false]
+	guard
+		token = 0xD9 and frames = nbFramesToEncode
 	end
 	
+	
+	eofNextImage: action In:[token] ==> Out:[token], pEOF:[false]
+	guard
+		token = 0xD9 and frames != nbFramesToEncode
+	do
+		frames := frames + 1;
+	end
+	
+	eofTrue:action ==> pEOF:[true]
+	end
 	
 	schedule fsm s0:
-		s0	(read)	--> s0;
-		s0	(finish)	--> s1;
-		s1	(send)	--> division;
-		division (division) -->s1;
-		s1	(finish)	--> s2;
-		s2	(changeBlock)	--> s0;
+		s0	(startMarker)		--> s1;
+		s0	(notStartMarker)	--> s0;
+		
+		s1	(noEof)				--> s0;
+		s1	(eofNextImage)		--> s0;
+		s1	(eofFinal)			--> s2;
+		
+		s2	(eofTrue)			--> s0;
 	end
-	
-	priority
-		finish > read;
-		finish > send;
-	end
+				
 end
