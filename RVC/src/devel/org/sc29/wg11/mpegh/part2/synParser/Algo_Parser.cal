@@ -39,7 +39,6 @@ actor Algo_Parser ()
 				 int(size=16) RefPoc,
 				uint(size=3)  ColocInfo,
 				 int(size=16) MvPredSyntaxElem,
-				 int (size= 8) Qp,
 				 bool Cbf
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -2297,10 +2296,10 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_CodingUnit_gotoPredictionUnit.goto1
 	 *************************************************************************/
-	read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5,
-		 PartMode:[PART_2Nx2N], SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, 0, 0, 0, //luma
-		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, 0, 0,	//cb
-		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, 0, 0] //cr
+	read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, Cbf :[false],
+		 PartMode:[PART_2Nx2N], SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
+		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,	//cb
+		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
 	guard 
 		cu_idx = 2,
 		skip_flag != 0
@@ -2608,9 +2607,10 @@ actor Algo_Parser ()
 		end
 	end
 
-	read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, 0, 0, 0, //luma
-		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, 0, 0,	//cb
-		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, 0, 0] //cr
+	read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
+		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,	//cb
+		 														1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr 
+		 														Cbf:[false] 
 	guard 
 		cu_idx = 11
 	do
@@ -2979,7 +2979,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_TransformTree_gotoTransformUnit
 	 *************************************************************************/
-	read_TransformTree_gotoTransformUnit : action ==>
+	read_TransformTree_gotoTransformUnit : action ==> Cbf:[cbf_luma = 1]
 	guard
 		ttStack[ttStack_idx][TT_idx] = 2
 	do
@@ -3087,8 +3087,7 @@ actor Algo_Parser ()
 		rc_y0 				:= tu_y0;
 		rc_log2TrafoSize	:= tu_log2TrafoSize;
 		rc_scanIdx			:= getScanIdx(predMode, tu_log2TrafoSize, cur_intra_pred_mode);
-		rc_cIdx				:= 0;
-		rc_TType			:= TEXT_LUMA;
+		rc_cIdx				:= TEXT_LUMA;
 		if cbf_luma = 1 then
 			tu_idx 			:= 2;
 		end
@@ -3108,8 +3107,7 @@ actor Algo_Parser ()
 		tu_idx 				:= 5;
 		rc_log2TrafoSize	:= tu_log2TrafoSize;
 		rc_scanIdx			:= getScanIdx(predMode, rc_log2TrafoSize, intra_pred_mode_c);
-		rc_cIdx				:= 1;
-		rc_TType			:= TEXT_CHROMA_U;						
+		rc_cIdx				:= TEXT_CHROMA_U;						
 		if tu_log2TrafoSize > 2 then
 			tu_idx 				:= 10;  // skipResidualCoding
 			rc_x0 				:= tu_x0;
@@ -3140,8 +3138,7 @@ actor Algo_Parser ()
 		uint(size=16) cbf_yBase			= tu_yBase & ((1<<tu_log2TrafoSize)-1)
 	do	
 		tu_idx	 := 7;
-		rc_cIdx	 := 2;
-		rc_TType := TEXT_CHROMA_V;						
+		rc_cIdx	 := TEXT_CHROMA_V;						
 		if tu_log2TrafoSize > 2 then
 			tu_idx	 			:= 12;  // skipResidualCoding
 			rc_log2TrafoSize	:= tu_log2TrafoSize - 1;
@@ -3167,7 +3164,7 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_TransformUnit.skipResidualCoding
 	 *************************************************************************/
-	read_TransformUnit.skipResidualCoding : action ==> TUSize:[1<<rc_log2TrafoSize, 2, 0, 0, 0, 0, 0]
+	read_TransformUnit.skipResidualCoding : action ==> TUSize:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0]
 	guard 
 		tu_idx = 8 or tu_idx = 10 or tu_idx = 12
 	do	
@@ -3195,7 +3192,6 @@ actor Algo_Parser ()
 	uint(size= 8) rc_log2TrafoSize;
 	uint(size= 8) rc_scanIdx;
 	uint(size= 8) rc_cIdx;
-	uint(size= 4) rc_TType;
 	//
 	uint(size= 8) ScanOrder[4][3][(BLW_WIDTH_MAX/4)*(BLW_HEIGHT_MAX/4)][2];
 	uint(size= 8) significant_coeff_flag_idx[16];
@@ -3214,7 +3210,7 @@ actor Algo_Parser ()
 	read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag,
 											slice_qp,
 											rc_cIdx,
-											if rc_cIdx = 1 then
+											if rc_cIdx = TEXT_CHROMA_U then
 												pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
 	         								else
 												pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
@@ -3229,12 +3225,12 @@ actor Algo_Parser ()
 		 int(size=16) yC := -1,
 		 int sz = 1 << rc_log2TrafoSize,
 		 uint(size=1) transform_skip_flag,
-		 uint(size=1) isDST = if (predMode = INTRA and rc_TType = TEXT_LUMA and sz = 4) then 1 else 0 end
+		 uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
 	do	
 		if DEBUG_CABAC and DEBUG_TRACE1 then
-			println("read_ResidualCoding.start "+if rc_TType = TEXT_LUMA then "cbY" elsif rc_TType = TEXT_CHROMA_U then "cbU" else "cbV" end+"("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
+			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end+"("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
 		elsif DEBUG_CABAC then
-			println("read_ResidualCoding.start "+if rc_TType = TEXT_LUMA then "cbY" elsif rc_TType = TEXT_CHROMA_U then "cbU" else "cbV" end);
+			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end);
 		end
 		foreach int i in 0 .. sz * sz - 1 do
 			tabTransCoeffLevel[i] := 0;
@@ -3242,7 +3238,7 @@ actor Algo_Parser ()
 		coded_sub_block_flag := [[0	: for int j in 0 .. 7]	: for int i in 0 .. 7];
 		if pps_transform_skip_enabled_flag[pps_id] = 1 and cu_transquant_bypass_flag = 0 and
 			rc_log2TrafoSize = 2 then
-			get_TRANSFORM_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, rc_TType);
+			get_TRANSFORM_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, rc_cIdx);
 			transform_skip_flag := res[0];
 		else
 			transform_skip_flag := 0;
