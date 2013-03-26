@@ -1,7 +1,8 @@
+// Native functions to be used with the embedded_tx applications
+
 #include <stdio.h>
 #include <stdlib.h>
 
-//char input_fn[] = "tx_stream.in";
 extern char *input_file;
 FILE *input = NULL;
 
@@ -92,11 +93,13 @@ void throw_away(int value)
 	fprintf(output, "%i\n", value);		
 }
 
+
 void print_cyclecount()
 {
 	close_all();
 	exit(0);
 }
+
 
 void display_checksum(int sum)
 {
