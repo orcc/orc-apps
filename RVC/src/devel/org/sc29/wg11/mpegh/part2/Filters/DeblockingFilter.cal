@@ -37,7 +37,8 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	uint(size=2)  IsPicSlcLcu,
 	uint(size=16) PicSize,
 	int (size=8)  Qp,
-	uint(size=8)  SampleIn
+	uint(size=8)  SampleIn,
+	bool DBFDisable
 		==>
 	uint(size=8)  FiltSample
 		:
@@ -82,6 +83,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	int (size=16) yAddrHor;	
 	uint(size=16) pixAddr[2];
 	uint(size=9)  blkIdx := 0;
+	bool FLAG := false;
 
 	uint(size=8)  pictureBuffer[3][PICT_WIDTH][PICT_HEIGHT];
 	int (size=8)  qpTab[PICT_WIDTH/4][2*64/4];
@@ -360,15 +362,18 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		end
 	end
 
-	isNewSlc: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix, picHeightInPix] ==>
+	isNewSlc: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix, picHeightInPix], DBFDisable:[disableFlag]==>
 	guard
 		isNewPicSlcLcu = NEW_SLC
+	do
+		FLAG := disableFlag;
 	end
 
-	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix, picHeightInPix] ==>
+	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix, picHeightInPix], DBFDisable:[disableFlag] ==>
 	guard
 		isNewPicSlcLcu = NEW_PIC
 	do
+		FLAG := disableFlag;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
 		picSizeInCu[0] := (picWidthInPix+63)/64;
@@ -720,23 +725,36 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	guard
 		yIdxSamp = picSizeInCu[1]
 	end
+	
+	checkFlagDBF.skip: action  ==>
+	guard
+		FLAG = true
+	end
+	
+	checkFlagDBF.filter: action  ==>
+	guard
+		FLAG = false
+	end
 
 	schedule fsm IsNewPict:
 		IsNewPict (isNewPict )--> GetCuPix;
 
 		GetCuPix  (isNewSlc                          )--> GetCuPix;
-		GetCuPix  (getCuPix.launch.pict              )--> FilterEdges;
+		GetCuPix  (getCuPix.launch.pict              )--> checkFlagDBF;
 		GetCuPix  (getCuPix.launch.lastColOrRow.vert )--> GetBlk;
 		GetCuPix  (getCuPix.launch.lastColOrRow.hor  )--> GetBs4Blk;
 		GetCuPix  (getCuPix.done                     )--> SendSamples;
+		
+		checkFlagDBF (checkFlagDBF.skip) --> GetCuPix;
+		checkFlagDBF (checkFlagDBF.filter) --> FilterEdges;
 
 		GetBlk (getBlk.launch )--> GetBlk;
 		GetBlk (getBlk.skip   )--> GetBlk;
-		GetBlk (getBlk.done   )--> FilterEdges;
+		GetBlk (getBlk.done   )--> checkFlagDBF;
 
 		GetBs4Blk (getBs4Blk.launch )--> GetBs4Blk;
 		GetBs4Blk (getBs4Blk.skip   )--> GetBs4Blk;
-		GetBs4Blk (getBs4Blk.done   )--> FilterEdges;
+		GetBs4Blk (getBs4Blk.done   )--> checkFlagDBF;
 
 		FilterEdges (filterEdges  )--> CheckEdgeFiltered;
 
