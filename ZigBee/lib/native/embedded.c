@@ -3,9 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+int source_packets = 0;
 extern char *input_file;
 FILE *input = NULL;
 
+int sink_packets = 0;
 char *output_fn = "tx_stream.out";
 FILE *output = NULL;
 
@@ -49,22 +51,25 @@ void source_init()
 
 int source_sizeOfFile()
 {
-	int len = 0;
-	int ret_val = -1;
+	int ret_val;
+	int sample;
 
-	if(input != NULL)
+	ret_val = fscanf(input, "%i\n", &sample);
+
+	if(ret_val != 1)
 	{
-		while(!feof(input))
-		{
-			char array[BUF_SZ];
-			fgets(array, BUF_SZ, input);
-			len++;
-		}
-
-		fseek(input, 0, SEEK_SET);	
+		// a not-so-nice way to finish execution
+		// when the packet has been read and no 
+		// new packet is available anymore,
+		// 1 is returned. 1 is an invalid
+		// packet size that leaves headerAdd
+		// in an undefined state
+		return 1;
 	}
 
- 	return len;
+	source_packets ++;
+
+	return sample;
 }
 
 unsigned char source_readByte()
@@ -76,9 +81,9 @@ unsigned char source_readByte()
 
 	if(ret_val != 1)
 	{
-		printf("Unable to read a sample from the input\nExit\n");
 		close_all();
 		exit(0);
+		return 0;
 	}
 
 	return (unsigned char) sample;
@@ -96,8 +101,13 @@ void throw_away(int value)
 
 void print_cyclecount()
 {
-	close_all();
-	exit(0);
+	sink_packets ++;
+
+	if(sink_packets == source_packets)
+	{
+		close_all();
+		exit(0);
+	}
 }
 
 
