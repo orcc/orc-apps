@@ -3,13 +3,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int source_packets = 0;
+// these are defined in orcc_util.c
 extern char *input_file;
-FILE *input = NULL;
+extern char *write_file;
 
-int sink_packets = 0;
-char *output_fn = "tx_stream.out";
+FILE *input = NULL;
 FILE *output = NULL;
+
+int source_packets = 0;
+int sink_packets = 0;
 
 void close_input()
 {
@@ -37,13 +39,16 @@ void close_all()
 
 void source_init()
 {
-	input = fopen(input_file, "r");
-
 	if(input == NULL)
 	{
-		printf("Unable to open file %s\nExit\n", input_file);
-		close_all();
-		exit(0);
+		input = fopen(input_file, "r");
+
+		if(input == NULL)
+		{
+			printf("Unable to open file %s\nExit\n", input_file);
+			close_all();
+			exit(0);
+		}
 	}
 }
 
@@ -83,7 +88,6 @@ unsigned char source_readByte()
 	{
 		close_all();
 		exit(0);
-		return 0;
 	}
 
 	return (unsigned char) sample;
@@ -93,7 +97,7 @@ unsigned char source_readByte()
 void throw_away(int value)
 {
 	if(output == NULL)
-		output = fopen(output_fn, "w");
+		output = fopen(write_file, "w");
 	
 	fprintf(output, "%i\n", value);		
 }
@@ -103,7 +107,7 @@ void print_cyclecount()
 {
 	sink_packets ++;
 
-	if(sink_packets == source_packets)
+	if(feof(input) && (sink_packets == source_packets))
 	{
 		close_all();
 		exit(0);
