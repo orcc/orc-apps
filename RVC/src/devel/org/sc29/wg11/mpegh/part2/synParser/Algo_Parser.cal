@@ -41,7 +41,8 @@ actor Algo_Parser ()
 				 int(size=16) MvPredSyntaxElem,
 				 bool Cbf,
 				 bool DBFDisable,
-				 bool DisableTMVP
+				 bool DisableTMVP,
+				 int(size=16) weightedPred
 				 
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -621,7 +622,8 @@ actor Algo_Parser ()
 	uint(size=16) sps_pic_width_in_luma_samples[NB_MAX_SPS];
     uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
     uint(size= 1) sps_separate_colour_plane_flag[NB_MAX_SPS];
-
+	uint(size= 2) sps_chroma_format_idc[NB_MAX_SPS];
+	
 	read_SPS_Header.se_idx_1 : action ==>
 	guard
 		se_idx = 1 and isFifoFull(fifo)
@@ -730,6 +732,7 @@ actor Algo_Parser ()
 		vld_ue_name(    fifo, res, "sps_seq_parameter_set_id                ");
 		sps_id := res[0];
 		vld_ue_name(    fifo, res, "chroma_format_idc                       ");
+		sps_chroma_format_idc[sps_id] := res[0]; 
 		if res[0] = 3 then
             vld_u_name(  1, fifo, res, "separate_colour_plane_flag              ");
             sps_separate_colour_plane_flag[sps_id] := res[0];
@@ -1009,7 +1012,7 @@ actor Algo_Parser ()
 	uint(size= 8) pps_num_tile_rows_minus1[NB_MAX_PPS];
 	uint(size= 1) pps_uniform_spacing_flag[NB_MAX_PPS];
 
-	read_PPS_Header.se_idx_2 : action ==>
+	read_PPS_Header.se_idx_2 : action ==> 
 	guard
 		se_idx = 2 and isFifoFull(fifo)
 	var
@@ -1141,6 +1144,7 @@ actor Algo_Parser ()
 	uint(size= 1) pps_loop_filter_across_slice_enabled_flag[NB_MAX_PPS];
 	uint(size= 1) pps_lists_modification_present_flag[NB_MAX_PPS];
     uint(size= 1) pps_slice_segment_header_extension_present_flag[NB_MAX_PPS];
+    uint(size= 1) pps_disable_deblocking_filter_flag[NB_MAX_PPS]; 
 
 	read_PPS_Header.se_idx_5 : action ==>
 	guard
@@ -1160,6 +1164,7 @@ actor Algo_Parser ()
             vld_u_name(  1, fifo, res, "deblocking_filter_override_enabled_flag ");
             deblocking_filter_override_enabled_flag[pps_id] := res[0];
             vld_u_name(  1, fifo, res, "pps_disable_deblocking_filter_flag      ");
+            pps_disable_deblocking_filter_flag[pps_id] := res[0];
             if res[0] = 0 then
                 vld_se_name(    fifo, res, "pps_beta_offset_div2                    ");
                 vld_se_name(    fifo, res, "pps_tc_offset_div2                      ");
@@ -1207,7 +1212,6 @@ actor Algo_Parser ()
 
 	uint(size=32) poc;
 	uint(size= 3) slice_type;
-	uint(size= 1) entropy_slice_flag;
 	uint(size=32) slice_segment_address;
 	uint(size= 1) slice_sample_adaptive_offset_flag[4];
 	
@@ -1372,30 +1376,28 @@ actor Algo_Parser ()
 	   	num_ref_idx_l0_active    := 0;
 	   	num_ref_idx_l1_active    := 0;
 	   	mvd_l1_zero_flag         := 0;
-		if entropy_slice_flag = 0 then
-			if slice_type = P_SLICE or slice_type = B_SLICE then
-			   	num_ref_idx_l0_active := pps_num_ref_idx_l0_default_active_minus1[pps_id] + 1;
-			   	if slice_type = B_SLICE then
-					num_ref_idx_l1_active := pps_num_ref_idx_l1_default_active_minus1[pps_id] + 1;	
+		if slice_type = P_SLICE or slice_type = B_SLICE then
+		   	num_ref_idx_l0_active := pps_num_ref_idx_l0_default_active_minus1[pps_id] + 1;
+		   	if slice_type = B_SLICE then
+				num_ref_idx_l1_active := pps_num_ref_idx_l1_default_active_minus1[pps_id] + 1;	
+			end
+			vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");		
+	   		if res[0] = 1 then
+				vld_ue_name(    fifo, res, "num_ref_idx_l0_active_minus1            ");
+				num_ref_idx_l0_active := res[0] + 1;
+				if slice_type = B_SLICE then
+					vld_ue_name(    fifo, res, "num_ref_idx_l1_active_minus1            ");
+					num_ref_idx_l1_active := res[0] + 1;
 				end
-				vld_u_name(  1, fifo, res, "num_ref_idx_active_override_flag        ");		
-	      		if res[0] = 1 then
-					vld_ue_name(    fifo, res, "num_ref_idx_l0_active_minus1            ");
-					num_ref_idx_l0_active := res[0] + 1;
-					if slice_type = B_SLICE then
-						vld_ue_name(    fifo, res, "num_ref_idx_l1_active_minus1            ");
-						num_ref_idx_l1_active := res[0] + 1;
-					end
-	      		end
-			    if pps_lists_modification_present_flag[pps_id] = 1 /*and NumPocTotalCurr > 1*/ then
-			    	println("TODO ref_pic_list_modification( )");
-			    	println("TODO ref_pic_list_combination( )");
-			    end
-			    if slice_type = B_SLICE then
-					vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");
-					mvd_l1_zero_flag := res[0];		
-				end	    
-	        end
+	   		end
+		    if pps_lists_modification_present_flag[pps_id] = 1 /*and NumPocTotalCurr > 1*/ then
+		    	println("TODO ref_pic_list_modification( )");
+		    	println("TODO ref_pic_list_combination( )");
+		    end
+		    if slice_type = B_SLICE then
+				vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");
+				mvd_l1_zero_flag := res[0];		
+			end	    
 	    end
 		se_idx := 10;
 	end
@@ -1490,64 +1492,285 @@ actor Algo_Parser ()
 	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
 	 	
-	read_SliceHeader.se_idx_3 : action ==> ColocInfo:[collocated_from_l0_flag, collocated_ref_idx], DBFDisable:[slice_disable_deblocking_filter_flag !=0]
-	
+	read_SliceHeader.se_idx_3 : action ==> ColocInfo:[collocated_from_l0_flag, collocated_ref_idx], weightedPred:[weighted_pred_flag]
 	guard
 		se_idx = 3 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
-		uint(size= 1) slice_disable_deblocking_filter_flag := 0,
+		uint(size= 2) weighted_pred_flag := 0,
 		uint(size= 1) collocated_from_l0_flag := 1,
 		uint(size= 3) collocated_ref_idx := 0
    	do	
    		cabac_init_flag := 0;
-		if(entropy_slice_flag = 0) then
-			if slice_type = P_SLICE or slice_type = B_SLICE then
-				if pps_cabac_init_present_flag[pps_id] = 1	then
-					vld_u_name(  1, fifo, res, "cabac_init_flag                         ");	
-					cabac_init_flag := res[0];
-				end
-				if slice_temporal_mvp_enable_flag = 1 then
-					res[0] := 1;
-					if( slice_type = B_SLICE ) then	
-						vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
-						collocated_from_l0_flag := res[0];
-					end
-					if ( collocated_from_l0_flag = 1 and num_ref_idx_l0_active > 1 ) or ( collocated_from_l0_flag = 0 and num_ref_idx_l1_active > 1 ) then
-						vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
-						collocated_ref_idx := res[0];
-					end
-				end
-				if ( pps_weighted_pred_flag[pps_id] = 1 and slice_type = P_SLICE) or ( pps_weighted_bipred_flag[pps_id] = 1 and slice_type = B_SLICE ) then
-                    println("not support for weighted_pred_flag != 0 or weighted_bipred_flag != 0");     				
-				end
-				vld_ue_name(    fifo, res, "five_minus_max_num_merge_cand           ");
-				MaxNumMergeCand := 5 - res[0];
+   		se_idx := 5;
+		if slice_type = P_SLICE or slice_type = B_SLICE then
+			if pps_cabac_init_present_flag[pps_id] = 1	then
+				vld_u_name(  1, fifo, res, "cabac_init_flag                         ");	
+				cabac_init_flag := res[0];
 			end
-			vld_se_name(    fifo, res, "slice_qp_delta                          ");
-			slice_qp := pps_init_qp_minus26[pps_id] + 26 +res[0];
-			slice_cb_qp_offset := 0;
-			slice_cr_qp_offset := 0;
-			if pps_slice_chroma_qp_offsets_present_flag[pps_id] = 1 then
-				vld_se_name(    fifo, res, "slice_cb_qp_offset                      ");
-				slice_cb_qp_offset := res[0];
-				vld_se_name(    fifo, res, "slice_cr_qp_offset                      ");
-				slice_cr_qp_offset := res[0];
-			end
-			if(pps_deblocking_filter_control_present_flag[pps_id] = 1) then	
-               res[0] := 0;
-                if(deblocking_filter_override_enabled_flag[pps_id] = 1) then
-                    vld_u_name(  1, fifo, res, "deblocking_filter_override_flag         ");
-                end
-                if res[0] = 1 then
-                    vld_u_name(  1, fifo, res, "slice_disable_deblocking_filter_flag    ");
-                    slice_disable_deblocking_filter_flag := res[0];
-					if( slice_disable_deblocking_filter_flag = 0) then
-						vld_se_name(    fifo, res, "beta_offset_div2                        ");
-						vld_se_name(    fifo, res, "tc_offset_div2                          ");
-					end
+			if slice_temporal_mvp_enable_flag = 1 then
+				res[0] := 1;
+				if( slice_type = B_SLICE ) then	
+					vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
+					collocated_from_l0_flag := res[0];
 				end
-			end	
+				if ( collocated_from_l0_flag = 1 and num_ref_idx_l0_active > 1 ) or ( collocated_from_l0_flag = 0 and num_ref_idx_l1_active > 1 ) then
+					vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+					collocated_ref_idx := res[0];
+				end
+			end
+			weighted_pred_flag := pps_weighted_pred_flag[pps_id] + pps_weighted_bipred_flag[pps_id];
+			if weighted_pred_flag != 0 then
+				
+		   		se_idx := 4;
+			
+			end
+		end
+	end
+	/**************************************************************************
+	 * read_SliceHeader.se_idx_4
+	 *************************************************************************/
+	uint(size= 1) luma_weight_lX_flag[30];
+	uint(size= 1) chroma_weight_lX_flag[30];
+	 int(size= 8) delta_luma_weight_lX[30];
+	 int(size= 8) luma_offset_lX[30];
+	 int(size= 8) delta_chroma_weight_lX[30][2];
+	 int(size= 10) delta_chroma_offset_lX[30][2];
+	 
+	read_SliceHeader.se_idx_4 : action ==> weightedPred:[luma_log2_weight_denom, delta_chroma_log2_weight_denom]
+	guard
+		se_idx = 4 and isFifoFull(fifo),
+		slice_type = P_SLICE or slice_type = B_SLICE,
+		(pps_weighted_pred_flag[pps_id] = 1 and slice_type = P_SLICE) or ( pps_weighted_bipred_flag[pps_id] = 1 and slice_type = B_SLICE )
+	var
+		uint(size=32) res[1],
+		uint(size= 3) luma_log2_weight_denom := 0,
+		 int(size= 4) delta_chroma_log2_weight_denom :=0
+   	do		
+		vld_ue_name(    fifo, res, "luma_log2_weight_denom                  ");					
+		luma_log2_weight_denom := res[0];
+        if sps_chroma_format_idc[sps_id] != 0 then
+			vld_se_name(    fifo, res, "delta_chroma_log2_weight_denom          ");					
+			delta_chroma_log2_weight_denom := res[0];
+		end
+		foreach int i in 0 .. num_ref_idx_l0_active -1 do
+			vld_u_name(  1, fifo, res, "luma_weight_lX_flag                     ");
+			luma_weight_lX_flag[i] := res[0];
+		end
+		if sps_chroma_format_idc[sps_id] != 0 then
+			foreach int i in 0 .. num_ref_idx_l0_active -1 do
+				vld_u_name(  1, fifo, res, "chroma_weight_lX_flag                   ");
+				chroma_weight_lX_flag[i] := res[0];
+			end
+		end
+		se_idx := 30;
+		cnt_i := 0;
+	end	
+		
+	read_SliceHeader.se_idx_4_deltaWeight_l0 : action ==>
+	guard
+		se_idx = 30 and isFifoFull(fifo),
+		cnt_i < num_ref_idx_l0_active
+	var
+		uint(size=32) res[1]
+	do	
+		if luma_weight_lX_flag[ cnt_i ] = 1  then
+			vld_se_name(    fifo, res, "delta_luma_weight_lX                    ");
+			delta_luma_weight_lX[ cnt_i ] := res[0];
+			vld_se_name(    fifo, res, "luma_offset_lX                          ");
+			luma_offset_lX[ cnt_i ] := res[0];
+		end
+		if chroma_weight_lX_flag[ cnt_i ] = 1  then
+			vld_se_name(    fifo, res, "delta_chroma_weight_lX                  ");
+			delta_chroma_weight_lX[ cnt_i ][ 0 ] := res[0];
+		end
+		se_idx := 31;		
+	end
+	read_SliceHeader.se_idx_4_deltaWeight_l0_2 : action ==>
+	guard
+		se_idx = 31 and isFifoFull(fifo)
+	var
+		uint(size=32) res[1]
+	do	
+		if chroma_weight_lX_flag[ cnt_i ] = 1  then
+			vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
+			delta_chroma_offset_lX[ cnt_i ][ 0 ] := res[0];
+			vld_se_name(    fifo, res, "delta_chroma_weight_lX                  ");
+			delta_chroma_weight_lX[ cnt_i ][ 1 ] := res[0];
+			vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
+			delta_chroma_offset_lX[ cnt_i ][ 1 ] := res[0];
+		end
+		cnt_i := cnt_i + 1;
+		se_idx := 30;		
+	end
+	
+	read_SliceHeader.se_idx_4_deltaWeight_l0_done : action ==>
+	guard
+		se_idx = 30,
+		cnt_i = num_ref_idx_l0_active
+	do
+		cnt_i := 0;
+		se_idx := 32;
+	end
+	
+	read_SliceHeader.se_idx_4_weight_l1 : action ==>
+	guard
+		se_idx = 32 and isFifoFull(fifo)
+	var
+		uint(size=32) res[1]
+	do	
+		if slice_type = B_SLICE then
+			foreach int i in num_ref_idx_l0_active .. num_ref_idx_l0_active + num_ref_idx_l1_active -1 do
+				vld_u_name(  1, fifo, res, "luma_weight_lX_flag                     ");
+				luma_weight_lX_flag[i] := res[0];
+			end
+			if sps_chroma_format_idc[sps_id] != 0 then
+				foreach int i in num_ref_idx_l0_active .. num_ref_idx_l0_active + num_ref_idx_l1_active -1 do
+					vld_u_name(  1, fifo, res, "chroma_weight_lX_flag                   ");
+					chroma_weight_lX_flag[i] := res[0];
+				end
+			end
+		end
+		se_idx := 33;
+		cnt_i := num_ref_idx_l0_active;
+	end
+	
+	read_SliceHeader.se_idx_4_delta_weight_l1 : action ==>
+	guard
+		se_idx = 33 and isFifoFull(fifo),
+		cnt_i < (num_ref_idx_l0_active + num_ref_idx_l1_active)
+	var
+		uint(size=32) res[1]
+	do	
+		if slice_type = B_SLICE then
+			if luma_weight_lX_flag[ cnt_i ] = 1  then
+				vld_se_name(    fifo, res, "delta_luma_weight_lX                    ");
+				delta_luma_weight_lX[ cnt_i ] := res[0];
+				vld_se_name(    fifo, res, "luma_offset_lX                          ");
+				luma_offset_lX[ cnt_i ] := res[0];
+			end
+			if chroma_weight_lX_flag[ cnt_i ] = 1  then
+				vld_se_name(    fifo, res, "delta_chroma_weight_lX                  ");
+				delta_chroma_weight_lX[ cnt_i ][ 0 ] := res[0];
+			end
+		end
+		se_idx := 34;
+	end
+	read_SliceHeader.se_idx_4_delta_weight_l1_2 : action ==>
+	guard
+		se_idx = 34 and isFifoFull(fifo)
+	var
+		uint(size=32) res[1]
+	do	
+		if slice_type = B_SLICE then
+			if chroma_weight_lX_flag[ cnt_i ] = 1  then
+				vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
+				delta_chroma_offset_lX[ cnt_i ][ 0 ] := res[0];
+				vld_se_name(    fifo, res, "delta_chroma_weight_lX                  ");
+				delta_chroma_weight_lX[ cnt_i ][ 1 ] := res[0];
+				vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
+				delta_chroma_offset_lX[ cnt_i ][ 1 ] := res[0];
+			end
+		end
+		cnt_i := cnt_i + 1;
+		se_idx := 33;
+	end
+	
+	read_SliceHeader.se_idx_4_delta_weight_l1_done : action ==>
+	guard
+		se_idx = 33,
+		cnt_i = (num_ref_idx_l0_active + num_ref_idx_l1_active)
+	do	
+		se_idx := 20;
+		cnt_i :=0;
+	end
+	
+	read_SliceHeader.putsWeightedPredSe_lX_00 : action ==> weightedPred:[0, 0]
+	guard
+		se_idx = 20 and cnt_i < (num_ref_idx_l0_active + num_ref_idx_l1_active),
+		luma_weight_lX_flag[cnt_i] = 0,
+		chroma_weight_lX_flag[cnt_i] = 0
+	do
+		cnt_i := cnt_i + 1;
+	end
+	read_SliceHeader.putsWeightedPredSe_lX_01 : action ==> weightedPred:[1, delta_luma_weight_lX[i], luma_offset_lX[i], 0]
+	guard
+		se_idx = 20 and cnt_i < (num_ref_idx_l0_active + num_ref_idx_l1_active),
+		luma_weight_lX_flag[cnt_i] = 1,
+		chroma_weight_lX_flag[cnt_i] = 0
+	var
+		uint(size= 8) i = cnt_i
+	do
+		cnt_i := cnt_i + 1;
+	end
+	read_SliceHeader.putsWeightedPredSe_lX_10 : action ==> weightedPred:[0, 1,  delta_chroma_weight_lX[i][0], delta_chroma_offset_lX[i][0],
+																				delta_chroma_weight_lX[i][1], delta_chroma_offset_lX[i][1]
+																		]
+	guard
+		se_idx = 20 and cnt_i < (num_ref_idx_l0_active + num_ref_idx_l1_active),
+		luma_weight_lX_flag[cnt_i] = 0,
+		chroma_weight_lX_flag[cnt_i] = 1
+	var
+		uint(size= 8) i = cnt_i
+	do
+		cnt_i := cnt_i + 1;
+	end
+	read_SliceHeader.putsWeightedPredSe_lX_11 : action ==> weightedPred:[1, delta_luma_weight_lX[i], luma_offset_lX[i], 1,
+																			delta_chroma_weight_lX[i][0], delta_chroma_offset_lX[i][0],
+																			delta_chroma_weight_lX[i][1], delta_chroma_offset_lX[i][1]
+																		]
+	guard
+		se_idx = 20 and cnt_i < (num_ref_idx_l0_active + num_ref_idx_l1_active),
+		luma_weight_lX_flag[cnt_i] = 1,
+		chroma_weight_lX_flag[cnt_i] = 1
+	var
+		uint(size= 8) i = cnt_i
+	do
+		cnt_i := cnt_i + 1;
+	end	
+	read_SliceHeader.putsWeightedPredSe_done : action ==>
+	guard
+		se_idx = 20 and cnt_i = (num_ref_idx_l0_active + num_ref_idx_l1_active)
+	do
+		se_idx := 5;
+	end	
+	/**************************************************************************
+	 * read_SliceHeader.se_idx_5
+	 *************************************************************************/
+	read_SliceHeader.se_idx_5 : action ==> DBFDisable:[slice_disable_deblocking_filter_flag !=0]
+	guard
+		se_idx = 5 and isFifoFull(fifo)
+	var
+		uint(size=32) res[1],
+		uint(size= 1) slice_disable_deblocking_filter_flag := pps_disable_deblocking_filter_flag[pps_id]
+   	do	
+		if slice_type = P_SLICE or slice_type = B_SLICE then
+			vld_ue_name(    fifo, res, "five_minus_max_num_merge_cand           ");
+			MaxNumMergeCand := 5 - res[0];
+		end
+		vld_se_name(    fifo, res, "slice_qp_delta                          ");
+		slice_qp := pps_init_qp_minus26[pps_id] + 26 +res[0];
+		slice_cb_qp_offset := 0;
+		slice_cr_qp_offset := 0;
+		if pps_slice_chroma_qp_offsets_present_flag[pps_id] = 1 then
+			vld_se_name(    fifo, res, "slice_cb_qp_offset                      ");
+			slice_cb_qp_offset := res[0];
+			vld_se_name(    fifo, res, "slice_cr_qp_offset                      ");
+			slice_cr_qp_offset := res[0];
+		end
+		if(pps_deblocking_filter_control_present_flag[pps_id] = 1) then	
+           res[0] := 0;
+            if(deblocking_filter_override_enabled_flag[pps_id] = 1) then
+                vld_u_name(  1, fifo, res, "deblocking_filter_override_flag         ");
+            end
+            if res[0] = 1 then
+                vld_u_name(  1, fifo, res, "slice_disable_deblocking_filter_flag    ");
+                slice_disable_deblocking_filter_flag := res[0];
+				if( slice_disable_deblocking_filter_flag = 0) then
+					vld_se_name(    fifo, res, "beta_offset_div2                        ");
+					vld_se_name(    fifo, res, "tc_offset_div2                          ");
+				end
+			end
 		end	
 	 	if( pps_loop_filter_across_slice_enabled_flag[sps_id] = 1  and  (
 	 		slice_sample_adaptive_offset_flag[0] = 1 
@@ -1584,7 +1807,7 @@ actor Algo_Parser ()
 	read_SliceHeader_done : action ==> Poc:[poc], 
 		StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id]]
 	guard
-		se_idx = 4
+		se_idx = 6
 	var
 		uint(size=32) res[1],
 		uint(size=16) num_entry_point_offsets,
