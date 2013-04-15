@@ -97,7 +97,6 @@ actor InterPrediction()
 	uint(size=4)  numRefIdxLxAct[2];
 	bool          isBSlice;
 	uint(size=4)  refIdxLxAct;
-	bool          weightLxFlag;
 	uint(size=3)  log2WeightDenom[3];
 	int           weight[6][2][3];
 	int           offset[6][2][3];
@@ -336,8 +335,8 @@ int(size=8) interPredCoeff[3][8][8] =
 				 */
 				if(isBiPredOrLx != BI_PRED) then
 					/* We use the bi-prediction way */
-					wX := weightCu[component][listIdx];
-					oX := offsetCu[component][listIdx];
+					wX := weightCu[component][rdList];
+					oX := offsetCu[component][rdList];
 					locLogWD := logWD[component];
 					predSamples[component][x][y][0] :=
 						if(locLogWD >= 1) then
@@ -513,57 +512,72 @@ int(size=8) interPredCoeff[3][8][8] =
 	guard
 		iLoop < refIdxLxAct
 	do
-		weightLxFlag := lumWeightFlag != 0;
+		weight[iLoop][listIdx][0] := lumWeightFlag;
+		iLoop := iLoop + 1;
 	end
 
 	getLumaWeightLX.done: action ==>
 	guard
 		iLoop = refIdxLxAct
 	do
-		listIdx := listIdx + 1;
+		iLoop := 0;
 	end
 
-	getDeltaLumaWeight: action WeightedPredSe:[wpSyntElem] repeat 3 ==>
+	getChromaWeightLX.launch: action WeightedPredSe:[chrWeightFlag] ==>
 	guard
-		weightLxFlag
+		iLoop < refIdxLxAct
+	do
+		weight[iLoop][listIdx][1] := chrWeightFlag;
+		iLoop := iLoop + 1;
+	end
+
+	getChromaWeightLX.done: action ==>
+	guard
+		iLoop = refIdxLxAct
+	do
+		iLoop := 0;
+	end
+
+	getDeltaLumaWeight.launch: action WeightedPredSe:[wpSyntElem] repeat 2 ==>
+	guard
+		iLoop < refIdxLxAct && weight[iLoop][listIdx][0] != 0
 	do
 		weight[iLoop][listIdx][0] := (1<<log2WeightDenom[0]) + wpSyntElem[0];
 		offset[iLoop][listIdx][0] := wpSyntElem[1];
-		weightLxFlag := wpSyntElem[2] != 0;
 	end
 
-	getChromaWeightLX: action WeightedPredSe:[chrWeightFlag] ==>
+	getDeltaLumaWeight.skip: action ==>
 	guard
-		not weightLxFlag
+		iLoop < refIdxLxAct && weight[iLoop][listIdx][0] = 0
 	do
 		weight[iLoop][listIdx][0] := (1<<log2WeightDenom[0]);
 		offset[iLoop][listIdx][0] := 0;
-		weightLxFlag := chrWeightFlag != 0;
+	end
+
+	getDeltaLumaWeight.done: action ==>
+	guard
+		iLoop = refIdxLxAct
+	do
+		iLoop := 0;
+		listIdx := listIdx + 1;
 	end
 
 	getDeltaChromaWeight.launch: action WeightedPredSe:[wpSyntElem] repeat 4 ==>
 	guard
-		weightLxFlag
-	var
-		int chromaWeight,
-		uint(size=13) shift = ((1<<bitDepthC)-1)>>1
+		weight[iLoop][listIdx][1] != 0
 	do
 		weight[iLoop][listIdx][1] := (1<<log2WeightDenom[1]) + wpSyntElem[0];
-		chromaWeight := weight[iLoop][listIdx][1];
-		offset[iLoop][listIdx][1] :=
-			wpSyntElem[1] - ((shift*chromaWeight)>>log2WeightDenom[1])+shift;
+		offset[iLoop][listIdx][1] := wpSyntElem[1];
 
 		weight[iLoop][listIdx][2] := (1<<log2WeightDenom[2]) + wpSyntElem[2];
-		chromaWeight := weight[iLoop][listIdx][2];
-		offset[iLoop][listIdx][2] :=
-			wpSyntElem[3] - ((shift*chromaWeight)>>log2WeightDenom[2])+shift;
+		offset[iLoop][listIdx][2] := wpSyntElem[3];
 
 		iLoop := iLoop + 1;
 	end
 
-	getDeltaChromaWeight.done: action ==>
+	getDeltaChromaWeight.skip: action ==>
 	guard
-		not weightLxFlag
+		weight[iLoop][listIdx][1] = 0
 	do
 		weight[iLoop][listIdx][1] := (1<<log2WeightDenom[1]);
 		offset[iLoop][listIdx][1] := 0;
@@ -889,13 +903,17 @@ int(size=8) interPredCoeff[3][8][8] =
 		GetWeightLX (getWeightLX.skip   )--> GetWeightLX;
 		GetWeightLX (getWeightLX.done   )--> GetPartMode;
 
-		GetLumaWeightLX (getLumaWeightLX.launch )--> GetDeltaLumWtLX;
-		GetLumaWeightLX (getLumaWeightLX.done   )--> GetWeightLX;
+		GetLumaWeightLX (getLumaWeightLX.launch )--> GetLumaWeightLX;
+		GetLumaWeightLX (getLumaWeightLX.done   )--> GetChromaWeightLX;
 
-		GetDeltaLumWtLX (getDeltaLumaWeight     )--> GetDeltaChrWtLX;
-		GetDeltaLumWtLX (getChromaWeightLX      )--> GetDeltaChrWtLX;
+		GetChromaWeightLX (getChromaWeightLX.launch )--> GetChromaWeightLX;
+		GetChromaWeightLX (getChromaWeightLX.done   )--> GetDeltaLumWtLX;
 
-		GetDeltaChrWtLX (getDeltaChromaWeight   )--> GetLumaWeightLX;
+		GetDeltaLumWtLX (getDeltaLumaWeight.launch )--> GetDeltaChrWtLX;
+		GetDeltaLumWtLX (getDeltaLumaWeight.skip   )--> GetDeltaChrWtLX;
+		GetDeltaLumWtLX (getDeltaLumaWeight.done   )--> GetWeightLX;
+
+		GetDeltaChrWtLX (getDeltaChromaWeight   )--> GetDeltaLumWtLX;
 
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
