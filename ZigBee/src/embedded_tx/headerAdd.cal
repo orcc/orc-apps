@@ -35,19 +35,29 @@
 // Changelog:
 // - initial version 01/10/2012
 // - cleanup for release 08/10/2012
+// - merged source and headerAdd 26/03/2013
+// - modified to support repetitive packets 03/04/2013
 
-package multitoken_tx;
-
-import multitoken_tx.constants.*;
+package embedded_tx;
+import embedded_tx.constants.*;
+import std.stdio.Source.*;
 
 actor headerAdd()
 // Inputs: 
-uint(size=PL_DATA_SZ) pl_bits       // payload bits from upper layer 
+ 
 // Outputs:
 ==> 
 uint(size=DATA_SZ) data,             // header + payload data
 uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 :
+	@native procedure source_init()
+	end
+
+	@native function source_readByte() --> uint(size=8)
+	end
+
+	@native function source_sizeOfFile() --> int(size=32)
+	end
 
     // variable to hold payload length
 	uint(size=PAYLOAD_LEN_SZ) octet_count;
@@ -63,29 +73,38 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 		0, 0, 0, 0, 167];
 
 	// init action
-	// resets the octet counter
+	// initializes the data source
 	init: action ==>
 	do
-		octet_count := 0; 
+		source_init();
+		octet_count := 0;
 	end
 	
 	// get_data_len action
-	// wait for payload octet to arrive
-	// send payload length information to pulse shaper
-	get_data_len: action pl_bits:[ bits_in ] ==> len:[ len_out ]
-	var
-		uint(size=PAYLOAD_LEN_SZ) len_out
+	// wait for packet to be available
+	get_data_len: action ==>
+	guard
+		octet_count = 0
 	do
-		len_out := bits_in + HEADER_LEN + 1;
-		octet_count := bits_in + HEADER_LEN + 1;
+		octet_count := source_sizeOfFile();
+	end
+
+	// init_transmission action
+	// proceed to transmission once valid data is available
+	// the standard specifies that the minimum packet size is 5
+	init_transmission: action ==>
+	guard
+		octet_count > 4
+	do
 		octet_index := 0;
+		octet_count := octet_count + HEADER_LEN + 1;
 	end
 
 	// send_header action
 	// transmit one octet belonging to header
 	send_header: action ==> data:[ data_out ]
 	guard
-		octet_index < HEADER_LEN 
+		octet_index < HEADER_LEN
 	var
 		uint(size=DATA_SZ) data_out
 	do
@@ -95,22 +114,26 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 
 	// send_length action
 	// transmit payload length in data as part of data frame
-	send_length: action ==> data:[ data_out ]
+	// send payload length information to pulse shaper
+	send_length: action ==> data:[ data_out ], len: [len_out]
 	var
-		uint(size=DATA_SZ) data_out
+		uint(size=DATA_SZ) data_out,
+		uint(size=PAYLOAD_LEN_SZ) len_out
 	do
 		data_out := octet_count - HEADER_LEN - 1;
+		len_out := octet_count;
+		octet_index := octet_index + 1;
 	end
 
 	// send_payload_octet
 	// transmit one octet of the data coming from higher layer
-	send_payload_octet: action pl_bits:[ bits_in ] ==> data:[ data_out ]
+	send_payload_octet: action ==> data:[ data_out ]
 	guard
-		octet_index < octet_count 
+		octet_index < octet_count
 	var
 		uint(size=DATA_SZ) data_out
 	do
-		data_out := bits_in;
+		data_out := source_readByte();
 		octet_index := octet_index + 1;
 	end
 
@@ -125,7 +148,8 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 
 	schedule fsm s_start :
 		s_start ( init ) --> s_idle;
-		s_idle ( get_data_len ) --> s_header;
+		s_idle ( get_data_len ) --> s_idle;
+		s_idle ( init_transmission ) --> s_header;
 		s_header ( send_header ) --> s_header;
 		s_header ( send_length ) --> s_payload;
 		s_payload ( send_payload_octet ) --> s_payload;
@@ -133,6 +157,7 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 	end
 
 	priority
+		get_data_len > init_transmission;
 		send_header > send_length;
 		send_payload_octet > done;
 	end

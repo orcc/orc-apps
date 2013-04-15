@@ -1,3 +1,5 @@
+// Native functions to be used with the multitoken_tx and monotoken_tx applications
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -16,15 +18,15 @@ void sink_close();
   Support functions for the ZigBee tx source actor
 */
 
-char input_fn[] = "tx_stream.in";
+extern char *input_file;	// defined in orcc_util.c
 FILE *input = NULL;
 
 // source actor initialization
 unsigned char native_source_init()
 {
-	input = fopen(input_fn, "r");
+	input = fopen(input_file, "r");
 
-	if(input)
+	if(input != NULL)
 	{
 		int ret_val;
 
@@ -33,6 +35,7 @@ unsigned char native_source_init()
 		if(ret_val != 1)
 		{
 			printf("Unable to read stream length\nExit\n");
+			fclose(input);
 			exit(0);
 		}
 
@@ -46,7 +49,7 @@ unsigned char native_source_init()
 	else
 	{
 
-		printf("Unable to open file %s\nExit\n", input_fn);
+		printf("Unable to open file %s\nExit\n", input_file);
 		exit(0);
 	}
 
@@ -74,7 +77,7 @@ unsigned char native_source_produce()
 // cleans up the source actor
 void native_source_close()
 {
-	if(!input);
+	if(input != 0);
 	{
 		fclose(input);
 		input = NULL;
@@ -95,7 +98,7 @@ void native_sink_init()
 {
 	output = fopen(output_fn, "w");
 
-	if(output)
+	if(output != 0)
 	{
 		printf("Writing output to file %s\n", output_fn);
 	}
@@ -127,7 +130,7 @@ void native_sink_consume(int sample)
 // cleans up the sink actor
 void sink_close()
 {
-	if(!output);
+	if(output != 0)
 	{
 		fclose(output);
 		output = NULL;
