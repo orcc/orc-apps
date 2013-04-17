@@ -6,14 +6,20 @@ Orc-apps is a library of open-source applications described in a dynamic dataflo
 
 * Documentation is located at http://orcc.sf.net
 
-### Project
+### Projects
 
-- RVC: Reconfigurable Video Coding, the project containing the standardized descriptions of:
-          * An MPEG-4 part 2 SP decoder.
-          * An MPEG-4 Part 10 decoder with 2 profiles, also known as AVC or H264.
-          * An MPEG-H Part 2 decoder, also known as HEVC or H265.
-- AVS: Partial description of the video part of the Chinese Audio Video Standard (AVS)
-- Research: Several on-going research descriptions of MPEG-4 part 2 and part 10.
+- RVC: Reconfigurable Video Coding project, that contains the standardized descriptions of :
+ * An MPEG-4 part 2 SP decoder.
+ * An MPEG-4 Part 10 decoder with 2 profiles, also known as AVC or H264.
+ * An MPEG-H Part 2 decoder, also known as HEVC or H265.
+- AVS: Partial description of the video part of the chinese Audio Video Standard (AVS).
 - Compression: Partial description of a GZIP decompresser.
-- Crypto: Descriptions of well-known cryptographic algorithms and hashing functions (AES, DES, SHA, etc.).
+- Crypto: Descriptions of well-known cryptographic algorithms and hashing functions (AES, DES, SHA, etc).
+- DigitalFiltering: Descriptions of a 4-tap FIR filter and a 1-tap IIR filter.
+- JPEG: Descriptions of the JPEG decoder and encoder.
+- Jpeg2000: Description of a JPEG2000 decoder.
 - RIP: Reconfigurable Image Processing, only contains a Sobel filter at this point.
+- SmartMotion: Implementation of a motion estimation based on diamond search algorithm.
+- Stereo: Implementation of a stereo matching algorithm.
+- Zigbee: Implementation of the ZigBee protocol.
+- Research: Several on-going research descriptions, derived from the RVC project.
