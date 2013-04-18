@@ -10,8 +10,8 @@ Orc-apps is a library of open-source applications described in a dynamic dataflo
 
 - RVC: Reconfigurable Video Coding project, that contains the standardized descriptions of :
  * An MPEG-4 part 2 SP decoder.
- * An MPEG-4 Part 10 decoder with 2 profiles, also known as AVC or H264.
- * An MPEG-H Part 2 decoder, also known as HEVC or H265.
+ * An MPEG-4 Part 10 decoder with 2 profiles, also known as AVC or H.264.
+ * An MPEG-H Part 2 decoder, also known as HEVC or H.265.
 - AVS: Partial description of the video part of the chinese Audio Video Standard (AVS).
 - Compression: Partial description of a GZIP decompresser.
 - Crypto: Descriptions of well-known cryptographic algorithms and hashing functions (AES, DES, SHA, etc).
