@@ -1,0 +1,114 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Endri Bezati <endri.bezati@epfl.ch>
+
+package jpeg.encoder.hw;
+
+import jpeg.encoder.common.Tables.QT;
+import jpeg.encoder.common.Tables.zigzag;
+import jpeg.encoder.common.Tables.DivTab;
+
+actor Quantizer()
+	int(size=13) In
+		==> 
+			int(size=24) Out:		
+	int(size=4) Block_Type := 0; // Block_Type = 0,1,2,3 (Luma), Block_Type = 4,5 (Chroma)
+	
+	int(size=13) data[64];
+	
+	int(size=9) Counter := 0;
+	
+	read: action In:[token] ==>
+	do
+		data[Counter] := token;
+		Counter := Counter + 1;
+	end
+	
+	finish: action ==>
+	guard
+		Counter = 64
+	do
+		Counter := 0;
+	end
+	
+	int(size=13) dataCounter;
+	
+	bool negative := false;
+	
+	int(size=8) qt;
+	send: action ==> 
+	do
+		qt := QT[Block_Type >> 2][Counter];
+		dataCounter := data[zigzag[Counter]];
+		if dataCounter > 0 then
+			dataCounter := dataCounter + (qt >> 2);
+			negative := false;
+		else 
+			dataCounter := -(dataCounter - (qt >> 2));
+			negative := true;
+		end
+	end
+	
+	
+	
+	division: action ==> Out:[out]
+	var
+		int(size=24) out
+	do 
+		out := (dataCounter * DivTab[qt - 1]) >> 16;
+		if negative then
+			out := -out;
+		end
+		Counter := Counter + 1;
+	end
+		
+	changeBlock: action ==>
+	do
+		Block_Type := (Block_Type + 1);
+		if Block_Type = 6 then
+			Block_Type := 0;
+		end
+	end
+	
+	
+	schedule fsm s0:
+		s0	(read)	--> s0;
+		s0	(finish)	--> s1;
+		s1	(send)	--> division;
+		division (division) -->s1;
+		s1	(finish)	--> s2;
+		s2	(changeBlock)	--> s0;
+	end
+	
+	priority
+		finish > read;
+		finish > send;
+	end
+end
