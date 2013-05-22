@@ -1,0 +1,139 @@
+// headerAdd.cal
+//
+// Copyright (c) 2012 University of Oulu, Finland
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+//
+// Author: 
+// Jani Boutellier (jani.boutellier@ee.oulu.fi)
+// Department of Computer Science and Engineering
+// University of Oulu, Finland
+//
+// Description:
+// Frame formatter for IEEE 802.15.4 (ZigBee) Baseband
+// transmission. Based on the C code implementation written
+// by Amanullah Ghazi. Described in SDR-WInnComm 2012 paper
+// "Low-complexity SDR Implementation of IEEE 802.15.4 (ZigBee)
+// Baseband Transceiver on Application Specific Processor"  
+//
+// Changelog:
+// - initial version 01/10/2012
+// - cleanup for release 08/10/2012
+
+package multitoken_tx;
+
+import multitoken_tx.constants.*;
+
+actor headerAdd()
+// Inputs: 
+uint(size=PL_DATA_SZ) pl_bits       // payload bits from upper layer 
+// Outputs:
+==> 
+uint(size=DATA_SZ) data,             // header + payload data
+uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
+:
+
+    // variable to hold payload length
+	uint(size=PAYLOAD_LEN_SZ) octet_count;
+	
+	// variable to count processed payload octets
+	uint(size=PAYLOAD_LEN_SZ) octet_index;
+
+	// static variable
+	int HEADER_LEN = 5;
+	
+	// the standard-defined header content
+	List(type: int(size=DATA_SZ), size=HEADER_LEN) Header = [
+		0, 0, 0, 0, 167];
+
+	// init action
+	// resets the octet counter
+	init: action ==>
+	do
+		octet_count := 0; 
+	end
+	
+	// get_data_len action
+	// wait for payload octet to arrive
+	// send payload length information to pulse shaper
+	get_data_len: action pl_bits:[ bits_in ] ==> len:[ len_out ]
+	var
+		uint(size=PAYLOAD_LEN_SZ) len_out
+	do
+		len_out := bits_in + HEADER_LEN + 1;
+		octet_count := bits_in + HEADER_LEN + 1;
+		octet_index := 0;
+	end
+
+	// send_header action
+	// transmit one octet belonging to header
+	send_header: action ==> data:[ data_out ]
+	guard
+		octet_index < HEADER_LEN 
+	var
+		uint(size=DATA_SZ) data_out
+	do
+		data_out := Header[octet_index];
+		octet_index := octet_index + 1;
+	end
+
+	// send_length action
+	// transmit payload length in data as part of data frame
+	send_length: action ==> data:[ data_out ]
+	var
+		uint(size=DATA_SZ) data_out
+	do
+		data_out := octet_count - HEADER_LEN - 1;
+	end
+
+	// send_payload_octet
+	// transmit one octet of the data coming from higher layer
+	send_payload_octet: action pl_bits:[ bits_in ] ==> data:[ data_out ]
+	guard
+		octet_index < octet_count 
+	var
+		uint(size=DATA_SZ) data_out
+	do
+		data_out := bits_in;
+		octet_index := octet_index + 1;
+	end
+
+	// done action
+	// transition back to waiting for a new data frame
+	done: action ==>
+	guard
+		octet_index = octet_count 
+	do
+		octet_count := 0; 
+	end
+
+	schedule fsm s_start :
+		s_start ( init ) --> s_idle;
+		s_idle ( get_data_len ) --> s_header;
+		s_header ( send_header ) --> s_header;
+		s_header ( send_length ) --> s_payload;
+		s_payload ( send_payload_octet ) --> s_payload;
+		s_payload ( done ) --> s_idle;
+	end
+
+	priority
+		send_header > send_length;
+		send_payload_octet > done;
+	end
+end
