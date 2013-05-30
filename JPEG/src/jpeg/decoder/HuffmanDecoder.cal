@@ -48,13 +48,12 @@ actor HuffmanDecoder()
 	uint code;
 	int count := 0;
 	int mbcount;
-	int bitcount := 0;
+	uint(size=8) bit_pos := 0;
 	uint(size=8) bits;
 	
 	// The indexes of each HT.
 	int(size=8) dctab[3] = [0, 1, 1];
 	int(size=8) actab[3] = [2, 3, 3];
-	
 	
 	uint(size=8) ht_lookup_codelen[4][256];
 	// Values have to be adjusted!!!
@@ -71,29 +70,34 @@ actor HuffmanDecoder()
 	int lastDC[3];
 	int block[64];
 
+	function get_bit() --> uint(size=1) :
+		((bits >> 7 - bit_pos) & 1)
+	end
+	
+	procedure inc_bit_pos() begin
+		bit_pos := (bit_pos + 1) & 7;
+	end
+	
 	getbit.read: action Bit:[b] ==>
 	guard 
-		to_read != 0, bitcount = 0
+		to_read != 0, bit_pos = 0
 	do
 		bits := b;
-		// The bit sequence is translated to a decimal number.
-		cur_val := cur_val * 2 + ((bits >> 7) & 1);
-	   	to_read := to_read - 1;
-	    cur_len := cur_len + 1;
-	    
-	    bitcount := bitcount + 1;
+		cur_val := 2 * cur_val + get_bit();
+		to_read := to_read - 1;
+		cur_len := cur_len + 1;
+		inc_bit_pos();
 	end
 
+	
 	getbit.noread:action ==>
 	guard 
-		to_read != 0, bitcount != 0
+		to_read != 0, bit_pos != 0
 	do
-		// The bit sequence is translated to a decimal number.
-		cur_val := cur_val * 2 + ((bits >> 7 - bitcount) & 1);
-	   	to_read := to_read - 1;
-	    cur_len := cur_len + 1;
-	    
-	     bitcount := (bitcount + 1) & 7;
+		cur_val := 2 * cur_val + get_bit();
+		to_read := to_read - 1;
+		cur_len := cur_len + 1;
+		inc_bit_pos();
 	end
 	
 	// Procedures
@@ -119,7 +123,7 @@ actor HuffmanDecoder()
 		u := 0;
 		v := 0;
 		code_idx := 0;
-		spread := 32768;
+		spread := 0x8000;
 		// Depending on the size of the code, we "spread" the bit sequence on the array so that every value 
 		// prefixed by this sequence refers to the same code.
 		// For example if the code 23 is encoded by 1111110111 (10 bits), in the array all values ranging from
@@ -177,12 +181,10 @@ actor HuffmanDecoder()
 		v_read_HT := v_read_HT + 1;
 	end
 	
-		// All 4 HT were read.
 	done_HT:action ==>
 	guard (v_read_HT = 4)
 	do
 		code := 0xFFFF;
-		// Begin with DC Luminance
 		comp := 0;
 		cur_HT := dctab[comp];
 		cur_val := 0;
@@ -193,11 +195,7 @@ actor HuffmanDecoder()
 	DC.done_len:action ==>
 	guard (to_read = 0)
 	do
-		// Even if cur_val is of size 16, it is represented by a BigInteger during Orcc simulation.
-		// A bitand is therefore needed to extract only 16 bits.
-		cur_val := cur_val & 0xFFFF;
 		get_HT_val(cur_HT, cur_val);
-		//code := ht_lookup_code[cur_HT][cur_val];
 		to_read := ht_lookup_codelen[cur_HT][code];
 	    cur_len := to_read;
 	end
@@ -206,24 +204,22 @@ actor HuffmanDecoder()
 	DC.done:action ==>
 	guard (to_read = 0)
 	var
-		int v
+		int dc
 	do
 		to_read := code & 0xF;
 		cur_len := to_read;
-		// The DC value.
-		v := cur_val >> (16 - to_read);	
-		if (v < (1 << (cur_len - 1)))
+		dc := cur_val >> (16 - to_read);	
+		if (dc < (1 << (cur_len - 1)))
 		then
-			v := v + (-1 << cur_len) + 1;
+			dc := dc + (-1 << cur_len) + 1;
 		end
-		v := v + lastDC[comp];
-		lastDC[comp] := v;
+		dc := dc + lastDC[comp];
+		lastDC[comp] := dc;
 		cur_len := 0;
 		cur_HT := actab[comp];
 		block := [0 : for int i in 0 .. 63];
-		// The position in the current block.
 		idx := 0;
-		block[0] := v;
+		block[0] := dc;
 	end
 	
 	AC.done_len:action ==>
@@ -259,7 +255,10 @@ actor HuffmanDecoder()
 		if (cur_count = subsampling[comp])
 		then
 			cur_count := 0;
-			comp := (comp + 1) mod 3;
+			comp := comp + 1;
+			if comp = 3 then 
+				comp := 0;
+			end
 		end
 		cur_HT := dctab[comp];
 		cur_len := 0;
@@ -283,10 +282,11 @@ actor HuffmanDecoder()
 	guard count = mbcount
 	do
 	count := 0;
-	bitcount := 0;
+	bit_pos := 0;
 	mbcount := 0;
 	v_read_HT := 0;
 	cur_val := 0;
+	
 	cur_len := 0;
 	to_read := 0;
 	lastDC := [0, 0, 0];
