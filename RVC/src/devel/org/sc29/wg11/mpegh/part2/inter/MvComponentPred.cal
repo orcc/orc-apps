@@ -161,7 +161,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	uint(size=16) slcIdx;
 	int (size=16) colSlcIdx;
 	bool          predFlag;
-	uint(size=8)  paralMergeLvl;
+	int (size=8)  paralMergeLvl;
 	int numCandidate;
 	uint sizeOfList;
 	uint nbList;
@@ -407,41 +407,44 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		uint listAvail
 	begin
 		predFlag := false;
-		if(xN>=0 && yN>=0 && xN<picSizeInPart[0] && yN<picSizeInPart[1]) then
-			predFlag := refIdxRef[currIdx][xN][yN][0] != -1 ||
-				refIdxRef[currIdx][xN][yN][1] != -1 ;
-			if(predFlag) then
-				if(isNonMerged && not scaled) then
-					foreach int i in 0 .. numCandidate-1
-					do
-						if(mvPred[i][0][0] = mvRef[currIdx][xN][yN][0][0] &&
-						   mvPred[i][0][1] = mvRef[currIdx][xN][yN][0][1] &&
-						   mvPred[i][1][0] = mvRef[currIdx][xN][yN][1][0] &&
-						   mvPred[i][1][1] = mvRef[currIdx][xN][yN][1][1]) then
-							sameComponent := true;
+		if(isNonMerged || (partAddr[0] >> paralMergeLvl) != (xN >> paralMergeLvl) ||
+		                  (partAddr[1] >> paralMergeLvl) != (yN >> paralMergeLvl)) then
+			if(xN>=0 && yN>=0 && xN<picSizeInPart[0] && yN<picSizeInPart[1]) then
+				predFlag := refIdxRef[currIdx][xN][yN][0] != -1 ||
+					refIdxRef[currIdx][xN][yN][1] != -1 ;
+				if(predFlag) then
+					if(isNonMerged && not scaled) then
+						foreach int i in 0 .. numCandidate-1
+						do
+							if(mvPred[i][0][0] = mvRef[currIdx][xN][yN][0][0] &&
+							   mvPred[i][0][1] = mvRef[currIdx][xN][yN][0][1] &&
+							   mvPred[i][1][0] = mvRef[currIdx][xN][yN][1][0] &&
+							   mvPred[i][1][1] = mvRef[currIdx][xN][yN][1][1]) then
+								sameComponent := true;
+							end
 						end
 					end
-				end
-				if(not sameComponent) then
-					if(isNonMerged) then
-						listAvail :=
-							if(refIdxRef[currIdx][xN][yN][listX] != -1) then
-								listX
-							else
-								listX^1
-							end;
-						mvPred[numCandidate][listX] := [mvRef[currIdx][xN][yN]
-							[listAvail][i]:for int i in 0 .. 1];
-						refIdxPred[numCandidate][listX] := refIdxRef[currIdx]
-							[xN][yN][listAvail];
-					else
-						mvPred[numCandidate] :=
-							[[mvRef[currIdx][xN][yN][list][i]:
-								for int i in 0 .. 1]:for int list in 0 .. 1];
-						refIdxPred[numCandidate] := [refIdxRef[currIdx][xN][yN]
-							[list]:for int list in 0 .. 1];
+					if(not sameComponent) then
+						if(isNonMerged) then
+							listAvail :=
+								if(refIdxRef[currIdx][xN][yN][listX] != -1) then
+									listX
+								else
+									listX^1
+								end;
+							mvPred[numCandidate][listX] := [mvRef[currIdx][xN][yN]
+								[listAvail][i]:for int i in 0 .. 1];
+							refIdxPred[numCandidate][listX] := refIdxRef[currIdx]
+								[xN][yN][listAvail];
+						else
+							mvPred[numCandidate] :=
+								[[mvRef[currIdx][xN][yN][list][i]:
+									for int i in 0 .. 1]:for int list in 0 .. 1];
+							refIdxPred[numCandidate] := [refIdxRef[currIdx][xN][yN]
+								[list]:for int list in 0 .. 1];
+						end
+						numCandidate := numCandidate + 1;
 					end
-					numCandidate := numCandidate + 1;
 				end
 			end
 		end
@@ -717,7 +720,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		dependSlc := partMode = PART_MODE_SLICE_DEP;
 		newPict   := partMode = PART_MODE_PICT;
 		enTmpMvp  := tmvpFlag ;
-		paralMergeLvl := paralMergeLevel;
+		paralMergeLvl := paralMergeLevel - 2;
 		if DEBUG_PartMode then
 			println("partMode = "+partMode);
 		end
@@ -866,7 +869,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		uint(size=4) cuPartModeInit = cuPartMode,
 		int          partAddrInit[2] = partAddr
 	do
-		if(paralMergeLvl > 2 && cuPartMode != PART_2Nx2N && predCuSize <= 8) then
+		if(paralMergeLvl > 0 && cuPartMode != PART_2Nx2N && predCuSize <= 8) then
 			nPSW := max(nPSW, nPSH);
 			nPSH := nPSW;
 			cuPartMode := PART_2Nx2N;
@@ -881,7 +884,9 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		//A1
 		if(not (cuPartMode = PART_Nx2N || cuPartMode = PART_nLx2N ||
 			cuPartMode = PART_nRx2N) || partIdx!=1) then
-			isAvailableA1 := getIsAvailable();
+			isAvailableA1 := getIsAvailable() and
+				((locationLeft[0] >> paralMergeLvl) != (partAddr[0] >> paralMergeLvl) ||
+			     (locationLeft[1] >> paralMergeLvl) != (partAddr[1] >> paralMergeLvl));
 			getNeighbourMv(false, 0, false);
 			numNeighbSelect := if(predFlag) then 1 else 0 end;
 		end
@@ -892,7 +897,9 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 
 			tryGetNeighbour := not isAvailableA1 || hasNotSameMvComp(locationUp, locationLeft);
 			neighbLocation := locationUp;
-			isAvailableB1 := getIsAvailable();
+			isAvailableB1 := getIsAvailable() and
+				((locationUp[0] >> paralMergeLvl) != (partAddr[0] >> paralMergeLvl) ||
+			     (locationUp[1] >> paralMergeLvl) != (partAddr[1] >> paralMergeLvl));
 			if(tryGetNeighbour) then
 				getNeighbourMv(false, 0, false);
 				numNeighbSelect := numNeighbSelect +
