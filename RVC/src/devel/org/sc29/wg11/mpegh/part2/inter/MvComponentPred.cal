@@ -98,6 +98,8 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	uint(size=3)  RefIdx
 		:
 
+	uint(size=16) MAX_NUM_SLICE = 1000;
+
  	bool DEBUG_CUInfo	    = false;
  	bool DEBUG_PartMode	    = false;
  	bool DEBUG_PicSize	    = false;
@@ -144,16 +146,20 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	int           mvPred[5][2][2];
 	int           refIdxPred[5][2];
 	int(size=16)  pocRef[7];
-	int(size=16)  pocRefList[7][2][16];
+	uint(size=16) numSlcPerPict[7];
+	int(size=16)  pocRefList[7][MAX_NUM_SLICE][2][16];
+	uint(size=16) slcAddrRef[7][MAX_NUM_SLICE][2];
 	int(size=4)   refIdxRef[7][PICT_WIDTH/4][PICT_HEIGHT/4][2];
-	uint(size=4)   modeRef[7][PICT_WIDTH/4][PICT_HEIGHT/4];
+	uint(size=4)  modeRef[7][PICT_WIDTH/4][PICT_HEIGHT/4];
 	int(size=16)  mvRef[7][PICT_WIDTH/4][PICT_HEIGHT/4][2][2];
 	int           neighbLocation[2];
 	int           nPSH;
 	int           nPSW;
 	bool          isRef[7];
 	bool          isStillRef[7];
-	int(size=4)   currIdx;
+	int (size=4)  currIdx;
+	uint(size=16) slcIdx;
+	int (size=16) colSlcIdx;
 	bool          predFlag;
 	uint(size=8)  paralMergeLvl;
 	int numCandidate;
@@ -235,6 +241,36 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			end
 		else
 			true
+		end
+	end
+
+	procedure searchColSlcAddr(int(size=32) partAddr[2])
+	var
+		int(size=32) pocSlcAddr[2]
+	begin
+		colSlcIdx := -1;
+		foreach int i in 0 .. numSlcPerPict[colRefIdx] - 1
+		do
+			pocSlcAddr := [slcAddrRef[colRefIdx][i][j]: for int j in 0 .. 1];
+			if(partAddr[1] >= pocSlcAddr[1]+64/4 ||
+					(partAddr[1] >= pocSlcAddr[1] && partAddr[0] >= pocSlcAddr[0])) then
+				if(colSlcIdx != -1) then
+					if(pocSlcAddr[1] > slcAddrRef[colRefIdx][colSlcIdx][1] ||
+					   pocSlcAddr[1] = slcAddrRef[colRefIdx][colSlcIdx][1] &&
+					   pocSlcAddr[0] > slcAddrRef[colRefIdx][colSlcIdx][0]) then
+						colSlcIdx := i;
+					end
+				else
+					colSlcIdx := i;
+				end
+			end
+		end
+		foreach int list in 0 .. 1
+		do
+			foreach int k in 0 .. 15
+			do
+				colRefPoc[list][k] := pocRefList[colRefIdx][colSlcIdx][list][k];
+			end
 		end
 	end
 
@@ -471,7 +507,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		int yN = neighbLocation[1],
 		int idxColRef = refIdxRef[pictIdx][xN][yN][listAvail],
 		int pocRefCol = refList[listAvail][idxColRef],
-		int pocRefCurrPic = pocRefList[currIdx][listX][refIdxRefCurrPic],
+		int pocRefCurrPic = pocRefList[currIdx][slcIdx][listX][refIdxRefCurrPic],
 		int deltaColPic,
 		int deltaCurrPic,
 		int td,
@@ -583,6 +619,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 							listAvail := [0, 1];
 						end
 					end end
+					searchColSlcAddr(neighbLocation);
 					mvScal := [mv[0][i]:for int i in 0 .. 1];
 					mvScaling(mvScal, refIdxRefCurrPic,   listAvail[0], 0, 
 						colRefIdx, colRefPoc);
@@ -615,6 +652,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 					if(refIdxRefCurrPic = -1) then
 						refIdxRefCurrPic := 0;
 					end
+					searchColSlcAddr(neighbLocation);
 					mvScal := [mv[listAvail[0]][i]:for int i in 0 .. 1];
 					mvScaling(mvScal, refIdxRefCurrPic, listAvail[0], listX,
 						colRefIdx, colRefPoc);
@@ -684,6 +722,13 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			println("partMode = "+partMode);
 		end
 		nbList := 0;
+		if(partMode = PART_MODE_PICT) then
+			slcIdx := 0;
+		elsif(partMode = PART_MODE_SLICE_INDEP) then
+			slcIdx := slcIdx + 1;
+			slcAddrRef[currIdx][slcIdx] := [slcAddr[i]: for int i in 0 .. 1];
+			numSlcPerPict[currIdx] := numSlcPerPict[currIdx] + 1;
+		end
 	end
 
 	checkDepSlc.isTrue: action ==>
@@ -714,6 +759,8 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 					currIdx  := i;
 				end
 			end
+			numSlcPerPict[currIdx] := 1;
+			slcAddrRef[currIdx][0] := [slcAddr[i]: for int i in 0 .. 1];
 
 			refIdxRef[currIdx]:= [[[-1:for int i in 0 .. 1]:
 				for int j in 0 .. PICT_HEIGHT/4-1]:for int k in 0 .. PICT_WIDTH/4-1];
@@ -1114,7 +1161,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 				do
 					foreach int j in 0 .. 15
 					do
-						colRefPoc[list][j] := pocRefList[i][list][j];
+						colRefPoc[list][j] := pocRefList[i][slcIdx][list][j];
 					end
 				end
 				colRefIdx := i;
@@ -1131,7 +1178,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 		maxPoc := max(maxPoc, refPoc);
 		pocRefListX[listIdx][sizeIdx] := refPoc;
-		pocRefList[currIdx][listIdx][sizeIdx] := refPoc;
+		pocRefList[currIdx][slcIdx][listIdx][sizeIdx] := refPoc;
 		sizeIdx := sizeIdx + 1;
 	end
 
