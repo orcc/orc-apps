@@ -194,6 +194,8 @@ actor Algo_Parser ()
 	look_for.Slice_header: action ==>
 	guard
 		(nal_unit_type = NAL_TRAIL_R    or
+		 nal_unit_type = NAL_TSA_N      or
+		 nal_unit_type = NAL_TSA_R      or
 		 nal_unit_type = NAL_TRAIL_N    or
 		 nal_unit_type = NAL_BLA_W_LP   or
          nal_unit_type = NAL_BLA_W_RADL or
@@ -286,15 +288,16 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_VPS_Header.se_idx_4
 	 *************************************************************************/
-	read_VPS_Header.se_idx_4.loop : action ==>
+	bool profile_present_flag := true;
+	bool sub_layer_profile_present_flag;
+	bool sub_layer_level_present_flag;
+		
+	read_VPS_Header.se_idx_4.loop1 : action ==>
 	guard
 		se_idx = 4 and isFifoFull(fifo),
 		cnt_i < vps_max_sub_layers_minus1      
 	var
-		bool profile_present_flag = true,
-		uint(size = 32) res[1],
-		bool sub_layer_profile_present_flag,
-		bool sub_layer_level_present_flag
+		uint(size = 32) res[1]
 	do
         res[0] := 0;
         if profile_present_flag then
@@ -303,6 +306,28 @@ actor Algo_Parser ()
         sub_layer_profile_present_flag := (res[0] = 1);
         vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
         sub_layer_level_present_flag := (res[0] = 1);
+        cnt_i := cnt_i + 1;
+    end
+    
+    read_VPS_Header.se_idx_4.insertedCond : action ==>
+	guard
+		se_idx = 40 and isFifoFull(fifo)
+	do
+        if (vps_max_sub_layers_minus1 > 0) then
+        	foreach int k in vps_max_sub_layers_minus1 .. 7 do
+        		flushBits_name( 2, fifo,    "reserved_zero_2bits[ i ]                ");
+        	end
+        end
+        se_idx := 41;
+    end
+   
+    read_VPS_Header.se_idx_4.loop2 : action ==>
+	guard
+		se_idx = 41 and isFifoFull(fifo),
+		cnt_i < vps_max_sub_layers_minus1      
+	var
+		uint(size = 32) res[1]
+	do
 	    if (profile_present_flag and sub_layer_profile_present_flag) then
 			vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
 			vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
@@ -317,10 +342,27 @@ actor Algo_Parser ()
 	    end
 	    cnt_i := cnt_i + 1;
 	end
-    read_VPS_Header.se_idx_4.loopEnd : action ==>
+    read_VPS_Header.se_idx_4.loop1End : action ==>
     guard
         se_idx = 4 and isFifoFull(fifo),
         cnt_i = vps_max_sub_layers_minus1
+        do
+		cnt_i  := 0;
+        se_idx := 40;
+    end
+    
+    read_VPS_Header.se_idx_4.loop2End : action ==>
+    guard
+        se_idx = 41 and isFifoFull(fifo),
+        cnt_i = vps_max_sub_layers_minus1
+    do
+    	se_idx := 42;
+    	cnt_i := 0;
+    end
+    
+    read_VPS_Header.se_idx_4.decodeInfoPresentFlag : action ==>
+    guard
+        se_idx = 42 and isFifoFull(fifo)
     var
         uint(size=32) res[1]
     do
@@ -330,17 +372,17 @@ actor Algo_Parser ()
         else
             cnt_i  := vps_max_sub_layers_minus1;
         end
-        se_idx := se_idx + 1;
+        se_idx := 5;
     end
     /**************************************************************************
      * read_VPS_Header.se_idx_5
      *************************************************************************/
-    read_VPS_Header.se_idx_5.loop : action ==>
+    read_VPS_Header.se_idx_5.loop11 : action ==>
     guard
         se_idx = 5 and isFifoFull(fifo),
-        cnt_i <= vps_max_sub_layers_minus1      
+        cnt_i < vps_max_sub_layers_minus1 +1      
     var
-        uint(size=32) res[1]
+        int(size=32) res[1]
     do
         vld_ue_name(    fifo, res, "vps_max_dec_pic_buffering[i]            ");
         vld_ue_name(    fifo, res, "vps_num_reorder_pics[i]                 ");
@@ -360,7 +402,7 @@ actor Algo_Parser ()
         vps_num_op_sets_minus1 := res[0];
         cnt_i  := 1;
         cnt_i  := vps_num_op_sets_minus1 + 1; // TODO : bypass layer_id_included_flag()
-        se_idx := se_idx + 1;
+        se_idx := 6;
     end
     /**************************************************************************
      * read_VPS_Header.se_idx_6
@@ -679,24 +721,56 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_22
 	 *************************************************************************/
-	read_SPS_Header.se_idx_22.loop : action ==>
+	bool sps_sub_layer_level_present_flag := false;
+	bool sps_profile_present_flag := true;
+	bool sps_sub_layer_profile_present_flag := false;
+	
+	read_SPS_Header.se_idx_22.loop1 : action ==>
 	guard
 		se_idx = 22 and isFifoFull(fifo),
 		cnt_i < sps_max_sub_layers_minus1[sps_id]
 	var
-		bool profile_present_flag = true,
-		uint(size = 32) res[1],
-		bool sub_layer_profile_present_flag,
-		bool sub_layer_level_present_flag
+		uint(size = 32) res[1]
 	do
         res[0] := 0;
-        if profile_present_flag then
+        if sps_profile_present_flag then
             vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
         end
-        sub_layer_profile_present_flag := (res[0] = 1);
+        sps_sub_layer_profile_present_flag := (res[0] = 1);
         vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
-        sub_layer_level_present_flag := (res[0] = 1);
-        if (profile_present_flag and sub_layer_profile_present_flag) then
+        sps_sub_layer_level_present_flag := (res[0] = 1);
+        cnt_i := cnt_i + 1;
+    end
+    
+    read_SPS_Header.se_idx_22.loopEnd1 : action ==>
+    guard
+        se_idx = 22 and isFifoFull(fifo),
+        cnt_i = sps_max_sub_layers_minus1[sps_id]
+    do
+		cnt_i := 0;
+		se_idx := 221;
+	end
+    
+    read_SPS_Header.se_idx_22.indertedCond : action ==>
+	guard
+		se_idx = 221 and isFifoFull(fifo)
+	do
+		if sps_max_sub_layers_minus1[sps_id] > 0 then
+			foreach int i in sps_max_sub_layers_minus1[sps_id] .. 7 do
+				flushBits_name(2, fifo,     "reserved_zero_2bits[i]                    ");
+			end
+		end
+		se_idx := 222;
+	end
+	
+	read_SPS_Header.se_idx_22.loop2 : action ==>
+	guard
+		se_idx = 222 and isFifoFull(fifo),
+		cnt_i < sps_max_sub_layers_minus1[sps_id]
+	var
+		uint(size = 32) res[1]
+	do
+        if (sps_profile_present_flag and sps_sub_layer_profile_present_flag) then
             vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
             vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
             vld_u_name(  5, fifo, res, "sub_layer_profile_idc[i]                ");
@@ -705,14 +779,14 @@ actor Algo_Parser ()
             end
             flushBits_name(16, fifo,    "sub_layer_reserved_zero_16bits[i]         ");
         end
-        if (sub_layer_level_present_flag) then
+        if (sps_sub_layer_level_present_flag) then
             vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
         end
         cnt_i := cnt_i + 1;
     end
     read_SPS_Header.se_idx_22.loopEnd : action ==>
     guard
-        se_idx = 22 and isFifoFull(fifo),
+        se_idx = 222 and isFifoFull(fifo),
         cnt_i = sps_max_sub_layers_minus1[sps_id]
     do
 		se_idx := 11;
