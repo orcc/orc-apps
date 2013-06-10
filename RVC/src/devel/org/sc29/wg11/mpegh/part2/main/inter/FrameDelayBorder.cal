@@ -1,0 +1,164 @@
+/*
+ * Copyright (c) 2012, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+package devel.org.sc29.wg11.mpegh.part2.main.inter;
+
+import std.util.Math.*;
+import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+
+actor FrameDelayBorder()
+	uint(size=16) PictSize,
+	uint(size=8)  Block_in
+		==>
+	uint(size=8)  Block_out
+		:
+
+
+	uint(size=8) pictureBuffer[3][PICT_WIDTH][PICT_HEIGHT];
+
+	uint(size=6)  picSizeInCu[2];
+	uint(size=6)  xCu := 0;
+	uint(size=6)  yCu := 0;
+
+
+	procedure nextLcuAddress()
+	begin
+		xCu := xCu + 1;
+		if(xCu = picSizeInCu[0]) then
+			xCu := 0;
+			yCu := yCu + 1;
+		end
+	end
+
+
+
+	isNewPict: action 
+		PictSize:[picWidthInPix, picHeightInPix]==>
+	do
+		picSizeInCu := [(picWidthInPix+63)/64, (picHeightInPix+63)/64];
+	end
+
+
+	getCuPix.launch: action Block_in:[samp] repeat 64*64 + 32*32*2 ==>
+	guard
+		yCu < picSizeInCu[1]
+	var
+		uint(size=16) offset,
+		uint(size=16) xPic,
+		uint(size=16) yPic
+	do
+		xPic := xCu<<6;
+		yPic := yCu<<6;
+
+		foreach uint y in 0 .. 63
+		do
+			foreach uint x in 0 .. 63
+			do
+				pictureBuffer[0][xPic+x][yPic+y] := samp[x + y*64]; 
+			end
+		end
+
+		xPic := xPic>>1;
+		yPic := yPic>>1;
+		offset := 64*64;
+		foreach uint cIdx in 1 .. 2
+		do
+			foreach uint y in 0 .. 31
+			do
+				foreach uint x in 0 .. 31
+				do
+					pictureBuffer[cIdx][xPic+x][yPic+y] := samp[x + y*32 +offset]; 
+				end
+			end
+			offset := offset + 32*32;
+		end
+		nextLcuAddress();
+	end
+
+	getCuPix.done: action ==>
+	guard
+		yCu = picSizeInCu[1]
+	do
+		xCu := 0;
+		yCu := 0;
+	end
+
+	sendSamples.launch: action ==> Block_out:[sampleOut] repeat 64*64 + 2* 32*32
+	guard
+		yCu < picSizeInCu[1]
+	var
+		uint tokenOffset,
+		uint(size=8) sampleOut[64*64+2*32*32],
+		uint(size=16) blkAddrX, uint(size=16) blkAddrY
+	do
+		blkAddrX := xCu*64;
+		blkAddrY := yCu*64;
+		foreach uint y in 0 .. 63
+		do
+			foreach uint x in 0 .. 63
+			do
+					sampleOut[x+y*64] := pictureBuffer[0][blkAddrX+x][blkAddrY+y];
+			end
+		end
+
+		blkAddrX := blkAddrX>>1;
+		blkAddrY := blkAddrY>>1;
+		tokenOffset:= 64*64;
+		foreach uint comp in 1 .. 2
+		do
+			foreach uint y in 0 .. 31
+			do
+				foreach uint x in 0 .. 31
+				do
+						sampleOut[x+y*32 + tokenOffset] := pictureBuffer[comp][blkAddrX+x][blkAddrY+y];
+				end
+			end
+			tokenOffset:= tokenOffset + 32*32;
+		end
+
+		nextLcuAddress();
+	end
+
+	sendSamples.done: action ==>
+	guard
+		yCu = picSizeInCu[1]
+	do
+		xCu := 0;
+		yCu := 0;
+	end
+
+	schedule fsm IsNewPict:
+		IsNewPict (isNewPict )--> GetCuPix;
+
+		GetCuPix (getCuPix.launch )--> GetCuPix;
+		GetCuPix (getCuPix.done   )--> SendSamples;
+
+		SendSamples (sendSamples.launch )--> SendSamples;
+		SendSamples (sendSamples.done   )--> IsNewPict;
+	end
+end
