@@ -125,6 +125,8 @@ actor Algo_Parser ()
 	uint(size= 6) nal_unit_type;
 	
 	read_nal_unit_header : action ==> 
+	guard
+		isFifoFull(fifo)
 	var
 		uint(size=32) res[1]
 	do
@@ -139,6 +141,7 @@ actor Algo_Parser ()
 			flushBits( 1, fifo );
 			vld_u(  6, fifo, res);
 			nal_unit_type := res[0];
+			println("nalUnitType =" + nal_unit_type) ;
 			flushBits( 6, fifo  );
 			vld_u(  3, fifo, res); 
 		end
@@ -344,7 +347,7 @@ actor Algo_Parser ()
 	end
     read_VPS_Header.se_idx_4.loop1End : action ==>
     guard
-        se_idx = 4 and isFifoFull(fifo),
+        se_idx = 4 ,
         cnt_i = vps_max_sub_layers_minus1
         do
 		cnt_i  := 0;
@@ -353,7 +356,7 @@ actor Algo_Parser ()
     
     read_VPS_Header.se_idx_4.loop2End : action ==>
     guard
-        se_idx = 41 and isFifoFull(fifo),
+        se_idx = 41 ,
         cnt_i = vps_max_sub_layers_minus1
     do
     	se_idx := 42;
@@ -2047,13 +2050,14 @@ actor Algo_Parser ()
 	read_SliceHeader_done : action ==> Poc:[poc], 
 		StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
 	guard
-		se_idx = 6
+		se_idx = 6 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
 		uint(size=16) num_entry_point_offsets,
 		uint(size=16) offset_len,
 		uint(size= 8) slice_segment_header_extension_length
 	do
+		println ("slicedone");
 		if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
 			vld_ue_name(    fifo, res, "num_entry_point_offsets                 ");
     		num_entry_point_offsets := res[0];
@@ -2111,7 +2115,7 @@ actor Algo_Parser ()
 
 	read_SliceData.init: action ==> SliceAddr:[0, 0]
 	guard
-		sliceData_idx = 1,
+		sliceData_idx = 1 and isFifoFull(fifo),
 		isNotFirstSlice = false or prev_pps_id != pps_id
 	var
 		uint(size=16) column_width[PICT_WIDTH / MIN_CTB_SIZE_Y]= [pps_column_width[pps_id][ i ] : for int i in 0 .. (PICT_WIDTH / MIN_CTB_SIZE_Y)-1],
@@ -2130,6 +2134,7 @@ actor Algo_Parser ()
 		uint(size=16) tbY,
 		uint(size=16) tIdx
 	do
+		println ("slicedatainit");
 		isNotFirstSlice   := true;
 		prev_pps_id       := pps_id;
 		
@@ -2237,7 +2242,7 @@ actor Algo_Parser ()
 	 
 	read_SliceData.start : action ==>
 	guard
-		sliceData_idx = 2
+		sliceData_idx = 2 and isFifoFull(fifo)
 	do
 		skip_flag_tab := [[0	    : for int j in 0 .. 1]	: for int i in 0 .. PICT_WIDTH-1];
 		intraPredMode := [[INTRA_DC	: for int j in 0 .. 1]	: for int i in 0 .. PICT_WIDTH-1];
@@ -3267,19 +3272,19 @@ actor Algo_Parser ()
 	 *************************************************************************/
 	 int(size=32) mvd_x;
 	 int(size=32) mvd_y;
+	 uint(size= 1) abs_mvd_greater1_flag_1;
+	 uint(size= 1) abs_mvd_greater0_flag_1;
+	 
+	 
 	read_MVDCoding.start : action ==>
 	guard
 		isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
 		uint(size= 1) abs_mvd_greater0_flag_0,
-		uint(size= 1) abs_mvd_greater0_flag_1,
 		uint(size= 1) abs_mvd_greater1_flag_0,
-		uint(size= 1) abs_mvd_greater1_flag_1,
 		 int(size=16) abs_mvd_minus2_0 := 0,
-		uint(size= 1) mvd_sign_flag_0  := 0,
-		 int(size=16) abs_mvd_minus2_1 := 0,
-		uint(size= 1) mvd_sign_flag_1  := 0
+		uint(size= 1) mvd_sign_flag_0  := 0
 	do
 		get_ABS_MVD_GREATER0_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
 		abs_mvd_greater0_flag_0 := res[0];
@@ -3302,6 +3307,17 @@ actor Algo_Parser ()
 			get_MVD_SIGN_FLAG(codIRange, codIOffset, fifo, res);
 			mvd_sign_flag_0 := res[0];
 		end
+		mvd_x := abs_mvd_greater0_flag_0 * ( abs_mvd_minus2_0 + 2 ) * ( 1 - (mvd_sign_flag_0 << 1) );
+	end	
+	
+	read_MVDCoding.ended : action ==>
+	guard
+		isFifoFull(fifo)
+	var
+		uint(size=32) res[1],
+		 int(size=16) abs_mvd_minus2_1 := 0,
+		uint(size= 1) mvd_sign_flag_1  := 0
+	do
 		if abs_mvd_greater0_flag_1 = 1 then
 			abs_mvd_minus2_1 := -1;
 			if abs_mvd_greater1_flag_1 = 1 then
@@ -3311,7 +3327,6 @@ actor Algo_Parser ()
 			get_MVD_SIGN_FLAG(codIRange, codIOffset, fifo, res);
 			mvd_sign_flag_1 := res[0];
 		end
-		mvd_x := abs_mvd_greater0_flag_0 * ( abs_mvd_minus2_0 + 2 ) * ( 1 - (mvd_sign_flag_0 << 1) );
 		mvd_y := abs_mvd_greater0_flag_1 * ( abs_mvd_minus2_1 + 2 ) * ( 1 - (mvd_sign_flag_1 << 1) );
 	end
 
@@ -4053,7 +4068,8 @@ actor Algo_Parser ()
 		read_PredictionUnit			    ( read_PredictionUnit_gotoMVDCoding ) --> read_MVDCoding;
 		read_PredictionUnit			    ( read_PredictionUnit_end			) --> read_CodingUnit;
 		// read_MVDCoding
-		read_MVDCoding				    ( read_MVDCoding	  				) --> read_PredictionUnit;
+		read_MVDCoding				    ( read_MVDCoding.start	  			) --> read_MVDCoding_end;
+		read_MVDCoding_end				( read_MVDCoding.ended	  			) --> read_PredictionUnit;
 		// read_PCMSample
 		read_PCMSample				    ( read_PCMSample	  				) --> undefined;//read_PredictionUnit;
 		// read_TransformTree
