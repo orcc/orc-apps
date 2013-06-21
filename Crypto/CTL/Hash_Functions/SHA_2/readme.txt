@@ -26,7 +26,7 @@ Note: These FUs are located under package CTL.Hash_Functions.common.
 
 Smaller2Bigger.cal
 
-Note: Utilities are located under package CTL.Utilities.
+Note: Utilities are located under package CTL.Utilities.Other.
 
 == SHA-2 FU network ==
 

@@ -16,7 +16,7 @@ Source_AES_InvCipher.cal: Source FU with test vectors and golden responses for A
 
 -- Validator FU --
 
-System.Validator_16B.cal: comparing the output of a FU against a golden response (used for validating the functionalities of blocks with 16 bytes).
+Utilities.System.Validator_16B.cal: comparing the output of a FU against a golden response (used for validating the functionalities of blocks with 16 bytes).
 
 ---- Test vectors and golden response ----
 
