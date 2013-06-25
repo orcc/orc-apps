@@ -93,9 +93,9 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	bool          disDbf := false;
 
 	uint(size=8)  pictureBuffer[3][PICT_WIDTH][PICT_HEIGHT];
-	int (size=8)  qpTab[PICT_WIDTH/4][2*64/4];
+	int (size=8)  qpTab[PICT_WIDTH/4][PICT_HEIGHT/4];
 	uint(size=2)  bSTableVert[256];
-	uint(size=2)  bSTableHoriz[2][256];
+	uint(size=2)  bSTableHoriz[PICT_WIDTH/64][PICT_HEIGHT/64][256];
 	uint(size=1)  currHorIdx;
 
 	int           betaOffset;
@@ -117,7 +117,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	procedure decisionProcessLumaBlkEdge(uint(size=16) addr[2], bool isVertical, uint(size=8) bS)
 	var
 		uint(size=16) q0X = (addr[0]/4) & (PICT_WIDTH/4-1),
-		uint(size=16) q0Y = (addr[1]/4) & 31,
+		uint(size=16) q0Y = addr[1]/4,
 		uint(size=16) p0X, uint(size=16) p0Y,
 		int Q,
 		uint(size=16) beta,
@@ -134,7 +134,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 			p0Y := q0Y;
 		else
 			p0X := q0X;
-			p0Y := (q0Y-1)&31;
+			p0Y := q0Y-1;
 		end
 		qPi := ((qpTab[q0X][q0Y] + qpTab[p0X][p0Y] + 1)>>1);
 		Q := clip_i32(qPi+betaOffset, 0, 51);
@@ -301,6 +301,28 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		//pcmLoopFilterDisableFlag is active.
 	end
 
+	procedure filterHorEdges()
+	var
+		uint(size=16) blkAddr[2]
+	begin
+		foreach int idxBlk in 0 .. 255
+		do
+			if(bSTableHoriz[xAddrHor/64][yAddrHor/64][idxBlk]!=0) then
+				rasterScanToAbsCoord(idxBlk, blkAddr);
+				blkAddr[0] := blkAddr[0] + xAddrHor;
+				blkAddr[1] := blkAddr[1] + yAddrHor;
+				decisionProcessLumaBlkEdge(blkAddr, false, bSTableHoriz[xAddrHor/64][yAddrHor/64][idxBlk]);
+				filterProcessLumaBlkEdge(blkAddr, false);
+				if(bSTableHoriz[xAddrHor/64][yAddrHor/64][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
+					foreach int cIdx in 1 .. 2
+					do
+						filtProcessChrBlkEdge(blkAddr, false, cIdx);
+					end
+				end
+			end
+		end
+	end
+
 	procedure saveRasterScanCu(uint(size=8) sample[64*64 + 2*32*32])
 	var
 		uint(size=16) pixAddr[2],
@@ -398,7 +420,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	getNumTiles: action TilesCoord:[valNumTiles] ==>
 	do
 		numTiles := valNumTiles;
-		println("\nnumTiles : " + numTiles);
 		iLoop := 0;
 	end
 
@@ -408,8 +429,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	do
 		tilesBeg[iLoop] := [tilesCoord[0]/64, tilesCoord[1]/64];
 		tilesEnd[iLoop] := [(tilesCoord[2]+63)/64, (tilesCoord[3]+63)/64];
-		println("tilesBeg[" + iLoop + "] : [" + tilesBeg[iLoop][0] + " ; " + tilesBeg[iLoop][1] + "]");
-		println("tilesEnd[" + iLoop + "] : [" + tilesEnd[iLoop][0] + " ; " + tilesEnd[iLoop][1] + "]\n");
 		iLoop := iLoop + 1;
 	end
 
@@ -436,8 +455,8 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 
 		xMin := (xAddrVert & PICT_WIDTH-1) >>2;
 		xMax := (xMin+16)&(PICT_WIDTH/4-1);
-		yMin := (yAddrVert/4)&31;
-		yMax := ((yAddrVert+64)/4)&31;
+		yMin := yAddrVert/4;
+		yMax := (yAddrVert+64)/4;
 		yVal := yMin;
 		while(yVal!=yMax)
 		do
@@ -446,15 +465,14 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 				coord := [x<<2, yVal<<2];
 				qpTab[x][yVal] := qp[absCoordToRasterScan(coord)];
 			end
-			yVal := (yVal+1)&31;
+			yVal := yVal+1;
 		end
 		bSTableVert := [bs[2*j]: for uint j in 0 .. 255];
-		bSTableHoriz[currHorIdx&1] := [bs[1+2*j]: for uint j in 0 .. 255];
+		bSTableHoriz[xIdx][yIdx] := [bs[1+2*j]: for uint j in 0 .. 255];
 
 		currHorIdx := currHorIdx + 1;
 		lastXIdx := xIdx;
 		lastYIdx := yIdx;
-		println("pixIdx : [" + xIdx + " ; " + yIdx + "];");
 		xIdx := xIdx + 1;
 		if(xIdx = tilesEnd[tileIdx][0]) then
 			xIdx := tilesBeg[tileIdx][0];
@@ -503,9 +521,9 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 			end
 		end
 
-		qpTab[(pixAddr[0] & PICT_WIDTH-1) >>2][(pixAddr[1]/4)&31] := qp;
+		qpTab[(pixAddr[0] & PICT_WIDTH-1) >>2][pixAddr[1]/4] := qp;
 		bSTableVert[blkIdx] := bs[0];
-		bSTableHoriz[currHorIdx&1][blkIdx] := bs[1];
+		bSTableHoriz[xAddrVert/64][yAddrVert/64][blkIdx] := bs[1];
 
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
@@ -533,7 +551,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
 		bSTableVert[blkIdx] := 0;
-		bSTableHoriz[currHorIdx&1][blkIdx] := 0;
+		bSTableHoriz[xAddrVert/64][yAddrVert/64][blkIdx] := 0;
 		blkIdx := blkIdx + 1;
 		rasterScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
@@ -546,7 +564,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
 		bSTableVert[blkIdx] := 0;
-		bSTableHoriz[currHorIdx&1][blkIdx] := 0;
+		bSTableHoriz[xAddrVert/64][yAddrVert/64][blkIdx] := 0;
 		blkIdx := blkIdx + 1;
 		rasterScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
@@ -560,7 +578,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		currHorIdx := currHorIdx + 1;
 		lastXIdx := xIdx;
 		lastYIdx := yIdx;
-		println("pixIdx : [" + xIdx + " ; " + yIdx + "];");
 		xIdx := xIdx + 1;
 		if(xIdx = tilesEnd[tileIdx][0]) then
 			xIdx := tilesBeg[tileIdx][0];
@@ -579,9 +596,9 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		blkIdx < 256 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
 
-		qpTab[(pixAddr[0] & PICT_WIDTH-1) >>2][(pixAddr[1]/4)&31] := qp;
+		qpTab[(pixAddr[0] & PICT_WIDTH-1) >>2][pixAddr[1]/4] := qp;
 		bSTableVert[blkIdx] := bs[0];
-		bSTableHoriz[currHorIdx&1][blkIdx] := bs[1];
+		bSTableHoriz[xAddrVert/64][yAddrVert/64][blkIdx] := bs[1];
 
 		blkIdx := blkIdx + 1;
 		rasterScanToAbsCoord(blkIdx, pixAddr);
@@ -595,7 +612,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
 		bSTableVert[blkIdx] := 0;
-		bSTableHoriz[currHorIdx&1][blkIdx] := 0;
+		bSTableHoriz[xAddrVert/64][yAddrVert/64][blkIdx] := 0;
 		blkIdx := blkIdx + 1;
 		rasterScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
@@ -609,7 +626,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		currHorIdx := currHorIdx + 1;
 		lastXIdx := xIdx;
 		lastYIdx := yIdx;
-		println("pixIdx : [" + xIdx + " ; " + yIdx + "];");
 		xIdx := xIdx + 1;
 		if(xIdx = tilesEnd[tileIdx][0]) then
 			xIdx := tilesBeg[tileIdx][0];
@@ -625,29 +641,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	getCuPix.done: action ==>
 	guard
 		tileIdx = numTiles
-	var
-		uint(size=16) blkAddr[2]
 	do
-		if(not disDbf) then
-			if(xAddrHor != -1 and FILT_HOR_EDGES) then
-				foreach int idxBlk in 0 .. 255
-				do
-					if(bSTableHoriz[(currHorIdx&1)^1][idxBlk]!=0) then
-						rasterScanToAbsCoord(idxBlk, blkAddr);
-						blkAddr[0] := blkAddr[0] + xAddrHor;
-						blkAddr[1] := blkAddr[1] + yAddrHor;
-						decisionProcessLumaBlkEdge(blkAddr, false, bSTableHoriz[(currHorIdx&1)^1][idxBlk]);
-						filterProcessLumaBlkEdge(blkAddr, false);
-						if(bSTableHoriz[(currHorIdx&1)^1][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
-							foreach int cIdx in 1 .. 2
-							do
-								filtProcessChrBlkEdge(blkAddr, false, cIdx);
-							end
-						end
-					end
-				end
-			end
-		end
 		lastXIdx := 0;
 		lastYIdx := 0;
 		xIdx := 0;
@@ -678,23 +672,14 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 				end
 			end
 			if(FILT_HOR_EDGES) then
-				if(xAddrHor != -1) then
-					foreach int idxBlk in 0 .. 255
-					do
-						if(bSTableHoriz[currHorIdx&1][idxBlk]!=0) then
-							rasterScanToAbsCoord(idxBlk, blkAddr);
-							blkAddr[0] := blkAddr[0] + xAddrHor;
-							blkAddr[1] := blkAddr[1] + yAddrHor;
-							decisionProcessLumaBlkEdge(blkAddr, false, bSTableHoriz[currHorIdx&1][idxBlk]);
-							filterProcessLumaBlkEdge(blkAddr, false);
-							if(bSTableHoriz[currHorIdx&1][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
-								foreach int cIdx in 1 .. 2
-								do
-									filtProcessChrBlkEdge(blkAddr, false, cIdx);
-								end
-							end
-						end
-					end
+				if(xAddrVert > 0) then
+					xAddrHor := xAddrVert - 64;
+					yAddrHor := yAddrVert;
+					filterHorEdges();
+				end
+				if(xAddrVert + 64 >= picSize[0]) then
+					xAddrHor := xAddrVert;
+					filterHorEdges();
 				end
 			end
 		end
