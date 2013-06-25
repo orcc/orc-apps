@@ -68,7 +68,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=8)  Sample,
 	uint(size=16) SliceAddr,
 	bool          SplitTransform,
-	bool 		  StrongIntraSmoothing
+	bool 		  StrongIntraSmoothing,
+	uint(size=16) TilesCoord
 		==>
 	uint(size=8) PredSample
 		:
@@ -81,7 +82,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 
 	uint(size=1) ABOVE = 0;
 	uint(size=1) LEFT  = 1;
-
 
 	uint(size=8) leftBlkAvail[256] =
 	[0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
@@ -135,6 +135,16 @@ actor IntraPrediction(bool EnabSkipInPix)
 	-390,  -482,  -630, -910, -1638, -4096,    0, -4096, -1638,  -910,
 	-630,  -482,  -390, -315,  -256];
 
+
+	int(size=16) iLoop;
+
+	uint(size=16) numTiles;
+	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
+	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
+
+	int(size=16) puTilesBeg[3][2];
+	int(size=16) puTilesEnd[3][2];
+
 	uint(size=7)  nS;
 	uint(size=3)  log2NS;
 	uint(size=16) cuAddr[2];
@@ -157,8 +167,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=8)  pNeighb[2][129];
 	uint(size=8)  puNeighb[3][NEIGHB_TAB_SZ];
 	bool          puIsIntra[3][NEIGHB_TAB_SZ];
-	uint(size=32) neighLumaIdxOff;
-	uint(size=32) neighChromaIdxOff;
 	uint(size=7)  neighbBlkSz;
 
 	uint(size=8) lumaComp[64][64];
@@ -198,11 +206,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 		xMax := maxVal[0];
 		yMax := maxVal[1];
 
-		if(cIdx = 0) then
-			origPixIdx := 64-(cuAddr[1]&63)+(cuAddr[0]&63)+neighLumaIdxOff;
-		else
-			origPixIdx := 32-(cuAddr[1]&31)+(cuAddr[0]&31)+neighChromaIdxOff;
-		end
+		origPixIdx := pictSize[cIdx][1] - cuAddr[1] + cuAddr[0];
 		foreach int y in yMin .. yMax-1
 		do
 			pNeighb[LEFT][y+1] :=
@@ -350,6 +354,16 @@ actor IntraPrediction(bool EnabSkipInPix)
 					end end
 				end
 			end
+			if(puTilesBeg[cIdx][0] > cuAddr[0]-1) then
+				yMin := yMax;
+			else
+				if(puTilesBeg[cIdx][1] - cuAddr[1] > yMin) then
+					yMin := max(puTilesBeg[cIdx][1] - cuAddr[1] + 1, yMin);
+				end
+				if(puTilesEnd[cIdx][1] - cuAddr[1] < yMax) then
+					yMax := min(puTilesEnd[cIdx][1] - cuAddr[1] + 1, yMax);
+				end
+			end
 		end
 
 		if(cuAddr[1]!=0) then
@@ -372,6 +386,16 @@ actor IntraPrediction(bool EnabSkipInPix)
 						xMin := sliceAddr[cIdx][0]-cuAddr[0]+1;
 					end end
 				end end
+			end
+			if(puTilesBeg[cIdx][1] > cuAddr[1]-1) then
+				xMin := xMax;
+			else
+				if(puTilesBeg[cIdx][0] - cuAddr[0] > xMin) then
+					xMin := max(puTilesBeg[cIdx][0] - cuAddr[0] + 1, xMin);
+				end
+				if(puTilesEnd[cIdx][0] - cuAddr[0] < xMax) then
+					xMax := min(puTilesEnd[cIdx][0] - cuAddr[0] + 1, xMax);
+				end
 			end
 		end
 
@@ -717,6 +741,26 @@ actor IntraPrediction(bool EnabSkipInPix)
 		isIndepSlc := partMode = PART_MODE_SLICE_INDEP;
 	end
 
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBeg[iLoop] := [tilesCoord[0], tilesCoord[1]];
+		tilesEnd[iLoop] := [tilesCoord[2], tilesCoord[3]];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
+
 	/* Check when there are two parts in the CU.  */
 	getPartMode.isNonQuadTree: action PartMode:[partMode] ==>
 	guard
@@ -748,14 +792,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 			getInSamp := false;
 			cuMode := cuMode - NO_IN_SAMP;
 		end
-		if((cuInfo[1]&63) = 0 && (cuInfo[2]&63) = 0) then
-			neighLumaIdxOff := neighLumaIdxOff + 64;
-			neighChromaIdxOff := neighChromaIdxOff + 32;
-		end
-		if(cuInfo[1] = 0 && (cuInfo[2]&63) = 0) then
-			neighLumaIdxOff := -cuInfo[2];
-			neighChromaIdxOff := -cuInfo[2]>>1;
-		end
 		nS := cuInfo[3];
 		cuAddr := [cuInfo[1], cuInfo[2]];
 		numPartDecoded := numPartDecoded + 1;
@@ -771,14 +807,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 	var
 		uint(size=7) nS = cuInfo[3]
 	do
-		if((cuInfo[1]&63) = 0 && (cuInfo[2]&63) = 0) then
-			neighLumaIdxOff := neighLumaIdxOff + 64;
-			neighChromaIdxOff := neighChromaIdxOff + 32;
-		end
-		if(cuInfo[1] = 0 && (cuInfo[2]&63) = 0) then
-			neighLumaIdxOff := -cuInfo[2];
-			neighChromaIdxOff := -cuInfo[2]>>1;
-		end
 		getInSamp := true;
 		treeAddr := [cuInfo[1], cuInfo[2]];
 		idxBlk := 0;
@@ -808,14 +836,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 		numPartDecoded := 2;
 		trafoTreeDepth  := 0;
 		trafoTreeIdx[0] := 3;
-		if((cuInfo[1]&63) = 0 && (cuInfo[2]&63) = 0) then
-			neighLumaIdxOff := neighLumaIdxOff + 64;
-			neighChromaIdxOff := neighChromaIdxOff + 32;
-		end
-		if(cuInfo[1] = 0 && (cuInfo[2]&63) = 0) then
-			neighLumaIdxOff := -cuInfo[2];
-			neighChromaIdxOff := -cuInfo[2]>>1;
-		end
 	end
 
 	getCuInfo.done: action ==>
@@ -828,6 +848,20 @@ actor IntraPrediction(bool EnabSkipInPix)
 	guard
 		cuMode = INTRA
 	do
+		foreach int tileIdx in 0 .. numTiles - 1
+		do
+			if(cuAddr[0] >= tilesBeg[tileIdx][0] && cuAddr[0] < tilesEnd[tileIdx][0] &&
+			   cuAddr[1] >= tilesBeg[tileIdx][1] && cuAddr[1] < tilesEnd[tileIdx][1]) then
+			   	puTilesBeg[0] := [tilesBeg[tileIdx][0], tilesBeg[tileIdx][1]];
+				puTilesBeg[1] := [puTilesBeg[0][0]/2, puTilesBeg[0][1]/2];
+				puTilesBeg[2] := [puTilesBeg[1][0], puTilesBeg[1][1]];
+
+			   	puTilesEnd[0] := [tilesEnd[tileIdx][0], tilesEnd[tileIdx][1]];
+			   	puTilesEnd[1] := [puTilesEnd[0][0] / 2, puTilesEnd[0][1] / 2];
+			   	puTilesEnd[2] := [puTilesEnd[1][0], puTilesEnd[1][1]];
+			 end
+		end
+
 		predModeTab[0] := predMode[0];
 		predModeTab[1] := predMode[1];
 		predModeTab[2] := predMode[1];
@@ -1073,8 +1107,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 		if(bottomBlk) then
 			foreach uint x in 0 .. 3
 			do
-				tabIdx := (64 -((blkAddr[1]+3)&63) +((blkAddr[0]+x)&63) + neighLumaIdxOff)
-					& NEIGHB_TAB_MASK;
+				tabIdx := pictSize[0][1] - (blkAddr[1] + 3) + blkAddr[0] + x;
 				puNeighb[0][tabIdx] := sample[4*3+x];
 				puIsIntra[0][tabIdx]   := cuMode = INTRA;
 			end
@@ -1083,8 +1116,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 		if(leftBlk) then
 			foreach uint y in 0 .. 3
 			do
-				tabIdx := (64 - ((blkAddr[1]+y)&63) + ((blkAddr[0]+3)&63) + neighLumaIdxOff)
-					& NEIGHB_TAB_MASK;
+				tabIdx := pictSize[0][1] - (blkAddr[1] + y) + blkAddr[0] + 3;
 				puNeighb[0][tabIdx] := sample[4*y+3];
 				puIsIntra[0][tabIdx]   := cuMode = INTRA;
 			end
@@ -1098,8 +1130,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 			if(bottomBlk) then
 				foreach uint x in 0 .. 1
 				do
-					tabIdx := (32 - ((blkAddr[1]+1)&31) + ((blkAddr[0]+x)&31) + neighChromaIdxOff)
-						& NEIGHB_TAB_MASK;
+					tabIdx := pictSize[1][1] - (blkAddr[1] + 1) + blkAddr[0] + x;
 					puNeighb[comp][tabIdx]  := sample[2*1+x+sampOff];
 					puIsIntra[comp][tabIdx] := cuMode = INTRA;
 				end
@@ -1108,8 +1139,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 			if(leftBlk) then
 				foreach uint y in 0 .. 1
 				do
-					tabIdx := (32 - ((blkAddr[1]+y)&31) + ((blkAddr[0]+1)&31) + neighChromaIdxOff)
-						& NEIGHB_TAB_MASK;
+					tabIdx := pictSize[1][1] - (blkAddr[1] + y) + blkAddr[0] + 1;
 					puNeighb[comp][tabIdx]  := sample[2*y+1+sampOff];
 					puIsIntra[comp][tabIdx] := cuMode = INTRA;
 				end
@@ -1126,9 +1156,13 @@ actor IntraPrediction(bool EnabSkipInPix)
 	end
 
 	schedule fsm GetPartMode:
-		GetPartMode(isNewSliceOrPict          )--> GetPartMode;
+		GetPartMode(isNewSliceOrPict          )--> GetNumTiles;
 		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
 		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
+
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetPartMode;
 
 		GetCuInfoNonQT (getCuInfo.nonQT )--> GetSplitTrafoInter;
 
