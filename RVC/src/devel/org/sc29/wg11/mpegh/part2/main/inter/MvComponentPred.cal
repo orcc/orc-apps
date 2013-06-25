@@ -86,7 +86,8 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	int (size=16) RpsPoc,
 	uint(size=16) SliceAddr,
 	uint(size=2)  SliceType,
-	int (size=16) SyntaxElem
+	int (size=16) SyntaxElem,
+	uint(size=16) TilesCoord
 		==>
 	uint(size=2)  IsBiPredOrLx,
 	uint(size=1)  IsReadOrNewSlice,
@@ -172,13 +173,24 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	uint(size=16) slcAddr[2];
 	bool          dependSlc;
 	bool          newPict;
+	int(size=16)  iLoop;
+	uint(size=16) numTiles;
+	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
+	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
+	int (size=16) puTilesBeg[2];
+	int (size=16) puTilesEnd[2];
 	
 	function isInter(int xN, int yN) --> bool
 	:
 		if(xN>=0 && yN>=0 && xN<picSizeInPart[0] && yN<picSizeInPart[1])then
 			if(dependSlc || not (yN < slcAddr[1] || (yN < slcAddr[1] + 64/4 &&
 			   xN < slcAddr[0]))) then
-				modeRef[currIdx][xN][yN] = INTER // and what about Skip ?
+				if(xN >= puTilesBeg[0] && xN < puTilesEnd[0] &&
+				   yN >= puTilesBeg[1] && yN < puTilesEnd[1]) then
+					modeRef[currIdx][xN][yN] = INTER // and what about Skip ?
+				else
+					false
+				end
 			else
 				false
 			end
@@ -301,7 +313,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	/* Computes the location of the neighbour. The result will be in the vector
 	 * neighbLocation
 	 */
-	procedure getNeighbAddr(int location, bool isMerged, bool depSlcOrCol)
+	procedure getNeighbAddr(int location, bool isMerged, bool depSlcOrCol, bool isColNeighb)
 	begin
 		int bitMod = 3;
 		if(location = LEFT) then
@@ -345,6 +357,11 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		if(not depSlcOrCol && (neighbLocation[1] < slcAddr[1] ||
 			(neighbLocation[1]< slcAddr[1] + 64/4 &&
 				neighbLocation[0] < slcAddr[0]))) then
+			neighbLocation[1] := -1;
+		end
+		if(not isColNeighb and (neighbLocation[0] < puTilesBeg[0] or
+			neighbLocation[0] >= puTilesEnd[0] or neighbLocation[1] < puTilesBeg[1] or
+			neighbLocation[1] >= puTilesEnd[1])) then
 			neighbLocation[1] := -1;
 		end
 	end
@@ -544,10 +561,10 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		if(isMerged) then
 			listX := 0;
 		end
-		getNeighbAddr(RIGHT_BOTTOM, false, true);
+		getNeighbAddr(RIGHT_BOTTOM, false, true, true);
 		getColNeighbourMv(isMerged, listX);
 		if(not predFlag) then
-			getNeighbAddr(CENTER, false, true);
+			getNeighbAddr(CENTER, false, true, true);
 			getColNeighbourMv(isMerged, listX);
 		end
 	end
@@ -733,6 +750,29 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 	end
 
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		println("\n\nnumTiles : " + numTiles);
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBeg[iLoop] := [tilesCoord[0]/4, tilesCoord[1]/4];
+		println("tilesBeg[" + iLoop + "] : [" + tilesBeg[iLoop][0] + " ; " + tilesBeg[iLoop][1] + "]");
+		tilesEnd[iLoop] := [tilesCoord[2]/4, tilesCoord[3]/4];
+		println("tilesEnd[" + iLoop + "] : [" + tilesEnd[iLoop][0] + " ; " + tilesEnd[iLoop][1] + "]\n");
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
+
 	checkDepSlc.isTrue: action ==>
 	guard
 		dependSlc
@@ -844,6 +884,14 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	guard
 		cuMode = INTER || cuMode = SKIP
 	do
+		foreach int tileIdx in 0 .. numTiles - 1
+		do
+			if(partAddr[0] >= tilesBeg[tileIdx][0] && partAddr[0] < tilesEnd[tileIdx][0] &&
+			   partAddr[1] >= tilesBeg[tileIdx][1] && partAddr[1] < tilesEnd[tileIdx][1]) then
+			   	puTilesBeg := [tilesBeg[tileIdx][0], tilesBeg[tileIdx][1]];
+			   	puTilesEnd := [tilesEnd[tileIdx][0], tilesEnd[tileIdx][1]];
+			 end
+		end
 		mergeIdx := mergeIndex;
 		if DEBUG_SyntaxElem then
 			println("mergeIdx = "+mergeIdx);	
@@ -875,9 +923,9 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			partAddr := partAddr1stPu;
 		end
 		numCandidate := 0;
-		getNeighbAddr(ABOVE, true, dependSlc);
+		getNeighbAddr(ABOVE, true, dependSlc, false);
 		locationUp := neighbLocation;
-		getNeighbAddr(LEFT, true, dependSlc);
+		getNeighbAddr(LEFT, true, dependSlc, false);
 		locationLeft := neighbLocation;
 
 		//A1
@@ -907,7 +955,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 
 		//B0
-		getNeighbAddr(ABOVE_RIGHT, true, dependSlc);
+		getNeighbAddr(ABOVE_RIGHT, true, dependSlc, false);
 		tryGetNeighbour := not isAvailableB1 || hasNotSameMvComp(neighbLocation, locationUp);
 		if(tryGetNeighbour) then
 			getNeighbourMv(false, 0, false);
@@ -916,7 +964,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 
 		//A0
-		getNeighbAddr(LEFT_BOTTOM, true, dependSlc);
+		getNeighbAddr(LEFT_BOTTOM, true, dependSlc, false);
 		tryGetNeighbour := not isAvailableA1 || hasNotSameMvComp(neighbLocation, locationLeft);
 		if(tryGetNeighbour) then
 			getNeighbourMv(false, 0, false);
@@ -925,7 +973,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 
 		if(numNeighbSelect<4) then
-			getNeighbAddr(ABOVE_LEFT, true, dependSlc);
+			getNeighbAddr(ABOVE_LEFT, true, dependSlc, false);
 			tryGetNeighbour := not isAvailableB1 || hasNotSameMvComp(neighbLocation, locationUp);
 			tryGetNeighbour := tryGetNeighbour &&
 				(not isAvailableA1 || hasNotSameMvComp(neighbLocation, locationLeft));
@@ -973,31 +1021,31 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			numCandidate := 0;
 
 			//Left neighbours
-			getNeighbAddr(LEFT_BOTTOM, false, dependSlc); // A0
+			getNeighbAddr(LEFT_BOTTOM, false, dependSlc, false); // A0
 			getNonMergedNeighbourMv(list);
 			if(not predFlag) then
-				getNeighbAddr(LEFT, false, dependSlc); // A1
+				getNeighbAddr(LEFT, false, dependSlc, false); // A1
 				getNonMergedNeighbourMv(list);
 			end
 			if(not predFlag) then
-				getNeighbAddr(LEFT_BOTTOM, false, dependSlc); // A0'
+				getNeighbAddr(LEFT_BOTTOM, false, dependSlc, false); // A0'
 				getNonMergedScaledMv(list);
 			end
 			if(not predFlag) then
-				getNeighbAddr(LEFT, false, dependSlc); // A1'
+				getNeighbAddr(LEFT, false, dependSlc, false); // A1'
 				getNonMergedScaledMv(list);
 			end
 			numNeighbSelect := if(predFlag) then 1 else 0 end;
 
 			//Above neighbours
-			getNeighbAddr(ABOVE_RIGHT, false, dependSlc); // B0
+			getNeighbAddr(ABOVE_RIGHT, false, dependSlc, false); // B0
 			getNonMergedNeighbourMv(list);
 			if(not predFlag) then
-				getNeighbAddr(ABOVE, false, dependSlc); // B1
+				getNeighbAddr(ABOVE, false, dependSlc, false); // B1
 				getNonMergedNeighbourMv(list);
 			end
 			if(not predFlag) then
-				getNeighbAddr(ABOVE_LEFT, false, dependSlc); // B2
+				getNeighbAddr(ABOVE_LEFT, false, dependSlc, false); // B2
 				getNonMergedNeighbourMv(list);
 			end
 			numNeighbSelect := numNeighbSelect +
@@ -1009,15 +1057,15 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 				predFlag := true;
 			end
 			if(not predFlag) then
-				getNeighbAddr(ABOVE_RIGHT, false, dependSlc); // B0'
+				getNeighbAddr(ABOVE_RIGHT, false, dependSlc, false); // B0'
 				getNonMergedScaledMv(list);
 			end
 			if(not predFlag) then
-				getNeighbAddr(ABOVE, false, dependSlc); // B1'
+				getNeighbAddr(ABOVE, false, dependSlc, false); // B1'
 				getNonMergedScaledMv(list);
 			end
 			if(not predFlag) then
-				getNeighbAddr(ABOVE_LEFT, false, dependSlc); // B2'
+				getNeighbAddr(ABOVE_LEFT, false, dependSlc, false); // B2'
 				getNonMergedScaledMv(list);
 			end
 			if enTmpMvp then
@@ -1219,8 +1267,12 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	end
 
 	schedule fsm GetPartMode:
-		GetPartMode (isNewSlice       )--> CheckIndepSlc;
+		GetPartMode (isNewSlice       )--> GetNumTiles;
 		GetPartMode (getPartMode      )--> GetCuInfo;
+
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> CheckIndepSlc;
 
 		CheckIndepSlc(checkDepSlc.isTrue  )--> GetPartMode;
 		CheckIndepSlc(checkDepSlc.isFalse )--> GetRps;
