@@ -34,11 +34,12 @@ import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	uint(size=2)  Bs,
+	bool          DBFDisable,
 	uint(size=2)  IsPicSlcLcu,
 	uint(size=16) PicSize,
 	int (size=8)  Qp,
 	uint(size=8)  SampleIn,
-	bool          DBFDisable
+	uint(size=16) TilesCoord
 		==>
 	uint(size=8)  FiltSample
 		:
@@ -69,6 +70,12 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		   36, 36, 37, 37, 38, 39, 40, 41, 42, 43,
 		   44, 45];
 
+	int(size=16) iLoop;
+
+	uint(size=16) numTiles;
+	uint(size=16) tileIdx;
+	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
+	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
 	uint(size=6)  xIdx;
@@ -385,11 +392,35 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		xIdxSamp := 0;
 		yIdxSamp := 0;
 		xAddrHor := -1;
+		tileIdx := 0;
+	end
+
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		println("\nnumTiles : " + numTiles);
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBeg[iLoop] := [tilesCoord[0]/64, tilesCoord[1]/64];
+		tilesEnd[iLoop] := [(tilesCoord[2]+63)/64, (tilesCoord[3]+63)/64];
+		println("tilesBeg[" + iLoop + "] : [" + tilesBeg[iLoop][0] + " ; " + tilesBeg[iLoop][1] + "]");
+		println("tilesEnd[" + iLoop + "] : [" + tilesEnd[iLoop][0] + " ; " + tilesEnd[iLoop][1] + "]\n");
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
 	end
 
 	getCuPix.launch.pict: action Bs:[bs] repeat 512, IsPicSlcLcu:[isLcu], Qp:[qp] repeat 256, SampleIn:[samp] repeat 64*64 + 32*32*2==>
 	guard
-		yIdx < picSizeInCu[1]-1 && xIdx < picSizeInCu[0]-1 && isLcu = NEW_LCU
+		tileIdx < numTiles && yIdx < picSizeInCu[1]-1 && xIdx < picSizeInCu[0]-1 && isLcu = NEW_LCU
 	var
 		uint(size=16) xMin, uint(size=16) xMax,
 		uint(size=16) yMin, uint(size=16) yMax, uint(size=16) yVal,
@@ -423,10 +454,16 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		currHorIdx := currHorIdx + 1;
 		lastXIdx := xIdx;
 		lastYIdx := yIdx;
+		println("pixIdx : [" + xIdx + " ; " + yIdx + "];");
 		xIdx := xIdx + 1;
-		if(xIdx = picSizeInCu[0]) then
-			xIdx := 0;
+		if(xIdx = tilesEnd[tileIdx][0]) then
+			xIdx := tilesBeg[tileIdx][0];
 			yIdx := yIdx + 1;
+			if(yIdx = tilesEnd[tileIdx][1]) then
+				tileIdx := tileIdx + 1;
+				xIdx := tilesBeg[tileIdx][0];
+				yIdx := tilesBeg[tileIdx][1];
+			end
 		end
 	end
 
@@ -523,10 +560,16 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		currHorIdx := currHorIdx + 1;
 		lastXIdx := xIdx;
 		lastYIdx := yIdx;
+		println("pixIdx : [" + xIdx + " ; " + yIdx + "];");
 		xIdx := xIdx + 1;
-		if(xIdx = picSizeInCu[0]) then
-			xIdx := 0;
+		if(xIdx = tilesEnd[tileIdx][0]) then
+			xIdx := tilesBeg[tileIdx][0];
 			yIdx := yIdx + 1;
+			if(yIdx = tilesEnd[tileIdx][1]) then
+				tileIdx := tileIdx + 1;
+				xIdx := tilesBeg[tileIdx][0];
+				yIdx := tilesBeg[tileIdx][1];
+			end
 		end
 	end
 
@@ -566,16 +609,22 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 		currHorIdx := currHorIdx + 1;
 		lastXIdx := xIdx;
 		lastYIdx := yIdx;
+		println("pixIdx : [" + xIdx + " ; " + yIdx + "];");
 		xIdx := xIdx + 1;
-		if(xIdx = picSizeInCu[0]) then
-			xIdx := 0;
+		if(xIdx = tilesEnd[tileIdx][0]) then
+			xIdx := tilesBeg[tileIdx][0];
 			yIdx := yIdx + 1;
+			if(yIdx = tilesEnd[tileIdx][1]) then
+				tileIdx := tileIdx + 1;
+				xIdx := tilesBeg[tileIdx][0];
+				yIdx := tilesBeg[tileIdx][1];
+			end
 		end
 	end
 
 	getCuPix.done: action ==>
 	guard
-		yIdx = picSizeInCu[1]
+		tileIdx = numTiles
 	var
 		uint(size=16) blkAddr[2]
 	do
@@ -731,13 +780,17 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES, bool DEBUG)
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewPict )--> GetCuPix;
+		IsNewPict (isNewPict )--> GetNumTiles;
 
-		GetCuPix  (isNewSlc                          )--> GetCuPix;
+		GetCuPix  (isNewSlc                          )--> GetNumTiles;
 		GetCuPix  (getCuPix.launch.pict              )--> FilterEdges;
 		GetCuPix  (getCuPix.launch.lastColOrRow.vert )--> GetBlk;
 		GetCuPix  (getCuPix.launch.lastColOrRow.hor  )--> GetBs4Blk;
 		GetCuPix  (getCuPix.done                     )--> SendSamples;
+
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetCuPix;
 
 		GetBlk (getBlk.launch )--> GetBlk;
 		GetBlk (getBlk.skip   )--> GetBlk;
