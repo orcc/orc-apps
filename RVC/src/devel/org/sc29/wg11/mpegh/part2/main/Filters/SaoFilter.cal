@@ -69,6 +69,7 @@ actor SaoFilter(bool DEBUG)
 	uint(size=5)  saoLeftClass[PICT_WIDTH/64][PICT_HEIGHT/64][3];
 	uint(size=3)  bandTable[32];
 	uint(size=6)  picSizeInCu[2];
+	uint(size=6)  picSizeInMb[2];
 	uint(size=16) picSize[3][2];
 	uint(size=8)  xCu := 0;
 	uint(size=8)  yCu := 0;
@@ -100,10 +101,10 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
-	procedure nextLcuAddressNoTile()
+	procedure nextMbAddr()
 	begin
 		xCu := xCu + 1;
-		if(xCu = picSizeInCu[0]) then
+		if(xCu = picSizeInMb[0]) then
 			xCu := 0;
 			yCu := yCu + 1;
 		end
@@ -615,6 +616,7 @@ uint numPict;
 		end
 		
 		picSizeInCu := [(picWidthInPix+63)/64, (picHeightInPix+63)/64];
+		picSizeInMb := [(picWidthInPix+15)/16, (picHeightInPix+15)/16];
 		picSize[0]  := [picWidthInPix   , picHeightInPix];
 		picSize[1]  := [picSize[0][0] >> 1, picSize[0][1] >> 1];
 		picSize[2]  := [picSize[1][0], picSize[1][1]];
@@ -920,27 +922,27 @@ uint numPict;
 
 	
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 64*64 + 2* 32*32
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 16*16 + 2 * 8*8 
 	guard
-		yCu < picSizeInCu[1]
+		yCu < picSizeInMb[1]
 	var
 		uint tokenOffset,
-		uint(size=8) filtSamp[64*64+2*32*32],
+		uint(size=8) filtSamp[16*16+2*8*8],
 		uint(size=16) blkAddrX, uint(size=16) blkAddrY
 	do
-		blkAddrX := xCu*64;
-		blkAddrY := yCu*64;
-		foreach uint y in 0 .. 63
+		blkAddrX := xCu*16;
+		blkAddrY := yCu*16;
+		foreach uint y in 0 .. 15
 		do
-			foreach uint x in 0 .. 63
+			foreach uint x in 0 .. 15
 			do
 				if(not DEBUG) then
-					filtSamp[x+y*64] := FiltPict[0][blkAddrX+x][blkAddrY+y];
+					filtSamp[x+y*16] := FiltPict[0][blkAddrX+x][blkAddrY+y];
 				else
 					if(blkAddrX+x<picSize[0][0] && blkAddrY+y<picSize[0][1]) then
-						filtSamp[x+y*64] := FiltPict[0][blkAddrX+x][blkAddrY+y];
+						filtSamp[x+y*16] := FiltPict[0][blkAddrX+x][blkAddrY+y];
 					else
-						filtSamp[x+y*64] := 0;
+						filtSamp[x+y*16] := 0;
 					end
 				end
 			end
@@ -948,65 +950,33 @@ uint numPict;
 
 		blkAddrX := blkAddrX>>1;
 		blkAddrY := blkAddrY>>1;
-		tokenOffset:= 64*64;
+		tokenOffset:= 16*16;
 		foreach uint comp in 1 .. 2
 		do
-			foreach uint y in 0 .. 31
+			foreach uint y in 0 .. 7
 			do
-				foreach uint x in 0 .. 31
+				foreach uint x in 0 .. 7
 				do
 					if(not DEBUG) then
-						filtSamp[x+y*32 + tokenOffset] := FiltPict[comp][blkAddrX+x][blkAddrY+y];
+						filtSamp[x+y*8 + tokenOffset] := FiltPict[comp][blkAddrX+x][blkAddrY+y];
 					else
 						if(blkAddrX+x<picSize[0][0]/2 && blkAddrY+y<picSize[0][1]/2) then
-							filtSamp[x+y*32 + tokenOffset] := FiltPict[comp][blkAddrX+x][blkAddrY+y];
+							filtSamp[x+y*8 + tokenOffset] := FiltPict[comp][blkAddrX+x][blkAddrY+y];
 						else
-							filtSamp[x+y*32 + tokenOffset] := 0;
+							filtSamp[x+y*8 + tokenOffset] := 0;
 						end
 					end
 				end
 			end
-			tokenOffset:= tokenOffset + 32*32;
+			tokenOffset:= tokenOffset + 8*8;
 		end
 
-		nextLcuAddressNoTile();
-		
-		if (DEBUG_Trace) then
-			println("=== sendSamples.launch ===");
-			println("FiltSample  = [ ");
-			foreach int y in 0 .. 63 do
-				foreach int x in 0 .. 63 do
-					print(filtSamp[x+y*64]+", ");
-				end
-				if y != 63 then
-					println("");
-				end 
-			end
-			println("][");
-			foreach int y in 0 .. 31 do
-				foreach int x in 0 .. 31 do
-					print(filtSamp[64*64+x+y*32]+", ");
-				end
-				if y != 31 then
-					println("");
-				end 
-			end
-			println("][");
-			foreach int y in 0 .. 31 do
-				foreach int x in 0 .. 31 do
-					print(filtSamp[64*64+32*32+x+y*32]+", ");
-				end
-				if y != 31 then
-					println("");
-				end 
-			end
-			println("]");
-		end
+		nextMbAddr();
 	end
 
 	sendSamples.done: action ==>
 	guard
-		yCu = picSizeInCu[1]
+		yCu = picSizeInMb[1]
 	do
 		xCuFilt := 0;
 		yCuFilt := 0;
