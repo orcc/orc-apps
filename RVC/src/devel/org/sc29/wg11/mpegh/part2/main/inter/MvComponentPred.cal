@@ -79,6 +79,7 @@ import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	uint(size=16) CUInfo,
+	uint(size=8)  LcuSizeMax,
 	uint(size=4)  PartMode,
 	uint(size=16) PicSize,
 	uint(size=16) Poc,
@@ -179,11 +180,14 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
 	int (size=16) puTilesBeg[2];
 	int (size=16) puTilesEnd[2];
+	uint(size=8)  lcuSizeMax;
+	uint(size=8)  lcuSizeMaxInPart;
+	uint(size=8)  maskLcuSzMax;
 	
 	function isInter(int xN, int yN) --> bool
 	:
 		if(xN>=0 && yN>=0 && xN<picSizeInPart[0] && yN<picSizeInPart[1])then
-			if(dependSlc || not (yN < slcAddr[1] || (yN < slcAddr[1] + 64/4 &&
+			if(dependSlc || not (yN < slcAddr[1] || (yN < slcAddr[1] + lcuSizeMax/4 &&
 			   xN < slcAddr[0]))) then
 				if(xN >= puTilesBeg[0] && xN < puTilesEnd[0] &&
 				   yN >= puTilesBeg[1] && yN < puTilesEnd[1]) then
@@ -262,7 +266,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		foreach int i in 0 .. numSlcPerPict[colRefIdx] - 1
 		do
 			pocSlcAddr := [slcAddrRef[colRefIdx][i][j]: for int j in 0 .. 1];
-			if(partAddr[1] >= pocSlcAddr[1]+64/4 ||
+			if(partAddr[1] >= pocSlcAddr[1] + maskLcuSzMax / 4 ||
 					(partAddr[1] >= pocSlcAddr[1] && partAddr[0] >= pocSlcAddr[0])) then
 				if(colSlcIdx != -1) then
 					if(pocSlcAddr[1] > slcAddrRef[colRefIdx][colSlcIdx][1] ||
@@ -339,23 +343,25 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 				neighbLocation[0] := -1;
 				neighbLocation[1] := -1;
 			else
+				if((neighbLocation[1] & maskLcuSzMax) = 0 ||
+					(neighbLocation[1]>>4 != partAddr[1]>>4)) then
+					neighbLocation[1] := -1;
+				end
 				neighbLocation[0] := neighbLocation[0] & ~bitMod;
 				neighbLocation[1] := neighbLocation[1] & ~bitMod;
 			end
 		else
 			neighbLocation[0] := partAddr[0] + nPSW/2;
 			neighbLocation[1] := partAddr[1] + nPSH/2;
+			if(neighbLocation[1] >> 4 != partAddr[1] >> 4) then
+				neighbLocation[1] := -1;
+			end
 			neighbLocation[0] := neighbLocation[0] & ~bitMod;
 			neighbLocation[1] := neighbLocation[1] & ~bitMod;
 		end end end end end end
-		if(location = CENTER || location = RIGHT_BOTTOM) then
-			if(isMerged && (neighbLocation[1] & 15) = 15 ||
-				(neighbLocation[1]>>4 != partAddr[1]>>4)) then
-				neighbLocation[1] := -1;
-			end
-		end
+
 		if(not depSlcOrCol && (neighbLocation[1] < slcAddr[1] ||
-			(neighbLocation[1]< slcAddr[1] + 64/4 &&
+			(neighbLocation[1]< slcAddr[1] + maskLcuSzMax/4 &&
 				neighbLocation[0] < slcAddr[0]))) then
 			neighbLocation[1] := -1;
 		end
@@ -750,12 +756,6 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 	end
 
-	getNumTiles: action TilesCoord:[valNumTiles] ==>
-	do
-		numTiles := valNumTiles;
-		iLoop := 0;
-	end
-
 	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
 	guard
 		iLoop < numTiles
@@ -775,9 +775,9 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		dependSlc
 	end
 
-	checkDepSlc.isFalse: action SyntaxElem:[colFromLX,
-		colRefIdxVal], PicSize:[picSize] repeat 2, Poc:[poc],
-		SliceType:[sliceType] ==> IsReadOrNewSlice:[0]
+	checkDepSlc.isFalse: action SyntaxElem:[colFromLX, colRefIdxVal],
+		LcuSizeMax:[lcuSz], PicSize:[picSize] repeat 2, Poc:[poc],
+		SliceType:[sliceType], TilesCoord:[valNumTiles] ==> IsReadOrNewSlice:[0]
 	guard
 		not dependSlc
 	do
@@ -821,6 +821,13 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 		picSizeInPart[0] := picSize[0]/4;
 		picSizeInPart[1] := picSize[1]/4;
+
+		numTiles := valNumTiles;
+		iLoop := 0;
+
+		lcuSizeMax := lcuSz;
+		lcuSizeMaxInPart := lcuSz / 4;
+		maskLcuSzMax     := lcuSizeMaxInPart - 1;
 	end
 
 	getPartMode: action PartMode:[partMode] ==>
@@ -1268,9 +1275,8 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		GetPartMode (getPartMode      )--> GetCuInfo;
 
 		CheckIndepSlc(checkDepSlc.isTrue  )--> GetPartMode;
-		CheckIndepSlc(checkDepSlc.isFalse )--> GetNumTiles;
+		CheckIndepSlc(checkDepSlc.isFalse )--> GetTilesCoord;
 
-		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.done   )--> GetRps;
 
