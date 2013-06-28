@@ -63,6 +63,7 @@ import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=16) CUInfo,
 	uint(size=6)  IntraPredMode,
+	uint(size=8)  LcuSizeMax,
 	uint(size=4)  PartMode,
 	uint(size=16) PictSize,
 	uint(size=8)  Sample,
@@ -158,6 +159,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 	bool strongIntraSmoothing;
 	bool constrIntraPred;
 	bool isIndepSlc;
+	uint(size=8) maxLcuSizeLuma;
+	uint(size=8) maxLcuSizeChr;
 
 	uint(size=6) predMode;
 	uint(size=6) predModeTab[3];
@@ -326,7 +329,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 	procedure neighbExist(uint(size=16) cuAddr[2], int minVal[2], int maxVal[2], int cIdx,
 		uint(size=7) nS)
 	var
-		uint(size=7) maxCuSize = if(cIdx=0) then 64 else 32 end,
+		uint(size=7) maxCuSize = if(cIdx=0) then maxLcuSizeLuma else maxLcuSizeChr end,
 		int xMin := 0, int yMin := 0, int xMax := 0, int yMax := 0,
 		int numPixRemain
 	begin
@@ -710,8 +713,10 @@ actor IntraPrediction(bool EnabSkipInPix)
 	end
 
 	/* Updating the picture size. */
-	isNewSliceOrPict.notDep: action PartMode:[partMode],
-		PictSize:[pictSizeVal] repeat 2, SliceAddr:[slcAddr] repeat 2, StrongIntraSmoothing:[smoothing, constrIntra]==>
+	isNewSliceOrPict.notDep: action PartMode:[partMode], LcuSizeMax:[lcuSz],
+		PictSize:[pictSizeVal] repeat 2, SliceAddr:[slcAddr] repeat 2,
+		StrongIntraSmoothing:[smoothing, constrIntra],
+		TilesCoord:[valNumTiles] ==>
 	guard
 		partMode = PART_MODE_SLICE_INDEP ||
 		partMode = PART_MODE_PICT
@@ -725,6 +730,10 @@ actor IntraPrediction(bool EnabSkipInPix)
 		strongIntraSmoothing := smoothing;
 		constrIntraPred := constrIntra;
 		isIndepSlc := partMode = PART_MODE_SLICE_INDEP;
+		numTiles := valNumTiles;
+		iLoop := 0;
+		maxLcuSizeLuma := lcuSz;
+		maxLcuSizeChr := lcuSz >> 1;
 	end
 
 	/* Updating the picture size. */
@@ -739,12 +748,6 @@ actor IntraPrediction(bool EnabSkipInPix)
 		strongIntraSmoothing := smoothing;
 		constrIntraPred := constrIntra;
 		isIndepSlc := partMode = PART_MODE_SLICE_INDEP;
-	end
-
-	getNumTiles: action TilesCoord:[valNumTiles] ==>
-	do
-		numTiles := valNumTiles;
-		iLoop := 0;
 	end
 
 	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
@@ -1092,9 +1095,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 		uint(size=16) tabIdx
 	do
 		rasterScanToAbsCoord(idxBlk, blkAddr);
-		if(((blkAddr[0]+treeAddr[0])&63) = 0 && ((blkAddr[1]+treeAddr[1])&63) = 60) then
-			idxBlk := idxBlk;
-		end
+
 		if(blkAddr[0]+4>=neighbBlkSz) then
 			leftBlk := true;
 		end
@@ -1156,12 +1157,11 @@ actor IntraPrediction(bool EnabSkipInPix)
 	end
 
 	schedule fsm GetPartMode:
-		GetPartMode(isNewSliceOrPict.notDep   )--> GetNumTiles;
+		GetPartMode(isNewSliceOrPict.notDep   )--> GetTilesCoord;
 		GetPartMode(isNewSliceOrPict.dep      )--> GetPartMode;
 		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
 		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
 
-		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.done   )--> GetPartMode;
 
