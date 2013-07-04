@@ -19,10 +19,11 @@ actor Algo_Parser ()
 				uint(size= 6) IntraPredMode,
 				//FIXME default value
 				uint(size=16) SliceAddr,
-
+				uint(size=16) TilesCoord,
+				uint(size=8)  LcuSizeMax,
 				uint(size= 4) PartMode,
                 uint(size=2)  IsPicSlcLcu,
-                bool          LFAcrossSlc,
+                uint(size=2)  LFAcrossSlcTile,
 				uint(size=16) PictSize,
 				uint(size=16) Poc,
 				 int(size= 9) SaoSe,
@@ -40,6 +41,7 @@ actor Algo_Parser ()
 				 int(size=16) MvPredSyntaxElem,
 				 bool Cbf,
 				 bool DBFDisable,
+				 int(size=8)  DbfSe,
 				 int(size=16) weightedPred
 				 
 :
@@ -141,7 +143,6 @@ actor Algo_Parser ()
 			flushBits( 1, fifo );
 			vld_u(  6, fifo, res);
 			nal_unit_type := res[0];
-			println("nalUnitType =" + nal_unit_type) ;
 			flushBits( 6, fifo  );
 			vld_u(  3, fifo, res); 
 		end
@@ -1217,10 +1218,13 @@ actor Algo_Parser ()
 	 *************************************************************************/	
 	uint(size= 1) pps_deblocking_filter_control_present_flag[NB_MAX_PPS];
 	uint(size =1) deblocking_filter_override_enabled_flag[NB_MAX_PPS];
+	uint(size= 1) pps_loop_filter_across_tile_enabled_flag[NB_MAX_PPS];
 	uint(size= 1) pps_loop_filter_across_slice_enabled_flag[NB_MAX_PPS];
 	uint(size= 1) pps_lists_modification_present_flag[NB_MAX_PPS];
     uint(size= 1) pps_slice_segment_header_extension_present_flag[NB_MAX_PPS];
     uint(size= 1) pps_disable_deblocking_filter_flag[NB_MAX_PPS]; 
+    uint(size= 1) pps_beta_offset[NB_MAX_PPS]; 
+    uint(size= 1) pps_tc_offset[NB_MAX_PPS]; 
     uint(size= 8) pps_log2_parallel_merge_level[NB_MAX_PPS]; 
 
 	read_PPS_Header.se_idx_5 : action ==>
@@ -1231,6 +1235,7 @@ actor Algo_Parser ()
    	do
    		if (pps_tiles_enabled_flag[pps_id] = 1) then
 			vld_u_name(  1, fifo, res, "loop_filter_across_tiles_enabled_flag   ");
+			pps_loop_filter_across_tile_enabled_flag[pps_id] := res[0];
 		end
 		vld_u_name(  1, fifo, res, "loop_filter_across_slices_enabled_flag  ");
 		pps_loop_filter_across_slice_enabled_flag[pps_id] := res[0];
@@ -1244,7 +1249,9 @@ actor Algo_Parser ()
             pps_disable_deblocking_filter_flag[pps_id] := res[0];
             if res[0] = 0 then
                 vld_se_name(    fifo, res, "pps_beta_offset_div2                    ");
+                pps_beta_offset[pps_id] := res[0] << 1;
                 vld_se_name(    fifo, res, "pps_tc_offset_div2                      ");
+                pps_tc_offset[pps_id] := res[0] << 1;
             end
 		end
 		vld_u_name(  1, fifo, res, "pps_scaling_list_data_present_flag      ");
@@ -1316,10 +1323,11 @@ actor Algo_Parser ()
 	    poc:= iPOCmsb+iPOClsb;
 	end
 	
-	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 63)/64, (pictSize[1] + 63)/64], 
+	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 15)/16, (pictSize[1] + 15)/16], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
-		IsPicSlcLcu:[1-first_slice_segment_in_pic_flag], LFAcrossSlc:[pps_loop_filter_across_slice_enabled_flag[pps_id] != 0],
-		MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag]
+		IsPicSlcLcu:[1-first_slice_segment_in_pic_flag], LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
+		MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag], LcuSizeMax:[1 << Log2CtbSize],
+		TilesCoord:[1, 0, 0, pictSize[0], pictSize[1]]
 	guard
 		se_idx = 1 and isFifoFull(fifo)
 	var
@@ -1980,12 +1988,15 @@ actor Algo_Parser ()
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_5
 	 *************************************************************************/
-	read_SliceHeader.se_idx_5 : action ==> DBFDisable:[slice_disable_deblocking_filter_flag !=0]
+	read_SliceHeader.se_idx_5 : action ==> DBFDisable:[slice_disable_deblocking_filter_flag !=0],
+		DbfSe:[betaOff, tcOff, pps_cb_qp_offset[pps_id] + slice_cb_qp_offset, pps_cr_qp_offset[pps_id] + slice_cr_qp_offset]
 	guard
 		se_idx = 5 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
-		uint(size= 1) slice_disable_deblocking_filter_flag := pps_disable_deblocking_filter_flag[pps_id]
+		uint(size= 1) slice_disable_deblocking_filter_flag := pps_disable_deblocking_filter_flag[pps_id],
+		int(size=8) betaOff := pps_beta_offset[pps_id],
+		int(size=8) tcOff := pps_tc_offset[pps_id]
    	do	
 		if slice_type = P_SLICE or slice_type = B_SLICE then
 			vld_ue_name(    fifo, res, "five_minus_max_num_merge_cand           ");
@@ -2011,7 +2022,9 @@ actor Algo_Parser ()
                 slice_disable_deblocking_filter_flag := res[0];
 				if( slice_disable_deblocking_filter_flag = 0) then
 					vld_se_name(    fifo, res, "beta_offset_div2                        ");
+					betaOff := res[0] << 1;
 					vld_se_name(    fifo, res, "tc_offset_div2                          ");
+					tcOff := res[0] << 1;
 				end
 			end
 		end	
@@ -2057,7 +2070,6 @@ actor Algo_Parser ()
 		uint(size=16) offset_len,
 		uint(size= 8) slice_segment_header_extension_length
 	do
-		println ("slicedone");
 		if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
 			vld_ue_name(    fifo, res, "num_entry_point_offsets                 ");
     		num_entry_point_offsets := res[0];
