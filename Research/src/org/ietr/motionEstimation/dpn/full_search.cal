@@ -32,11 +32,12 @@
 package org.ietr.motionEstimation.dpn;
 import std.util.Math.* ;
 
+//@native
 actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, uint(size=32) height*/ ==> uint(size=8) mb, int(size=32) mv :
 	int WITDH = 352;
 	int HEIGHT = 288;
 	int BLOCKSIZE = 16;
-	int MAX_MOTION = 16;
+	int MAX_MOTION = 32;
 	int FRAME_SIZE = WITDH*HEIGHT;
 	
 	
@@ -47,37 +48,47 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
 	int(size=32) cnt := 0;
 	int(size=32) mb_id := 0;
 	int(size=32) bestSad := 0;
+	int(size=32) sad_tab[BLOCKSIZE * BLOCKSIZE];
 	
 	
-	function calc(int sad, int y, int y_ref ) --> int :
-	sad + abs(y_array[y] - y_ref_array[y_ref])
-	end
-
-	procedure SAD( int ox, int oy, int dx, int dy, int h, int w, int idx )
-	var
-		int rx = ox + dx,
-		int ry = oy +dy,
-		int sad := 0
-	begin
-		if (abs(dx) <= MAX_MOTION && abs(dy) <= MAX_MOTION && rx >=0 && ry >=0 && rx+w <= WITDH && ry + h <= HEIGHT) then
-			@gridify(j,i)
-			foreach int j in 0 .. BLOCKSIZE
+  function calc(int y, int y_ref ) --> int :
+    abs(y_array[y] - y_ref_array[y_ref])
+  end
+  
+   procedure SAD( int ox, int oy, int dx, int dy, int h, int w, int idx )
+   var
+     int rx = ox + dx,
+     int ry = oy +dy,
+     int sad := 0
+    begin
+    
+    if (abs(dx) <= MAX_MOTION && abs(dy) <= MAX_MOTION && rx >=0 && ry >=0 && rx+w <= WITDH && ry + h <= HEIGHT) then
+    	@gridify(j,i)
+    	foreach int j in 0 .. BLOCKSIZE-1
+		do
+			foreach int i in 0 .. BLOCKSIZE-1
 			do
-				foreach int i in 0 .. BLOCKSIZE
-				do
-					sad :=  calc(sad, (oy+j) * WITDH + ox+ i, (ry+j) * WITDH + rx +i);
-				end
-			end
-			
-			if (sad < bestSad) then
-				bestSad := sad;
-				mvx[idx] := dx;
-				mvy[idx] := dy;
+				sad_tab[j*BLOCKSIZE+i] :=  calc((oy+j) * WITDH + ox+ i, (ry+j) * WITDH + rx +i);
 			end
 		end
-	end
 
-	@codelet(target="CUDA")
+    	foreach int j in 0 .. BLOCKSIZE-1
+		do
+			foreach int i in 0 .. BLOCKSIZE-1
+			do
+				sad :=  sad + sad_tab[j*BLOCKSIZE+i];
+			end
+		end
+		
+		if (sad < bestSad) then
+			bestSad := sad;
+			mvx[idx] := dx;
+			mvy[idx] := dy;
+		end
+    end
+  end
+  
+  	@codelet(target="OPENCL")
 	procedure search_FS(int x , int y, int h, int w, int idx)
 	var
 		int ox = x * BLOCKSIZE,
@@ -94,6 +105,7 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
 		end
 	end
 	
+	
 	load:action  y:[y_val], y_ref:[y_ref_val] ==>
 	guard
 		cnt < FRAME_SIZE
@@ -104,22 +116,20 @@ actor full_search () uint(size=8) y, uint(size=8) y_ref/*, uint(size=32) width, 
 		cnt := cnt + 1;
 	end
 
-	// TODO HMPP : Advanced load y, y_ref
 	start: action ==>
 	guard
 		cnt = FRAME_SIZE
 	do
-		foreach int j in 0 .. HEIGHT / BLOCKSIZE
+		foreach int j in 0 .. (HEIGHT / BLOCKSIZE)-1
 		do
-			foreach int i in 0 .. WITDH / BLOCKSIZE
+			foreach int i in 0 .. (WITDH / BLOCKSIZE)-1
 			do
-				search_FS(i,j, BLOCKSIZE, BLOCKSIZE, i + j * WITDH / BLOCKSIZE);
+				search_FS(i,j, BLOCKSIZE,BLOCKSIZE, i + j * WITDH / BLOCKSIZE);
 			end
 		end
 		mb_id := 0;
 	end
 	
-	// TODO HMPP : Delegated store mvx, mvy
 	send: action ==> mb:[id], mv:[vx, vy]
 	guard
 		mb_id < (HEIGHT/BLOCKSIZE) * (WITDH/BLOCKSIZE)
