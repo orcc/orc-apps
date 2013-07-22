@@ -1008,6 +1008,8 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	uint(size= 1) sps_temporal_mvp_enable_flag[NB_MAX_SPS];
 	bool          sps_strong_intra_smoothing_enable_flag[NB_MAX_SPS];
 	uint(size= 6) sps_num_long_term_ref_pics_sps[NB_MAX_SPS];
+	uint(size=16) lt_ref_pic_poc_lsb_sps[32];
+	uint(size= 8) used_by_curr_pic_lt_sps_flag[32];
 	
 	read_SPS_Header.se_idx_8 : action ==>
 	guard
@@ -1022,7 +1024,9 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
             sps_num_long_term_ref_pics_sps[sps_id] := res[0];
             foreach int i in 0 .. sps_num_long_term_ref_pics_sps[sps_id]-1 do
                 vld_u_name(  sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "lt_ref_pic_poc_lsb_sps                  "); 
-                vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_sps_flag            "); 
+                lt_ref_pic_poc_lsb_sps[i] := res[0];
+                vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_sps_flag            ");
+                used_by_curr_pic_lt_sps_flag[i] := res[0];
             end
 		end
 		vld_u_name(  1, fifo, res, "sps_temporal_mvp_enable_flag            ");
@@ -1340,6 +1344,11 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	uint(size= 1) first_slice_segment_in_pic_flag;
 	uint(size= 1) dependent_slice_segment_flag;
 	uint(size=16) pictSize[2];
+	uint(size=16) num_long_term_sps := 0;
+    uint(size=16) num_long_term_pics := 0;
+    uint(size= 8) poc_lsb_lt[32];
+    uint(size= 8) UsedByCurrPicLt[32];
+    uint(size= 8) DeltaPocMsbCycleLt[32];
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 15)/16, (pictSize[1] + 15)/16], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
@@ -1349,9 +1358,8 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		se_idx = 1 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1],
-        uint(size=16) num_long_term_sps,
-        uint(size=16) num_long_term_pics,
-        uint(size= 8) numbits := 0
+        uint(size= 8) numbits := 0,
+        uint(size= 8) lt_idx_sps := 0
    	do	
         Log2MinCbSize     := sps_log2_min_coding_block_size_minus3[sps_id] + 3;
         Log2CtbSize       := Log2MinCbSize + sps_log2_diff_max_min_coding_block_size[sps_id];
@@ -1418,28 +1426,44 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
                     end
 				    pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1]; 
 				end
+				
+				num_long_term_sps := 0;
+    			num_long_term_pics := 0;
+    			
 				if sps_long_term_ref_pics_present_flag[sps_id] = 1 then
-				    num_long_term_sps := 0;
 				    if sps_num_long_term_ref_pics_sps[sps_id] > 0 then
                         vld_ue_name(    fifo, res, "num_long_term_sps                       ");
                         num_long_term_sps := res[0];
                     end
 					vld_ue_name(    fifo, res, "num_long_term_pics                      ");
 					num_long_term_pics := res[0]; 
-					numbits := 0;
-                    while (sps_num_long_term_ref_pics_sps[sps_id] > (1 << numbits)) do
-                        numbits := numbits + 1;
-                    end
+//					numbits := 0;
+//                    while (sps_num_long_term_ref_pics_sps[sps_id] > (1 << numbits)) do
+//                        numbits := numbits + 1;
+//                    end
 					foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
 						if i < num_long_term_sps then
-                            vld_u_name(  numbits, fifo, res, "lt_idx_sps                              ");
+							if num_long_term_pics > 1 then
+								vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "lt_idx_sps                              ");
+								lt_idx_sps := res[0];
+                           	end
+                           	poc_lsb_lt[i] := lt_ref_pic_poc_lsb_sps[lt_idx_sps];
+                           	UsedByCurrPicLt[i] := used_by_curr_pic_lt_sps_flag[lt_idx_sps];
 						else
-                            vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "poc_lsb_lt                              "); 
+                            vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "poc_lsb_lt                              ");
+                            poc_lsb_lt[i] := res[0];
                             vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_flag                ");
+                            UsedByCurrPicLt[i] :=  res[0];
 						end
 						vld_u_name(  1, fifo, res, "delta_poc_msb_present_flag              ");
 						if res[0] = 1 then
-			    			vld_ue_name(    fifo, res, "delta_poc_msb_cycle_lt_minus1                "); 
+							if( i = 0 or i = num_long_term_sps ) then
+                            	vld_ue_name(    fifo, res, "delta_poc_msb_cycle_lt_minus1                ");
+                            	DeltaPocMsbCycleLt[i] := res[0];
+                        	else
+			    				vld_ue_name(    fifo, res, "delta_poc_msb_cycle_lt_minus1                ");
+			    				DeltaPocMsbCycleLt[i] := res[0] + DeltaPocMsbCycleLt[i - 1];
+			    			end
 						end
 					end
 				end
@@ -1466,8 +1490,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	    else
 	    	se_idx := 6;
 	    end
-		
-		
 	end
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_2
@@ -1475,11 +1497,15 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	uint(size= 8) num_ref_idx_l0_active;
 	uint(size= 8) num_ref_idx_l1_active;
 	uint(size= 1) mvd_l1_zero_flag;
+	uint(size= 8) ref_pic_list_modification_flag_lx[2] := [0,0];
+	uint(size=4) list_entry_lx [2][32];
+	
 	read_SliceHeader.se_idx_2 : action ==>
 	guard
 		se_idx = 2 and isFifoFull(fifo)
 	var
-		uint(size=32) res[1]
+		uint(size=32) res[1],
+		int NumPocTotalCurr := 0
    	do
 	   	num_ref_idx_l0_active    := 0;
 	   	num_ref_idx_l1_active    := 0;
@@ -1498,9 +1524,48 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 					num_ref_idx_l1_active := res[0] + 1;
 				end
 	   		end
-		    if pps_lists_modification_present_flag[pps_id] = 1 /*and NumPocTotalCurr > 1*/ then
-		    	println("TODO ref_pic_list_modification( )");
-		    	println("TODO ref_pic_list_combination( )");
+	   		
+	   		ref_pic_list_modification_flag_lx[0] := 0;
+	   		ref_pic_list_modification_flag_lx[1] := 0;
+	   		
+	   		foreach int i in 0 .. pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]-1 do
+	   			if (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+i] = 1) then 
+	   				NumPocTotalCurr := NumPocTotalCurr + 1;
+	   			end
+	   		end
+	   		
+	   		foreach int i in pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]-1 .. pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]-1 do
+	   			if (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+i] = 1) then 
+	   				NumPocTotalCurr := NumPocTotalCurr + 1;
+	   			end
+	   		end
+	   	
+	   		foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
+//	   			if ( = 1) then 
+//	   				NumPocTotalCurr := NumPocTotalCurr + 1;
+//	   			end
+	   		end
+	   		
+		    if pps_lists_modification_present_flag[pps_id] = 1 and NumPocTotalCurr > 1 then
+		    	vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_lx       ");
+		    	ref_pic_list_modification_flag_lx[0] := res[0];
+		    	if ref_pic_list_modification_flag_lx[0] = 1 then 
+		    		foreach int i in 0 .. num_ref_idx_l0_active - 1 do
+		    			vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "list_entry_lx                           ");
+		    			list_entry_lx[0][i] := res[0];
+		    		end
+		    	end
+		    	
+		    	if slice_type = B_SLICE then
+		    		vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_lx       ");
+		    		ref_pic_list_modification_flag_lx[1] := res[0];
+		    		if ref_pic_list_modification_flag_lx[1] = 1 then
+		    			foreach int i in 0 .. num_ref_idx_l1_active - 1 do
+		    				vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "list_entry_lx                           ");
+		    				list_entry_lx[1][i] := res[0];
+		    			end
+		    		end
+		    	end
 		    end
 		    if slice_type = B_SLICE then
 				vld_u_name(  1, fifo, res, "mvd_l1_zero_flag                        ");
@@ -1550,14 +1615,61 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		numPic[LT_FOLL] := 0;
 	end
 
-	read_SliceHeader.sendRefPOC.init : action ==> NumRefIdxLxActive:[num_ref_idx_l0_active, num_ref_idx_l1_active] , RefPicListModif:[0, 0]
+	read_SliceHeader.sendRefPOC.init : action ==> NumRefIdxLxActive:[num_ref_idx_l0_active, num_ref_idx_l1_active] , 
+	RefPicListModif:[ref_pic_list_modification_flag_lx[0], ref_pic_list_modification_flag_lx[1]]
 	guard
 		se_idx = 10
 	do
 		setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
 		idxNumPic := 0;
+		if ref_pic_list_modification_flag_lx[0] = 0 and ref_pic_list_modification_flag_lx[1] = 0 then 
+			se_idx    := 11;
+		else if ref_pic_list_modification_flag_lx[0] != 0 then
+			 	se_idx    := 101;
+			 else
+			 	se_idx    := 102;
+			 end
+		end
+	end
+	
+	read_SliceHeader.sendListEntryL0Loop : action ==> RefPicListModif:[list_entry_lx[0][cnt_i]]
+	guard
+		se_idx = 101,
+		cnt_i < num_ref_idx_l0_active
+	do
+		cnt_i := cnt_i + 1;
+	end
+	
+	read_SliceHeader.sendListEntryL0End : action ==>
+	guard
+		se_idx = 101,
+		cnt_i = num_ref_idx_l0_active
+	do
+		cnt_i := 0;
+		if ref_pic_list_modification_flag_lx[1] != 0 then
+			 se_idx    := 102;
+		else 
+			se_idx    := 11;
+		end
+	end
+	
+	read_SliceHeader.sendListEntryL1Loop : action ==> RefPicListModif:[list_entry_lx[1][cnt_i]]
+	guard
+		se_idx = 102,
+		cnt_i < num_ref_idx_l1_active
+	do
+		cnt_i := cnt_i + 1;
+	end
+	
+	read_SliceHeader.sendListEntryL1End : action ==>
+	guard
+		se_idx = 102,
+		cnt_i = num_ref_idx_l1_active
+	do
+		cnt_i := 0;
 		se_idx    := 11;
 	end
+	
 	read_SliceHeader.sendRefPOC.sendSize : action ==> RefPoc:[refPocSize]
 	guard
 		se_idx = 11
@@ -1765,7 +1877,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		delta_luma_weight_l0 := res[0];
 		vld_se_name(    fifo, res, "luma_offset_lX                          ");
 		luma_offset_l0 := res[0];
-		se_idx := 46;
 		se_idx := 46;
 	end
 	
@@ -2049,6 +2160,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
 			vld_ue_name(    fifo, res, "num_entry_point_offsets                 ");
     		num_entry_point_offsets := res[0];
+    		println("num_entry_point_offsets = " + num_entry_point_offsets);
     		if num_entry_point_offsets > NUM_ENTRY_MAX then
     			println("ERROR: fix NUM_ENTRY_MAX");
     		end
@@ -2462,7 +2574,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			end
 			sliceData_idx := 3;
 			if pps_tiles_enabled_flag[pps_id] = 1 and (TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1]) then
-		 			//println("endOfTile ###################################################"); 
+		 			println("endOfTile ###################################################"); 
 		 			//end of tile: move to bypass if parser considers only one tile
 		 			if TilesInfo[0] = 0 then
 		 				sliceData_idx := 3;
@@ -2479,7 +2591,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			 		end
 				end
 		else
-			//println("endOfSlice ###################################################");
+			println("endOfSlice ###################################################");
 			sliceData_idx := 5;
 			curr_Tile := 0;
 			CtbAddrTS := 0;
