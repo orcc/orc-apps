@@ -836,7 +836,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	 * read_SPS_Header.se_idx_2
 	 *************************************************************************/
 	uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
-	uint(size=16) max_poc_lsb[NB_MAX_SPS];
+	uint(size=32) max_poc_lsb[NB_MAX_SPS];
 	
 	read_SPS_Header.se_idx_2 : action ==>
 	guard
@@ -1008,7 +1008,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	uint(size= 1) sps_temporal_mvp_enable_flag[NB_MAX_SPS];
 	bool          sps_strong_intra_smoothing_enable_flag[NB_MAX_SPS];
 	uint(size= 6) sps_num_long_term_ref_pics_sps[NB_MAX_SPS];
-	//uint(size=16) lt_ref_pic_poc_lsb_sps[32];
+	uint(size=16) lt_ref_pic_poc_lsb_sps[32];
 	uint(size= 8) used_by_curr_pic_lt_sps_flag[32];
 	
 	read_SPS_Header.se_idx_8 : action ==>
@@ -1024,7 +1024,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
             sps_num_long_term_ref_pics_sps[sps_id] := res[0];
             foreach int i in 0 .. sps_num_long_term_ref_pics_sps[sps_id]-1 do
                 vld_u_name(  sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "lt_ref_pic_poc_lsb_sps                  "); 
-                //lt_ref_pic_poc_lsb_sps[i] := res[0];
+                lt_ref_pic_poc_lsb_sps[i] := res[0];
                 vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_sps_flag            ");
                 used_by_curr_pic_lt_sps_flag[i] := res[0];
             end
@@ -1346,9 +1346,11 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	uint(size=16) pictSize[2];
 	uint(size=16) num_long_term_sps := 0;
     uint(size=16) num_long_term_pics := 0;
-    //uint(size= 8) poc_lsb_lt[32];
+    uint(size= 8) poc_lsb_lt[32];
     uint(size= 8) UsedByCurrPicLt[32];
     uint(size= 8) DeltaPocMsbCycleLt[32];
+    uint(size= 8) delta_poc_msb_present_flag[32];
+    int pic_order_cnt_lsb;
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2, PicSizeInMb:[(pictSize[0] + 15)/16, (pictSize[1] + 15)/16], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
@@ -1359,7 +1361,8 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	var
 		uint(size=32) res[1],
         uint(size= 8) numbits := 0,
-        uint(size= 8) lt_idx_sps := 0
+        uint(size= 8) lt_idx_sps := 0,
+        uint(size= 8) prevDeltaMSB :=0
    	do	
         Log2MinCbSize     := sps_log2_min_coding_block_size_minus3[sps_id] + 3;
         Log2CtbSize       := Log2MinCbSize + sps_log2_diff_max_min_coding_block_size[sps_id];
@@ -1409,7 +1412,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 				poc := 0;
 			else
 				vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       "); 
-
+				pic_order_cnt_lsb := res[0];
 				//compute the number of POC
 				compute_POC(res[0]);
 				
@@ -1447,23 +1450,25 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 								vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "lt_idx_sps                              ");
 								lt_idx_sps := res[0];
                            	end
-                           	//poc_lsb_lt[i] := lt_ref_pic_poc_lsb_sps[lt_idx_sps];
+                           	poc_lsb_lt[i] := lt_ref_pic_poc_lsb_sps[lt_idx_sps];
                            	UsedByCurrPicLt[i] := used_by_curr_pic_lt_sps_flag[lt_idx_sps];
 						else
                             vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "poc_lsb_lt                              ");
-                            //poc_lsb_lt[i] := res[0];
+                            poc_lsb_lt[i] := res[0];
                             vld_u_name(  1, fifo, res, "used_by_curr_pic_lt_flag                ");
                             UsedByCurrPicLt[i] :=  res[0];
 						end
 						vld_u_name(  1, fifo, res, "delta_poc_msb_present_flag              ");
+						delta_poc_msb_present_flag[i] := res[0];
 						if res[0] = 1 then
 							if( i = 0 or i = num_long_term_sps ) then
                             	vld_ue_name(    fifo, res, "delta_poc_msb_cycle_lt_minus1                ");
                             	DeltaPocMsbCycleLt[i] := res[0];
                         	else
 			    				vld_ue_name(    fifo, res, "delta_poc_msb_cycle_lt_minus1                ");
-			    				DeltaPocMsbCycleLt[i] := res[0] + DeltaPocMsbCycleLt[i - 1];
+			    				DeltaPocMsbCycleLt[i] := res[0] + prevDeltaMSB;
 			    			end
+			    			prevDeltaMSB := DeltaPocMsbCycleLt[i];
 						end
 					end
 				end
@@ -1587,6 +1592,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	
 		uint j := 0;
 		uint k := 0;
+		int pocLt := poc_lsb_lt[0];
 		foreach int i in 0 .. pc_rps[sps_id][idx][NUM_NEGATIVE_PICS]-1
 		do
 			if(pc_rps[sps_id][idx][USED+i]=1) then
@@ -1622,8 +1628,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
 		idxNumPic := 0;
 		se_idx    := 101;
-		//println("num_ref_idx_l0_active = " + num_ref_idx_l0_active);
-		//println("num_ref_idx_l1_active = " + num_ref_idx_l1_active);
 	end
 	
 	read_SliceHeader.sendListEntryL0Flag : action ==> RefPicListModif:[ref_pic_list_modification_flag_lx[0]]
@@ -1635,7 +1639,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		else
 			se_idx := 102;
 		end
-		//println("ref_pic_list_modification_flag_lx[0] = " + ref_pic_list_modification_flag_lx[0]);
 	end
 	
 	read_SliceHeader.sendListEntryL0Loop : action ==> RefPicListModif:[list_entry_lx[0][cnt_i - 1]]
@@ -1644,7 +1647,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		cnt_i < num_ref_idx_l0_active
 	do
 		cnt_i := cnt_i + 1;
-		//println("list_entry_lx[0][cnt_i] = " + list_entry_lx[0][cnt_i]);
 	end
 	
 	read_SliceHeader.sendListEntryL0End : action ==>
@@ -1666,7 +1668,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		else
 			se_idx := 202;
 		end
-		//println("ref_pic_list_modification_flag_lx[1] = " + ref_pic_list_modification_flag_lx[1]);
 	end
 	
 	read_SliceHeader.sendListEntryL1Loop : action ==> RefPicListModif:[list_entry_lx[1][cnt_i - 1]]
@@ -1675,7 +1676,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		cnt_i < num_ref_idx_l1_active
 	do
 		cnt_i := cnt_i + 1;
-		//println("list_entry_lx[1][cnt_i] = " + list_entry_lx[1][cnt_i]);
 	end
 	
 	read_SliceHeader.sendListEntryL1End : action ==>
@@ -1693,7 +1693,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	var
 		uint(size=16) refPocSize = numPic[idxNumPic]
 	do
-		//println("sendRefPoc");
 		if numPic[idxNumPic] = 0 then
 			idxNumPic := idxNumPic + 1;
 			if idxNumPic = 5 then
@@ -2940,8 +2939,6 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		if	ct_x0 + ( 1 << ct_log2CbSize ) <= sps_pic_width_in_luma_samples[sps_id] and
 			ct_y0 + ( 1 << ct_log2CbSize ) <= sps_pic_height_in_luma_samples[sps_id] and
 			ct_log2CbSize > Log2MinCbSize then
-			//get_SPLIT_CODING_UNIT_FLAG(codIRange, codIOffset, ctxTable, fifo, res, ct_ctDepth,
-										//ct_x0 > 0, left_ctDepth, ct_y0 > 0, top_ctDepth);
 			get_SPLIT_CODING_UNIT_FLAG(codIRange, codIOffset, ctxTable, fifo, res, ct_ctDepth,
 				(leftCtbInSlice) or (x0b > 0), left_ctDepth, (upCtbInSlice) or (y0b > 0),
 				 top_ctDepth);
@@ -3002,7 +2999,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		ctStack[ctStack_idx][CT_ctDepth]    := ctStack[idx][CT_ctDepth] + 1;
 	end
 	
-	uint countCuInfo := 0;
+	//uint countCuInfo := 0;
 	
 	read_CodingQuadTree.noCase2 : action ==> CUInfo:[cuInfo] repeat 5,
 		 PartMode:[PART_2Nx2N]
@@ -3016,7 +3013,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
 	do
 		ctStack[ctStack_idx][CT_idx]        := 4;
-		countCuInfo := countCuInfo + 5;
+		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingQuadTree.noCase2");
 	end
 	/**************************************************************************
@@ -3049,7 +3046,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
 	do
 		ctStack[ctStack_idx][CT_idx]        := 5;
-		countCuInfo := countCuInfo + 5;
+		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingQuadTree.noCase3");
 	end
 	/**************************************************************************
@@ -3084,7 +3081,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
 	do
 		ctStack[ctStack_idx][CT_idx]        := 7;
-		countCuInfo := countCuInfo + 5;
+		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingQuadTree.noCase4");
 	end
 	/**************************************************************************
@@ -3226,7 +3223,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		pu_PbW		:= cu_nCbS;
 		pu_PbH		:= cu_nCbS;
 		intra_prediction_unit_default_value( cu_x0, cu_y0, cu_log2CbSize, partMode, Log2MinCbSize-1, intraPredMode);
-		countCuInfo := countCuInfo + 5;
+		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingUnit_gotoPredictionUnit.goto1");
 	end
 	/**************************************************************************
@@ -3356,7 +3353,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 				end;
 			predMode_v := intraPredModeC[intraChrPredModIdx][idx];
 		end
-		countCuInfo := countCuInfo + 5;
+		//countCuInfo := countCuInfo + 5;
 		//println("sendIntraPredMode.part2Nx2N");
 	end
 
@@ -3395,7 +3392,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 				intraPredMode[2*i+1] := intraPredModeC[intraChrPredModIdx][idx];
 			end
 		end
-		countCuInfo := countCuInfo + 20;
+		//countCuInfo := countCuInfo + 20;
 		//println("sendIntraPredMode.partNxN");
 	end
 
@@ -3514,7 +3511,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 				cu_idx := 8;
 			end
 		end
-		countCuInfo := countCuInfo + 5;
+		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingUnit_gotoPredictionUnit.goto2");
 	end
 	/**************************************************************************
