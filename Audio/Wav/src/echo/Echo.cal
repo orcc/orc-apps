@@ -1,0 +1,156 @@
+/*
+ * Copyright (c) 2013, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Malgorzata Wiszniewska
+
+package echo;
+
+actor Echo() 
+	uint(size=32) SampleRateIn, 
+	uint(size=16) SampleSizeInBitsIn, 
+	uint(size=8) DataIn,
+	uint(size=16) ChannelsIn,
+	uint ChunkSizeIn
+		==> 
+			uint(size=32) SampleRateOut, 
+			uint(size=16) SampleSizeInBitsOut, 
+			uint(size=8) DataOut,
+			uint(size=16) ChannelsOut,
+			uint ChunkSizeOut:
+
+	uint(size=16) delay := 500; // delay in miliseconds
+	uint(size=32) bufferSize := 100000000; // size of the delay in bytes, to be calculated
+	uint inputChunkSize;
+	uint sampleSize;
+	
+	int(size=16) pcm_data_buffer[bufferSize];
+	
+	int counter := 0;
+	int counterBS := 0;
+	
+	forwardHeader: action SampleRateIn:[sr], SampleSizeInBitsIn:[ssib], ChunkSizeIn:[chs], ChannelsIn:[chin] 
+		==> 
+			SampleRateOut:[sr],
+			SampleSizeInBitsOut:[ssib],
+			ChunkSizeOut:[chs + bufferSize],
+			ChannelsOut:[chin]
+	do
+		bufferSize := sr * delay * chin * (ssib / 8) / 1000;
+		if bufferSize mod 2 != 0 then
+			bufferSize := bufferSize + 1;
+		end
+		foreach int i in 0 .. bufferSize
+		do
+			pcm_data_buffer[i] := 0;
+		end
+		inputChunkSize := chs;
+		sampleSize := ssib;
+	end
+	
+	processData_8: action DataIn:[input] ==> DataOut:[output]
+	guard
+		sampleSize = 8
+	var
+		int(size=16) output
+	do	
+		output := input / 2 + pcm_data_buffer[counter mod bufferSize] / 3;
+		if output > 255 then
+			output := 255;
+		end
+		pcm_data_buffer[counter mod bufferSize] := input;
+		counter := counter + 1;
+	end
+	
+	processData_16: action DataIn:[input16] repeat 2 ==> DataOut:[output16] repeat 2
+	guard
+		sampleSize = 16
+	var
+		int(size=16) input,
+		int(size=16) output,
+		int(size=8) output16[2]
+	do
+		input := ((input16[1] << 8) + input16[0]);
+		output := input / 2 + pcm_data_buffer[counter mod bufferSize] / 3;
+		if output > 65536 then
+			output := 65536;
+		end
+		pcm_data_buffer[counter mod bufferSize] := input;
+		output16[0] := output mod 256;
+		output16[1] := output >> 8;
+		counter := counter + 2;
+	end
+	
+ 	sendRemaining_8: action ==> DataOut:[output]
+	guard
+		counter = inputChunkSize and sampleSize = 8
+	var
+		int(size=16) output
+	do	
+		output := pcm_data_buffer[counterBS] / 2;
+		counterBS := counterBS + 1;
+	end
+
+	sendRemaining_16: action ==> DataOut:[output16] repeat 2
+	guard
+		counter = inputChunkSize and sampleSize = 16
+	var
+		int(size=16) output,
+		int(size=8) output16[2]
+	do	
+		output := pcm_data_buffer[counterBS] / 2;
+		output16[0] := output mod 256;
+		output16[1] := output >> 8;
+		counterBS := counterBS + 2;
+	end
+
+	sendRemainingStop: action ==>
+	guard
+		counter = inputChunkSize && counterBS = bufferSize
+	do
+		counterBS := 0;
+		counter := 0;
+	end
+	
+	schedule fsm FH:
+		FH(forwardHeader) --> PD;
+		PD(processData_16) --> PD;
+		PD(processData_8) --> PD;
+		PD(sendRemaining_8) --> PD;
+		PD(sendRemaining_16) --> PD;
+		PD(sendRemainingStop) --> FH;
+	end
+	
+	priority
+		sendRemainingStop > sendRemaining_8;
+		sendRemainingStop > sendRemaining_16;
+		sendRemaining_8 > processData_8;
+		sendRemaining_16 > processData_16;
+	end
+end
+			
