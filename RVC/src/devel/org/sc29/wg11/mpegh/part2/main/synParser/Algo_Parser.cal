@@ -12,7 +12,7 @@ import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
 import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
 import  devel.org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
 
-actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NUM_TILES + 1] = [0 ,0 , 0, 0, 0, 0, 0, 0, 0]) 
+actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NUM_TILES + 1] = [1,2, 0, 0, 0, 0, 0, 0]) 
 // TilesInfo[0]: number of tiles to decode
 // TilesInfo[i>0]: increasing indexes of tiles  
 				uint(size= 8) byte
@@ -1351,13 +1351,19 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
     uint(size= 8) DeltaPocMsbCycleLt[32];
     uint(size= 8) delta_poc_msb_present_flag[32];
     int pic_order_cnt_lsb;
+    uint(size=16) pictOrTileSize[2] := [0,0];
+    uint rowIndex := 0;
+    uint colIndex := 0;
+    uint(size=16) prevTileCoord[2] := [0,0];
+    uint prevRowIndex := 0;
+    uint prevColIndex := 0;
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictOrTileSize] repeat 2 , PicSizeInMb:[(pictOrTileSize[0] + 15)/16, (pictOrTileSize[1] + 15)/16], 
 		DispCoord:[0, pictOrTileSize[0]-1, 0, pictOrTileSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
 		IsPicSlcLcu:[1-first_slice_segment_in_pic_flag], LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
 		MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag], LcuSizeMax:[1 << Log2CtbSize]
 	guard
-		se_idx = 1 and isFifoFull(fifo)
+		se_idx = 1 and isFifoFull(fifo) 
 	var
 		uint(size=32) res[1],
         uint(size= 8) numbits := 0,
@@ -1367,10 +1373,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		uint(size=16) row_height[PICT_HEIGHT / MIN_CTB_SIZE_Y]	= [pps_row_height[pps_id][ i ] : for int i in 0 .. (PICT_HEIGHT / MIN_CTB_SIZE_Y)-1],
 		uint(size= 8) num_tile_columns_minus1		= pps_num_tile_columns_minus1[pps_id],
 		uint(size= 8) num_tile_rows_minus1			= pps_num_tile_rows_minus1[pps_id],
-		uint(size= 1) uniform_spacing_flag			= pps_uniform_spacing_flag[pps_id],
-        uint(size=16) pictOrTileSize[2] := [0,0],
-        uint rowIndex := 0,
-        uint colIndex := 0
+		uint(size= 1) uniform_spacing_flag			= pps_uniform_spacing_flag[pps_id]
    	do	
         Log2MinCbSize     := sps_log2_min_coding_block_size_minus3[sps_id] + 3;
         Log2CtbSize       := Log2MinCbSize + sps_log2_diff_max_min_coding_block_size[sps_id];
@@ -1553,6 +1556,12 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			rowIndex := TilesInfo[1]  div (num_tile_columns_minus1+1);
 			pictOrTileSize[0] := colTileInPix[colIndex + 1] - colTileInPix[colIndex];
 			pictOrTileSize[1] := rowTileInPix[rowIndex + 1] - rowTileInPix[rowIndex];
+			if TilesInfo[1] != 0 then
+				prevColIndex := (TilesInfo[1] - 1)  mod (num_tile_rows_minus1+1);
+    			prevRowIndex := (TilesInfo[1] - 1)  div (num_tile_columns_minus1+1);
+				prevTileCoord[0] := colTileInPix[prevColIndex + 1];
+				prevTileCoord[1] := rowTileInPix[prevRowIndex + 1];
+			end
 		end
 		////////////////////////////////////////////////////////////////////////////
 	    if (dependent_slice_segment_flag = 0) then
@@ -1561,6 +1570,8 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	    	se_idx := 6;
 	    end
 	end
+	
+	
 	/**************************************************************************
 	 * read_SliceHeader.se_idx_2
 	 *************************************************************************/
@@ -2296,6 +2307,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		se_idx = 7 and isFifoFull(fifo), cnt_i = num_entry_point_offsets
 	do
 		println("entryOffsetsTab[0] = " + entryOffsetsTab[0]);
+		println("entryOffsetsTab[1] = " + entryOffsetsTab[1]);
 		cnt_i := 0;
 		se_idx := 8;
 	end
@@ -2349,6 +2361,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 				byte_align(fifo);
 				foreach int k in 0 .. TilesInfo[1] - 1 do
 					totalByPass := totalByPass + entryOffsetsTab[k];
+					println("totalbypass = " + totalByPass);
 				end
 			end
 			
@@ -2419,6 +2432,7 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 				else
 					nbCtbTile[count] := nbCtbTile[count-1] + rowHeight[ i ] * colWidth[ j ];
 				end
+				//println("nbCtbTile[count]"+nbCtbTile[count]);
 				count := count + 1;
 			end
 		end
@@ -2516,6 +2530,12 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 			countRow := countRow + 1;
 		end
 		cnt_i := cnt_i + 1;
+		if TilesInfo[0] = 1 then
+			x0 := 0;
+			x1 := pictOrTileSize[0];
+			y0 := 0;
+			y1 := 256;
+		end
 	end
 	
 	read_SliceData.senInfoTilesEnd: action ==> 
@@ -2597,8 +2617,10 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 		cnt_i := 0;
 		byPassFlag := false;
 		codingTree_idx := 1;
-		byte_alignment(fifo);
-		tile_idx := TilesInfo [curr_Tile];
+		foreach int i in 0 .. TilesInfo[1] - 1 do
+			byte_alignment(fifo);
+		end
+		tile_idx := TilesInfo [1];
 		CtbAddrTS := nbCtbTile[tile_idx - 1];
 		//println("CtbAddrTS" + CtbAddrTS);
 		CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
@@ -2672,15 +2694,23 @@ actor Algo_Parser (uint(size=8) MAX_NUM_TILES = 8, uint(size=8) TilesInfo[MAX_NU
 	var
 		uint(size=32) res[1],
 		uint(size=32) CtbSize = 1 << Log2CtbSize,
-		uint(size=16) ct_x0			= ctStack[ctStack_idx][CT_x0],
-		uint(size=16) ct_y0			= ctStack[ctStack_idx][CT_y0],
+		uint(size=16) ct_x0			:= ctStack[ctStack_idx][CT_x0],
+		uint(size=16) ct_y0			:= ctStack[ctStack_idx][CT_y0],
 		uint index := 0
 	do
+		if TilesInfo[1] != 0 then
+			ct_x0 := ((prevTileCoord[0] >> 6 ) - 1) << 6;
+			ct_y0 := ((prevTileCoord[1] >> 6 ) - 1) << 6;
+		end
 		if CtbAddrTS != 0 then
 			index := CtbAddrTS -1;
 		end
-		xCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0 );
-		yCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1 );
+//		println("ct_x0" + ct_x0);
+//		println("ct_y0" + ct_y0);
+//		println("colTileInPix[colIndex]" + colTileInPix[colIndex]);
+//		println("rowTileInPix[rowIndex]" + rowTileInPix[rowIndex]);
+		xCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0 ) - colTileInPix[colIndex];
+		yCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1 ) - rowTileInPix[rowIndex];
 		//println("yctb=" + yCtb);
 		CtbAddrInSlice := CtbAddrRS - slice_segment_address;
 		codingTree_idx := 2;
