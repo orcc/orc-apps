@@ -39,7 +39,8 @@ import  testBench.common.SourceUnit.*;
 actor FrameDelayBorder()
 
 	uint(size=16) PicSize,
-	uint(size=8)  SampleIn
+	uint(size=8)  SampleIn,
+	uint(size=16) TilesCoord
 		==>
 	uint(size=8)  FiltSample
 		:
@@ -61,7 +62,8 @@ actor FrameDelayBorder()
 	uint(size=16) numTokenPerLcu[2];
 	uint(size=16) tokenGot;
 
-	uint(size=16) numTiles := 4;
+	uint(size=16) numTiles;
+	 int(size=16) iLoop;
 	uint(size=16) lcuTileIdx;
 	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
 	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
@@ -112,18 +114,27 @@ actor FrameDelayBorder()
 		
 		tilesBeg[0][0] := 0;
 		tilesBeg[0][1] := 0;
-		
-		///////static tiles coord fill
-		tilesBeg[0] := [0/lcuSizeMax, 0/lcuSizeMax];
-		tilesEnd[0] := [(384+(lcuSizeMax - 1))/lcuSizeMax, (256+(lcuSizeMax - 1))/lcuSizeMax];
-		tilesBeg[1] := [384/lcuSizeMax, 0/lcuSizeMax];
-		tilesEnd[1] := [(832+(lcuSizeMax - 1))/lcuSizeMax, (256+(lcuSizeMax - 1))/lcuSizeMax];
-		tilesBeg[2] := [0/lcuSizeMax, 256/lcuSizeMax];
-		tilesEnd[2] := [(384+(lcuSizeMax - 1))/lcuSizeMax, (480+(lcuSizeMax - 1))/lcuSizeMax];
-		tilesBeg[3] := [384/lcuSizeMax, 256/lcuSizeMax];
-		tilesEnd[3] := [(832+(lcuSizeMax - 1))/lcuSizeMax, (480+(lcuSizeMax - 1))/lcuSizeMax];
+	end
+	
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		iLoop := 0;
 	end
 
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBeg[iLoop] := [tilesCoord[0]/lcuSizeMax, tilesCoord[1]/lcuSizeMax];
+		tilesEnd[iLoop] := [(tilesCoord[2]+(lcuSizeMax - 1))/lcuSizeMax, (tilesCoord[3]+(lcuSizeMax - 1))/lcuSizeMax];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
 	//There should be slice SAO enable for each independent slice.
 
 	getCuPix.launch.init: action  ==>
@@ -242,10 +253,14 @@ actor FrameDelayBorder()
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewPict )--> GetCuPix;
+		IsNewPict (isNewPict )--> GetNumTiles;
 
 		GetCuPix (getCuPix.launch.init )--> GetCuPixLuma;
 		GetCuPix (getCuPix.done        )--> SendSamples;
+		
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetCuPix;
 
 		GetCuPixLuma (getCuPix.launch.luma     )--> GetCuPixLuma;
 		GetCuPixLuma (getCuPix.launch.lumaDone )--> GetCuPixChr;

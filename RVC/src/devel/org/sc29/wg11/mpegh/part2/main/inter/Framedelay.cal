@@ -36,11 +36,12 @@ import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 actor Framedelay()
 	
 	uint(size=16) PicSize,
-	uint(size=8)  SampleIn
+	uint(size=8)  SampleIn,
+	uint(size=16) TilesCoord
 		==>
 	uint(size=8)  FiltSample
 		:
-	uint(size=16) numTiles := 4;
+	uint(size=16) numTiles;
 	uint(size=16) tileIdx;
 	uint(size=16) numPartition;
 	uint(size=16) tilesBegSamp[MAX_NUM_TILES][2];
@@ -58,7 +59,8 @@ actor Framedelay()
 	uint(size=16) tokenSent;
 	uint(size=16) pixAddr[2];
 	uint(size=9)  blkIdx := 0;
-
+	int(size=16) iLoop;
+	
 	uint(size=8)  pictureBuffer[3][PICT_WIDTH][PICT_HEIGHT];
 
 	procedure computeNextLcuAddr()
@@ -117,25 +119,10 @@ actor Framedelay()
 		numTokenPerLcu[1] := numTokenPerLcu[0] >> 2;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
-//		tilesBegSamp[0][0] :=  0;
-//		tilesBegSamp[0][1] :=  0;
-//		tilesEndSamp[0][0] :=  picWidthInPix;
-//		tilesEndSamp[0][1] :=  picHeightInPix;
-		/*lastXIdx := 0;
-		lastYIdx := 0;*/
+
 		xIdx := 0;
 		yIdx := 0;
 		tileIdx := 0;
-		
-		///////static tiles coord fill
-		tilesBegSamp[0] := [0, 0];
-		tilesEndSamp[0] := [384, 256];
-		tilesBegSamp[1] := [384, 0];
-		tilesEndSamp[1] := [832, 256];
-		tilesBegSamp[2] := [0, 256];
-		tilesEndSamp[2] := [384, 480];
-		tilesBegSamp[3] := [384, 256];
-		tilesEndSamp[3] := [832, 480];
 	end
 
 	getCuPix.launch.pict: action  ==>
@@ -146,6 +133,26 @@ actor Framedelay()
 		xAddrVert := xIdx;
 		yAddrVert := yIdx;
 		blkIdx := 0;
+	end
+	
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBegSamp[iLoop] := [tilesCoord[0], tilesCoord[1]];
+		tilesEndSamp[iLoop] := [tilesCoord[2], tilesCoord[3]];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
 	end
 
 	getCuPix.launch.getPart: action SampleIn:[samp] repeat 4*4 + 2* 2*2 ==>
@@ -364,12 +371,16 @@ actor Framedelay()
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewPict )--> GetCuPix;
+		IsNewPict (isNewPict )--> GetNumTiles;
 
 		GetCuPix  (getCuPix.launch.pict              )--> GetPartition;
 		GetCuPix  (getCuPix.launch.lastColOrRow.vert )--> GetBlk;
 //		GetCuPix  (getCuPix.launch.lastColOrRow.hor  )--> GetBs4Blk;
 		GetCuPix  (getCuPix.done                     )--> SendSamples;
+		
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetCuPix;
 
 		GetPartition (getCuPix.launch.getPart     )--> GetPartition;
 		GetPartition (getCuPix.launch.getPartDone )--> GetCuPix;
