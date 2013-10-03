@@ -73,13 +73,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * search_start_code or getByte
 	 *************************************************************************/
+ 	uint counterByte := 0;
  	action byte:[ b ] ==>
 	guard 
 		not isFifoFull(fifo)
 	var
 		uint(size=4) fifo_idx  =  fifo[FIFO_IDX]
 	do
-		localizeAEB := localizeAEB >> 1;
+		counterByte := counterByte + 1;
+		//localizeAEB := localizeAEB >> 1;
 		if b != EPR_VALUE or zeroByte != 3 then
 			if b = START_CODE_VALUE and zeroByte = 3 then
 				fifo[fifo_idx]      := b + START_CODE_FLAG;
@@ -87,14 +89,16 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				fifo[fifo_idx]      := b;
 			end
 			fifo[FIFO_CPT_BITS] := fifo[FIFO_CPT_BITS] + 8;
-			if DEBUG_BITSTREAM then
-				println("fifo["+fifo_idx+"] := "+b+" \t "+fifo[FIFO_CPT_BITS]);
+			if false then
+				println("fifo["+fifo_idx+"] := "+b);
 			end
 			fifo[FIFO_IDX]      := (fifo_idx+1) & (FIFO_SIZE-1);
-		else
-			//println("AntiEmulationByte");
-			localizeAEB := localizeAEB + 128;
-			//println("localize AEB = " + localizeAEB);
+		else 
+			if b = EPR_VALUE then
+				//println("AntiEmulationByte");
+				//localizeAEB := localizeAEB + 128;
+				//println("localize AEB = " + localizeAEB);
+			end
 		end
 		if b = 0 then
 			zeroByte := ((zeroByte << 1) + 1) & 0x3;
@@ -1530,6 +1534,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				end
 			end
 		end
+		
+		
 		if num_tile_rows_minus1 >= (PICT_HEIGHT / MIN_CTB_SIZE_Y) then
 			println("Error read_SliceData.init : RowHeight : "+num_tile_rows_minus1+" >= "+(PICT_HEIGHT / MIN_CTB_SIZE_Y));
 		end
@@ -1556,8 +1562,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			pictOrTileSize[0] := pictSize[0];
 			pictOrTileSize[1] := pictSize[1];
 		else // tiles split : send current tile size
-			colIndex := TilesInfo[1]  mod (num_tile_rows_minus1+1);
+			colIndex := TilesInfo[1]  mod (num_tile_columns_minus1+1);
 			rowIndex := TilesInfo[1]  div (num_tile_columns_minus1+1);
+			
 			pictOrTileSize[0] := colTileInPix[colIndex + 1] - colTileInPix[colIndex];
 			pictOrTileSize[1] := rowTileInPix[rowIndex + 1] - rowTileInPix[rowIndex];
 			if TilesInfo[1] != 0 then
@@ -2521,6 +2528,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		uint x1 := pictSize[0],
 		uint y1 := pictSize[1]
 	do
+		//colTileInPix[0] :=0;
 		x0 := colTileInPix[countCol];
 		x1 := colTileInPix[countCol + 1];
 		y0 := rowTileInPix[countRow];
@@ -2536,7 +2544,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			x0 := 0;
 			x1 := pictOrTileSize[0];
 			y0 := 0;
-			y1 := 256;
+			y1 := pictOrTileSize[1];
 		end
 	end
 	
@@ -2564,6 +2572,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_SliceData.start
 	 *************************************************************************/	
+	//bool flag := true;
 	uint(size=32) CtbAddrRS;
 	uint(size=32) CtbAddrTS;
 	uint(size=32) end_of_slice_flag;
@@ -2571,7 +2580,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	read_SliceData.start : action ==>
 	guard
 		sliceData_idx = 2 and isFifoFull(fifo)
+	var
+		uint(size=32) res[1]
 	do
+		showBits(8, fifo, res);
+		//println("showbits8Start = " + res[0]);
 		skip_flag_tab := [[0	    : for int j in 0 .. 1]	: for int i in 0 .. PICT_WIDTH-1];
 		intraPredMode := [[INTRA_DC	: for int j in 0 .. 1]	: for int i in 0 .. PICT_WIDTH-1];
 		
@@ -2601,7 +2614,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	
 	read_CodingTree.byPassBeforeTileLoop: action ==> 
 	guard
-		codingTree_idx = 0 and isFifoFull(fifo), cnt_i < totalByPass
+		codingTree_idx = 0 and isFifoFull(fifo), cnt_i < totalByPass , TILE_INDEX <8
 	do
 		if (localizeAEB & 1) = 0 then 
 			flushBits_name(8, fifo, "bypassed");
@@ -2611,11 +2624,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		//println("bypassed " + cnt_i);
 		cnt_i := cnt_i + 1;
 	end
-	
+
 	read_CodingTree.byPassBeforeTileEnd: action ==> 
 	guard
-		codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass
+		codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass , TILE_INDEX <8
 	do
+		//println("totalByPass = " +totalByPass);
 		cnt_i := 0;
 		byPassFlag := false;
 		codingTree_idx := 1;
@@ -2629,12 +2643,44 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		//println("CtbAddrRS" + CtbAddrRS);
 	end
 	
+	read_CodingTree.byPassBeforeTileLoopLAstTile: action ==> 
+	guard
+		codingTree_idx = 0 and isFifoFull(fifo), cnt_i < totalByPass +8 , TILE_INDEX = 8
+	do
+		if (localizeAEB & 1) = 0 then 
+			flushBits_name(8, fifo, "bypassed");
+		else
+			countAEB := countAEB + 1;
+		end
+		//println("bypassed " + cnt_i);
+		cnt_i := cnt_i + 1;
+	end
+
+	read_CodingTree.byPassBeforeTileEndLAstTile: action ==> 
+	guard
+		codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass +8 , TILE_INDEX = 8
+	do
+		//println("totalByPass = " +totalByPass);
+		cnt_i := 0;
+		byPassFlag := false;
+		codingTree_idx := 1;
+		//foreach int i in 0 .. TilesInfo[1] - 1 do
+			//byte_alignment(fifo);
+		//end
+		tile_idx := TilesInfo [1];
+		CtbAddrTS := nbCtbTile[tile_idx - 1];
+		//println("CtbAddrTS" + CtbAddrTS);
+		CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
+		//println("CtbAddrRS" + CtbAddrRS);
+	end
+	
 	read_SliceData.retCodingTree : action ==>
 	guard
 		sliceData_idx = 4 and isFifoFull(fifo)
 	var
 		uint(size=32) res[1] := [0]
 	do
+		//println("retcodingtree"); 
 		get_END_OF_SLICE_FLAG(codIRange, codIOffset, fifo, res);
 		end_of_slice_flag := res[0];
 		CtbAddrTS := CtbAddrTS + 1;
@@ -2745,7 +2791,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			end
 		else 
 			 if CtbAddrTS = 0 or pps_tiles_enabled_flag[pps_id] = 1 and (ct_y0 >0 and TileId[ CtbAddrTS ] != TileId[ index]) then
-			 	showBits(9, fifo, res);
+			 	//showBits(9, fifo, res);
 				//println("showbits9 = " + res[0]);
 				decodeReInit(codIRange, codIOffset, fifo);
 				//println("codIRangeINITCABAC4 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
@@ -3079,6 +3125,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1),
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
 	do
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);
 		ctStack[ctStack_idx][CT_idx]        := 4;
 		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingQuadTree.noCase2");
@@ -3116,6 +3164,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1),
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
 	do
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);
 		ctStack[ctStack_idx][CT_idx]        := 5;
 		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingQuadTree.noCase3");
@@ -3155,6 +3205,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1),
 			1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
 	do
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);
 		ctStack[ctStack_idx][CT_idx]        := 7;
 		//countCuInfo := countCuInfo + 5;
 		//println("read_CodingQuadTree.noCase4");
@@ -3296,6 +3348,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
 		1<<cu_log2CbSize, 1<<cu_log2CbSize]
 	do
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);
 		cu_idx		:= 10; 
 		pu_idx		:= 1;
 		pu_PbW		:= cu_nCbS;
@@ -3416,7 +3470,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				1<<cu_log2CbSize, 1<<cu_log2CbSize],
 		uint(size=6) predMode_v,
 		uint(size=3) idx
-	do			
+	do		
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);	
 		if(intraChrPredModIdx=4) then
 			predMode_v := intra_pred_mode[0];
 		else
@@ -3456,6 +3512,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		uint(size=6) intraPredMode[8],
 		uint(size=3) idx
 	do
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);
 		foreach uint i in 0 .. 3
 		do
 			intraPredMode[2*i] := intra_pred_mode[i];
@@ -3506,7 +3564,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		uint(size= 8) nCbS_3_4 = cu_nCbS - nCbS_4,
 		int x0 := ctStack[ctStack_idx][CT_x0],
 		int y0 := ctStack[ctStack_idx][CT_y0]
-	do		
+	do	
+//		println("colIndex[colIndex] = " + colTileInPix[colIndex]);
+//		println("colIndex = " + colIndex);	
 		pu_idx := 1;
 		pu_PbW := cu_nCbS;
 		pu_PbH := cu_nCbS;
