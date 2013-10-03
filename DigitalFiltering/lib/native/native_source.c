@@ -85,7 +85,7 @@ unsigned short native_source_produce_hf(int index)
 
 	if(source_file[index] != NULL)
 	{
-		fscanf(source_file[index],"%u\n", &data);
+		fscanf(source_file[index],"%hu\n", &data);
 
 		if(feof(source_file[index]))
 		{
