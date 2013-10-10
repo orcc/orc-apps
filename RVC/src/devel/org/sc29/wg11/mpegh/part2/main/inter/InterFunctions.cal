@@ -1,7 +1,9 @@
 package devel.org.sc29.wg11.mpegh.part2.main.inter;
-
+import std.util.Math.*;
 unit InterFunctions : 
 	
+	uint(size=4) bitDepth = 8;
+	uint(size=10) maxPixVal = (1<<bitDepth)-1;
 	int shift1 = 6;
 	int(size=8) ff_hevc_epel_filters[7][4] = 
   [ [-2, 58, 10, -2],
@@ -213,101 +215,89 @@ unit InterFunctions :
 	    foreach int y in 0 .. height do
 	        foreach int x in 0 .. width do
 	            src[component][x][y][0] := (src[component][x][y][rdList] + (1 <<(shift1-1)))>>shift1;
+	            src[component][x][y][0] := clip_i32(src[component][x][y][0], 0 , maxPixVal);
 	        end
 	    end
 	end
-/* 
-static void FUNC(put_weighted_pred_avg)(uint8_t *_dst, ptrdiff_t _dststride,
-                                        int16_t *src1, int16_t *src2,
-                                        ptrdiff_t srcstride,
-                                        int width, int height)
-{
-    int x, y;
-    pixel *dst = (pixel*)_dst;
-    ptrdiff_t dststride = _dststride / sizeof(pixel);
+ 
+	procedure put_weighted_pred_avg (int (size=16) src[3][64][64][2], int width, int height, int component)
+	begin
 
-    int shift = 14 + 1 - BIT_DEPTH;
-#if BIT_DEPTH < 14
-    int offset = 1 << (shift - 1);
-#else
-    int offset = 0;
-#endif
+	    foreach int y in 0 .. height do
+	        foreach int x in 0 .. width do
+	            src[component][x][y][0] := (src[component][x][y][0] + src[component][x][y][1] + 64) >> 7;
+				src[component][x][y][0] := clip_i32(src[component][x][y][0], 0 , maxPixVal);
+	        end
+	    end
+	end
 
-    for (y = 0; y < height; y++) {
-        for (x = 0; x < width; x++) {
-            dst[x] = av_clip_pixel((src1[x] + src2[x] + offset) >> shift);
-        }
-        dst  += dststride;
-        src1 += srcstride;
-        src2 += srcstride;
-    }
-}
+	procedure weighted_pred (int logWD [3], int weightCu [3][2], int offsetCu [3][2] ,
+		int (size=16) src[3][64][64][2], int width, int height, uint(size=1) rdList, int component)
+	var
+	    int locLogWD,
+	    int wX,
+	    int oX	
+	begin
+	    
+	    wX := weightCu[component][rdList];
+		oX := offsetCu[component][rdList];
+		locLogWD := logWD[component];
+	
+	    foreach int y in 0 .. height do
+	        foreach int x in 0 .. width do
+	            src[component][x][y][0] :=
+				if(locLogWD >= 1) then
+					((src[component][x][y][rdList]*wX + (1<<(locLogWD-1))) >> locLogWD)+oX
+				else
+					src[component][x][y][rdList]*wX +oX
+				end;
+				src[component][x][y][0] := clip_i32(src[component][x][y][0], 0 , maxPixVal);
+	        end
+	    end
+	end
 
-static void FUNC(weighted_pred)(uint8_t denom, int16_t wlxFlag, int16_t olxFlag,
-                                uint8_t *_dst, ptrdiff_t _dststride,
-                                int16_t *src, ptrdiff_t srcstride,
-                                int width, int height)
-{
-    int shift;
-    int log2Wd;
-    int wx;
-    int ox;
-    int x , y;
-    int offset;
-    pixel *dst = (pixel*)_dst;
-    ptrdiff_t dststride = _dststride / sizeof(pixel);
+	procedure weighted_pred_avg (int logWD [3], int weightCu [3][2], int offsetCu [3][2] ,
+		int (size=16) src[3][64][64][2], int width, int height, int component)
+	var
+	    int locLogWD,
+	    int w0,
+	    int w1,
+	    int o0,
+	    int o1	
+	begin
+		w0 := weightCu[component][0];
+		w1 := weightCu[component][1];
+		o0 := offsetCu[component][0];
+		o1 := offsetCu[component][1];
+		locLogWD := logWD[component];
+		foreach int y in 0 .. height do
+	        foreach int x in 0 .. width do
+				src[component][x][y][0] := (src[component][x][y][0]*w0 + src[component][x][y][1]*w1 +
+					((o0+o1+1)<<locLogWD))>>(locLogWD+1);
+				
+				src[component][x][y][0] := clip_i32(src[component][x][y][0], 0 ,
+					maxPixVal);
+			end
+		end
+	end
+	
+	procedure weighted_pred_mono (int logWD [3], int weightCu [3][2], int offsetCu [3][2] ,
+		int (size=16) src[3][64][64][2], int width, int height, int component)
+	var
+	    int locLogWD,
+	    int wX,
+	    int oX	
+	begin
+	    
+	   wX := weightCu[component][0] + weightCu[component][1];
+	   oX := offsetCu[component][0] + offsetCu[component][1] +1;
+	   locLogWD := logWD[component] +1;
+	   foreach int y in 0 .. height do
+	       foreach int x in 0 .. width do
+				src[component][x][y][0] := ((src[component][x][y][0]*wX + (oX<<(locLogWD-1))) >>locLogWD);
+				src[component][x][y][0] := clip_i32(src[component][x][y][0], 0 , maxPixVal);
+	        end
+	    end
+	end
 
-    shift  = 14 - BIT_DEPTH;
-    log2Wd = denom + shift;
-    offset = 1 << (log2Wd - 1);
-    wx = wlxFlag;
-    ox = olxFlag * (1 << (BIT_DEPTH - 8));
-
-    for (y = 0; y < height; y++) {
-        for (x = 0; x < width; x++) {
-            if (log2Wd >= 1) {
-                dst[x] = av_clip_pixel(((src[x] * wx + offset) >> log2Wd) + ox);
-            } else {
-                dst[x] = av_clip_pixel(src[x] * wx + ox);
-            }
-        }
-        dst  += dststride;
-        src  += srcstride;
-    }
-}
-
-static void FUNC(weighted_pred_avg)(uint8_t denom, int16_t wl0Flag, int16_t wl1Flag,
-                                    int16_t ol0Flag, int16_t ol1Flag,
-                                    uint8_t *_dst, ptrdiff_t _dststride,
-                                    int16_t *src1, int16_t *src2, ptrdiff_t srcstride,
-                                    int width, int height)
-{
-    int shift;
-    int log2Wd;
-    int w0;
-    int w1;
-    int o0;
-    int o1;
-    int x , y;
-    pixel *dst = (pixel*)_dst;
-    ptrdiff_t dststride = _dststride / sizeof(pixel);
-
-    shift  = 14 - BIT_DEPTH;
-    log2Wd = denom + shift;
-    w0 = wl0Flag;
-    w1 = wl1Flag;
-    o0 = (ol0Flag) * (1 << (BIT_DEPTH - 8));
-    o1 = (ol1Flag) * (1 << (BIT_DEPTH - 8));
-
-    for (y = 0; y < height; y++) {
-        for (x = 0; x < width; x++) {
-            dst[x] = av_clip_pixel((src1[x] * w0 + src2[x] * w1 +
-                                    ((o0 + o1 + 1) << log2Wd)) >> (log2Wd + 1));
-        }
-        dst  += dststride;
-        src1 += srcstride;
-        src2 += srcstride;
-    }
-}
-*/
 end

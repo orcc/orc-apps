@@ -199,14 +199,6 @@ actor InterPrediction()
 		end end
 	end
 
-	/* Computing the weighted prediction of the current pixel */
-	procedure weightedPred(uint(size=2) component, uint x, uint y, uint(size=1) rdList)
-	
-	begin
-		/* If we have a mono-prediction */
-		
-	end
-
 	/* We have a new slice, we will update differents value then get the new
 	 * refList and weights
 	 */
@@ -649,14 +641,7 @@ actor InterPrediction()
 		listIdx=2 || listIdx=1 && isBiPredOrLx = PRED_L0
 	var
 		uint(size=7) compPuIdxMax[2],
-		uint(size=1) rdList = if(isBiPredOrLx = PRED_L1) then 1 else 0 end,
-		int wX,
-		int oX,
-		int locLogWD,
-		int w0,
-		int w1,
-		int o0,
-		int o1
+		uint(size=1) rdList = if(isBiPredOrLx = PRED_L1) then 1 else 0 end
 	do
 		compPuIdxMax := [cuSize[i]-1:for int i in 0 .. 1];
 		foreach int component in 0 .. 2 /* Y, Cb, Cr */
@@ -664,81 +649,21 @@ actor InterPrediction()
 			if(numList = 1) then
 				if(wpIdc = 0) then
 					put_unweighted_pred(predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, component);
-				end
-			end
-			
-			foreach int y in 0 .. compPuIdxMax[1]
-			do
-				foreach int x in 0 .. compPuIdxMax[0]
-				do
-					if(numList = 1) then
-						if(wpIdc = 0) then
-							/* When we don't have a weighted prediction, we do the
-							 * average.
-							 */
-							//predSamples[component][x][y][0] := (predSamples[component][x][y][rdList] + (1 <<(shift1-1)))>>shift1;
-						else
-							/* If we had a bi-prediction both pictures used and movement
-							 * vectors where identical
-							 */
-							if(isBiPredOrLx != BI_PRED) then
-								/* We use the bi-prediction way */
-								wX := weightCu[component][rdList];
-								oX := offsetCu[component][rdList];
-								locLogWD := logWD[component];
-								predSamples[component][x][y][0] :=
-									if(locLogWD >= 1) then
-										((predSamples[component][x][y][rdList]*wX + (1<<(locLogWD-1))) >> locLogWD)+oX
-									else
-										predSamples[component][x][y][rdList]*wX +oX
-									end;
-							else
-								/* Weighted prediction for mono-prediction. */
-								wX := weightCu[component][0] + weightCu[component][1];
-								oX := offsetCu[component][0] + offsetCu[component][1] +1;
-								locLogWD := logWD[component] +1;
-								predSamples[component][x][y][0] := ((predSamples[component][x][y][0]*wX + (oX<<(locLogWD-1))) >>locLogWD);
-							end
-						end
-						/* We apply a threashold according to bitDepth
-						 * (which is equal to 8, 10 or 12 bits).
-						 */
-						predSamples[component][x][y][0] := clip_i32(predSamples[component][x][y][0], 0 , maxPixVal);
-					/* If we have a bi-prediction */
+				else
+					if(isBiPredOrLx != BI_PRED) then
+						weighted_pred (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, component);
 					else
-						if(wpIdc = 0) then
-							/* When we don't have a weighted prediction, we do the average
-							 * of both pixels.
-							 */
-							predSamples[component][x][y][0] := (predSamples[component][x][y][0] + predSamples[component][x][y][1] + 64)
-								>> 7;
-							/* We apply a threshold according to bitDepth
-							 * (which is equal to 8, 10 or 12 bits).
-							 */
-							predSamples[component][x][y][0] := clip_i32(predSamples[component][x][y][0], 0 ,
-								maxPixVal);
-						else /* When we have weighted prediction for bi-prediction */
-							/* Then we realize the weighted prediction with the pixel
-							 * values and the coefficients.
-							 */
-							w0 := weightCu[component][0];
-							w1 := weightCu[component][1];
-							o0 := offsetCu[component][0];
-							o1 := offsetCu[component][1];
-							locLogWD := logWD[component];
-							predSamples[component][x][y][0] := (predSamples[component][x][y][0]*w0 + predSamples[component][x][y][1]*w1 +
-								((o0+o1+1)<<locLogWD))>>(locLogWD+1);
-							/* We apply a threashold according to bitDepth
-							 * (which is equal to 8, 10 or 12 bits).
-							 */
-							predSamples[component][x][y][0] := clip_i32(predSamples[component][x][y][0], 0 ,
-								maxPixVal);
-						end
+						weighted_pred_mono (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
 					end
 				end
+			else
+				if(wpIdc = 0) then
+					put_weighted_pred_avg (predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
+				else
+					weighted_pred_avg (logWD, weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
+				end
 			end
-			compPuIdxMax := [(cuSize[i]>>1)-1:for int i in 0 .. 1];
-		end
+		end	
 		iLoop := 0;
 		jLoop := 0;
 	end
