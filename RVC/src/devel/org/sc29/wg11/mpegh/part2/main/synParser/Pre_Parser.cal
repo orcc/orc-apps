@@ -12,7 +12,7 @@ import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
 import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
 import  devel.org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
 
-actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE) 
+actor Pre_Parser () 
 // TilesInfo[0]: number of tiles to decode
 // TilesInfo[i>0]: increasing indexes of tiles  
 				uint(size= 8) byte
@@ -56,13 +56,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size=32) cnt_i;
 	uint(size=10) sps_id;
 	uint(size=10) pps_id;
-	uint(size=32) wp[2][MAX_NUM_REF][3][WP_MAX_STRUCT];
-	uint(size= 8) localizeAEB := 0;
 	uint NUM_ENTRY_MAX = 64;
-	uint entryOffsetsTab[NUM_ENTRY_MAX];
 	//uint(size=8) curr_Tile := TilesInfo[1];
-	bool byPassFlag := false;
-	uint(size=8) TilesInfo[2];
 	
 	
 	/**************************************************************************
@@ -1362,9 +1357,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
     uint(size=16) pictOrTileSize[2] := [0,0];
     uint rowIndex := 0;
     uint colIndex := 0;
-    uint(size=16) prevTileCoord[2] := [0,0];
-    uint prevRowIndex := 0;
-    uint prevColIndex := 0;
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2 , TileSize:[pictOrTileSize] repeat 2, PicSizeInMb:[(pictSize[0] + 15)/16, (pictSize[1] + 15)/16], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[PART_MODE_PICT], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
@@ -1389,7 +1381,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         PicHeightInCtbsY  := ( sps_pic_height_in_luma_samples[sps_id] + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
         PicSizeInCtbsY    := PicWidthInCtbsY * PicHeightInCtbsY;
    	    slice_temporal_mvp_enable_flag := 0;
-   	    TilesInfo := [TILE_SPLIT_ENABLE, TILE_INDEX];
    	
         vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
 		first_slice_segment_in_pic_flag := res[0];
@@ -1557,22 +1548,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				if i = num_tile_rows_minus1 then
 					rowTileInPix[ i + 1 ] := pictSize [1];
 				end
-			end
-		end
-		if TILE_SPLIT_ENABLE = 0 then // no tiles split : send image size
-			pictOrTileSize[0] := pictSize[0];
-			pictOrTileSize[1] := pictSize[1];
-		else // tiles split : send current tile size
-			colIndex := TilesInfo[1]  mod (num_tile_columns_minus1+1);
-			rowIndex := TilesInfo[1]  div (num_tile_columns_minus1+1);
-			
-			pictOrTileSize[0] := colTileInPix[colIndex + 1] - colTileInPix[colIndex];
-			pictOrTileSize[1] := rowTileInPix[rowIndex + 1] - rowTileInPix[rowIndex];
-			if TilesInfo[1] != 0 then
-				prevColIndex := (TilesInfo[1] - 1)  mod (num_tile_rows_minus1+1);
-    			prevRowIndex := (TilesInfo[1] - 1)  div (num_tile_columns_minus1+1);
-				prevTileCoord[0] := colTileInPix[prevColIndex + 1];
-				prevTileCoord[1] := rowTileInPix[prevRowIndex + 1];
 			end
 		end
 		////////////////////////////////////////////////////////////////////////////
@@ -2246,33 +2221,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_SliceHeader_done
 	 *************************************************************************/	
-	 procedure initWpScaling()
-	 begin
-		foreach uint(size=8) e in 0 .. 1 do
-			foreach uint(size=8) i in 0 .. MAX_NUM_REF-1 do
-				foreach uint(size=8) yuv in 0 .. 2 do
-					if wp[e][i][yuv][WP_PRESENT_FLAG] = 1 then
-						wp[e][i][yuv][WP_I_WEIGHT] := (1 << wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM]);
-						wp[e][i][yuv][WP_I_OFFSET] := 0;
-					end
-					wp[e][i][yuv][WP_W]     := wp[e][i][yuv][WP_I_WEIGHT];
-					wp[e][i][yuv][WP_O]     := wp[e][i][yuv][WP_I_OFFSET] * (1);
-					wp[e][i][yuv][WP_SHIFT] := wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM];
-					if wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM] >= 1 then
-						wp[e][i][yuv][WP_ROUND] := (1 << wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM]) - 1;
-					else
-						wp[e][i][yuv][WP_ROUND] := 0;
-					end
-				end
-			end
-		end
-	end
 	uint(size=16) num_entry_point_offsets := 0;
 	uint(size=16) offset_len;
 	uint(size= 8) slice_segment_header_extension_length;
-	uint num_entry_offsets := 0;
 	
-	read_SliceHeader.se_idx_6 : action ==> TilesCoord:[num_entry_offsets + 1], RealTilesCoord:[num_entry_point_offsets + 1]
+	read_SliceHeader.se_idx_6 : action ==> TilesCoord:[num_entry_point_offsets + 1]
 	guard
 		se_idx = 6 and isFifoFull(fifo)
 	var
@@ -2292,12 +2245,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				se_idx := 7;
     		end
     	end
-    	
-    	if TILE_SPLIT_ENABLE != 0 then
-			num_entry_offsets := 0;
-		else
-			num_entry_offsets := num_entry_point_offsets;
-		end
     end
     
     read_SliceHeader.se_idx_7_loop : action ==> 
@@ -2310,7 +2257,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			println("ERROR with vld_ue : check offset_len size");
 		end
 		vld_u_name(  offset_len, fifo, res, "entry_point_offset                      ");
-		entryOffsetsTab[cnt_i] := res[0];
 		cnt_i := cnt_i + 1;
 	end
 	
@@ -2353,8 +2299,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
     	se_idx := 100;
     end
     
-    uint totalByPass := 0;
-    
     read_SliceHeader_done : action ==> Poc:[poc], 
 		StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
     guard
@@ -2364,19 +2308,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			println("\tPOC: "+poc);
 		end
 		sliceData_idx := 1;
-		totalByPass := 0;
-		if num_entry_point_offsets > 0 and TILE_SPLIT_ENABLE != 0 then //bypass
-			if TilesInfo[1] != 0 then
-				byPassFlag := true;
-				byte_align(fifo);
-				foreach int k in 0 .. TilesInfo[1] - 1 do
-					totalByPass := totalByPass + entryOffsetsTab[k];
-					//println("totalbypass = " + totalByPass);
-				end
-			end
-			
-			// nb of bytes to bypass since they concern previous tiles				
-		end 	
 	end
 
 	/**************************************************************************
@@ -2384,7 +2315,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 ********        Slice Data                           *********************
 	 **************************************************************************
 	 *************************************************************************/
-	int countAEB := 0;
 	uint(size= 9) codIRange[1];
 	uint(size=16) codIOffset[1];
 	uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX];
@@ -2405,7 +2335,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size=16) nbCtbTile[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
 	uint(size=16) colTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
 	uint(size=16) rowTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
-	uint tile_idx := 0;
 	uint(size= 1) skip_flag_tab[PICT_WIDTH][2];
 	uint(size= 8) intraPredMode[PICT_WIDTH][2];
 	uint(size=16) colWidth[PICT_WIDTH / MIN_CTB_SIZE_Y];
@@ -2522,7 +2451,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	
 	read_SliceData.sendInfoTilesLoop: action ==> TilesCoord:[x0 ,y0 ,x1 ,y1]
 	guard 
-		sliceData_idx = 20,  cnt_i < num_entry_offsets + 1
+		sliceData_idx = 20,  cnt_i < num_entry_point_offsets + 1
 	var
 		uint x0 := 0,
 		uint y0 := 0,
@@ -2541,49 +2470,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			countRow := countRow + 1;
 		end
 		cnt_i := cnt_i + 1;
-		if TILE_SPLIT_ENABLE = 1 then
-			x0 := 0;
-			x1 := pictOrTileSize[0];
-			y0 := 0;
-			y1 := pictOrTileSize[1];
-		end
-	end
-	
-	read_SliceData.sendRealInfoTilesLoop: action ==> RealTilesCoord:[x0 ,y0 ,x1 ,y1]
-	guard 
-		sliceData_idx = 22,  cnt_i < num_entry_point_offsets + 1
-	var
-		uint x0 := 0,
-		uint y0 := 0,
-		uint x1 := pictSize[0],
-		uint y1 := pictSize[1]
-	do
-		x0 := colTileInPix[countCol];
-		x1 := colTileInPix[countCol + 1];
-		y0 := rowTileInPix[countRow];
-		y1 := rowTileInPix[countRow + 1];
-		
-		countCol := countCol + 1;
-		if countCol  = pps_num_tile_columns_minus1[pps_id]+1 then
-			countCol := 0;
-			countRow := countRow + 1;
-		end
-		cnt_i := cnt_i + 1;
-	end
-	
-	read_SliceData.senInfoTilesEnd: action ==> 
-	guard 
-		sliceData_idx = 20,  cnt_i = num_entry_offsets + 1
-	do
-		countCol := 0;
-		countRow := 0;
-		cnt_i    := 0;
-		sliceData_idx := 22;
 	end
 	
 	read_SliceData.senRealInfoTilesEnd: action ==> 
 	guard 
-		sliceData_idx = 22,  cnt_i = num_entry_point_offsets + 1
+		sliceData_idx = 20,  cnt_i = num_entry_point_offsets + 1
 	do
 		countCol := 0;
 		countRow := 0;
@@ -2631,48 +2522,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 *************************************************************************/	
 	read_SliceData_gotoCodingTree.start : action ==>
 	guard
-		sliceData_idx = 3, byPassFlag = false
+		sliceData_idx = 3
 	do
 		sliceData_idx  := 4;
 		codingTree_idx := 1;
 	end
-	
-	read_SliceData_gotoCodingTree.byPass : action ==>
-	guard
-		sliceData_idx = 3, byPassFlag = true
-	do
-		sliceData_idx  := 4;
-		codingTree_idx := 0;
-	end
-	
-	read_CodingTree.byPassBeforeTileLoop: action ==> 
-	guard
-		codingTree_idx = 0 and isFifoFull(fifo), cnt_i < totalByPass + TilesInfo[1] 
-	do
-		if (localizeAEB & 1) = 0 then 
-			flushBits_name(8, fifo, "bypassed");
-		else
-			countAEB := countAEB + 1;
-		end
-		//println("bypassed " + cnt_i);
-		cnt_i := cnt_i + 1;
-	end
-
-	read_CodingTree.byPassBeforeTileEnd: action ==> 
-	guard
-		codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass + TilesInfo[1] 
-	do
-		//println("totalByPass = " +totalByPass);
-		cnt_i := 0;
-		byPassFlag := false;
-		codingTree_idx := 1;
-		//flushBits_name(8, fifo, "bypassed");
-		tile_idx := TilesInfo [1];
-		CtbAddrTS := nbCtbTile[tile_idx - 1];
-		//println("CtbAddrTS" + CtbAddrTS);
-		CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
-		//println("CtbAddrRS" + CtbAddrRS);
-	end	
 	
 	read_SliceData.retCodingTree : action ==>
 	guard
@@ -2693,15 +2547,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			if pps_tiles_enabled_flag[pps_id] = 1 and (TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1]) then
 		 			//println("endOfTile ###################################################"); 
 		 			//end of tile: move to bypass if parser considers only one tile
-		 			if TILE_SPLIT_ENABLE = 0 then
-		 				sliceData_idx := 3;
-		 			else
-		 				sliceData_idx := 5;
-						//curr_Tile := 0;
-						//CtbAddrTS := 0;
-						//CtbAddrRS := 0;
-						//byPassFlag := false;
-					end
+		 			sliceData_idx := 3;
+		 			
 				end
 		else
 			//println("endOfSlice ###################################################");
@@ -2710,7 +2557,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			CtbAddrTS := 0;
 			CtbAddrRS := 0;
 			//numByPassBytes := [0: for int i in 0 .. MAX_NUM_TILES - 1];
-			byPassFlag := false;
 		end
 	end
 	/**************************************************************************
@@ -2746,10 +2592,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		uint(size=16) ct_y0			:= ctStack[ctStack_idx][CT_y0],
 		uint index := 0
 	do
-		if TilesInfo[1] != 0 then
-			ct_x0 := ((prevTileCoord[0] >> 6 ) - 1) << 6;
-			ct_y0 := ((prevTileCoord[1] >> 6 ) - 1) << 6;
-		end
 		if CtbAddrTS != 0 then
 			index := CtbAddrTS -1;
 		end
