@@ -32,13 +32,13 @@ Feistel_Networks.Feistel_Manager.cal
 
 -- Utility FUs used in both Blowfish encipher and decipher --
 
-Utilities.Any2Bits.cal
-Utilities.Bits2Any.cal
-Utilities.Mux2.cal
-Utilities.Mux8.cal
-Utilities.Demux2.cal
-Utilities.Demux8.cal
-Utilities.XOR_1b.cal
+Utilities.Other.Any2Bits.cal
+Utilities.Other.Bits2Any.cal
+Utilities.Other.Mux2.cal
+Utilities.Other.Mux8.cal
+Utilities.Other.Demux2.cal
+Utilities.Other.Demux8.cal
+Utilities.Other.XOR_1b.cal
 
 == Blowfish encipher and decipher as FU networks ==
 

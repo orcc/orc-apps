@@ -1,0 +1,141 @@
+package ch.epfl.common;
+import  std.video.Display.*;
+
+actor DisplayUnkillable()
+	uint(size=8) Byte,
+	int(size=32) SIZE,
+	int(size=32) H,
+	int(size=32) W
+		==>
+		:
+ 
+
+	uint(size=8)  pictureBufferY[MAX_WIDTH * MAX_HEIGHT];
+	uint(size=8)  pictureBufferU[MAX_WIDTH * MAX_HEIGHT / 4];
+	uint(size=8)  pictureBufferV[MAX_WIDTH * MAX_HEIGHT / 4];
+	int (size=32) pictureSizeInMb;
+	int (size=32) nbBlockGot;
+	int (size=32) nbFrameDecoded;
+	uint(size=2)  chromaComponent;
+	int (size=16) pictureWidthLuma := MAX_WIDTH;
+	int (size=16) pictureHeightLuma := MAX_HEIGHT;
+	uint(size=12) xIdxLuma;
+	uint(size=32) yOffLuma;
+	uint(size=12) xIdxChroma;
+	uint(size=32) yOffChroma;
+	
+ 
+	initialize ==>
+	do
+        displayYUV_init();
+		compareYUV_init();
+		fpsPrintInit();
+		nbFrameDecoded := 0;
+	end
+
+
+	getPictureSize.parallel: action
+		W :[WidthValue],
+		H :[HeightValue]
+			==>
+	do
+		setSize(WidthValue, HeightValue);
+	end
+	
+	getPictureSize.serial: action
+		SIZE :[WidthValue, HeightValue]
+			==>
+	do
+		setSize(WidthValue, HeightValue);
+	end
+
+	getPixValue.launch.Luma: action Byte :[Bytes] repeat 256 ==>
+	guard
+		nbBlockGot < pictureSizeInMb
+	var
+		uint(size=32) yOff := yOffLuma,
+		uint(size=9)  idx  := 0
+	do
+		nbBlockGot := nbBlockGot + 1;
+		foreach int y in 0 .. 15
+		do
+			foreach int x in xIdxLuma .. xIdxLuma + 15
+			do
+				pictureBufferY[yOff+x] := Bytes[idx];
+				idx := idx + 1;
+			end
+			yOff := yOff + pictureWidthLuma;
+		end
+		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
+		chromaComponent := 0;
+	end
+
+	getPixValue.launch.Chroma: action Byte :[Bytes] repeat 64 ==>
+	var
+		uint(size=32) yOff := yOffChroma,
+		uint(size=7)  idx  := 0
+	do
+		foreach int y in 0 .. 7
+		do
+			foreach int x in xIdxChroma .. xIdxChroma + 7
+			do
+				if(chromaComponent=0)then
+					pictureBufferU[yOff + x] := Bytes[idx];
+				else
+					pictureBufferV[yOff + x] := Bytes[idx];
+				end
+				idx := idx + 1;
+			end
+			yOff := yOff + pictureWidthLuma / 2;
+		end
+		if chromaComponent != 0 then
+			xIdxChroma := xIdxChroma + MB_SIZE_CHROMA;
+			if xIdxLuma = pictureWidthLuma then
+				xIdxLuma   := 0;
+				xIdxChroma := 0;
+				yOffLuma   := yOffLuma + MB_SIZE_LUMA   * pictureWidthLuma;
+				yOffChroma := yOffChroma + MB_SIZE_CHROMA * pictureWidthLuma / 2;
+			end
+		end
+		chromaComponent := 1;
+	end
+
+	displayPicture: action ==>
+	guard
+		nbBlockGot >= pictureSizeInMb,
+		displayYUV_getFlags() != 0
+	do
+		fpsPrintNewPicDecoded();
+		displayYUV_displayPicture(pictureBufferY, pictureBufferU, pictureBufferV, pictureWidthLuma, pictureHeightLuma);
+		compareYUV_comparePicture(pictureBufferY, pictureBufferU, pictureBufferV, pictureWidthLuma, pictureHeightLuma);
+		nbFrameDecoded := nbFrameDecoded + 1;
+	end
+	
+	procedure setSize(uint(size=32) WidthValue, uint(size=32) HeightValue) begin
+		pictureWidthLuma  := WidthValue  * 16;
+		pictureHeightLuma := HeightValue * 16;
+		pictureSizeInMb   := WidthValue * HeightValue;
+		nbBlockGot := 0;
+		xIdxLuma   := 0;
+		xIdxChroma := 0;
+		yOffLuma   := 0;
+		yOffChroma := 0;
+	end
+
+	schedule fsm GetPictureSize:
+		GetPictureSize    (getPictureSize.serial     )--> GetLumaBlock;
+		GetPictureSize    (getPictureSize.parallel   )--> GetLumaBlock;
+		GetLumaBlock      (getPixValue.launch.Luma   )--> GetChroma1Block;
+		GetChroma1Block   (getPixValue.launch.Chroma )--> GetChroma2Block;
+		GetChroma2Block   (getPixValue.launch.Chroma )--> GetLumaBlock;
+
+		GetLumaBlock      (displayPicture            )--> GetPictureSize;
+	end
+
+	priority
+		getPixValue > displayPicture;
+	end
+
+	
+ 
+end
