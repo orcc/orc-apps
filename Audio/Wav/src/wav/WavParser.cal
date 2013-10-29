@@ -1,0 +1,107 @@
+/*
+ * Copyright (c) 2013, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Malgorzata Wiszniewska
+
+package wav;
+
+actor WavParser()
+	uint(size=8) In
+		==> 
+			uint(size=32) SampleRate, 
+			uint(size=16) SampleSizeInBits, 
+			uint(size=16) Channels, 
+			uint(size=8) Data,
+			uint ChunkSize:
+			
+	uint(size=32) sampleRate := 0;
+	uint(size=16) sampleSize := 0; 
+	uint(size=8) channels := 0; 
+	uint(size=8) format := 0;
+	uint(size=32) numberOfBytes := 0;
+	
+	int counter := 0;
+	
+	readHeader: action In:[inputBytes] repeat 44 
+		==> 
+			SampleRate:[sampleRate],
+			SampleSizeInBits:[sampleSize],
+			Channels:[channels],
+			ChunkSize:[numberOfBytes],
+			Data:[inputBytes] repeat 44
+	do
+		numberOfBytes := (numberOfBytes << 8) + inputBytes[7];
+		numberOfBytes := (numberOfBytes << 8) + inputBytes[6];
+		numberOfBytes := (numberOfBytes << 8) + inputBytes[5];
+		numberOfBytes := (numberOfBytes << 8) + inputBytes[4] - 36;
+		
+		format := (format << 8) + inputBytes[21];
+		format := (format << 8) + inputBytes[20];
+		
+		if format != 1 then
+			println("File is not in a PCM Format. The result of playing back will be poorer than expected.");
+		end
+		
+		channels := (channels << 8) + inputBytes[23];
+		channels := (channels << 8) + inputBytes[22];
+		
+		sampleRate := inputBytes[27];
+		sampleRate := (sampleRate << 8) + inputBytes[26];
+		sampleRate := (sampleRate << 8) + inputBytes[25];
+		sampleRate := (sampleRate << 8) + inputBytes[24];
+		
+		sampleSize := (sampleSize << 8) + inputBytes[35];
+		sampleSize := (sampleSize << 8) + inputBytes[34];
+	end
+	
+	sendDataBytes: action In:[inputByte] 
+		==> 
+			Data:[inputByte]	
+	do	
+		counter := counter + 1;
+	end
+	
+	stop: action ==>
+	guard
+		counter = numberOfBytes
+	do
+		counter := 0;
+	end
+	
+	schedule fsm H:
+		H(readHeader) --> D;
+		D(sendDataBytes) --> D;
+		D(stop) --> H;
+	end
+	
+	priority
+		stop > sendDataBytes;
+	end
+	
+end

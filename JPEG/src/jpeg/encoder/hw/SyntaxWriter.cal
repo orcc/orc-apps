@@ -1,0 +1,447 @@
+/*
+ * Copyright (c) 2011, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+// Author: Endri Bezati <endri.bezati@epfl.ch>
+
+package jpeg.encoder.hw;
+
+import jpeg.encoder.common.Tables.QT;
+import jpeg.encoder.common.Tables.zigzag;
+import jpeg.encoder.common.Tables.HT_Bits;
+import jpeg.encoder.common.Tables.lumaDCValues;
+import jpeg.encoder.common.Tables.lumaACValues;
+import jpeg.encoder.common.Tables.chromaDCValues;
+import jpeg.encoder.common.Tables.chromaACValues;
+
+
+actor SyntaxWriter()
+	int(size=4) Bit,
+	int(size=32) Count,
+	int(size=32) SOI
+		==> 
+			uint(size=8) BitStream:
+	int count;
+	int bytes_read := 0;
+	bool padding := false;
+	bool get_current_image_count := false;
+	int qt_count := 0;
+	int ht_count := 0;
+	int val_count := 0;
+	
+	int Counter := 0;
+	
+	
+	int width;
+	int height;
+	
+	
+	List(type:int(size=8), size=16) APP0_data = [0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 00, 00];
+
+	List(type:int(size=9), size=17) SOF0_data := [0x00, 0x11, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x01, 0xFF, 0x00, 0x02, 0xFF, 0x01, 0x03, 0xFF, 0x01];
+
+	List(type:int(size=7), size=12) SOS_data = [0x00, 0x0C, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3F, 0x00];
+	
+	List(type:int(size=9), size=67) DQT_data;
+	List(type:int(size=9), size=19) DHT_data;
+	List(type:int(size=4), size=8) SCAN_read;
+	
+	GetSzW: action SOI:[w]  ==>
+	do
+		width := w;
+	end
+	
+	GetSzH: action SOI:[h] ==> 
+	do
+		height := h;
+		get_current_image_count := true;
+	end
+	
+	SOI.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	SOI.send_marker: action ==> BitStream:[0xD8]
+	end
+	
+	APP0.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	APP0.send_marker: action ==> BitStream:[0xE0]
+	end
+	
+	APP0.send_start: action ==>
+	do
+		Counter := 0;
+	end
+	
+	APP0.send_data: action ==> BitStream:[token]
+	var
+		uint(size=8) token
+	do
+		token := APP0_data[Counter];
+		Counter := Counter + 1;
+	end
+	
+	APP0.send_stop: action ==>
+	guard
+		Counter = 16
+	end
+	
+	DQT.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	DQT.send_marker: action ==> BitStream:[0xDB]
+	end
+	
+	DQT.send_start: action ==>
+	do
+		DQT_data[0] := 0;
+		DQT_data[1] := 67;
+		DQT_data[2] := qt_count;
+		foreach int i in 0 .. 63
+		do
+			DQT_data[zigzag[i] + 3] := QT[qt_count][i];
+		end
+		qt_count := qt_count + 1;
+		Counter := 0;
+	end	
+	
+	DQT.send_data: action  ==> BitStream:[token]
+	var
+		uint(size=8) token
+	do
+		token := DQT_data[Counter];
+		Counter := Counter + 1;
+	end
+	
+	DQT.send_stop: action ==>
+	guard
+		Counter = 67
+	end
+	
+
+	SOF0.Complete: action ==>
+	do
+		// Replace fields by actual width and heigth.
+		
+		SOF0_data[3] := height >> 8;
+		SOF0_data[4] := height & 0xFF;
+		SOF0_data[5] := width >> 8;
+		SOF0_data[6] := width & 0xFF;
+		SOF0_data[9] := 0x22;
+		SOF0_data[12] := 0x11;
+		SOF0_data[15] := 0x11;
+	end
+	
+	SOF0.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	SOF0.send_marker: action ==> BitStream:[0xC0]
+	end
+	
+	SOF0.send_start: action ==>
+	do
+		Counter := 0;
+	end
+	
+	SOF0.send_data: action ==> BitStream:[token]
+	var
+		uint(size=8) token
+	do
+		token := SOF0_data[Counter];
+		Counter := Counter + 1;
+	end
+	
+	SOF0.send_stop: action ==>
+	guard
+		Counter = 17
+	end
+	
+	DHT.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	DHT.send_marker: action ==> BitStream:[0xC4]
+	end
+	
+	DHT.send_len_start: action ==>
+	var
+		int len
+	do
+		DHT_data[0] := 0;
+		DHT_data[2] := HT_Bits[ht_count][0];
+		len := 0;
+			
+		foreach int i in 1 .. 16 
+		do
+			DHT_data[i + 2] := HT_Bits[ht_count][i];
+			len := len + HT_Bits[ht_count][i];
+		end
+		DHT_data[1] := len + 1 + 2 + 16;
+		to_read := len;
+		val_count := 0;
+		Counter := 0;
+	end	
+	
+	int to_read;
+	
+	DHT.send_len: action  ==> BitStream:[token]
+	var
+		uint(size=8) token
+	do
+		token := DHT_data[Counter];
+		Counter := Counter + 1;
+	end
+	
+	DHT.send_len_stop: action ==>
+	guard
+		Counter = 19
+	end
+	
+	DHT.send_data: action  ==> BitStream:[v]
+	guard 
+		to_read != 0
+	var
+		uint(size=8) v
+	do
+		if ht_count = 0 then
+			v := lumaDCValues[val_count];
+		else
+			if ht_count = 1 then
+				v := chromaDCValues[val_count];
+			else
+				if ht_count = 2 then
+					v := lumaACValues[val_count];				
+				else
+					if ht_count = 3 then
+						v := chromaACValues[val_count];
+					end
+				end
+			end
+		end
+				
+		val_count := val_count + 1;	
+		to_read := to_read - 1;
+	end
+	
+	DHT.done: action ==>
+	guard 
+		to_read = 0
+	do
+		ht_count := ht_count + 1;
+	end
+	
+	SOS.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	SOS.send_marker: action ==> BitStream:[0xDA]
+	end
+	
+	SOS.send_data_start: action ==>
+	do
+		Counter := 0;
+	end
+	
+	SOS.send_data: action ==> BitStream:[token]
+	var
+		uint(size=8) token
+	do
+		token := SOS_data[Counter];
+		Counter := Counter + 1;
+	end
+	
+	SOS.send_data_stop: action ==>
+	guard
+		Counter = 12
+	do
+		// The number of bytes has not been received yet.
+		count := 0x0EFFFFFF;
+	end
+	
+	SCAN.read_start: action ==>
+	guard
+		not padding 
+	do
+		Counter := 0;
+	end
+	
+	SCAN.read_save: action Bit:[b] ==>
+	do
+		SCAN_read[Counter] := b;
+		Counter :=  Counter + 1;
+	end
+	
+	
+	SCAN.read_stop_and_send: action  ==> BitStream:[v]
+	guard 
+		Counter = 8
+	var
+		uint(size=8) v
+	do
+		v := 0;
+		foreach int i in 0 .. 7
+		do
+			v := (v << 1) + SCAN_read[i];
+	 	end
+		padding := (v = 0xFF);
+		bytes_read := bytes_read + 8;
+	end
+	
+	SCAN.padding: action ==> BitStream:[0x00]
+	guard 
+		padding
+	do
+		padding := false;
+	end
+	
+	SCAN.count: action Count:[c] ==>
+	guard
+		get_current_image_count
+	do
+		count := c;
+		get_current_image_count := false;
+		//println("count " + c);
+	end
+	
+	// We have received the length of the entropy coded section, we now know when to add EOI.
+	SCAN.done: action ==>
+	guard 
+		bytes_read >= count
+	end
+	
+	EOI.send_start_marker: action ==> BitStream:[0xFF]
+	end
+	
+	EOI.send_marker: action ==> BitStream:[0xD9]
+	do
+		bytes_read := 0;
+		qt_count := 0;
+		ht_count := 0;
+		padding := false;
+	end
+	
+	schedule fsm s0:
+		
+		s0			(GetSzW)								--> s01;
+		s01			(GetSzH)								--> s1;
+		
+		s1			(SOI.send_start_marker)					--> s11;
+		s11			(SOI.send_marker)						--> s2;
+		
+		s2			(APP0.send_start_marker)				--> s21;
+		s21			(APP0.send_marker)						--> s22;
+		s22			(APP0.send_start)						--> s23;
+		s23			(APP0.send_data)						--> s23;
+		s23			(APP0.send_stop)						--> s3;	
+		
+		// QT LUMA
+		s3			(DQT.send_start_marker)					--> s31;
+		s31			(DQT.send_marker)						--> s4;
+		
+		s4			(DQT.send_start)						--> s41;
+		s41			(DQT.send_data)							--> s41;
+		s41			(DQT.send_stop)							--> s5;
+		
+		// QT Chroma
+		s5			(DQT.send_start_marker)					--> s5x;
+		s5x			(DQT.send_marker)						--> s5q;
+		s5q			(DQT.send_start)						--> s51;
+		s51			(DQT.send_data)							--> s51;
+		s51			(DQT.send_stop)							--> s6;
+		
+		s6			(SOF0.Complete)							--> s61;	
+		s61			(SOF0.send_start_marker)				--> s62;
+		s62			(SOF0.send_marker)						--> s7;
+		
+		s7			(SOF0.send_start)						--> s71;
+		s71			(SOF0.send_data)						--> s71;
+		s71			(SOF0.send_stop)						--> s8;
+		//Luma DC
+		s8			(DHT.send_start_marker)					--> s81;
+		s81			(DHT.send_marker)						--> s82;
+		s82			(DHT.send_len_start)					--> s83;
+		s83			(DHT.send_len)							--> s83;
+		s83			(DHT.send_len_stop)						--> s84;
+		s84			(DHT.send_data)							--> s84;
+		s84			(DHT.done)								--> s9;
+		//Chroma DC
+		s9			(DHT.send_start_marker)					--> s91;
+		s91			(DHT.send_marker)						--> s92;
+		s92			(DHT.send_len_start)					--> s93;
+		s93			(DHT.send_len)							--> s93;
+		s93			(DHT.send_len_stop)						--> s94;
+		s94			(DHT.send_data)							--> s94;
+		s94			(DHT.done)								--> sA;
+		//Luma AC
+		sA			(DHT.send_start_marker)					--> sA1;
+		sA1			(DHT.send_marker)						--> sA2;
+		sA2			(DHT.send_len_start)					--> sA3;
+		sA3			(DHT.send_len)							--> sA3;
+		sA3			(DHT.send_len_stop)						--> sA4;
+		sA4			(DHT.send_data)							--> sA4;
+		sA4			(DHT.done)								--> sB;
+		//Chroma AC
+		sB			(DHT.send_start_marker)					--> sB1;
+		sB1			(DHT.send_marker)						--> sB2;
+		sB2			(DHT.send_len_start)					--> sB3;
+		sB3			(DHT.send_len)							--> sB3;
+		sB3			(DHT.send_len_stop)						--> sB4;
+		sB4			(DHT.send_data)							--> sB4;
+		sB4			(DHT.done)								--> sC;
+		
+		sC			(SOS.send_start_marker)					--> sC1;
+		sC1			(SOS.send_marker)						--> sD;
+		
+		sD			(SOS.send_data_start)					--> sD1;
+		sD1			(SOS.send_data)							--> sD1;
+		sD1			(SOS.send_data_stop)					--> sE;
+		
+		
+		
+		sE			(SCAN.read_start)						--> sE1;
+		sE1			(SCAN.read_save)						--> sE1;
+		sE1			(SCAN.read_stop_and_send)				--> sE;
+		
+		sE			(SCAN.count)							--> sE;
+		sE			(SCAN.padding)							--> sE;
+		sE			(SCAN.done)								--> sF;
+		
+		sF			(EOI.send_start_marker)					--> sF1;
+		sF1			(EOI.send_marker)						--> s0;
+	end
+	
+	priority
+		APP0.send_stop > APP0.send_data;
+		DQT.send_stop > DQT.send_data;
+		SOF0.send_stop > SOF0.send_data;
+		DHT.send_len_stop > DHT.send_len;
+		SOS.send_data_stop > SOS.send_data;
+		SCAN.read_stop_and_send > SCAN.read_save;
+		SCAN.done > SCAN.read_start;
+		SCAN.count > SCAN.read_start;
+	end
+end

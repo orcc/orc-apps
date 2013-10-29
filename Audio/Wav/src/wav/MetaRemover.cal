@@ -1,0 +1,171 @@
+/*
+ * Copyright (c) 2013, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Malgorzata Wiszniewska
+
+package wav;
+
+actor MetaRemover()
+	uint ChunkSizeIn,
+	uint(size=8) DataIn
+		==> 
+			uint ChunkSizeOut,
+			uint(size=8) DataOut:
+	
+	bool afspOn := false;	
+	bool ignore := true;
+	bool blockToPass := false;
+	bool afsp := false;
+	bool afFound := false;
+	bool spFound := false;
+	uint afspCounter := 0;
+	int(size=32) numberOfBytesIn := 0;
+	int(size=32) numberOfBytesOut := 0;
+	int(size=32) numberOfBlocked := 0;
+	int(size=32) counter := 0;
+	uint(size=8) outputBlock[4];
+	uint(size=8) outputByte := 0;
+	
+	updateChunkSize: action DataIn:[inputByte] repeat 2 ==> ChunkSizeOut:[numberOfBytesOut]
+	guard
+		blockToPass
+	do
+		numberOfBlocked := numberOfBlocked + 2;
+		numberOfBytesOut := numberOfBytesIn - numberOfBlocked;
+		counter := counter + 2;
+		blockToPass := false;
+	end
+	
+	passHeader: action ChunkSizeIn:[chs], DataIn:[header] repeat 44
+			==> 
+	do
+		foreach int i in 0 .. 40
+		do
+			//if data chunk found - stop ignoring; this chunk is usually not a part of the header, however for some files it looks like that, though...
+			if header[i] = 100 and header[i + 1] = 97 and header[i + 2] = 116 and header[i + 3] = 97 then
+				ignore := false;
+				blockToPass := true;
+			end
+		end
+		
+		numberOfBytesIn := chs;
+	end
+		
+	block: action DataIn:[inputByte] repeat 4 ==>
+	guard
+		ignore
+	do
+		//if data chunk found - stop ignoring
+		if inputByte[0] = 100 and inputByte[1] = 97 and inputByte[2] = 116 and inputByte[3] = 97 then
+			ignore := false;
+			blockToPass := true;
+		end
+		counter := counter + 4;
+		numberOfBlocked := numberOfBlocked + 4;
+	end
+	
+	pass: action DataIn:[inputBlock] repeat 4
+		==> 
+			DataOut:[outputBlock] repeat 4
+	do
+		if afspOn then
+			// afsp search done in two halves
+			// "af" sub-chunk found
+			if (inputBlock[2] = 97 and inputBlock[3] = 102) or (inputBlock[0] = 97 and inputBlock[1] = 102) then
+				afsp := true;
+				afFound := true;
+			end
+	
+			// "sp" sub-chunk found
+			if (inputBlock[0] = 115 and inputBlock[1] = 112) or (inputBlock[2] = 115 and inputBlock[3] = 112) then
+				spFound := true;
+			end
+			
+			if afspCounter = 2 and afFound and spFound then
+				afsp := false;
+				afspCounter := 0;
+				afFound := false;
+				spFound := false;
+			end
+		end
+		
+		foreach int i in 0 .. 3
+		do
+			if afspOn and afsp then
+				outputBlock[i] := 0;
+			else
+				outputBlock[i] := inputBlock[i];
+			end
+		end
+		counter := counter + 4;
+		afspCounter := afspCounter + 1;
+	end
+	
+	passRemaining: action 
+		DataIn:[inputByte]
+			==> 
+				DataOut:[outputByte]
+	guard
+		counter > numberOfBytesIn - 4
+	do
+		if afsp then
+			outputByte := 0;
+		else
+			outputByte := inputByte;
+		end
+		counter := counter + 1;
+	end
+	
+	stop: action ==>
+	guard
+		counter = numberOfBytesIn
+	do
+		counter := 0;
+		afspCounter := 0;
+		afFound := false;
+		spFound := false;
+		numberOfBlocked := 0;
+		ignore := true;
+		afsp := false;
+	end
+	
+	schedule fsm PH:
+		PH(passHeader) --> B;
+		B(block) --> B;
+		B(updateChunkSize) --> S;
+		B(pass) --> S;
+		S(pass) --> S;
+		S(passRemaining) --> S;
+		S(stop) --> PH;
+	end
+	
+	priority
+		stop > updateChunkSize > block > passRemaining > pass;
+	end
+end
