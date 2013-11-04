@@ -1,0 +1,276 @@
+// Authors: Eduardo Juarez, Wei Jianguo and Ren Rong <eduardo.juarez@upm.es> of UPM (Spain) 
+
+package devel.org.sc29.wg11.mpegh.part2.main.IT;  
+import  std.util.Math.*;
+
+
+actor IT_Splitter() int(size=16)  Coeff, 
+                    int(size=7)   Size
+                    ==> 
+                    int(size=16)  Coeff_4x4_DST,  
+                    int(size=16)  Coeff_4x4_IT,  
+                    int(size=16)  Coeff_8x8, 
+                    int(size=16)  Coeff_16x16, 
+                    int(size=16)  Coeff_32x32,                                   
+                    int(size=16)  Coeff_skip                                    
+                    :
+ 			
+	int 	MAX_TR_DYNAMIC_RANGE = 15; // Maximum transform dynamic range (excluding sign bit)
+	int 	BIT_DEPTH = 8; // assuming 8bits for samples
+	
+    int(size= 16) tabTransCoeffLevel[32*32];
+	
+	/**************************************************************************
+	 * tabTransCoeffLevel_proc
+	 *************************************************************************/
+	procedure tabTransCoeffLevel_proc(
+//		uint(size= 8) sps_bit_depth_luma_minus8,
+//		uint(size= 8) sps_bit_depth_chroma_minus8,
+		 int(size= 8) slice_qp,
+		uint(size= 8) rc_cIdx,
+		 int(size= 8) qp_offset,
+		uint(size= 8) log2TrafoSize
+	)
+	var
+		uint(size= 8) sizeOfTU                    = 1 << log2TrafoSize,
+		uint(size= 8) sps_bit_depth_luma_minus8   = 0,
+		uint(size= 8) sps_bit_depth_chroma_minus8 = 0,
+		uint(size=16) qp_bd_offset_luma           = 6 * sps_bit_depth_luma_minus8,
+		uint(size=16) qp_bd_offset_chroma         = 6 * sps_bit_depth_chroma_minus8,
+         int(size= 8) qp_y     = ((slice_qp + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
+        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
+		 int(size=16) qp,
+		 int(size=16) qp_i,
+		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
+		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8 + 8 + log2TrafoSize - 5 else sps_bit_depth_chroma_minus8 + 8 + log2TrafoSize - 5 end
+	begin
+        if rc_cIdx = 0 then
+            qp := qp_y + qp_bd_offset_luma;
+        else
+            qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
+            if qp_i < 30 then
+                qp := qp_i;
+            elsif qp_i > 43 then
+                qp := qp_i - 6;
+            else
+                qp := qp_c[qp_i - 30];
+            end
+	
+	        qp := qp + qp_bd_offset_chroma;
+	    end
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+			tabTransCoeffLevel[i] := clip_i32(( ( tabTransCoeffLevel[i] * 16 * levelScale[ qp mod 6 ] << (qp/6)) + (1 << (shift - 1 )) ) >> shift, -32768, 32767 );
+		end
+	end
+	
+	/**************************************************************************
+	 * split_4x4.transf_skip
+	 *************************************************************************/
+	split_4x4.transf_skip: action Coeff:    [ coeff ] repeat 4*4, 
+	                  			  Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  			  ==>
+	                  			  Coeff_skip:[ [(tabTransCoeffLevel[i] + offset) >> transformSkipShift: for int i in 0 .. 15] ] repeat 4*4
+	guard
+	  sizeOfTU = 4 and RCskip = 0 and transformSkipFlag = 1
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 2,
+		int transformSkipShift = shift,
+		int offset = (1 << (transformSkipShift -1))
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 2);
+	end
+
+	/**************************************************************************
+	 * split_4x4.DST
+	 *************************************************************************/
+	split_4x4.DST: action Coeff:    [ coeff ] repeat 4*4, 
+	                  	  Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  	  ==>
+	                  	  Coeff_4x4_DST:[ [tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1] ] repeat 4*4
+	guard
+	  sizeOfTU = 4 and RCskip = 0 and isDST = 1 and transformSkipFlag = 0
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 2);
+	end
+
+	/**************************************************************************
+	 * split_4x4.IT
+	 *************************************************************************/
+	split_4x4.IT: action Coeff:    [ coeff ] repeat 4*4, 
+	                  	 Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  	 ==>
+	                  	 Coeff_4x4_IT:[ [tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1] ] repeat 4*4
+	guard
+	  sizeOfTU = 4 and RCskip = 0 and isDST = 0 and transformSkipFlag = 0
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 2);
+	end
+
+	/**************************************************************************
+	 * split_4x4.skipIT
+	 *************************************************************************/
+	split_4x4.skipIT: action  
+	                  Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  ==>
+	guard
+	  sizeOfTU = 4 and RCskip != 0 and transformSkipFlag = 0
+	end
+
+	/**************************************************************************
+	 * split_8x8.trans_skip
+	 *************************************************************************/
+	split_8x8.trans_skip: action Coeff:    [ coeff ] repeat 8*8, 
+	                  			 Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  			 ==>
+	                  			 Coeff_skip:[ [(tabTransCoeffLevel[i] + offset) >> transformSkipShift: for int i in 0 .. 63] ] repeat 8*8  
+	guard
+	  sizeOfTU = 8 and RCskip = 0 and transformSkipFlag = 1
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 3,
+		int transformSkipShift = shift,
+		int offset = (1 << (transformSkipShift -1))
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 3);
+	end	
+
+	/**************************************************************************
+	 * split_8x8.default
+	 *************************************************************************/
+	split_8x8.default: action Coeff:    [ coeff ] repeat 8*8, 
+	                  		  Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  		  ==>
+	                  		  Coeff_8x8:[  [tabTransCoeffLevel[i]: for int i in 0 .. 8 * 8 - 1]  ] repeat 8*8  
+	guard
+	  sizeOfTU = 8 and RCskip = 0 and transformSkipFlag = 0
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 3);
+	end	
+	
+	/**************************************************************************
+	 * split_8x8.skip
+	 *************************************************************************/
+	split_8x8.skip: action  
+	                  Size:     [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                  ==>
+	guard
+	  sizeOfTU = 8 and RCskip != 0 and transformSkipFlag = 0
+	end
+
+	/**************************************************************************
+	 * split_16x16.trans_skip
+	 *************************************************************************/
+	split_16x16.trans_skip: action Coeff:      [ coeff ] repeat 16*16, 
+	                    		   Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    		   ==>
+	                    		   Coeff_skip:[ [(tabTransCoeffLevel[i] + offset) >> transformSkipShift: for int i in 0 .. 255] ] repeat 16*16
+	guard
+	  sizeOfTU = 16 and RCskip = 0 and transformSkipFlag = 1
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 4,
+		int transformSkipShift = shift,
+		int offset = (1 << (transformSkipShift -1))
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 4);
+	end	
+
+	/**************************************************************************
+	 * split_16x16.default
+	 *************************************************************************/
+	split_16x16.default: action Coeff:      [ coeff ] repeat 16*16, 
+	                    		Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    		==>
+	                    		Coeff_16x16:[ [tabTransCoeffLevel[i]: for int i in 0 .. 16 * 16 - 1] ] repeat 16*16
+	guard
+	  sizeOfTU = 16 and RCskip = 0 and transformSkipFlag = 0
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 4);
+	end	
+
+	/**************************************************************************
+	 * split_16x16.skip
+	 *************************************************************************/
+	split_16x16.skip: action 
+	                    Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    ==>
+	guard
+	  sizeOfTU = 16 and RCskip != 0 and transformSkipFlag = 0
+	end	
+	
+	/**************************************************************************
+	 * split_32x32.trans_skip
+	 *************************************************************************/
+	split_32x32.trans_skip: action Coeff:      [ coeff ] repeat 32*32,  
+	                    		   Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    		   ==>
+	                    		   Coeff_skip:[ [(tabTransCoeffLevel[i] + offset) >> transformSkipShift: for int i in 0 .. 1023] ] repeat 32*32
+	guard
+	  sizeOfTU = 32 and RCskip = 0 and transformSkipFlag = 1
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 5,
+		int transformSkipShift = shift,
+		int offset = (1 << (transformSkipShift -1))
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 5);
+	end
+
+	/**************************************************************************
+	 * split_32x32.default
+	 *************************************************************************/
+	split_32x32.default: action Coeff:      [ coeff ] repeat 32*32,  
+	                    		Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    		==>
+	                    		Coeff_32x32:[ [tabTransCoeffLevel[i]: for int i in 0 .. 32 * 32 - 1] ] repeat 32*32
+	guard
+	  sizeOfTU = 32 and RCskip = 0 and transformSkipFlag = 0
+	do
+		foreach int i in 0 .. sizeOfTU * sizeOfTU - 1 do
+		    tabTransCoeffLevel[i] := coeff[i];
+		end
+		tabTransCoeffLevel_proc(slice_qp, rc_cIdx, qp_offset, 5);
+	end
+
+	/**************************************************************************
+	 * split_32x32.skip
+	 *************************************************************************/
+	split_32x32.skip: action
+	                    Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    ==>
+	guard
+	  sizeOfTU = 32 and RCskip != 0 and transformSkipFlag = 0
+	end
+	
+	/**************************************************************************
+	 * split_64x64.skip
+	 *************************************************************************/
+	split_64x64.skip: action
+	                    Size:       [ sizeOfTU, RCskip, isDST, transformSkipFlag, slice_qp, rc_cIdx, qp_offset]
+	                    ==>
+	guard
+	  sizeOfTU = 64 and RCskip != 0 and transformSkipFlag = 0
+	end
+
+end
