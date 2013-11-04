@@ -1,0 +1,132 @@
+// splitter_420_B
+//
+// Author: Andrew Kinane (kinanea@eeng.dcu.ie)
+// 
+// Description: This module splits a 4:2:0 chroma subsampled serial macroblock (YYYYUV)
+//              into its respective Y, U and V components.
+//
+
+package ch.epfl.xronos.mpeg4.part2.parser;
+
+import org.sc29.wg11.mpeg4.part2.Constants.*;
+import org.ietr.mpeg4.part2.sp.ConstantsBtype.*;
+
+actor splitter_420_B () int(size=SAMPLE_SZ) B, int(size=BTYPE_SZ) BTYPE ==> int(size=SAMPLE_SZ) Y ,
+int(size=SAMPLE_SZ) U , int(size=SAMPLE_SZ) V :
+
+	int comp := 0;
+
+	//         comp layout
+	//      Y         U       V
+	//  +---+---+   +---+   +---+
+	//  | 0 | 1 |   | 4 |   | 5 |
+	//  +---+---+   +---+   +---+
+	//  | 2 | 3 | 
+	//  +---+---+  
+	start: action BTYPE:[ cmd ] ==>
+	guard
+		(cmd & NEWVOP) != 0
+	end
+
+	consume: action BTYPE:[ cmd ] ==>
+	end
+
+	skip_uncoded: action BTYPE:[ cmd ] ==>
+	guard
+		(cmd & INTER) != 0,
+		// An INTER block
+		(cmd & ACCODED) = 0 // Not ACCODED
+
+	do
+		comp := comp + 1;
+		if comp = 6 then
+			comp := 0;
+		end
+	end
+
+	skip_other: action BTYPE:[ cmd ] ==>
+	guard
+		(cmd & INTER) = 0,
+		// Not an INTER block
+		(cmd & INTRA) = 0 // Not an INTRA block
+
+	do
+		comp := comp + 1;
+		if comp = 6 then
+			comp := 0;
+		end
+	end
+
+	int counter := 0;
+
+	stop: action ==>
+	guard
+		counter = 64
+	do
+		counter := 0;
+		comp := comp + 1;
+		if(comp = 6) then
+			comp := 0;
+		end
+	end
+
+	sentY: action B:[x] ==> Y:[x]
+	do
+		counter := counter + 1;
+	end 
+
+	sentU: action B:[x] ==> U:[x]
+	do
+		counter := counter + 1;
+	end
+	
+	sentV: action B:[x] ==> V:[x]
+	do
+		counter := counter + 1;
+	end
+	
+	
+	splitY: action BTYPE:[ cmd ] ==>
+	guard
+		comp < 4
+	end
+	
+	splitU: action BTYPE:[ cmd ] ==>
+	guard
+		comp = 4
+	end
+
+	splitV: action BTYPE:[ cmd ] ==>
+	guard
+		comp = 5
+	end
+
+	// 4:2:0 schedule.
+	schedule fsm READ :
+		READ  ( start ) --> GETW;
+		GETW  ( consume ) --> GETH;
+		GETH  ( consume ) --> READ;
+		READ  ( skip_uncoded ) --> READ;
+		READ  ( skip_other ) --> READ;
+		
+		READ  ( splitY ) --> SENTY;
+		SENTY ( sentY ) --> SENTY;
+		SENTY ( stop ) --> READ;
+		
+		READ  ( splitU ) --> SENTU;
+	    SENTU ( sentU ) --> SENTU;
+		SENTU ( stop ) --> READ;
+		
+		READ  ( splitV ) --> SENTV;
+	    SENTV ( sentV ) --> SENTV; 
+		SENTV ( stop ) --> READ;
+	end
+
+	priority
+		start > skip_uncoded > skip_other > splitY > splitU > splitV;
+		stop > sentY;
+		stop > sentU;
+		stop > sentV;
+	end
+
+end

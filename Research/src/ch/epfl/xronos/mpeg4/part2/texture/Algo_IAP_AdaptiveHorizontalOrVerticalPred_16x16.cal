@@ -102,6 +102,12 @@ actor Algo_IAP_AdaptiveHorizontalOrVerticalPred_16x16 ()
 		==>
 	int(size=SAMPLE_SZ) QF_AC :
 
+// Use 3 address lines for component index to save address calculation effort
+	// Also, location 0 is reserved for all uncoded blocks. This protocol must
+	// be identical to the buffer addressing in DCR_addressing_16x16.cal and DCR_invpred_16x16_L.cal, since
+	// pointer values are generated there.
+	int(size=8) count;
+
 	// Block coefficient counter (start at 1 since 0 is DC coeff)
 	int BUF_SIZE = (MAXW_IN_MB + 2) * 4;
 
@@ -113,24 +119,24 @@ actor Algo_IAP_AdaptiveHorizontalOrVerticalPred_16x16 ()
 	// Pointer to 8x8 block used for prediction of current 8x8 block
 	// Initialize to the dummy values needed for uncoded blocks (always mapped to index 0)
 	// Add 4 address lines  so that we can store the left edge and top edge AC values (14 in all).
-	int(size=SAMPLE_SZ) buf[BUF_SIZE * 16];
+	List(type: int(size=SAMPLE_SZ), size=BUF_SIZE * 16) buf;
 
 	int(size=4) comp;
 
 	// 8x8 block component in macroblock index
 	bool top;
+
 	bool acpred_flag;
-	
+
 	int(size=6) s_quant;
 
 	int(size=6) s_prev_quant;
 
-	function divroundnearest(int i, int iDenom) --> int :
-		if (i >= 0) then
-			(i + (iDenom >> 1)) / iDenom
-		else
-			(i - (iDenom >> 1)) / iDenom
-		end
+	function divroundnearest(int i, int iDenom) --> int 
+	var
+		int aa = if (i >= 0) then (i + (iDenom >> 1)) else (i - (iDenom >> 1)) end  
+	:
+		aa
 	end
 
 	newvop: action AC_PRED_DIR:[ s ] ==>
@@ -140,23 +146,29 @@ actor Algo_IAP_AdaptiveHorizontalOrVerticalPred_16x16 ()
 		comp := 0;
 		ptr := 4;
 		// Start at 4, since 0-3 are reserved
+
 	end
 
 	skip: action AC_PRED_DIR:[ s ] ==>
 	guard
 		s < 0
+	do
+		count := 64;
 	end
 
 	start: action AC_PRED_DIR:[ s ], PTR:[ p ], QP:[ qp ], PREV_QP:[ prev_qp ] ==>
 	do
 		s_quant := qp;
 		s_prev_quant := prev_qp;
+		count := 1;
 		pred_ptr := p;
 		top := s = 2;
 		acpred_flag := s != 0;
 	end
 
 	advance: action ==>
+	guard
+		count = 64
 	do
 		comp := comp + 1;
 		if comp = 4 then
@@ -170,53 +182,132 @@ actor Algo_IAP_AdaptiveHorizontalOrVerticalPred_16x16 ()
 	end
 
 
-  int(size=SAMPLE_SZ) pred[63];
-   	
-  copy: action PQF_AC:[ ac ] repeat 63 ==> QF_AC:[ pred ] repeat 63
-  var
-    int(size=4) v,
-    // NOT SUPPORTED ON XRONOS : int(size=SAMPLE_SZ) pred[63],
-    int(size=4) h, 
-    bool top_edge,
-    bool left_edge, 
-    int(size=5) index, 
-    int count
-  do
-    foreach int i in 0 .. 62 do
-    	count := i + 1;
-    	v := (count & 7);
-    	h := ((count >> 3) & 7);
-    	top_edge := (h = 0);
-    	left_edge := (v = 0);
-    	index := if top_edge then v else (h | 8) end;
-    	
-	    if acpred_flag and ((top and top_edge) or ((not top) and left_edge)) then
-			if (s_prev_quant = s_quant) then
-				pred[i] := ac[i] + buf[((pred_ptr << 4) | index)];
-			else
-				pred[i] := ac[i] + divroundnearest(buf[((pred_ptr << 4) | index)] * s_prev_quant, s_quant);
-			end
-		else
-			pred[i] := ac[i];
-	    end
-	    
-	    if left_edge or top_edge then
-	      buf[(((ptr | comp) << 4) | index)] := pred[i];
-	    end
-    end
-  end
+	bool top_edge;
+	bool left_edge; 
+	int(size=5) index;
+	
+
+
+	int(size=SAMPLE_SZ) pred; 
+	
+	copy0: action PQF_AC:[ ac ] ==> 
+	var
+		int(size=4) v = (count & 7),
+		int(size=4) h = ((count >> 3) & 7)
+	do
+		pred := ac;
+		top_edge := (h = 0); 
+		left_edge := (v = 0);
+		index := if top_edge then v else (h | 8) end;
+	end
+	
+	copy11: action ==>
+	guard
+		acpred_flag and ((top and top_edge) or ((not top) and left_edge))
+	do
+		divr := divroundnearest(buf[((pred_ptr << 4) | index)] * s_prev_quant,
+		s_quant);
+	end
+	
+	
+	copy12: action ==>
+	guard
+		not (acpred_flag and ((top and top_edge) or ((not top) and left_edge)))
+	end
+	
+	copy21: action ==>
+	guard
+		s_prev_quant = s_quant
+	do
+		pred := pred + buf[((pred_ptr << 4) | index)];
+	end
+	
+		int divr;
+		int division;
+		int diff := 0;
+        int tmpDen := 0;
+        int tmpNum := 0;
+        int tmpRes := 0;
+        int tmpResX := 0; 	
+	
+	
+	copy22: action ==>
+	guard
+		s_prev_quant != s_quant
+	do
+		//*****divide
+		tmpResX := 0;
+
+        tmpDen := s_quant;
+        tmpNum := divr;
+
+        diff := divr - s_quant;
+	end
+	
+	
+	copy22_div: action ==>
+	guard
+		diff > s_quant
+	do
+		  tmpRes := 1;
+                while (tmpDen <= tmpNum) do
+                        tmpDen := tmpDen << 1;
+                        tmpRes := tmpRes << 1;
+                end
+
+                tmpDen := tmpDen >> 1;
+                tmpRes := tmpRes >> 1;
+                diff := tmpNum - tmpDen;
+                tmpNum := tmpNum - tmpDen;
+                tmpDen := s_quant;
+
+                if (tmpNum = tmpDen) then
+                        tmpRes := tmpRes + 1;
+                end
+
+			tmpResX := tmpResX + tmpRes;
+	end
+	
+	
+	copy22_end: action ==>
+	guard
+		diff < s_quant
+	do
+		 division := tmpResX;
+		//******
+		
+		pred := pred + division;
+	end
+	
+	copy33: action ==>  QF_AC:[ pred ]
+	do
+		if left_edge or top_edge then
+			buf[(((ptr| comp) << 4) | index)] := pred;
+		end 
+		count := count + 1;
+	end
+	
 
 	schedule fsm start :
 		start ( newvop ) --> start;
-		start ( skip ) --> advance;
+		start ( skip ) --> pred;
 		start ( start ) --> pred;
-		pred ( copy ) --> advance;
-		advance ( advance ) --> start;
+		//pred ( copy ) --> pred;
+		pred (copy0 ) --> s1;
+		s1	(copy11)	--> s2;
+		s1	(copy12)	--> s3;
+		s2	(copy21)	--> s3;
+		s2	(copy22)	--> divi;
+		divi(copy22_div)--> divi;
+		divi(copy22_end) --> s3;
+		s3	(copy33)	-->pred;
+		
+		pred ( advance ) --> start;
 	end
 
 	priority
 		newvop > skip > start;
-		advance > copy;
+		advance > copy0;
 	end
 
 end
