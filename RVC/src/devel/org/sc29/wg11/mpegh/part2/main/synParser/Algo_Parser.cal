@@ -968,6 +968,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size= 8) sps_sl[4][6][64];
     uint(size= 8) sps_sl_dc[2][6];
     int sps_size_id := 0;
+    int sps_size_id_matrixCase;
+    int sps_matrix_id := 0;
 	
 	read_SPS_Header.se_idx_60 : action ==>
 	guard
@@ -1009,14 +1011,21 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		end
 	end
 	
-	read_SPS_Header.se_idx_61_loop : action ==>
+	read_SPS_Header.se_idx_61_loopSize_id : action ==>
 	guard
 		se_idx = 61 and isFifoFull(fifo) , sps_size_id < 4
+   	do  
+        if sps_size_id = 3 then sps_size_id_matrixCase := 2; else sps_size_id_matrixCase := 6; end
+        se_idx := 62;
+    end
+    
+    read_SPS_Header.se_idx_61_loopMatrix_id : action ==>
+	guard
+		se_idx = 62 and isFifoFull(fifo) , sps_matrix_id < sps_size_id_matrixCase
 	var
 		uint(size=32) res[1],
 		int pos,
 		int delta,
-		int size_id_matrixCase,
 		int size_id_memcpyCase,
 		int next_coef,
 	    int coef_num,
@@ -1024,51 +1033,61 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size= 8) sps_scaling_list_pred_mode_flag[4][6],
     	uint(size= 32) sps_scaling_list_dc_coef[2][6]
    	do  
-        if sps_size_id = 3 then size_id_matrixCase := 2; else size_id_matrixCase := 6; end
-        foreach int matrix_id in 0 .. size_id_matrixCase - 1 do
-        	vld_u_name(  1, fifo, res, "scaling_list_pred_mode_flag             ");
-            sps_scaling_list_pred_mode_flag[sps_size_id][matrix_id] := res[0];
-            if sps_scaling_list_pred_mode_flag[sps_size_id][matrix_id] = 0 then
-            	vld_ue_name(    fifo, res, "delta                                   ");
-                delta := res[0];
-                // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
-        		if delta = 1 then
-            		// Copy from previous array.
-                    if (matrix_id - delta < 0) then
-                        println("Invalid delta in scaling list data");				                        
-                    end
-					if sps_size_id > 0 then size_id_memcpyCase := 64; else size_id_memcpyCase := 16; end
-					foreach int k in 0 .. size_id_memcpyCase - 1 do
-						sps_sl[sps_size_id][matrix_id][k] := sps_sl[sps_size_id][matrix_id][k];
-					end
-                    if (sps_size_id > 1) then
-                        sps_sl_dc[sps_size_id - 2][matrix_id] := sps_sl_dc[sps_size_id - 2][matrix_id - delta];
-                    end
-        		end
-    		else
-                next_coef := 8;
-                coef_num := min(64, (1  <<  (4 + (sps_size_id  <<  1))));
-                if (sps_size_id > 1) then
-                	vld_se_name(    fifo, res, "scaling_list_dc_coef                    ");
-                    sps_scaling_list_dc_coef[sps_size_id - 2][matrix_id] := res[0] + 8;
-                    next_coef := sps_scaling_list_dc_coef[sps_size_id - 2][matrix_id];
-                    sps_sl_dc[sps_size_id - 2][matrix_id] := next_coef;
+//   		println("matrixloop ");
+//   		println("sps_matrix_id = " + sps_matrix_id);
+//   		println("sps_size_id = " + sps_size_id);
+   		
+    	vld_u_name(  1, fifo, res, "scaling_list_pred_mode_flag             ");
+        sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] := res[0];
+        if sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] = 0 then
+        	vld_ue_name(    fifo, res, "delta                                   ");
+            delta := res[0];
+            // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
+    		if delta = 1 then
+        		// Copy from previous array.
+                if (sps_matrix_id - delta < 0) then
+                    println("Invalid delta in scaling list data");				                        
                 end
-                foreach int i in 0 .. coef_num - 1 do
-                    if (sps_size_id = 0) then
-                        pos := 4 * hevc_diag_scan4x4_y[i] + hevc_diag_scan4x4_x[i];
-                    else
-                        pos := 8 * hevc_diag_scan8x8_y[i] + hevc_diag_scan8x8_x[i];
-                    end
-                    vld_se_name(    fifo, res, "scaling_list_delta_coef                 ");
-                    scaling_list_delta_coef := res[0];
-                    next_coef := (next_coef + scaling_list_delta_coef + 256) mod 256;
-                    sps_sl[sps_size_id][matrix_id][pos] := next_coef;
+				if sps_size_id > 0 then size_id_memcpyCase := 64; else size_id_memcpyCase := 16; end
+				foreach int k in 0 .. size_id_memcpyCase - 1 do
+					sps_sl[sps_size_id][sps_matrix_id][k] := sps_sl[sps_size_id][sps_matrix_id][k];
+				end
+                if (sps_size_id > 1) then
+                    sps_sl_dc[sps_size_id - 2][sps_matrix_id] := sps_sl_dc[sps_size_id - 2][sps_matrix_id - delta];
                 end
     		end
+		else
+            next_coef := 8;
+            coef_num := min(64, (1  <<  (4 + (sps_size_id  <<  1))));
+            if (sps_size_id > 1) then
+            	vld_se_name(    fifo, res, "scaling_list_dc_coef                    ");
+                sps_scaling_list_dc_coef[sps_size_id - 2][sps_matrix_id] := res[0] + 8;
+                next_coef := sps_scaling_list_dc_coef[sps_size_id - 2][sps_matrix_id];
+                sps_sl_dc[sps_size_id - 2][sps_matrix_id] := next_coef;
+            end
+            foreach int i in 0 .. coef_num - 1 do
+                if (sps_size_id = 0) then
+                    pos := 4 * hevc_diag_scan4x4_y[i] + hevc_diag_scan4x4_x[i];
+                else
+                    pos := 8 * hevc_diag_scan8x8_y[i] + hevc_diag_scan8x8_x[i];
+                end
+                vld_se_name(    fifo, res, "scaling_list_delta_coef                 ");
+                scaling_list_delta_coef := res[0];
+                next_coef := (next_coef + scaling_list_delta_coef + 256) mod 256;
+                sps_sl[sps_size_id][sps_matrix_id][pos] := next_coef;
+            end
 		end
-		sps_size_id := sps_size_id + 1;
+		sps_matrix_id := sps_matrix_id + 1;
     end
+    
+    read_SPS_Header.se_idx_61_loopMatrix_id_End : action ==>
+	guard
+		se_idx = 62 and isFifoFull(fifo) , sps_matrix_id = sps_size_id_matrixCase
+	do
+		sps_size_id := sps_size_id + 1;
+		sps_matrix_id := 0;
+		se_idx := 61;
+	end
     
     read_SPS_Header.se_idx_61_loopEnd : action ==>
 	guard
@@ -1474,7 +1493,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		uint(size=32) res[1],
 		int pos,
 		int delta,
-		int size_id_matrixCase,
+		int pps_size_id_matrixCase,
 		int size_id_memcpyCase,
 		int next_coef,
 	    int coef_num,
@@ -1482,25 +1501,25 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size= 8) pps_scaling_list_pred_mode_flag[4][6],
     	uint(size= 32) pps_scaling_list_dc_coef[2][6]
    	do  
-        if pps_size_id = 3 then size_id_matrixCase := 2; else size_id_matrixCase := 6; end
-        foreach int matrix_id in 0 .. size_id_matrixCase - 1 do
+        if pps_size_id = 3 then pps_size_id_matrixCase := 2; else pps_size_id_matrixCase := 6; end
+        foreach int pps_matrix_id in 0 .. pps_size_id_matrixCase - 1 do
         	vld_u_name(  1, fifo, res, "scaling_list_pred_mode_flag             ");
-            pps_scaling_list_pred_mode_flag[pps_size_id][matrix_id] := res[0];
-            if pps_scaling_list_pred_mode_flag[pps_size_id][matrix_id] = 0 then
+            pps_scaling_list_pred_mode_flag[pps_size_id][pps_matrix_id] := res[0];
+            if pps_scaling_list_pred_mode_flag[pps_size_id][pps_matrix_id] = 0 then
             	vld_ue_name(    fifo, res, "delta                                   ");
                 delta := res[0];
                 // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
         		if delta = 1 then
             		// Copy from previous array.
-                    if (matrix_id - delta < 0) then
+                    if (pps_matrix_id - delta < 0) then
                         println("Invalid delta in scaling list data");				                        
                     end
 					if pps_size_id > 0 then size_id_memcpyCase := 64; else size_id_memcpyCase := 16; end
 					foreach int k in 0 .. size_id_memcpyCase do
-						pps_sl[pps_size_id][matrix_id][k] := pps_sl[pps_size_id][matrix_id][k];
+						pps_sl[pps_size_id][pps_matrix_id][k] := pps_sl[pps_size_id][pps_matrix_id][k];
 					end
                     if (pps_size_id > 1) then
-                        pps_sl_dc[pps_size_id - 2][matrix_id] := pps_sl_dc[pps_size_id - 2][matrix_id - delta];
+                        pps_sl_dc[pps_size_id - 2][pps_matrix_id] := pps_sl_dc[pps_size_id - 2][pps_matrix_id - delta];
                     end
         		end
     		else
@@ -1508,9 +1527,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 coef_num := min(64, (1  <<  (4 + (pps_size_id  <<  1))));
                 if (pps_size_id > 1) then
                 	vld_se_name(    fifo, res, "scaling_list_dc_coef                    ");
-                    pps_scaling_list_dc_coef[pps_size_id - 2][matrix_id] := res[0] + 8;
-                    next_coef := pps_scaling_list_dc_coef[pps_size_id - 2][matrix_id];
-                    pps_sl_dc[pps_size_id - 2][matrix_id] := next_coef;
+                    pps_scaling_list_dc_coef[pps_size_id - 2][pps_matrix_id] := res[0] + 8;
+                    next_coef := pps_scaling_list_dc_coef[pps_size_id - 2][pps_matrix_id];
+                    pps_sl_dc[pps_size_id - 2][pps_matrix_id] := next_coef;
                 end
                 foreach int i in 0 .. coef_num - 1 do
                     if (pps_size_id = 0) then
@@ -1521,7 +1540,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                     vld_se_name(    fifo, res, "scaling_list_delta_coef                 ");
                     scaling_list_delta_coef := res[0];
                     next_coef := (next_coef + scaling_list_delta_coef + 256) & 255;
-                    pps_sl[pps_size_id][matrix_id][pos] := next_coef;
+                    pps_sl[pps_size_id][pps_matrix_id][pos] := next_coef;
                 end
     		end
 		end
