@@ -1037,24 +1037,20 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size= 8) sps_scaling_list_pred_mode_flag[4][6],
     	uint(size= 32) sps_scaling_list_dc_coef[2][6]
    	do  
-//   		println("matrixloop ");
-//   		println("sps_matrix_id = " + sps_matrix_id);
-//   		println("sps_size_id = " + sps_size_id);
-   		
     	vld_u_name(  1, fifo, res, "scaling_list_pred_mode_flag             ");
         sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] := res[0];
         if sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] = 0 then
         	vld_ue_name(    fifo, res, "delta                                   ");
             delta := res[0];
             // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
-    		if delta = 1 then
+    		if delta != 0  then
         		// Copy from previous array.
                 if (sps_matrix_id - delta < 0) then
                     println("Invalid delta in scaling list data");				                        
                 end
 				if sps_size_id > 0 then size_id_memcpyCase := 64; else size_id_memcpyCase := 16; end
 				foreach int k in 0 .. size_id_memcpyCase - 1 do
-					sps_sl[sps_size_id][sps_matrix_id][k] := sps_sl[sps_size_id][sps_matrix_id][k];
+					sps_sl[sps_size_id][sps_matrix_id][k] := sps_sl[sps_size_id][sps_matrix_id - delta][k];
 				end
                 if (sps_size_id > 1) then
                     sps_sl_dc[sps_size_id - 2][sps_matrix_id] := sps_sl_dc[sps_size_id - 2][sps_matrix_id - delta];
@@ -1478,9 +1474,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	read_PPS_Header.se_idx_50 : action ==>
 	guard
 		se_idx = 50 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1],
-		uint(size= 1) pps_scaling_list_data_present_flag
    	do 
    		foreach int matrixId in 0 .. 5 do
         	// 4x4 default is 16
@@ -1513,7 +1506,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	guard
 		se_idx = 51 and isFifoFull(fifo) , pps_size_id < 4
 	do
-		println("read_PPS_Header.se_idx_51_loopSize_id");
 		if pps_size_id = 3 then pps_size_id_matrixCase := 2; else pps_size_id_matrixCase := 6; end
 		se_idx := 53;
     end
@@ -1534,14 +1526,14 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         	vld_ue_name(    fifo, res, "delta                                   ");
             delta := res[0];
             // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
-    		if delta = 1 then
+    		if delta != 0 then
         		// Copy from previous array.
                 if (pps_matrix_id - delta < 0) then
                     println("Invalid delta in scaling list data");				                        
                 end
 				if pps_size_id > 0 then size_id_memcpyCase := 64; else size_id_memcpyCase := 16; end
 				foreach int k in 0 .. size_id_memcpyCase do
-					pps_sl[pps_size_id][pps_matrix_id][k] := pps_sl[pps_size_id][pps_matrix_id][k];
+					pps_sl[pps_size_id][pps_matrix_id][k] := pps_sl[pps_size_id][pps_matrix_id - delta][k];
 				end
                 if (pps_size_id > 1) then
                     pps_sl_dc[pps_size_id - 2][pps_matrix_id] := pps_sl_dc[pps_size_id - 2][pps_matrix_id - delta];
@@ -1603,7 +1595,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	guard
 		se_idx = 51 and isFifoFull(fifo) , pps_size_id = 4
    	do 
-   		println("read_PPS_Header.se_idx_51_loopSize_id_End");
    		pps_size_id := 0;
    		se_idx := 52;
    	end  
@@ -4638,6 +4629,13 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 int(size= 8) rc_lastSubBlock;
 	 int(size= 8) rc_i;
 	 int(size= 16) tabTransCoeffLevel[32*32];
+	 int add;
+	 int scale;
+	 int scale_m;
+	 int dc_scale := 16; 
+	 uint(size=8) scale_matrix [64];
+	 uint(size= 8) shift;
+	 
 	read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag,
 											slice_qp,
 											rc_cIdx,
@@ -4656,6 +4654,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		 int(size=16) yC := -1,
 		 int sz = 1 << rc_log2TrafoSize,
 		 uint(size=1) transform_skip_flag,
+		 int matrix_id,
+		 int qp_offset,
+		int(size=16) qp,
+		 int(size=16) qp_i,
+		 uint(size=16) qp_bd_offset_luma           = 6 * sps_bit_depth_luma_minus8,
+		uint(size=16) qp_bd_offset_chroma         = 6 * sps_bit_depth_chroma_minus8,
+         int(size= 8) qp_y     = ((slice_qp + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
+        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
+		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
 		 uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
 	do	
 		if DEBUG_CABAC and DEBUG_TRACE1 then
@@ -4663,6 +4670,57 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		elsif DEBUG_CABAC then
 			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end);
 		end
+		
+		shift := if rc_cIdx = 0 then sps_bit_depth_luma_minus8 + 8 + rc_log2TrafoSize - 5 
+							  else sps_bit_depth_chroma_minus8 + 8 + rc_log2TrafoSize - 5 end;
+		if rc_cIdx = 0 then
+            qp := qp_y + qp_bd_offset_luma;
+        else
+        	if rc_cIdx = 1 then
+        		qp_offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
+        	else
+        		qp_offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
+        	end
+            qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
+            if qp_i < 30 then
+                qp := qp_i;
+            elsif qp_i > 43 then
+                qp := qp_i - 6;
+            else
+                qp := qp_c[qp_i - 30];
+            end
+	
+	        qp := qp + qp_bd_offset_chroma;
+	    end
+		
+	    add := 1 << (shift - 1 );
+	    scale := levelScale[ rem6[qp] ] << (div6[qp]);
+	   	
+		scale_m := 16;
+		if sps_scaling_list_enabled_flag = 1 then
+            matrix_id := if predMode != INTRA then 1 else 0 end;
+
+            if rc_log2TrafoSize != 5 then
+                matrix_id := 3 * matrix_id + rc_cIdx;
+			end
+			if pps_scaling_list_data_present_flag = 1 then
+				foreach int i in 0 .. 63 do
+	            	scale_matrix[i] := pps_sl[rc_log2TrafoSize - 2][matrix_id][i];
+	            end
+	            if rc_log2TrafoSize >= 4 then
+	                dc_scale := pps_sl_dc[rc_log2TrafoSize - 4][matrix_id];
+	            end
+	        else
+	        	foreach int i in 0 .. 63 do
+	        		scale_matrix[i] := sps_sl[rc_log2TrafoSize - 2][matrix_id][i];
+	        	end
+	            if rc_log2TrafoSize >= 4 then
+	                dc_scale := sps_sl_dc[rc_log2TrafoSize - 4][matrix_id];
+	            end
+	        end
+        end
+		
+		
 		foreach int i in 0 .. sz * sz - 1 do
 			tabTransCoeffLevel[i] := 0;
 		end 
@@ -4897,76 +4955,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		 int          n       = significant_coeff_flag_idx[rc_m],
 	     int(size=16) transCoeffLevel := 0,
 	     int pos,
-		 int scale_m,
 		uint(size=16) xC,
-		uint(size=16) yC,
-		int dc_scale := 16, 
-		int matrix_id,
-		uint(size=8) scale_matrix [64],
-		int add,
-		int scale,
-		int qp_offset,
-		int(size=16) qp,
-		 int(size=16) qp_i,
-		 uint(size=16) qp_bd_offset_luma           = 6 * sps_bit_depth_luma_minus8,
-		uint(size=16) qp_bd_offset_chroma         = 6 * sps_bit_depth_chroma_minus8,
-         int(size= 8) qp_y     = ((slice_qp + /*s->tu.cu_qp_delta +*/ 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma,
-        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
-		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
-		uint(size= 8) shift = if rc_cIdx = 0 then sps_bit_depth_luma_minus8 + 8 + rc_log2TrafoSize - 5 
-							  else sps_bit_depth_chroma_minus8 + 8 + rc_log2TrafoSize - 5 end
-		
-		 
-	do
-		
-		if rc_cIdx = 0 then
-            qp := qp_y + qp_bd_offset_luma;
-        else
-        	if rc_cIdx = 1 then
-        		qp_offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-        	else
-        		qp_offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-        	end
-            qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
-            if qp_i < 30 then
-                qp := qp_i;
-            elsif qp_i > 43 then
-                qp := qp_i - 6;
-            else
-                qp := qp_c[qp_i - 30];
-            end
-	
-	        qp := qp + qp_bd_offset_chroma;
-	    end
-		
-	    add := 1 << (shift - 1 );
-	    scale := levelScale[ rem6[qp] ] << (div6[qp]);
-	   	
-		scale_m := 16;
-		if sps_scaling_list_enabled_flag = 1 then
-            matrix_id := if cur_intra_pred_mode != INTRA then 1 else 0 end;
-
-            if rc_log2TrafoSize != 5 then
-                matrix_id := 3 * matrix_id + rc_cIdx;
-			end
-			if pps_scaling_list_data_present_flag = 1 then
-				foreach int i in 0 .. 63 do
-	            	scale_matrix[i] := pps_sl[rc_log2TrafoSize - 2][matrix_id][i];
-	            end
-	            if rc_log2TrafoSize >= 4 then
-	                dc_scale := pps_sl_dc[rc_log2TrafoSize - 4][matrix_id];
-	            end
-	        else
-	        	foreach int i in 0 .. 63 do
-	        		scale_matrix[i] := sps_sl[rc_log2TrafoSize - 2][matrix_id][i];
-	        	end
-	            if rc_log2TrafoSize >= 4 then
-	                dc_scale := sps_sl_dc[rc_log2TrafoSize - 4][matrix_id];
-	            end
-	        end
-        end
-		
-					
+		uint(size=16) yC
+	do			
 		xC := ( rc_xS << 2 ) + ScanOrder[2][ rc_scanIdx ][ n ][ 0 ]; 
 		yC := ( rc_yS << 2 ) + ScanOrder[2][ rc_scanIdx ][ n ][ 1 ];			
 		transCoeffLevel := 1 + coeff_abs_level_greater1_flag[ n ] + if n = rc_firstGreater1ScanPos then coeff_abs_level_greater2_flag else 0 end;
@@ -5000,14 +4991,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 					end
 					scale_m := scale_matrix[pos];
 				else
-					scale_m := dc_scale;					
+					scale_m := dc_scale;			
 				end
 			end 
 			transCoeffLevel := clip_i32(( ( transCoeffLevel * scale_m * scale + add )) >> shift, -32768, 32767 );
 		end
-		//println("transCoeffLevel= " +transCoeffLevel );
-		//println("xC= " +xC );
-		//println("yC= " +yC );
+
 		tabTransCoeffLevel[xC+(1<<rc_log2TrafoSize)*yC] := transCoeffLevel;
 		rc_numSigCoeff := rc_numSigCoeff + 1;
 		rc_m := rc_m + 1;		
