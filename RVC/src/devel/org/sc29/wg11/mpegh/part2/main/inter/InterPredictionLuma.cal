@@ -67,7 +67,7 @@ import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 import devel.org.sc29.wg11.mpegh.part2.main.inter.InterFunctions.*;
 import devel.org.sc29.wg11.mpegh.part2.main.inter.NativeInterFunctions.*;
 
-actor InterPredictionLuma ()
+actor InterPredictionLuma()
 	uint(size=16) CUInfo,
 	uint(size=2)  IsBiPredOrLx,
 	int (size=32) Mv,
@@ -101,20 +101,20 @@ actor InterPredictionLuma ()
 	uint(size=3)  numPart;
 	uint(size=7)  cuSize[2];
 	uint(size=2)  cuMode;
-	int logWD;
-	int weightCu[2];
-	int offsetCu[2];
+	int logWD[3];
+	int weightCu[3][2];
+	int offsetCu[3][2];
 	uint(size=2)  isBiPredOrLx;
 	int (size=4)  refIdxLx[2];
 	int (size=32) mvLx[2][2];
 	uint(size=2)  numList;
 	uint(size=7)  predCuSize;
-	int logWDTab[SZ_REF_LIST+1][SZ_REF_LIST+1];
-	int weightCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][2];
-	int offsetCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][2];
+	int logWDTab[SZ_REF_LIST+1][SZ_REF_LIST+1][3];
+	int weightCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][3][2];
+	int offsetCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][3][2];
 
-	uint(size=8) refSamples[(64+7)*(64+7)];
-	int (size=16) predSamples[2][64*64];
+	uint(size=8) refSamples[3][(64+7)*(64+7)];
+	int (size=16) predSamples[2][3][64*64];
 /* Coefficients used for the 8-tap filter (luma component) and 4-tap filter
  * (chroma component).
  */
@@ -162,20 +162,20 @@ actor InterPredictionLuma ()
 				end
 				foreach int component in 0 .. 2
 				do
-					logWDTab[idxL0][idxL1] := 5+shift1;
-					offsetCuTab[idxL0][idxL1][0] := 0;
-					offsetCuTab[idxL0][idxL1][1] := 0;
-					weightCuTab[idxL0][idxL1][0] := w0;
-					weightCuTab[idxL0][idxL1][1] := w1;
+					logWDTab[idxL0][idxL1][component] := 5+shift1;
+					offsetCuTab[idxL0][idxL1][component][0] := 0;
+					offsetCuTab[idxL0][idxL1][component][1] := 0;
+					weightCuTab[idxL0][idxL1][component][0] := w0;
+					weightCuTab[idxL0][idxL1][component][1] := w1;
 				end
 			else
 				foreach int component in 0 .. 2
 				do
-					logWDTab[idxL0][idxL1] := shift1;
-					offsetCuTab[idxL0][idxL1][0] := 0;
-					offsetCuTab[idxL0][idxL1][1] := 0;
-					weightCuTab[idxL0][idxL1][0] := 1;
-					weightCuTab[idxL0][idxL1][1] := 1;
+					logWDTab[idxL0][idxL1][component] := shift1;
+					offsetCuTab[idxL0][idxL1][component][0] := 0;
+					offsetCuTab[idxL0][idxL1][component][1] := 0;
+					weightCuTab[idxL0][idxL1][component][0] := 1;
+					weightCuTab[idxL0][idxL1][component][1] := 1;
 				end
 			end
 		/*Explicit weighted prediction : we get the coefficients thanks to the
@@ -184,14 +184,14 @@ actor InterPredictionLuma ()
 		else if (wpIdc = 1) then
 			foreach int component in 0 .. 2
 			do
-				logWDTab[idxL0][idxL1] := log2WeightDenom[component] + shift1;
+				logWDTab[idxL0][idxL1][component] := log2WeightDenom[component] + shift1;
 				if(refIdxL0 >=0) then
-					weightCuTab[idxL0][idxL1][0] := weight[refIdxL0][0][component];
-					offsetCuTab[idxL0][idxL1][0] := offset[refIdxL0][0][component];
+					weightCuTab[idxL0][idxL1][component][0] := weight[refIdxL0][0][component];
+					offsetCuTab[idxL0][idxL1][component][0] := offset[refIdxL0][0][component];
 				end
 				if(refIdxL1 >=0) then
-					weightCuTab[idxL0][idxL1][1] := weight[refIdxL1][1][component];
-					offsetCuTab[idxL0][idxL1][1] := offset[refIdxL1][1][component];
+					weightCuTab[idxL0][idxL1][component][1] := weight[refIdxL1][1][component];
+					offsetCuTab[idxL0][idxL1][component][1] := offset[refIdxL1][1][component];
 				end
 			end
 		end end
@@ -338,27 +338,13 @@ actor InterPredictionLuma ()
 		iLoop := 0;
 	end
 
-	getChromaWeightLX.launch: action WeightedPredSe:[chrWeightFlag] ==>
-	guard
-		iLoop < refIdxLxAct
-	do
-		weight[iLoop][listIdx][1] := chrWeightFlag;
-		iLoop := iLoop + 1;
-	end
-
-	getChromaWeightLX.done: action ==>
-	guard
-		iLoop = refIdxLxAct
-	do
-		iLoop := 0;
-	end
-
 	getDeltaLumaWeight.launch: action WeightedPredSe:[wpSyntElem] repeat 2 ==>
 	guard
 		iLoop < refIdxLxAct && weight[iLoop][listIdx][0] != 0
 	do
 		weight[iLoop][listIdx][0] := (1<<log2WeightDenom[0]) + wpSyntElem[0];
 		offset[iLoop][listIdx][0] := wpSyntElem[1];
+		iLoop := iLoop + 1;
 	end
 
 	getDeltaLumaWeight.skip: action ==>
@@ -367,6 +353,7 @@ actor InterPredictionLuma ()
 	do
 		weight[iLoop][listIdx][0] := (1<<log2WeightDenom[0]);
 		offset[iLoop][listIdx][0] := 0;
+		iLoop := iLoop + 1;
 	end
 
 	getDeltaLumaWeight.done: action ==>
@@ -377,33 +364,6 @@ actor InterPredictionLuma ()
 		listIdx := listIdx + 1;
 	end
 
-	getDeltaChromaWeight.launch: action WeightedPredSe:[wpSyntElem] repeat 4 ==>
-	guard
-		weight[iLoop][listIdx][1] != 0
-	var
-		int offPred
-	do
-		weight[iLoop][listIdx][1] := (1<<log2WeightDenom[1]) + wpSyntElem[0];
-		offPred := 128 - (128*weight[iLoop][listIdx][1] >> log2WeightDenom[1]);
-		offset[iLoop][listIdx][1] := clip_i32(offPred+wpSyntElem[1], -128, 127);
-
-		weight[iLoop][listIdx][2] := (1<<log2WeightDenom[2]) + wpSyntElem[2];
-		offPred := 128 - (128*weight[iLoop][listIdx][2] >> log2WeightDenom[2]);
-		offset[iLoop][listIdx][2] := clip_i32(offPred+wpSyntElem[3], -128, 127);
-
-		iLoop := iLoop + 1;
-	end
-
-	getDeltaChromaWeight.skip: action ==>
-	guard
-		weight[iLoop][listIdx][1] = 0
-	do
-		weight[iLoop][listIdx][1] := (1<<log2WeightDenom[1]);
-		offset[iLoop][listIdx][1] := 0;
-		weight[iLoop][listIdx][2] := (1<<log2WeightDenom[2]);
-		offset[iLoop][listIdx][2] := 0;
-		iLoop := iLoop + 1;
-	end
 	/* Get the size of each part of the current Cu. */
 	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
 	guard
@@ -456,14 +416,15 @@ actor InterPredictionLuma ()
 		end
 		idxL0 := refIdxLx[0]+1;
 		idxL1 := refIdxLx[1]+1;
-		
-		logWD := logWDTab[idxL0][idxL1];
-		foreach int list in 0 .. 1
+		foreach int component in 0 .. 2
 		do
-			weightCu[list] := weightCuTab[idxL0][idxL1][list];
-			offsetCu[list] := offsetCuTab[idxL0][idxL1][list];
+			logWD[component] := logWDTab[idxL0][idxL1][component];
+			foreach int list in 0 .. 1
+			do
+				weightCu[component][list] := weightCuTab[idxL0][idxL1][component][list];
+				offsetCu[component][list] := offsetCuTab[idxL0][idxL1][component][list];
+			end
 		end
-		
 		numList := 1;
 	end
 
@@ -480,11 +441,11 @@ actor InterPredictionLuma ()
 		idxL1 := refIdxLx[1]+1;
 		foreach int component in 0 .. 2
 		do
-			logWD := logWDTab[idxL0][idxL1];
+			logWD[component] := logWDTab[idxL0][idxL1][component];
 			foreach int list in 0 .. 1
 			do
-				weightCu[list] := weightCuTab[idxL0][idxL1][list];
-				offsetCu[list] := offsetCuTab[idxL0][idxL1][list];
+				weightCu[component][list] := weightCuTab[idxL0][idxL1][component][list];
+				offsetCu[component][list] := offsetCuTab[idxL0][idxL1][component][list];
 			end
 		end
 		listIdx := 0;
@@ -508,16 +469,16 @@ actor InterPredictionLuma ()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 64
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (64+7)*(64+7)-1];
+		refSamples[0] := [sample[i]:for uint i in 0 .. (64+7)*(64+7)-1];
 	end
 
-	getSamples.launch.is32x32: action Sample:[sample] repeat (32+7)*(32+7) ==>
+	getSamples.launch.is32x32: action Sample:[sample] repeat (32+7)*(32+7)==>
 	guard
 		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 32
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (32+7)*(32+7)-1];
+		refSamples[0] := [sample[i]:for uint i in 0 .. (32+7)*(32+7)-1];
 	end
 
 	getSamples.launch.is16x16: action Sample:[sample] repeat (16+7)*(16+7) ==>
@@ -526,7 +487,7 @@ actor InterPredictionLuma ()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 16
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (16+7)*(16+7)-1];
+		refSamples[0] := [sample[i]:for uint i in 0 .. (16+7)*(16+7)-1];
 	end
 
 	getSamples.launch.is8x8: action Sample:[sample] repeat (8+7)*(8+7) ==>
@@ -535,7 +496,7 @@ actor InterPredictionLuma ()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 8
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (8+7)*(8+7)-1];
+		refSamples[0] := [sample[i]:for uint i in 0 .. (8+7)*(8+7)-1];
 	end
 
 	getSamples.launch.is4x4: action Sample:[sample] repeat (4+7)*(4+7) ==>
@@ -544,12 +505,12 @@ actor InterPredictionLuma ()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 4
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (4+7)*(4+7)-1];
+		refSamples[0] := [sample[i]:for uint i in 0 .. (4+7)*(4+7)-1];
 	end
 
 	interpolateSamples: action ==>
 	var
-		uint maskMv = 3,
+		uint maskMv[3] = [3, 7, 7],
 		int mvQuartPix[2],
 		uint(size=7) compPuIdxMax[2]
 	do
@@ -557,27 +518,48 @@ actor InterPredictionLuma ()
 			refIdxLx[0]!=-1)) then
 
 			compPuIdxMax := [cuSize[i]-1:for int i in 0 .. 1];
-			
-			mvQuartPix := [mvLx[listIdx][i] & maskMv:
-				for int i in 0 .. 1];
+			foreach int component in 0 .. 2 /* Y, Cb, Cr */
+			do
+				/* We just need to do the fractionnal part of the movement
+				 * interpolation.
+				 */
+				mvQuartPix := [mvLx[listIdx][i] & maskMv[component]:
+					for int i in 0 .. 1];
 
 
-			/* if quartPix (or eighthPix for chroma) is not equal to 0 for both
-			 * x and y, we realize the interpolation in 2 steps.
-			 */
-			/* We do the horizontal interpolation for all the samples which
-			 * will be needed for the vertical interpolation.
-			 */
-			if(mvQuartPix[0]=0 && mvQuartPix[1]=0) then
-				hevc_qpel_pixel(predSamples, listIdx, refSamples, predCuSize + 7, compPuIdxMax[0], compPuIdxMax[1]);
-			elsif(mvQuartPix[1]=0) then
-					hevc_qpel_h(predSamples, listIdx, refSamples, predCuSize + 7, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1]);
-			elsif(mvQuartPix[0] = 0) then
-					hevc_qpel_v(predSamples, listIdx, refSamples, predCuSize + 7, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1]);
-			else
-					hevc_qpel_hv(predSamples, listIdx,refSamples, predCuSize + 7, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1]);
+				/* if quartPix (or eighthPix for chroma) is not equal to 0 for both
+				 * x and y, we realize the interpolation in 2 steps.
+				 */
+				/* We do the horizontal interpolation for all the samples which
+				 * will be needed for the vertical interpolation.
+				 */
+ 				if(mvQuartPix[0]=0 && mvQuartPix[1]=0) then
+					if component=0 then
+						hevc_qpel_pixel(predSamples, listIdx, refSamples, predCuSize + 7, compPuIdxMax[0], compPuIdxMax[1]);
+					else
+						hevc_epel_pixel(predSamples, listIdx, refSamples, (predCuSize>>1) + 3, compPuIdxMax[0], compPuIdxMax[1], component);
+					end
+				elsif(mvQuartPix[1]=0) then
+					if component=0 then
+						hevc_qpel_h(predSamples, listIdx, refSamples, predCuSize + 7, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1]);
+					else
+						hevc_epel_h(predSamples, listIdx, refSamples, (predCuSize>>1) + 3, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1], component);
+					end
+				elsif(mvQuartPix[0] = 0) then
+					if component=0 then
+						hevc_qpel_v(predSamples, listIdx, refSamples, predCuSize + 7, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1]);
+					else
+						hevc_epel_v(predSamples, listIdx, refSamples, (predCuSize>>1) + 3, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1], component);
+					end
+				else
+					if component=0 then
+						hevc_qpel_hv(predSamples, listIdx,refSamples, predCuSize + 7, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1]);
+					else
+						hevc_epel_hv(predSamples, listIdx,refSamples, (predCuSize>>1) + 3, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1], component);
+					end
+				end
+				compPuIdxMax := [(cuSize[i]>>1)-1:for int i in 0 .. 1];
 			end
-			compPuIdxMax := [(cuSize[i]>>1)-1:for int i in 0 .. 1];
 		end
 		listIdx := listIdx + 1;
 	end
@@ -594,19 +576,19 @@ actor InterPredictionLuma ()
 		do
 			if(numList = 1) then
 				if(wpIdc = 0) then
-					put_unweighted_pred (predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList);
+					put_unweighted_pred(predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, component);
 				else
 					if(isBiPredOrLx != BI_PRED) then
-						weighted_pred (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList);
+						weighted_pred (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, component);
 					else
-						weighted_pred_mono (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1]);
+						weighted_pred_mono (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
 					end
 				end
 			else
 				if(wpIdc = 0) then
-					put_weighted_pred_avg (predSamples, compPuIdxMax[0], compPuIdxMax[1]);
+					put_weighted_pred_avg (predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
 				else
-					weighted_pred_avg (logWD, weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1]);
+					weighted_pred_avg (logWD, weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
 				end
 			end
 		end	
@@ -624,7 +606,7 @@ actor InterPredictionLuma ()
 		do
 			foreach uint x in 0 .. 3
 			do
-				pix[y*4+x] := predSamples[0][iLoop+x + (jLoop+y)*cuSize[0]];
+				pix[y*4+x] := predSamples[0][0][iLoop+x + (jLoop+y)*cuSize[0]];
 			end
 		end
 		iLoop := iLoop + 4;
@@ -661,16 +643,11 @@ actor InterPredictionLuma ()
 		GetWeightLX (getWeightLX.done   )--> GetPartMode;
 
 		GetLumaWeightLX (getLumaWeightLX.launch )--> GetLumaWeightLX;
-		GetLumaWeightLX (getLumaWeightLX.done   )--> GetChromaWeightLX;
+		GetLumaWeightLX (getLumaWeightLX.done   )--> GetDeltaLumWtLX;
 
-		GetChromaWeightLX (getChromaWeightLX.launch )--> GetChromaWeightLX;
-		GetChromaWeightLX (getChromaWeightLX.done   )--> GetDeltaLumWtLX;
-
-		GetDeltaLumWtLX (getDeltaLumaWeight.launch )--> GetDeltaChrWtLX;
-		GetDeltaLumWtLX (getDeltaLumaWeight.skip   )--> GetDeltaChrWtLX;
+		GetDeltaLumWtLX (getDeltaLumaWeight.launch )--> GetDeltaLumWtLX;
+		GetDeltaLumWtLX (getDeltaLumaWeight.skip   )--> GetDeltaLumWtLX;
 		GetDeltaLumWtLX (getDeltaLumaWeight.done   )--> GetWeightLX;
-
-		GetDeltaChrWtLX (getDeltaChromaWeight   )--> GetDeltaLumWtLX;
 
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
