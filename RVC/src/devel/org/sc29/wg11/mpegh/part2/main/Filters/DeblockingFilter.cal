@@ -33,7 +33,7 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 //Pipelined version broken
-actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
+actor DeblockingFilter()
 	uint(size=2)  Bs,
 	bool          DBFDisable,
 	uint(size=2)  IsPicSlcLcu,
@@ -85,8 +85,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 	uint(size=16) picSize[2];
 	uint(size=16) xIdx;
 	uint(size=16) yIdx;
-/*	uint(size=6)  lastXIdx;
-	uint(size=6)  lastYIdx;*/
 	uint(size=2)  compIdx;
 	uint(size=16) xAddrVert;
 	uint(size=16) yAddrVert;
@@ -449,11 +447,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 	var
 		uint(size=16) coord[2] 	
 	do
-		if(FILT_VERT_EDGES) then
-			saveRasterScanCu(samp);
-		else
-//			saveZScanCu(samp);
-		end
+		saveRasterScanCu(samp);
 
 		rasterScanToAbsCoord(blkIdx, coord);
 		coord[0] := xIdx + coord[0];
@@ -470,14 +464,12 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 	guard
 		blkIdx = numPartition
 	do
-		/*lastXIdx := xIdx;
-		lastYIdx := yIdx;*/
 		computeNextLcuAddr();
 	end
 
 	getCuPix.launch.lastColOrRow.vert: action IsPicSlcLcu:[isLcu] ==>
 	guard
-		(xIdx >= picSize[0]-lcuSizeMax || yIdx >= picSize[1]-lcuSizeMax) && FILT_VERT_EDGES && isLcu = NEW_LCU
+		(xIdx >= picSize[0]-lcuSizeMax || yIdx >= picSize[1]-lcuSizeMax) && isLcu = NEW_LCU
 	do
 		xAddrVert := xIdx;
 		yAddrVert := yIdx;
@@ -487,16 +479,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 		pixAddr[0] := pixAddr[0] + xAddrVert;
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
-
-	/*getCuPix.launch.lastColOrRow.hor: action IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 64*64 + 32*32*2 ==>
-	guard
-		(xIdx >= picSize[0]-1 || yIdx >= picSize[1]-1) && not FILT_VERT_EDGES && isLcu = NEW_LCU
-	do
-		xAddrVert := xIdx;
-		yAddrVert := yIdx;
-		saveZScanCu(samp);
-		blkIdx := 0;
-	end*/
 
 	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 4*4 + 2*2*2 ==>
 	guard
@@ -537,20 +519,7 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 
 	getBlk.skip.vertEdge: action ==>
 	guard
-		blkIdx < numPartition  && FILT_VERT_EDGES,
-		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
-	do
-		bSTableVert[blkIdx] := 0;
-		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := 0;
-		blkIdx := blkIdx + 1;
-		rasterScanToAbsCoord(blkIdx, pixAddr);
-		pixAddr[0] := pixAddr[0] + xAddrVert;
-		pixAddr[1] := pixAddr[1] + yAddrVert;
-	end
-
-	getBlk.skip.horEdge: action SampleIn:[samp] repeat 4*4 + 2*2*2 ==>
-	guard
-		blkIdx < numPartition  && not FILT_VERT_EDGES,
+		blkIdx < numPartition,
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
 		bSTableVert[blkIdx] := 0;
@@ -565,8 +534,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 	guard
 		blkIdx = numPartition
 	do
-		/*lastXIdx := xIdx;
-		lastYIdx := yIdx;*/
 		computeNextLcuAddr();
 	end
 
@@ -621,34 +588,30 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 		uint(size=16) blkAddr[2]
 	do
 		if(not disDbf) then
-			if(FILT_VERT_EDGES) then
-				foreach int idxBlk in 0 .. numPartition - 1
-				do
-					if(bSTableVert[idxBlk]!=0) then
-						rasterScanToAbsCoord(idxBlk, blkAddr);
-						blkAddr[0] := blkAddr[0] + xAddrVert;
-						blkAddr[1] := blkAddr[1] + yAddrVert;
-						decisionProcessLumaBlkEdge(blkAddr, true, bSTableVert[idxBlk]);
-						filterProcessLumaBlkEdge(blkAddr, true);
-						if(bSTableVert[idxBlk]=2 && ((blkAddr[0]>>2)&3) = 0 ) then
-							foreach int cIdx in 1 .. 2
-							do
-								filtProcessChrBlkEdge(blkAddr, true, cIdx);
-							end
+			foreach int idxBlk in 0 .. numPartition - 1
+			do
+				if(bSTableVert[idxBlk]!=0) then
+					rasterScanToAbsCoord(idxBlk, blkAddr);
+					blkAddr[0] := blkAddr[0] + xAddrVert;
+					blkAddr[1] := blkAddr[1] + yAddrVert;
+					decisionProcessLumaBlkEdge(blkAddr, true, bSTableVert[idxBlk]);
+					filterProcessLumaBlkEdge(blkAddr, true);
+					if(bSTableVert[idxBlk]=2 && ((blkAddr[0]>>2)&3) = 0 ) then
+						foreach int cIdx in 1 .. 2
+						do
+							filtProcessChrBlkEdge(blkAddr, true, cIdx);
 						end
 					end
 				end
 			end
-			if(FILT_HOR_EDGES) then
-				if(xAddrVert > 0) then
-					xAddrHor := xAddrVert - lcuSizeMax;
-					yAddrHor := yAddrVert;
-					filterHorEdges();
-				end
-				if(xAddrVert + lcuSizeMax >= picSize[0]) then
-					xAddrHor := xAddrVert;
-					filterHorEdges();
-				end
+			if(xAddrVert > 0) then
+				xAddrHor := xAddrVert - lcuSizeMax;
+				yAddrHor := yAddrVert;
+				filterHorEdges();
+			end
+			if(xAddrVert + lcuSizeMax >= picSize[0]) then
+				xAddrHor := xAddrVert;
+				filterHorEdges();
 			end
 		end
 		xAddrHor := xAddrVert;
@@ -656,8 +619,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 	end
 
 	filteringOnlyVertEdge.isFalse: action ==>
-	guard
-		FILT_HOR_EDGES
 	end
 
 	sendSamples.launch.luma: action ==> FiltSample:[filtSamp] repeat 16
@@ -713,11 +674,6 @@ actor DeblockingFilter(bool FILT_VERT_EDGES, bool FILT_HOR_EDGES)
 		tokenSent := 0;
 		computeNextLcuAddr();
 	end
-
-	/*sendSamples.skip: action ==> 
-	guard
-		 xIdx = lastXIdx
-	end*/
 
 	sendSamples.done: action ==>
 	guard
