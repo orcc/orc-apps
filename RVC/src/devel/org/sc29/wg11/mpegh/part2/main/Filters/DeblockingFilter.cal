@@ -40,7 +40,9 @@ actor DeblockingFilter()
 	uint(size=8)  LcuSizeMax,
 	uint(size=16) PicSize,
 	int (size=8)  Qp,
-	uint(size=8)  SampleIn,
+	uint(size=8)  SampleIn_y,
+	uint(size=8)  SampleIn_u,
+	uint(size=8)  SampleIn_v,
 	int (size=8)  SyntaxElem,
 	uint(size=16) TilesCoord
 		==>
@@ -346,10 +348,9 @@ actor DeblockingFilter()
 		end
 	end
 
-	procedure saveRasterScanCu(uint(size=8) sample[4*4 + 2*2*2])
+	procedure saveRasterScanCu(uint(size=8) sample_y[4*4], uint(size=8) sample_u[2*2], uint(size=8) sample_v[2*2])
 	var
-		uint(size=16) pixAddr[2],
-		uint tokenOffset
+		uint(size=16) pixAddr[2]
 	begin
 		rasterScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
@@ -359,23 +360,21 @@ actor DeblockingFilter()
 			foreach uint x in 0 .. 3
 			do
 				pictureBuffer[0][pixAddr[1]+y][pixAddr[0]+x] :=
-					sample[4*y+x];
+					sample_y[4*y+x];
 			end
 		end
-		tokenOffset := 16;
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
-		foreach uint comp in 1 .. 2
+		
+		foreach uint y in 0 .. 1
 		do
-			foreach uint y in 0 .. 1
+			foreach uint x in 0 .. 1
 			do
-				foreach uint x in 0 .. 1
-				do
-					pictureBuffer[comp][pixAddr[1]+y][pixAddr[0]+x] :=
-						sample[tokenOffset + 2*y+x];
-				end
+				pictureBuffer[1][pixAddr[1]+y][pixAddr[0]+x] :=
+					sample_u[ 2*y+x];
+				pictureBuffer[2][pixAddr[1]+y][pixAddr[0]+x] :=
+					sample_v[ 2*y+x];
 			end
-			tokenOffset := tokenOffset + 4;
 		end
 	end
 
@@ -447,13 +446,16 @@ actor DeblockingFilter()
 	end
 
 	getCuPix.launch.getPart: action Bs:[bs] repeat 2, Qp:[qp],
-		SampleIn:[samp] repeat 4*4 + 2* 2*2 ==>
+		SampleIn_y:[samp_y] repeat 4*4, 
+		SampleIn_u:[samp_u] repeat 2*2,
+		SampleIn_v:[samp_v] repeat 2*2
+		 ==>
 	guard
 		blkIdx < numPartition
 	var
 		uint(size=16) coord[2] 	
 	do
-		saveRasterScanCu(samp);
+		saveRasterScanCu(samp_y,samp_u,samp_v);
 
 		rasterScanToAbsCoord(blkIdx, coord);
 		coord[0] := xIdx + coord[0];
@@ -486,7 +488,10 @@ actor DeblockingFilter()
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
 
-	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 4*4 + 2*2*2 ==>
+	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn_y:[samp_y] repeat 4*4, 
+		SampleIn_u:[samp_u] repeat 2*2,
+		SampleIn_v:[samp_v] repeat 2*2
+		 ==>
 	guard
 		blkIdx < numPartition && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
@@ -495,7 +500,7 @@ actor DeblockingFilter()
 			foreach uint x in 0 .. 3
 			do
 				pictureBuffer[0][pixAddr[1]+y][pixAddr[0]+x] :=
-					samp[4*y+x];
+					samp_y[4*y+x];
 			end
 		end
 
@@ -505,15 +510,13 @@ actor DeblockingFilter()
 
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
-		foreach uint comp in 1 .. 2
+		
+		foreach uint y in 0 .. 1
 		do
-			foreach uint y in 0 .. 1
+			foreach uint x in 0 .. 1
 			do
-				foreach uint x in 0 .. 1
-				do
-					pictureBuffer[comp][pixAddr[1]+y][pixAddr[0]+x] :=
-						samp[2*y+x + 16+4*(comp-1)];
-				end
+				pictureBuffer[1][pixAddr[1]+y][pixAddr[0]+x] := samp_u[2*y+x];
+				pictureBuffer[2][pixAddr[1]+y][pixAddr[0]+x] := samp_v[2*y+x];
 			end
 		end
 
