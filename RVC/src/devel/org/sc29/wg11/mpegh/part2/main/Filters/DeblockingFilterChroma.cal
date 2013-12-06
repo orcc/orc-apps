@@ -33,33 +33,21 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 //Pipelined version broken
-actor DeblockingFilter()
+actor DeblockingFilterChroma(int comp)
 	uint(size=2)  Bs,
 	bool          DBFDisable,
 	uint(size=2)  IsPicSlcLcu,
 	uint(size=8)  LcuSizeMax,
 	uint(size=16) PicSize,
 	int (size=8)  Qp,
-	uint(size=8)  SampleIn_y,
-	uint(size=8)  SampleIn_u,
 	uint(size=8)  SampleIn_v,
 	int (size=8)  SyntaxElem,
 	uint(size=16) TilesCoord
 		==>
-	uint(size=8)  FiltSample_y,
-	uint(size=8)  FiltSample_u,
-	uint(size=8)  FiltSample_v
+	uint(size=8)  FiltSample_chroma
 		:
 
 	uint(size=4)  BIT_DEPTH = 8;
-
-	uint(size=8) betaTable[52] =
-		[ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-		  0,  0,  0,  0,  0,  0,  6,  7,  8,  9,
-		 10, 11, 12, 13, 14, 15, 16, 17, 18, 20,
-		 22, 24, 26, 28, 30 ,32, 34, 36, 38, 40,
-		 42, 44, 46, 48, 50, 52, 54, 56, 58, 60,
-		 62, 64];
 
 	uint(size=8) tcTable[54] =
 		[ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
@@ -84,42 +72,30 @@ actor DeblockingFilter()
 	uint(size=16) numPartition;
 	uint(size=16) tilesBegSamp[MAX_NUM_TILES][2];
 	uint(size=16) tilesEndSamp[MAX_NUM_TILES][2];
-	int (size=5)  qpChrOff[2];
+	int (size=5)  qpChrOff;
 	uint(size=8)  lcuSizeMax;
 	uint(size=16) picSize[2];
 	uint(size=16) xIdx;
 	uint(size=16) yIdx;
-	uint(size=2)  compIdx;
 	uint(size=16) xAddrVert;
 	uint(size=16) yAddrVert;
 	int (size=16) xAddrHor;
 	int (size=16) yAddrHor;
-	uint(size=16) numTokenPerLcu[2];
+	uint(size=16) numTokenPerLcu;
 	uint(size=16) tokenSent;
 	uint(size=16) pixAddr[2];
 	uint(size=9)  blkIdx := 0;
 	bool          disDbf := false;
-
-	uint(size=8)  pictureBuffer[3][PICT_HEIGHT][PICT_WIDTH];
 	int (size=8)  qpTab[PICT_HEIGHT/4][PICT_WIDTH/4];
+
+	uint(size=8)  pictureBuffer[PICT_HEIGHT][PICT_WIDTH];
 	uint(size=2)  bSTableVert[256];
 	uint(size=2)  bSTableHoriz[PICT_HEIGHT/64][PICT_WIDTH/64][256];
 
-	int           betaOffset;
-	uint(size=2)  dE;
-	bool          dEp;
-	bool          dEq;
+	
 	int           qPi;
 	int           tcOffset;
 	uint(size=8)  tc;
-
-	function decisionProcessLumaSamp(uint(size=8) p0, uint(size=8) p3,
-		uint(size=8) q0, uint(size=8) q3, int dpq, int beta) --> bool
-	:
-		(dpq < (beta>>2)) &&
-		(abs(p3-p0) + abs(q0-q3))<(beta>>3) &&
-		abs(p0-q0)<((5*tc+1)>>1)
-	end
 
 	procedure computeNextLcuAddr()
 	begin
@@ -134,21 +110,12 @@ actor DeblockingFilter()
 			end
 		end
 	end
-
-	procedure decisionProcessLumaBlkEdge(uint(size=16) addr[2], bool isVertical, uint(size=8) bS)
+	
+	procedure decisionProcessLumaBlkEdge(uint(size=16) addr[2], bool isVertical)
 	var
 		uint(size=16) q0X = (addr[0]/4) & (PICT_WIDTH/4-1),
 		uint(size=16) q0Y = addr[1]/4,
-		uint(size=16) p0X, uint(size=16) p0Y,
-		int Q,
-		uint(size=16) beta,
-		int dp0, int dp3, int dq0, int dq3,
-		int dpq0, int dpq3,
-		int dp, int dq,
-		int d,
-		int p0[4], int q0[4],
-		int p3[4], int q3[4],
-		bool dSam0, bool dSam3
+		uint(size=16) p0X, uint(size=16) p0Y
 	begin
 		if(isVertical) then
 			p0X := q0X-1;
@@ -158,130 +125,10 @@ actor DeblockingFilter()
 			p0Y := q0Y-1;
 		end
 		qPi := ((qpTab[q0Y][q0X] + qpTab[p0Y][p0X] + 1)>>1);
-		Q := clip_i32(qPi+betaOffset, 0, 51);
-		beta := betaTable[Q]<<(BIT_DEPTH - 8);
-		Q := clip_i32(qPi + 2*(bS-1) + tcOffset, 0, 53);
-		tc := tcTable[Q]<<(BIT_DEPTH - 8);
-		if(isVertical) then
-			q0 := [pictureBuffer[0][addr[1]][addr[0]+i]:for int i in 0 .. 3];
-			p0 := [pictureBuffer[0][addr[1]][addr[0]-i]:for int i in 1 .. 4];
-			q3 := [pictureBuffer[0][addr[1]+3][addr[0]+i]:for int i in 0 .. 3];
-			p3 := [pictureBuffer[0][addr[1]+3][addr[0]-i]:for int i in 1 .. 4];
-		else
-			q0 := [pictureBuffer[0][addr[1]+i][addr[0]]:for int i in 0 .. 3];
-			p0 := [pictureBuffer[0][addr[1]-i][addr[0]]:for int i in 1 .. 4];
-			q3 := [pictureBuffer[0][addr[1]+i][addr[0]+3]:for int i in 0 .. 3];
-			p3 := [pictureBuffer[0][addr[1]-i][addr[0]+3]:for int i in 1 .. 4];
-		end
-		dp0 :=abs(p0[2]-2*p0[1]+p0[0]);
-		dq0 :=abs(q0[2]-2*q0[1]+q0[0]);
-		dp3 :=abs(p3[2]-2*p3[1]+p3[0]);
-		dq3 :=abs(q3[2]-2*q3[1]+q3[0]);
-		dpq0 := dp0+dq0;
-		dpq3 := dp3+dq3;
-		dp := dp0+dp3;
-		dq := dq0+dq3;
-		d  := dpq0 + dpq3;
-		if(d<beta) then
-			dSam0 := decisionProcessLumaSamp(p0[0], p0[3], q0[0], q0[3],
-				2*dpq0, beta);
-			dSam3 := decisionProcessLumaSamp(p3[0], p3[3], q3[0], q3[3], 2*dpq3, beta);
+	end
 	
-			dE := 1;
-			dEp := false;
-			dEq := false;
-			if(dSam0 && dSam3) then
-				dE := 2;
-			end
-			if(dp < (beta+(beta>>1))>>3) then
-				dEp := true;
-			end
-			if(dq < (beta+(beta>>1))>>3) then
-				dEq := true;
-			end
-		else
-			dE  := 0;
-			dEp := false;
-			dEq := false;
-		end
-	end
 
-	procedure filterProcessLumaBlkVerticalEdge(uint(size=16) addr[2])
-	var
-		uint(size=8) p[4],
-		uint(size=8) q[4]
-	begin
-		if(dE!=0) then
-			foreach int y in 0 .. 3
-			do
-				p := [pictureBuffer[0][addr[1]+y][addr[0]-i]: for int i in 1 ..4];
-				q := [pictureBuffer[0][addr[1]+y][addr[0]+i]: for int i in 0 .. 3];
-				filterProcessLumaSamp(p, q);
-				foreach int i in 0 .. 2
-				do
-					pictureBuffer[0][addr[1]+y][addr[0]-1-i] := p[i];
-					pictureBuffer[0][addr[1]+y][addr[0]  +i] := q[i];
-				end
-			end
-		end
-	end
-
-	procedure filterProcessLumaBlkHorizontalEdge(uint(size=16) addr[2])
-	var
-		uint(size=8) p[4],
-		uint(size=8) q[4]
-	begin
-		if(dE!=0) then
-			foreach int x in 0 .. 3
-			do
-				p := [pictureBuffer[0][addr[1]-i][addr[0]+x]: for int i in 1 ..4];
-				q := [pictureBuffer[0][addr[1]+i][addr[0]+x]: for int i in 0 .. 3];
-				filterProcessLumaSamp(p, q);
-				foreach int i in 0 .. 2
-				do
-					pictureBuffer[0][addr[1]-1-i][addr[0]+x] := p[i];
-					pictureBuffer[0][addr[1]  +i][addr[0]+x] := q[i];
-				end
-			end
-		end
-	end
-
-	procedure filterProcessLumaSamp(uint(size=8) p[4], uint(size=8) q[4])
-	var
-		uint(size=8) p0=p[0], uint(size=8) p1=p[1], uint(size=8) p2=p[2],
-		uint(size=8) q0=q[0], uint(size=8) q1=q[1], uint(size=8) q2=q[2],
-		uint(size=8) p3=p[3], uint(size=8) q3=q[3],
-		int delta, int deltaP, int deltaQ
-	begin
-		if(dE=2) then
-			p[0] := clip_i32((p2+2*p1+2*p0+2*q0+q1+4)>>3, p0-2*tc, p0+2*tc);
-			p[1] := clip_i32((p2+p1+p0+q0+2)>>2, p1-2*tc, p1+2*tc);
-			p[2] := clip_i32((2*p3+3*p2+p1+p0+q0+4)>>3, p2-2*tc, p2+2*tc);
-			q[0] := clip_i32((p1+2*p0+2*q0+2*q1+q2+4)>>3, q0-2*tc, q0+2*tc);
-			q[1] := clip_i32((p0+q0+q1+q2+2)>>2, q1-2*tc, q1+2*tc);
-			q[2] := clip_i32((p0+q0+q1+3*q2+2*q3+4)>>3, q2-2*tc, q2+2*tc);
-		else
-			delta := (9*(q0-p0)-3*(q1-p1)+8)>>4;
-			if(abs(delta)<10*tc) then
-				delta := clip_i32(delta, -tc, tc);
-				p[0] := clip_i32(p0+delta, 0, 255);
-				q[0] := clip_i32(q0-delta, 0, 255);
-				if(dEp) then
-					deltaP := clip_i32( ((((p2+p0+1)>>1)-p1+delta)>>1), -(tc>>1), tc>>1);
-					p[1] := clip_i32(p1+deltaP, 0, 255);
-				end
-				if(dEq) then
-					deltaQ := clip_i32(((((q2+q0+1)>>1)-q1-delta)>>1), -(tc>>1), tc>>1);
-					q[1] := clip_i32(q1+deltaQ, 0, 255);
-				end
-			end
-		end
-		//There should be the code for reverting filtering if pcm and
-		//pcmLoopFilterDisableFlag is active.
-	end
-
-	procedure filtProcessChrBlkEdge(uint(size=16) addr[2], bool isVerticalEdge,
-		uint(size=2) cIdx)
+	procedure filtProcessChrBlkEdge(uint(size=16) addr[2], bool isVerticalEdge)
 	var
 		uint(size=2) bS = 2,
 		int qPC, int Q,
@@ -289,26 +136,26 @@ actor DeblockingFilter()
 		uint(size=16) addrY = addr[1]>>1,
 		uint(size=8) p[2], uint(size=8) q[2]
 	begin
-		qPC := qPcTable[min(qPi + qpChrOff[cIdx-1],51)];
+		qPC := qPcTable[min(qPi + qpChrOff,51)];
 		Q  := clip_i32(qPC + 2*(bS-1) + tcOffset, 0, 53);
 		tc := tcTable[Q]<<(BIT_DEPTH - 8);
 		if(isVerticalEdge) then
 			foreach int y in 0 .. 1
 			do
-				p := [pictureBuffer[cIdx][addrY+y][addrX-i]: for int i in 1 .. 2];
-				q := [pictureBuffer[cIdx][addrY+y][addrX+i]: for int i in 0 .. 1];
+				p := [pictureBuffer[addrY+y][addrX-i]: for int i in 1 .. 2];
+				q := [pictureBuffer[addrY+y][addrX+i]: for int i in 0 .. 1];
 				filterProcessChrSamp(p, q);
-				pictureBuffer[cIdx][addrY+y][addrX-1] := p[0];
-				pictureBuffer[cIdx][addrY+y][addrX] := q[0];
+				pictureBuffer[addrY+y][addrX-1] := p[0];
+				pictureBuffer[addrY+y][addrX] := q[0];
 			end
 		else
 			foreach int x in 0 .. 1
 			do
-				p := [pictureBuffer[cIdx][addrY-i][addrX+x]: for int i in 1 .. 2];
-				q := [pictureBuffer[cIdx][addrY+i][addrX+x]: for int i in 0 .. 1];
+				p := [pictureBuffer[addrY-i][addrX+x]: for int i in 1 .. 2];
+				q := [pictureBuffer[addrY+i][addrX+x]: for int i in 0 .. 1];
 				filterProcessChrSamp(p, q);
-				pictureBuffer[cIdx][addrY-1][addrX+x] := p[0];
-				pictureBuffer[cIdx][addrY][addrX+x] := q[0];
+				pictureBuffer[addrY-1][addrX+x] := p[0];
+				pictureBuffer[addrY][addrX+x] := q[0];
 			end
 		end
 	end
@@ -336,33 +183,22 @@ actor DeblockingFilter()
 				rasterScanToAbsCoord(idxBlk, blkAddr);
 				blkAddr[0] := blkAddr[0] + xAddrHor;
 				blkAddr[1] := blkAddr[1] + yAddrHor;
-				decisionProcessLumaBlkEdge(blkAddr, false, bSTableHoriz[yAddrHor/lcuSizeMax][xAddrHor/lcuSizeMax][idxBlk]);
-				filterProcessLumaBlkHorizontalEdge(blkAddr);
+				decisionProcessLumaBlkEdge(blkAddr, false);
 				if(bSTableHoriz[yAddrHor/lcuSizeMax][xAddrHor/lcuSizeMax][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
-					foreach int cIdx in 1 .. 2
-					do
-						filtProcessChrBlkEdge(blkAddr, false, cIdx);
-					end
+					filtProcessChrBlkEdge(blkAddr, false);
 				end
 			end
 		end
 	end
 
-	procedure saveRasterScanCu(uint(size=8) sample_y[4*4], uint(size=8) sample_u[2*2], uint(size=8) sample_v[2*2])
+	procedure saveRasterScanCu(uint(size=8) sample[2*2])
 	var
 		uint(size=16) pixAddr[2]
 	begin
 		rasterScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
 		pixAddr[1] := pixAddr[1] + yAddrVert;
-		foreach uint y in 0 .. 3
-		do
-			foreach uint x in 0 .. 3
-			do
-				pictureBuffer[0][pixAddr[1]+y][pixAddr[0]+x] :=
-					sample_y[4*y+x];
-			end
-		end
+	
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
 		
@@ -370,8 +206,7 @@ actor DeblockingFilter()
 		do
 			foreach uint x in 0 .. 1
 			do
-				pictureBuffer[1][pixAddr[1]+y][pixAddr[0]+x] := sample_u[ 2*y+x];
-				pictureBuffer[2][pixAddr[1]+y][pixAddr[0]+x] := sample_v[ 2*y+x];
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[ 2*y+x];
 			end
 		end
 	end
@@ -383,9 +218,12 @@ actor DeblockingFilter()
 		isNewPicSlcLcu = NEW_SLC
 	do
 		disDbf := disableFlag;
-		betaOffset := betaOff;
 		tcOffset := tcOff;
-		qpChrOff := [qpUOff, qpVOff];
+		if comp = 1 then
+			qpChrOff := qpUOff;
+		else
+			qpChrOff := qpVOff;
+		end
 	end
 
 	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix,
@@ -396,8 +234,7 @@ actor DeblockingFilter()
 	do
 		lcuSizeMax := lcuSz;
 		numPartition := (lcuSz * lcuSz) / 16;
-		numTokenPerLcu[0] := lcuSizeMax * lcuSizeMax;
-		numTokenPerLcu[1] := numTokenPerLcu[0] >> 2;
+		numTokenPerLcu := (lcuSizeMax * lcuSizeMax) >> 2;
 		disDbf := disableFlag;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
@@ -407,9 +244,12 @@ actor DeblockingFilter()
 		yIdx := 0;
 		xAddrHor := -1;
 		tileIdx := 0;
-		betaOffset := betaOff;
 		tcOffset := tcOff;
-		qpChrOff := [qpUOff, qpVOff];
+		if comp = 1 then
+			qpChrOff := qpUOff;
+		else
+			qpChrOff := qpVOff;
+		end
 	end
 
 	getNumTiles: action TilesCoord:[valNumTiles] ==>
@@ -432,8 +272,6 @@ actor DeblockingFilter()
 		iLoop = numTiles
 	end
 
-	
-
 	getCuPix.launch.pict: action  IsPicSlcLcu:[isLcu] ==>
 	guard
 		tileIdx < numTiles && yIdx < picSize[1]-lcuSizeMax && xIdx < picSize[0]-lcuSizeMax && isLcu = NEW_LCU
@@ -443,17 +281,13 @@ actor DeblockingFilter()
 		blkIdx := 0;
 	end
 
-	getCuPix.launch.getPart: action Bs:[bs] repeat 2, Qp:[qp],
-		SampleIn_y:[samp_y] repeat 4*4, 
-		SampleIn_u:[samp_u] repeat 2*2,
-		SampleIn_v:[samp_v] repeat 2*2
-		 ==>
+	getCuPix.launch.getPart: action Bs:[bs] repeat 2, Qp:[qp], SampleIn_v:[samp] repeat 2*2 ==>
 	guard
 		blkIdx < numPartition
 	var
 		uint(size=16) coord[2] 	
 	do
-		saveRasterScanCu(samp_y,samp_u,samp_v);
+		saveRasterScanCu(samp);
 
 		rasterScanToAbsCoord(blkIdx, coord);
 		coord[0] := xIdx + coord[0];
@@ -486,22 +320,10 @@ actor DeblockingFilter()
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
 
-	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn_y:[samp_y] repeat 4*4, 
-		SampleIn_u:[samp_u] repeat 2*2,
-		SampleIn_v:[samp_v] repeat 2*2
-		 ==>
+	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn_v:[samp] repeat 2*2 ==>
 	guard
 		blkIdx < numPartition && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
-		foreach uint y in 0 .. 3
-		do
-			foreach uint x in 0 .. 3
-			do
-				pictureBuffer[0][pixAddr[1]+y][pixAddr[0]+x] :=
-					samp_y[4*y+x];
-			end
-		end
-
 		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
 		bSTableVert[blkIdx] := bs[0];
 		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
@@ -513,8 +335,7 @@ actor DeblockingFilter()
 		do
 			foreach uint x in 0 .. 1
 			do
-				pictureBuffer[1][pixAddr[1]+y][pixAddr[0]+x] := samp_u[2*y+x];
-				pictureBuffer[2][pixAddr[1]+y][pixAddr[0]+x] := samp_v[2*y+x];
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[2*y+x];
 			end
 		end
 
@@ -549,7 +370,6 @@ actor DeblockingFilter()
 	guard
 		blkIdx < numPartition && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
-
 		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
 		bSTableVert[blkIdx] := bs[0];
 		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
@@ -601,13 +421,9 @@ actor DeblockingFilter()
 					rasterScanToAbsCoord(idxBlk, blkAddr);
 					blkAddr[0] := blkAddr[0] + xAddrVert;
 					blkAddr[1] := blkAddr[1] + yAddrVert;
-					decisionProcessLumaBlkEdge(blkAddr, true, bSTableVert[idxBlk]);
-					filterProcessLumaBlkVerticalEdge(blkAddr);
+					decisionProcessLumaBlkEdge(blkAddr, true);
 					if(bSTableVert[idxBlk]=2 && ((blkAddr[0]>>2)&3) = 0 ) then
-						foreach int cIdx in 1 .. 2
-						do
-							filtProcessChrBlkEdge(blkAddr, true, cIdx);
-						end
+						filtProcessChrBlkEdge(blkAddr, true);
 					end
 				end
 			end
@@ -628,34 +444,9 @@ actor DeblockingFilter()
 	filteringOnlyVertEdge.isFalse: action ==>
 	end
 
-	sendSamples.launch.luma: action ==> FiltSample_y:[filtSamp] repeat 16
+	sendSamples.launch.chroma.u: action ==> FiltSample_chroma:[filtSamp] repeat 8
 	guard
-		tileIdx < numTiles && tokenSent < numTokenPerLcu[0]
-	var
-		uint(size=8) filtSamp[16],
-		uint(size=16) xOff, uint(size=16) yOff
-	do
-		xOff := tokenSent & (lcuSizeMax - 1);
-		yOff := tokenSent / lcuSizeMax;
-		foreach uint x in 0 .. 15
-		do
-			filtSamp[x] := pictureBuffer[0][yIdx + yOff][xIdx + xOff + x];
-		end
-
-		tokenSent := tokenSent + 16;
-	end
-
-	sendSamples.launch.lumaDone: action ==>
-	guard
-		tokenSent = numTokenPerLcu[0]
-	do
-		tokenSent := 0;
-		compIdx := 1;
-	end
-
-	sendSamples.launch.chroma.u: action ==> FiltSample_u:[filtSamp] repeat 8
-	guard
-		compIdx = 1
+		tileIdx < numTiles && tokenSent < numTokenPerLcu
 	var
 		uint(size=8) filtSamp[8],
 		uint(size=16) xOff, uint(size=16) yOff
@@ -664,40 +455,15 @@ actor DeblockingFilter()
 		yOff := tokenSent / (lcuSizeMax >> 1);
 		foreach uint x in 0 .. 7
 		do
-			filtSamp[x] := pictureBuffer[compIdx][yIdx/2 + yOff][xIdx/2 + xOff + x];
+			filtSamp[x] := pictureBuffer[yIdx/2 + yOff][xIdx/2 + xOff + x];
 		end
 
 		tokenSent := tokenSent + 8;
-		if(tokenSent = numTokenPerLcu[1]) then
-			tokenSent := 0;
-			compIdx := compIdx + 1;
-		end
-	end
-	
-	sendSamples.launch.chroma.v: action ==> FiltSample_v:[filtSamp] repeat 8
-	guard
-		compIdx = 2
-	var
-		uint(size=8) filtSamp[8],
-		uint(size=16) xOff, uint(size=16) yOff
-	do
-		xOff := tokenSent & ((lcuSizeMax - 1) >> 1);
-		yOff := tokenSent / (lcuSizeMax >> 1);
-		foreach uint x in 0 .. 7
-		do
-			filtSamp[x] := pictureBuffer[compIdx][yIdx/2 + yOff][xIdx/2 + xOff + x];
-		end
-
-		tokenSent := tokenSent + 8;
-		if(tokenSent = numTokenPerLcu[1]) then
-			tokenSent := 0;
-			compIdx := compIdx + 1;
-		end
 	end
 
 	sendSamples.launch.chromaDone: action ==>
 	guard
-		compIdx = 3
+		tokenSent = numTokenPerLcu
 	do
 		tokenSent := 0;
 		computeNextLcuAddr();
@@ -740,11 +506,8 @@ actor DeblockingFilter()
 		/*SendSamplesVert (sendSamples.launch )--> GetCuPix;
 		SendSamplesVert (sendSamples.skip   )--> GetCuPix;*/
 
-		SendSamples (sendSamples.launch.luma )--> SendSamplesLuma;
+		SendSamples (sendSamples.launch.chroma )--> SendSamplesChr;
 		SendSamples (sendSamples.done        )--> IsNewPict;
-
-		SendSamplesLuma (sendSamples.launch.luma     )--> SendSamplesLuma;
-		SendSamplesLuma (sendSamples.launch.lumaDone )--> SendSamplesChr;
 
 		SendSamplesChr (sendSamples.launch.chroma     )--> SendSamplesChr;
 		SendSamplesChr (sendSamples.launch.chromaDone )--> SendSamples;
