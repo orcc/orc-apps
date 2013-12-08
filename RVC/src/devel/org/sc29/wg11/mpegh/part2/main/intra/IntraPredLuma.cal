@@ -1,0 +1,1048 @@
+/*
+ * Copyright (c) 2012-2013, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/**
+ * Decoding process for intra blocks.
+ * 
+ * 
+ * @input CUInfo : Informations related to the current CU
+ *        (size, address and mode : INTRA,INTER,...).
+ * 
+ * @input IntraPredMode : Luma and chroma intra prediction mode for the
+ *        current CU.
+ * 
+ * @input PartMode : Giving the partitioning mode of the current CU.
+ * 
+ * @input PicSize : Size of the current picture.
+ * 
+ * @input Sample : Value of the YUV components of every pixel from the pictures.
+ *        The tokens correspond to the pixels of the non filtered picture.
+ * 
+ * @input SplitTransf : split_transform_flag syntax element.
+ * 
+ * 
+ * @output PredSample : Pixel's values predicted from the intra prediction
+ *         process.
+ * 
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
+ 
+package devel.org.sc29.wg11.mpegh.part2.main.intra;
+
+import std.util.Math.*;
+import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
+
+actor IntraPredLuma(bool EnabSkipInPix)
+	uint(size=16) CUInfo,
+	uint(size=6)  IntraPredMode,
+	uint(size=8)  LcuSizeMax,
+	uint(size=4)  PartMode,
+	uint(size=16) PictSize,
+	uint(size=8)  Sample_y,
+	uint(size=16) SliceAddr,
+	bool          SplitTransform,
+	bool 		  StrongIntraSmoothing,
+	uint(size=16) TilesCoord
+		==>
+	uint(size=8) PredSample_y
+		:
+
+	uint(size=16) NEIGHB_TAB_SZ   = 2*PICT_WIDTH;
+	uint(size=16) NEIGHB_TAB_MASK = 2*PICT_WIDTH-1;
+
+	uint(size=6) INTRA_PLANAR = 0;
+	uint(size=6) INTRA_DC = 1;
+
+	uint(size=1) ABOVE = 0;
+	uint(size=1) LEFT  = 1;
+
+	uint(size=8) leftBlkAvail[256] =
+	[0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+
+	 8, 1, 7, 1, 2, 1, 1, 1, 6, 1, 5, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+
+	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+
+	 8, 1, 7, 1, 2, 1, 1, 1, 6, 1, 5, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1];
+
+	uint(size=8) aboveBlkAvail[256] =
+	[0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+
+	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 0, 0, 2, 1, 0, 0, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+
+	 16, 15, 2, 1, 14, 13, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 12, 11, 2, 1, 10,  9, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	  8,  7, 2, 1,  6,  5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	  4,  3, 2, 1,  2,  1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 8, 7, 2, 1, 6, 5, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1,
+	 4, 3, 2, 1, 2, 1, 2, 1, 4, 3, 2, 1, 2, 1, 2, 1];
+
+	int(size=7) intraPredAngle[64] = [0, 0, 32, 26, 21, 17, 13, 9, 5, 2, 0, -2,
+	-5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9, -5, -2, 0, 2, 5,
+	9, 13, 17, 21, 26, 32];
+
+	int(size=16) invAngle[64] =
+	[  0,     0,  -256, -315,  -390,  -482, -630,  -910, -1638, -4096,
+	   0, -4096, -1638, -910,  -630,  -482, -390,  -315,  -256,  -315,
+	-390,  -482,  -630, -910, -1638, -4096,    0, -4096, -1638,  -910,
+	-630,  -482,  -390, -315,  -256];
+
+
+	int(size=16) iLoop;
+
+	uint(size=16) numTiles;
+	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
+	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
+
+	int(size=16) puTilesBeg[2];
+	int(size=16) puTilesEnd[2];
+
+	uint(size=7)  nS;
+	uint(size=3)  log2NS;
+	uint(size=16) cuAddr[2];
+	uint(size=5)  cuMode;
+	uint(size=16) treeAddr[2];
+	uint(size=16) pictSize[2];
+	uint(size=16) sliceAddr[2];
+	uint(size=3)  numPart;
+	uint(size=3)  numPartDecoded;
+
+	bool strongIntraSmoothing;
+	bool constrIntraPred;
+	bool isIndepSlc;
+	uint(size=8) maxLcuSizeLuma;
+
+	uint(size=6) predMode;
+	uint(size=6) predModeTab;
+	int (size=4) trafoTreeDepth;
+	uint(size=3) trafoTreeIdx[6];
+
+	uint(size=8)  pNeighb[2][129];
+	uint(size=8)  puNeighb[NEIGHB_TAB_SZ];
+	bool          puIsIntra[NEIGHB_TAB_SZ];
+	uint(size=7)  neighbBlkSz;
+
+	uint(size=8) lumaComp[64][64];
+	uint(size=9) numBlkToSend;
+	uint(size=9) idxBlk;
+
+	bool getInSamp;
+
+	function absCoordToRasterScan(uint(size=16) coord[2]) --> int
+	var
+		uint(size=4) xCoordInBlk = coord[0]/4,
+		uint(size=4) yCoordInBlk = coord[1]/4
+	:
+		if((xCoordInBlk & 1)!=0) then 1   else 0 end +
+		if((xCoordInBlk & 2)!=0) then 4   else 0 end +
+		if((xCoordInBlk & 4)!=0) then 16  else 0 end +
+		if((xCoordInBlk & 8)!=0) then 64  else 0 end +
+		if((yCoordInBlk & 1)!=0) then 2   else 0 end +
+		if((yCoordInBlk & 2)!=0) then 8   else 0 end +
+		if((yCoordInBlk & 4)!=0) then 32  else 0 end +
+		if((yCoordInBlk & 8)!=0) then 128 else 0 end
+	end
+
+	procedure getNeighbSamples(uint(size=16) cuAddr[2],
+		uint(size=7) nS, uint(size=3) log2NS)
+	var
+		int minVal[2], int maxVal[2],
+		int xMin, int yMin, int xMax, int yMax,
+		int xIdx, int yIdx,
+		int origPixIdx,
+		uint(size=8) pixVal
+	begin
+		neighbExist(cuAddr, minVal, maxVal, nS);
+		xMin := minVal[0];
+		yMin := minVal[1];
+		xMax := maxVal[0];
+		yMax := maxVal[1];
+
+		origPixIdx := pictSize[1] - cuAddr[1] + cuAddr[0];
+		foreach int y in yMin .. yMax-1
+		do
+			pNeighb[LEFT][y+1] :=
+				puNeighb[(origPixIdx-1-y)&NEIGHB_TAB_MASK];
+		end
+	
+		foreach int x in xMin .. xMax-1
+		do
+			pNeighb[ABOVE][x] :=
+				puNeighb[(origPixIdx+1+x-1)&NEIGHB_TAB_MASK];
+		end
+
+		pNeighb[LEFT][0] := pNeighb[ABOVE][0];
+		if(constrIntraPred) then
+			if(yMax = 0 || not puIsIntra[(origPixIdx-1-(yMax-1))&NEIGHB_TAB_MASK]) then
+				pixVal := 128;
+	
+				xIdx := xMax-1;
+				while(xIdx >= xMin)
+				do
+					if(puIsIntra[(origPixIdx+1+xIdx-1)&NEIGHB_TAB_MASK]) then
+						pixVal := pNeighb[ABOVE][xIdx];
+					end
+					xIdx := xIdx - 1;
+				end
+	
+				if(puIsIntra[origPixIdx & NEIGHB_TAB_MASK]) then
+					pixVal := pNeighb[LEFT][0];
+				end
+				foreach int y in yMin .. yMax-2
+				do
+					if(puIsIntra[(origPixIdx-1-y)&NEIGHB_TAB_MASK]) then
+						pNeighb[LEFT][y+1] := pNeighb[LEFT][y+2];
+					end
+				end
+				pNeighb[LEFT][yMax-1+1] := pixVal;
+			end
+	
+			yIdx := yMax - 2;
+			while(yIdx >= yMin)
+			do
+				if(not puIsIntra[(origPixIdx-1-yIdx)&NEIGHB_TAB_MASK]) then
+					pNeighb[LEFT][yIdx+1] := pNeighb[LEFT][yIdx+2];
+				end
+				yIdx := yIdx - 1;
+			end
+	
+			if(not puIsIntra[origPixIdx & NEIGHB_TAB_MASK])then
+				pNeighb[LEFT][0]  := pNeighb[LEFT][1];
+				pNeighb[ABOVE][0] := pNeighb[LEFT][1];
+			end
+			foreach int x in xMin .. xMax - 1
+			do
+				if(not puIsIntra[(origPixIdx+1+x)&NEIGHB_TAB_MASK]) then
+					pNeighb[ABOVE][x+1] := pNeighb[ABOVE][x];
+				end
+			end
+		end
+
+		if(yMax != yMin) then
+			foreach int y in 0 .. yMin-1
+			do
+				pNeighb[LEFT][y+1] := pNeighb[LEFT][yMin+1];
+			end
+			foreach int y in yMax .. 2*nS-1
+			do
+				pNeighb[LEFT][y+1] := pNeighb[LEFT][yMax-1+1];
+			end
+		end
+
+		if(xMax != xMin) then
+			foreach int x in 0 .. xMin-1
+			do
+				pNeighb[ABOVE][x] := pNeighb[LEFT][0+1];
+			end
+			foreach int x in xMax .. 2*nS
+			do
+				pNeighb[ABOVE][x] := pNeighb[ABOVE][xMax-1];
+			end
+		end
+
+		/* When the neighbours are not available, the nearest valid value is
+		 * propagated to the other neighbours
+		 */
+		if(xMax=xMin && yMax=yMin) then
+			foreach int idx in 0 .. 2*nS
+			do
+				pNeighb[ABOVE][idx] := 128;
+				pNeighb[LEFT][idx]  := 128;
+			end
+		else if(xMax=xMin && yMax!=yMin) then
+			foreach int x in 0 .. 2*nS
+			do
+				pNeighb[ABOVE][x] := pNeighb[LEFT][0+1];
+			end
+		else if(xMax!=xMin && yMax=yMin) then
+			foreach int y in 0 .. 2*nS-1
+			do
+				pNeighb[LEFT][y+1] := pNeighb[ABOVE][0+1];
+			end
+			pNeighb[ABOVE][0] := pNeighb[ABOVE][0+1];
+		else if(xMin!=0 || yMin != 0) then
+			pNeighb[ABOVE][0] := pNeighb[LEFT][0+1];
+		else if(not constrIntraPred) then
+				pNeighb[ABOVE][0] :=
+					puNeighb[origPixIdx&NEIGHB_TAB_MASK];
+		end end end end end
+		
+		filterNeighbSamp(nS, log2NS);
+	end
+
+	/* Check if the neighbours are available. maxVal contained either 2*nS or
+	 * the index of the first pixel unavailable.
+	 */
+	procedure neighbExist(uint(size=16) cuAddr[2], int minVal[2], int maxVal[2],
+		uint(size=7) nS)
+	var
+		uint(size=7) maxCuSize = maxLcuSizeLuma,
+		int xMin := 0, int yMin := 0, int xMax := 0, int yMax := 0,
+		int numPixRemain
+	begin
+		if(cuAddr[0]!=0) then
+			numPixRemain :=
+				if((cuAddr[0]&~(maxCuSize-1)) =
+					((cuAddr[0]-1)&~(maxCuSize-1))) then
+					leftBlkAvail[absCoordToRasterScan(cuAddr)]<<2
+				else
+					maxCuSize-(cuAddr[1]&(maxCuSize-1))
+				end;
+			yMax := min(min(2*nS, numPixRemain), pictSize[1]-cuAddr[1]);
+			if(isIndepSlc) then
+				if(cuAddr[0] <= sliceAddr[0]) then
+					if(sliceAddr[1]+maxCuSize>cuAddr[1]+2*nS)then
+						yMin := yMax;
+					else if(sliceAddr[1]+maxCuSize>cuAddr[1]) then
+						yMin := sliceAddr[1] + maxCuSize - cuAddr[1];
+					end end
+				else
+					if(sliceAddr[1]>cuAddr[1]+2*nS) then
+						yMin := yMax;
+					else if(sliceAddr[1]>cuAddr[1]) then
+						yMin := sliceAddr[1] - cuAddr[1];
+					end end
+				end
+			end
+			if(puTilesBeg[0] > cuAddr[0]-1) then
+				yMin := yMax;
+			else
+				if(puTilesBeg[1] - cuAddr[1] > yMin) then
+					yMin := max(puTilesBeg[1] - cuAddr[1] + 1, yMin);
+				end
+				if(puTilesEnd[1] - cuAddr[1] < yMax) then
+					yMax := min(puTilesEnd[1] - cuAddr[1] + 1, yMax);
+				end
+			end
+		end
+
+		if(cuAddr[1]!=0) then
+			numPixRemain :=
+				if((cuAddr[1]&~(maxCuSize-1)) =
+					((cuAddr[1]-1)&~(maxCuSize-1))) then
+					min( aboveBlkAvail[absCoordToRasterScan(cuAddr)]<<2,
+						pictSize[0]-cuAddr[0])
+				else
+					pictSize[0]-cuAddr[0]
+				end;
+			xMax := min(2*nS, numPixRemain)+1;
+			if(isIndepSlc) then
+				if(cuAddr[1] = sliceAddr[1]) then
+					xMin := xMax;
+				else if((cuAddr[1] = sliceAddr[1]+maxCuSize) && (cuAddr[0]-1<sliceAddr[0])) then
+					if(sliceAddr[0]>cuAddr[0]+2*nS) then
+						xMin := xMax;
+					else if(sliceAddr[0]>cuAddr[0]-1) then
+						xMin := sliceAddr[0]-cuAddr[0]+1;
+					end end
+				end end
+			end
+			if(puTilesBeg[1] > cuAddr[1]-1) then
+				xMin := xMax;
+			else
+				if(puTilesBeg[0] - cuAddr[0] > xMin) then
+					xMin := max(puTilesBeg[0] - cuAddr[0] + 1, xMin);
+				end
+				if(puTilesEnd[0] - cuAddr[0] < xMax) then
+					xMax := min(puTilesEnd[0] - cuAddr[0] + 1, xMax);
+				end
+			end
+		end
+
+		maxVal[0] := xMax;
+		maxVal[1] := yMax;
+		minVal[0] := xMin;
+		minVal[1] := yMin;
+	end
+
+	/* Filtering process of neighbouring sample. */
+	procedure filterNeighbSamp(uint(size=7) nS, uint(size=3) log2NS)
+	var
+		uint bitDepthY = 8,
+		uint threshold = 1<<(bitDepthY-5),
+		uint(size=8) bottomLeft = pNeighb[LEFT][2*nS],
+		uint(size=8) topLeft = pNeighb[ABOVE][0],
+		uint(size=8) topRight = pNeighb[ABOVE][2*nS],
+		uint(size=8) edgePix[2] = [topRight, bottomLeft],
+		bool bilinearLeft,
+		bool bilinearAbove,
+		uint(size=5) minDistVertHor,
+		uint(size=8) pFNeighb[2][64]
+	begin
+		if(predMode != INTRA_DC) then
+			minDistVertHor := min(abs(predMode-26), abs(predMode-10));
+			if(nS=4  && minDistVertHor>10 ||
+			   nS=8  && minDistVertHor>7 ||
+			   nS=16 && minDistVertHor>1 ||
+			   nS=32 && minDistVertHor>0 ||
+			   nS=64 && minDistVertHor>10) then
+				if(strongIntraSmoothing) then
+					bilinearLeft  := abs(bottomLeft+topLeft-2*pNeighb[LEFT][nS]) < threshold;
+					bilinearAbove := abs(topLeft+topRight-2*pNeighb[ABOVE][nS]) < threshold;
+
+					if(nS>=32 && bilinearLeft && bilinearAbove) then
+						foreach uint neighb in 0 .. 1
+						do
+							foreach uint i in 1 .. nS*2-1
+							do
+								pFNeighb[neighb][i] := ((2*nS-i)*topLeft+ i*edgePix[neighb]+nS)>>log2NS+1;
+							end
+						end
+						foreach uint neighb in 0 .. 1
+						do
+							foreach uint i in 1 .. nS*2-1
+							do
+								pNeighb[neighb][i] := pFNeighb[neighb][i];
+							end
+						end
+					else
+						foreach uint neighb in 0 .. 1
+						do
+							pFNeighb[neighb][0] := (pNeighb[ABOVE][0] + 2*pNeighb[neighb][0+1] +
+									pNeighb[neighb][1+1] + 2) >> 2;
+							foreach uint i in 1 .. nS*2-2
+							do
+								pFNeighb[neighb][i] := (pNeighb[neighb][i-1+1] + 2*pNeighb[neighb][i+1] +
+									pNeighb[neighb][i+1+1] + 2) >> 2;
+							end
+						end
+						pNeighb[ABOVE][0] := (pNeighb[LEFT][0+1] + 2*pNeighb[ABOVE][0] + pNeighb[ABOVE][0+1] + 2) >> 2;
+						foreach uint neighb in 0 .. 1
+						do
+							foreach uint i in 0 .. nS*2-2
+							do
+								pNeighb[neighb][i+1] := pFNeighb[neighb][i];
+							end
+						end
+	 				end
+				else
+					foreach uint neighb in 0 .. 1
+					do
+						pFNeighb[neighb][0] := (pNeighb[ABOVE][0] + 2*pNeighb[neighb][0+1] +
+								pNeighb[neighb][1+1] + 2) >> 2;
+						foreach uint i in 1 .. nS*2-2
+						do
+							pFNeighb[neighb][i] := (pNeighb[neighb][i-1+1] + 2*pNeighb[neighb][i+1] +
+								pNeighb[neighb][i+1+1] + 2) >> 2;
+						end
+					end
+					pNeighb[ABOVE][0] := (pNeighb[LEFT][0+1] + 2*pNeighb[ABOVE][0] + pNeighb[ABOVE][0+1] + 2) >> 2;
+					foreach uint neighb in 0 .. 1
+					do
+						foreach uint i in 0 .. nS*2-2
+						do
+							pNeighb[neighb][i+1] := pFNeighb[neighb][i];
+						end
+					end
+	 			end
+	 		end
+		end
+	end
+
+	procedure intraPlanarPred(uint(size=7) nS,
+		uint(size=3) log2NS)
+	var
+		uint(size=8) pUpRight,
+		uint(size=8) pBottomLeft
+	begin
+		pUpRight    := pNeighb[ABOVE][nS+1];
+		pBottomLeft := pNeighb[LEFT][nS+1];
+		foreach uint y in 0 .. nS-1
+		do
+			foreach uint x in 0 .. nS-1
+			do
+				lumaComp[x][y] := ((nS-1-x)*pNeighb[LEFT][y+1] +
+					(x+1)*pUpRight + (nS-1-y)*pNeighb[ABOVE][x+1] +
+					(y+1)*pBottomLeft + nS) >> (log2NS+1);
+			end
+		end
+	end
+
+	/* Implementation of Intra_DC prediction mode. */
+	procedure intraDcPred(uint(size=7) nS, uint(size=3) log2NS)
+	var
+		uint(size=1) minVal,
+		uint(size=13) dcVal
+	begin
+		dcVal := nS;
+		foreach uint x in 0 .. nS-1
+		do
+			dcVal := dcVal + pNeighb[ABOVE][x+1];
+		end
+		foreach uint y in 0 .. nS-1
+		do
+			dcVal := dcVal + pNeighb[LEFT][y+1];
+		end
+		dcVal := dcVal >> (log2NS+1);
+
+		
+		minVal := if(nS>16) then 0 else 1 end;
+		if(nS<=16) then
+			lumaComp[0][0] := (pNeighb[LEFT][0+1] + 2*dcVal +
+				pNeighb[ABOVE][0+1] + 2)>>2;
+			foreach uint x in 1 .. nS-1
+			do
+				lumaComp[x][0] := (pNeighb[ABOVE][x+1] + 3*dcVal + 2)>>2;
+			end
+			foreach uint y in 1 .. nS-1
+			do
+				lumaComp[0][y] := (pNeighb[LEFT][y+1] + 3*dcVal + 2)>>2;
+			end
+		end
+		foreach uint y in minVal .. nS-1
+		do
+			foreach uint x in minVal .. nS-1
+			do
+				lumaComp[x][y] := dcVal;
+			end
+		end
+		
+	end
+
+	/* Implementation of Intra_Angular prediction mode. */
+	procedure intraAngularPred(uint(size=7) nS)
+	var
+		uint(size=6) OFFSET = 33,
+		uint(size=6) angle := predMode & 63,
+		uint(size=1) neighbIdx,
+		uint(size=8) refMain[128+33],
+		int(size=9) iIdx,
+		uint(size=5) iFact
+	begin
+		if(angle=26 || angle = 10) then
+			intraAngularVertOrHor(angle=26, nS);
+		else
+			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
+			 * mode.
+			 */
+			neighbIdx := if(angle>=18) then ABOVE else LEFT end;
+			refMain[OFFSET] := pNeighb[ABOVE][0];
+			foreach uint x in 1 .. nS
+			do
+				refMain[x+OFFSET] := pNeighb[neighbIdx][x-1+1];
+			end
+			if(intraPredAngle[angle]<0) then
+				neighbIdx := neighbIdx^1;
+				foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
+				do
+					refMain[k+OFFSET] :=
+						pNeighb[neighbIdx][((k*invAngle[angle]+128)>>8)-1+1];
+				end
+			else
+				foreach uint x in nS+1 .. 2*nS
+				do
+					refMain[x+OFFSET] := pNeighb[neighbIdx][x-1+1];
+				end
+			end
+			if(angle>=18) then
+				foreach uint y in 0 .. nS-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					foreach uint x in 0 .. nS-1
+					do
+						if(iFact!=0) then
+							lumaComp[x][y] :=
+								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							lumaComp[x][y] := refMain[x+iIdx+1 +OFFSET];
+						end
+					end
+				end
+			else
+				foreach uint y in 0 .. nS-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					foreach uint x in 0 .. nS-1
+					do
+						if(iFact!=0) then
+							lumaComp[y][x] :=
+								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							lumaComp[y][x] := refMain[x+iIdx+1 +OFFSET];
+						end
+					end
+				end
+			end
+		end
+	end
+
+	/* Implementation of Intra_angular(10,26) prediction mode. */
+	procedure intraAngularVertOrHor(bool isVertical,
+		uint(size=7) nS)
+	var
+		uint(size=1) minVal
+	begin
+		minVal := if(nS>16) then 0 else 1 end;
+		if(isVertical) then
+			if(minVal!=0) then
+				foreach uint y in 0 .. nS-1
+				do
+					lumaComp[0][y] := clip_i32(pNeighb[ABOVE][0+1]+
+						((pNeighb[LEFT][y+1]-pNeighb[ABOVE][0])>>1), 0, 255);
+				end
+			end
+			foreach uint x in minVal .. nS-1
+			do
+				foreach uint y in 0 .. nS-1
+				do
+					lumaComp[x][y] := pNeighb[ABOVE][x+1];
+				end
+			end
+		else
+			if(minVal!=0) then
+				foreach uint x in 0 .. nS-1
+				do
+					lumaComp[x][0] := clip_i32(pNeighb[LEFT][0+1]+
+						((pNeighb[ABOVE][x+1]-pNeighb[ABOVE][0])>>1), 0, 255);
+				end
+			end
+			foreach uint x in 0 .. nS-1
+			do
+				foreach uint y in minVal .. nS-1
+				do
+					lumaComp[x][y] := pNeighb[LEFT][y+1];
+				end
+			end
+		end
+	end
+
+	/* Updating the picture size. */
+	isNewSliceOrPict.notDep: action PartMode:[partMode], LcuSizeMax:[lcuSz],
+		PictSize:[pictSizeVal] repeat 2, SliceAddr:[slcAddr] repeat 2,
+		StrongIntraSmoothing:[smoothing, constrIntra],
+		TilesCoord:[valNumTiles] ==>
+	guard
+		partMode = PART_MODE_SLICE_INDEP ||
+		partMode = PART_MODE_PICT
+	do
+		sliceAddr := [slcAddr[i]:for int i in 0 .. 1];
+		pictSize := [pictSizeVal[i]:for int i in 0 .. 1];
+		strongIntraSmoothing := smoothing;
+		constrIntraPred := constrIntra;
+		isIndepSlc := partMode = PART_MODE_SLICE_INDEP;
+		numTiles := valNumTiles;
+		iLoop := 0;
+		maxLcuSizeLuma := lcuSz;
+	end
+
+	/* Updating the picture size. */
+	isNewSliceOrPict.dep: action PartMode:[partMode], SliceAddr:[slcAddr] repeat 2,
+		StrongIntraSmoothing:[smoothing, constrIntra]==>
+	guard
+		partMode = PART_MODE_SLICE_DEP
+	do
+		sliceAddr := [slcAddr[i]:for int i in 0 .. 1];
+		strongIntraSmoothing := smoothing;
+		constrIntraPred := constrIntra;
+		isIndepSlc := partMode = PART_MODE_SLICE_INDEP;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBeg[iLoop] := [tilesCoord[0], tilesCoord[1]];
+		tilesEnd[iLoop] := [tilesCoord[2], tilesCoord[3]];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
+
+	/* Check when there are two parts in the CU.  */
+	getPartMode.isNonQuadTree: action PartMode:[partMode] ==>
+	guard
+		partMode != PART_MODE_SLICE_DEP && partMode != PART_MODE_SLICE_INDEP &&
+		partMode != PART_MODE_PICT,
+		partMode != PART_2Nx2N && partMode != PART_NxN
+	end
+
+	/* Check if all parts of the CU are a square. */
+	getPartMode.isQuadTree: action PartMode:[partMode] ==>
+	guard
+		partMode = PART_2Nx2N || partMode = PART_NxN
+	do
+		numPart := partModeToNumPart[partMode];
+		numPartDecoded := 0;
+	end
+
+	/* Get the information concerning the CU to be able to save the values in
+	 * currPict.
+	 */
+	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
+	guard
+		numPartDecoded < numPart,
+		not EnabSkipInPix || cuInfo[0] != IN_SAMP
+	do
+		cuMode := cuInfo[0];
+		getInSamp := true;
+		if(EnabSkipInPix && (cuMode & NO_IN_SAMP) != 0) then
+			getInSamp := false;
+			cuMode := cuMode - NO_IN_SAMP;
+		end
+		nS := cuInfo[3];
+		cuAddr := [cuInfo[1], cuInfo[2]];
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	/* Get the information concerning the CU to be able to save the values in
+	 * currPict.
+	 */
+	getCuInfo.getInSamp: action CUInfo:[cuInfo] repeat 5 ==>
+	guard
+		numPartDecoded < numPart,
+		EnabSkipInPix && cuInfo[0] = IN_SAMP
+	var
+		uint(size=7) nS = cuInfo[3]
+	do
+		getInSamp := true;
+		treeAddr := [cuInfo[1], cuInfo[2]];
+		idxBlk := 0;
+		numBlkToSend := (nS*nS)/16;
+		neighbBlkSz  := nS;
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	/* When there are two parts, we get both part in once in order to perform a
+	 * raster scan on the square (the SelectCU actor reorder the different
+	 * blocks)
+	 */
+	getCuInfo.nonQT.isInter: action CUInfo:[cuInfo] repeat 10 ==>
+	do
+		cuMode := cuInfo[0];
+		getInSamp := true;
+		if(EnabSkipInPix && (cuMode & NO_IN_SAMP) != 0) then
+			getInSamp := false;
+			cuMode := cuMode - NO_IN_SAMP;
+		end
+		nS := max(cuInfo[3], cuInfo[4]);
+		idxBlk := 0;
+		numBlkToSend := nS*nS/16;
+		neighbBlkSz  := nS;
+		treeAddr := [cuInfo[1], cuInfo[2]];
+		numPart := 2;
+		numPartDecoded := 2;
+		trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
+	end
+
+	getCuInfo.done: action ==>
+	guard
+		numPartDecoded = numPart
+	end
+
+	/* When it's an intra CU, getting the intra prediction mode for chroma and luma component. */
+	getCuMode.isIntra: action IntraPredMode:[predMode] repeat 2 ==>
+	guard
+		cuMode = INTRA
+	do
+		foreach int tileIdx in 0 .. numTiles - 1
+		do
+			if(cuAddr[0] >= tilesBeg[tileIdx][0] && cuAddr[0] < tilesEnd[tileIdx][0] &&
+			   cuAddr[1] >= tilesBeg[tileIdx][1] && cuAddr[1] < tilesEnd[tileIdx][1]) then
+			   	puTilesBeg := [tilesBeg[tileIdx][0], tilesBeg[tileIdx][1]];
+			   	puTilesEnd := [tilesEnd[tileIdx][0], tilesEnd[tileIdx][1]];
+			 end
+		end
+
+		predModeTab := predMode[0];
+		log2NS := 2;
+		while((1<<log2NS) < nS)
+		do
+			log2NS := log2NS+1;
+		end
+		trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
+	end
+
+	/* Check if it's an inter prediction, then the pixels sent will be saved in
+	 * currPict.
+	 */
+	getCuMode.isInter: action ==>
+	guard
+		cuMode = INTER || cuMode = SKIP
+	do
+		idxBlk := 0;
+		numBlkToSend := nS*nS/16;
+		neighbBlkSz  := nS;
+		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
+	end
+
+	/* When it's neither an intra nor inter prediction CU, do neither
+	 * prediction nor saving pixels' value
+	 */
+	getCuMode.isOther: action ==>
+	guard
+		cuMode = OTHER
+	end
+
+	/* Check if the intra prediction CU has to be split in 4 "subCU" */
+	getSplitTrafo.isTrue: action SplitTransform:[splitTrafo] ==>
+	guard
+		splitTrafo && trafoTreeDepth>-1
+	do
+		trafoTreeDepth := trafoTreeDepth + 1;
+		trafoTreeIdx[trafoTreeDepth] := 0;
+	end
+
+	/* Check if the intra prediction will not be split again, then realize the
+	 * prediction for this part of CU
+	 */
+	getSplitTrafo.isFalse: action SplitTransform:[splitTrafo] ==>
+	guard
+		not splitTrafo && trafoTreeDepth>-1
+	var
+		uint(size=7)  treeNS,
+		uint(size=3)  treeLog2NS,
+		uint(size=16) locAddr[2]
+	do
+		/* Computing the size and the address of the current block. */
+		treeLog2NS := log2NS - trafoTreeDepth;
+		treeNS := nS;
+		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		foreach uint idx in 1 .. trafoTreeDepth
+		do
+			treeNS := treeNS >> 1;
+			if((trafoTreeIdx[idx]&1) != 0) then
+				treeAddr[0] := treeAddr[0] + treeNS;
+			end
+			if((trafoTreeIdx[idx]&2) != 0) then
+				treeAddr[1] := treeAddr[1] + treeNS;
+			end
+		end
+
+		numBlkToSend := treeNS*treeNS/16;
+		neighbBlkSz  := treeNS;
+		idxBlk := 0;
+
+		/* Chroma component are not split if we get a 2x2 block (this problem
+		 * appear with YUV420)
+		 */
+		
+		locAddr := [treeAddr[i]:for int i in 0 .. 1];
+		
+		predMode := predModeTab;
+
+		getNeighbSamples(locAddr,treeNS, treeLog2NS);
+
+		if(predMode = INTRA_PLANAR) then
+			intraPlanarPred(treeNS, treeLog2NS);
+		else if(predMode = INTRA_DC) then
+			intraDcPred(treeNS, treeLog2NS);
+		else
+			intraAngularPred(treeNS);
+		end end
+			
+		/* going to the next "branch of the tree" */
+		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+		/* Replace by (trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4) when orcc's simulator
+		 * support short-circuit evaluation.
+		 */
+		while(if trafoTreeDepth>= 0 then (trafoTreeIdx[trafoTreeDepth] = 4) else false end)
+		do
+			trafoTreeDepth := trafoTreeDepth - 1;
+			if(trafoTreeDepth>-1) then
+				trafoTreeIdx[trafoTreeDepth] :=
+					trafoTreeIdx[trafoTreeDepth] + 1;
+			end
+		end
+	end
+
+	getSplitTrafo.isInter: action SplitTransform:[splitTrafo] ==>
+	guard
+		trafoTreeDepth>-1
+	do
+		if(splitTrafo) then
+			trafoTreeDepth := trafoTreeDepth + 1;
+			trafoTreeIdx[trafoTreeDepth] := 0;
+		else
+			trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+			while(trafoTreeDepth > -1 && if trafoTreeDepth>= 0 then (trafoTreeIdx[trafoTreeDepth] = 4) else false end)
+			do
+				trafoTreeDepth := trafoTreeDepth - 1;
+				if(trafoTreeDepth>-1) then
+					trafoTreeIdx[trafoTreeDepth] :=
+						trafoTreeIdx[trafoTreeDepth] + 1;
+				end
+			end
+		end
+	end
+
+	getSplitTrafo.done: action ==>
+	guard
+		trafoTreeDepth = -1
+	end
+
+	/* Sending One 4x4 luma blocks and the corresponding chroma values. */
+	sendSamples.launch: action ==> PredSample_y:[sampleVal_y] repeat 16
+	guard
+		idxBlk < numBlkToSend
+	var
+		uint(size=8) sampleVal_y[16],
+		uint(size=7) idxSample := 0,
+		uint(size=16) blkAddr[2]
+	do
+		rasterScanToAbsCoord(idxBlk, blkAddr);
+
+		foreach uint y in blkAddr[1] .. blkAddr[1]+3
+		do
+			foreach uint x in blkAddr[0] .. blkAddr[0]+3
+			do
+				sampleVal_y[idxSample] := lumaComp[x][y];
+				idxSample := idxSample + 1;
+			end
+		end
+		
+		idxBlk := idxBlk + 1;
+	end
+
+	sendSamples.done: action ==>
+	guard
+		idxBlk = numBlkToSend
+	do
+		idxBlk := 0;
+	end
+
+	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
+	getSamples.launch: action Sample_y:[sample_y] repeat 16 ==>
+	guard
+		idxBlk < numBlkToSend && (not EnabSkipInPix || getInSamp)
+	var
+		uint(size=16) blkAddr[2],
+		bool bottomBlk := false,
+		bool leftBlk := false,
+		uint(size=16) tabIdx
+	do
+		rasterScanToAbsCoord(idxBlk, blkAddr);
+
+		if(blkAddr[0]+4>=neighbBlkSz) then
+			leftBlk := true;
+		end
+		if(blkAddr[1]+4>=neighbBlkSz) then
+			bottomBlk := true;
+		end
+		blkAddr[0] := blkAddr[0] + treeAddr[0];
+		blkAddr[1] := blkAddr[1] + treeAddr[1];
+
+		if(bottomBlk) then
+			foreach uint x in 0 .. 3
+			do
+				tabIdx := pictSize[1] - (blkAddr[1] + 3) + blkAddr[0] + x;
+				puNeighb[tabIdx] := sample_y[4*3+x];
+				puIsIntra[tabIdx]   := cuMode = INTRA;
+			end
+		end
+
+		if(leftBlk) then
+			foreach uint y in 0 .. 3
+			do
+				tabIdx := pictSize[1] - (blkAddr[1] + y) + blkAddr[0] + 3;
+				puNeighb[tabIdx] := sample_y[4*y+3];
+				puIsIntra[tabIdx]   := cuMode = INTRA;
+			end
+		end
+		
+		idxBlk := idxBlk + 1;
+	end
+
+	getSamples.done: action ==>
+	guard
+		idxBlk = numBlkToSend || (EnabSkipInPix && not getInSamp)
+	end
+
+	schedule fsm GetPartMode:
+		GetPartMode(isNewSliceOrPict.notDep   )--> GetTilesCoord;
+		GetPartMode(isNewSliceOrPict.dep      )--> GetPartMode;
+		GetPartMode(getPartMode.isQuadTree    )--> GetCuInfo;
+		GetPartMode(getPartMode.isNonQuadTree )--> GetCuInfoNonQT;
+
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetPartMode;
+
+		GetCuInfoNonQT (getCuInfo.nonQT )--> GetSplitTrafoInter;
+
+		GetCuInfo (getCuInfo.launch    )--> GetCuMode;
+		GetCuInfo (getCuInfo.getInSamp )--> GetInSamples;
+		GetCuInfo (getCuInfo.done      )--> GetPartMode;
+
+		GetCuMode (getCuMode.isIntra )--> GetSplitTrafoIntra;
+		GetCuMode (getCuMode.isInter )--> GetSplitTrafoInter;
+		GetCuMode (getCuMode.isOther )--> GetCuInfo;
+
+		GetInterSamples (getSamples.launch )--> GetInterSamples;
+		GetInterSamples (getSamples.done   )--> GetCuInfo;
+
+		GetSplitTrafoIntra (getSplitTrafo.isTrue  )--> GetSplitTrafoIntra;
+		GetSplitTrafoIntra (getSplitTrafo.isFalse )--> SendSamples;
+		GetSplitTrafoIntra (getSplitTrafo.done    )--> GetCuInfo;
+
+		GetSplitTrafoInter (getSplitTrafo.isInter  )--> GetSplitTrafoInter;
+		GetSplitTrafoInter (getSplitTrafo.done    )--> GetInterSamples;
+
+		SendSamples (sendSamples.launch )--> SendSamples;
+		SendSamples (sendSamples.done   )--> GetIntraSamples;
+
+		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
+		GetIntraSamples (getSamples.done   )--> GetSplitTrafoIntra;
+
+		GetInSamples (getSamples.launch )--> GetInSamples;
+		GetInSamples (getSamples.done   )--> GetCuInfo;
+	end
+end
