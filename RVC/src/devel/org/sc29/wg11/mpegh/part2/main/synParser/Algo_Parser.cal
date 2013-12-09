@@ -30,6 +30,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				uint(size=16) PictSize,
 				uint(size=16) Poc,
 				 int(size= 9) SaoSe,
+				 int(size= 9) SaoSeLuma,
 				uint(size= 8) SEI_MD5,
 				uint(size= 2) SliceType,
 				bool          SplitTransform,
@@ -1678,6 +1679,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2 , TileSize:[pictOrTileSize] repeat 2, PicSizeInMb:[(pictSize[0] + 15)/16, (pictSize[1] + 15)/16], 
 		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[part_mode], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
+		SaoSeLuma:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
 		IsPicSlcLcu:[1-first_slice_segment_in_pic_flag], LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
 		MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag], LcuSizeMax:[1 << Log2CtbSize]
 	guard
@@ -3203,7 +3205,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_SaoParam.start
 	 *************************************************************************/	
-	read_SaoParam.start : action ==> SaoSe:[sao_merge]
+	read_SaoParam.start : action ==> SaoSe:[sao_merge], SaoSeLuma:[sao_merge] 
 	guard
 		sao_idx = 1 and isFifoFull(fifo)
 	var
@@ -3252,10 +3254,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 *************************************************************************/	
      int(size= 9) sao_typeIdx;
      int(size= 9) sao_eo;
-    read_SaoParam.loop1 : action ==> SaoSe:[sao_typeIdx]
+    read_SaoParam.loop.luma : action ==> SaoSe:[sao_typeIdx], SaoSeLuma:[sao_typeIdx]
     guard
         sao_idx  = 2 and isFifoFull(fifo),
-        sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
+        sao_cIdx = 0 and sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
     var
          int(size=32) res[1]
     do
@@ -3270,7 +3272,28 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             sao_cIdx := sao_cIdx + 1;
         end
     end
-	read_SaoParam.loop2 : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo]
+
+    read_SaoParam.loop.chroma : action ==> SaoSe:[sao_typeIdx]//, SaoSeLuma:[sao_typeIdx]
+    guard
+        sao_idx  = 2 and isFifoFull(fifo),
+        sao_cIdx != 0 and sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
+    var
+         int(size=32) res[1]
+    do
+        if sao_cIdx != 2 then
+            sao_typeIdx := SAO_NOT_APPLIED;
+            get_SAO_TYPE_IDX(codIRange, codIOffset, ctxTable, fifo, res);
+            sao_typeIdx := res[0];
+        end
+        if sao_typeIdx != SAO_NOT_APPLIED then
+            sao_idx := 4;
+        else
+            sao_cIdx := sao_cIdx + 1;
+        end
+    end
+
+	read_SaoParam.loop2_luma : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo],
+										  SaoSeLuma:[offset[0],offset[1],offset[2],offset[3],sao_eo]
 	guard
 		sao_idx  = 3 and isFifoFull(fifo)
 	var
@@ -3304,6 +3327,43 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		sao_cIdx := sao_cIdx + 1;
         sao_idx  := 2;
 	end
+
+	read_SaoParam.loop2_chroma : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo]//,
+		                                    //SaoSeLuma:[offset[0],offset[1],offset[2],offset[3],sao_eo]
+	guard
+		sao_idx  = 4 and isFifoFull(fifo)
+	var
+		uint(size= 8) offsetTh   = (1<<3)-1,
+		 int(size= 9) offset[4] := [0, 0, 0, 0],
+		 int(size=32) res[1]    := [0]
+	do
+        foreach int i in 0 .. 3 do
+            get_SAO_OFFSET_ABS(offsetTh, codIRange, codIOffset, fifo, res);            
+            offset[i] := res[0];
+        end
+        if sao_typeIdx = SAO_BAND then
+			foreach int i in 0 .. 3 do
+				if offset[i] != 0 then
+					get_SAO_OFFSET_SIGN(codIRange, codIOffset, fifo, res);
+					if res[0] != 0 then
+						offset[i] := -offset[i];
+					end 
+				end
+			end
+			get_SAO_BAND_POSITION(codIRange, codIOffset, fifo, res);
+			sao_eo := res[0];
+		else
+		    offset[2] := -offset[2];
+		    offset[3] := -offset[3];
+			if sao_cIdx != 2 then
+				get_SAO_EO(codIRange, codIOffset, fifo, res);
+				sao_eo := res[0];
+			end
+		end
+		sao_cIdx := sao_cIdx + 1;
+        sao_idx  := 2;
+	end
+
 	read_SaoParam.nextLoop : action ==>
 	guard
 		sao_idx  = 2 ,
