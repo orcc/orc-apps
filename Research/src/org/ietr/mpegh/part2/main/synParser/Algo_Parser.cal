@@ -1,4 +1,4 @@
-package devel.org.sc29.wg11.mpegh.part2.main.synParser;
+package org.ietr.mpegh.part2.main.synParser;
 
 import  std.util.Math.*;
 import  std.stdio.Source.*;
@@ -28,8 +28,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 uint(size=2)  IsPicSlcLcu,
                 uint(size=2)  LFAcrossSlcTile,
 				uint(size=16) PictSize,
-				 int(size=16) Poc,
-				 int(size= 9) SaoSe,
+				uint(size=16) Poc,
+				 int(size= 9) SaoSeLuma,
+				 int(size= 9) SaoSeChromaU,
+				 int(size= 9) SaoSeChromaV,
 				uint(size= 8) SEI_MD5,
 				uint(size= 2) SliceType,
 				bool          SplitTransform,
@@ -45,7 +47,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				bool Cbf,
 				bool DBFDisable,
 				 int(size=8)  DbfSe,
-				 int(size=16) WeightedPred,
+				 int(size=16) WeightedPredLuma,
+				 int(size=16) WeightedPredChroma,
 				uint(size=16) TileSize,
 				uint(size=16) TileCUInfo
 				 
@@ -1630,7 +1633,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
     uint(size=16) PicSizeInCtbsY;
     uint(size= 1) slice_temporal_mvp_enable_flag;
 
-	int(size=32) poc;
+	uint(size=32) poc;
 	uint(size= 3) slice_type;
 	uint(size=32) slice_segment_address;
 	uint(size= 1) slice_sample_adaptive_offset_flag[4];
@@ -1655,13 +1658,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				iPOCmsb := iPrevPOCmsb;
 			end
 		end
-		if (nal_unit_type = NAL_BLA_W_LP   or
-       		nal_unit_type = NAL_BLA_W_RADL or
-       		nal_unit_type = NAL_BLA_N_LP)
-        then
-        	iPOCmsb := 0;
-       	end
-        
 	    poc:= iPOCmsb+iPOClsb;
 	end
 	
@@ -1683,7 +1679,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
     uint prevColIndex := 0;
 	
 	read_SliceHeader.se_idx_1 : action ==> PictSize:[pictSize] repeat 2 , TileSize:[pictOrTileSize] repeat 2, PicSizeInMb:[(pictSize[0] + 15)/16, (pictSize[1] + 15)/16], 
-		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[part_mode], SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
+		DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], SliceType:[slice_type], PartMode:[part_mode], SaoSeChromaV:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
+		SaoSeLuma:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], SaoSeChromaU:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
 		IsPicSlcLcu:[1-first_slice_segment_in_pic_flag], LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
 		MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag], LcuSizeMax:[1 << Log2CtbSize]
 	guard
@@ -2003,7 +2000,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 * read_SliceHeader.sendRefPOC
 	 *************************************************************************/
 	int(size=16)  pocTables[5][NB_MAX_PICS];
-	int numPic[5];
+	uint numPic[5];
 	uint(size= 8) idxNumPic;
 	uint(size= 8) idxRefPoc;
 
@@ -2128,7 +2125,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	guard
 		se_idx = 11
 	var
-		int(size=16) refPocSize = numPic[idxNumPic]
+		uint(size=16) refPocSize = numPic[idxNumPic]
 	do
 		if numPic[idxNumPic] = 0 then
 			idxNumPic := idxNumPic + 1;
@@ -2144,7 +2141,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	guard
 		se_idx = 12
 	var
-		int(size=16) refPoc = pocTables[idxNumPic][idxRefPoc]
+		uint(size=16) refPoc = pocTables[idxNumPic][idxRefPoc]
 	do
 		idxRefPoc := idxRefPoc + 1;
 		if idxRefPoc = numPic[idxNumPic] then
@@ -2165,7 +2162,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
 	 	
-	read_SliceHeader.se_idx_3 : action ==> MvPredSyntaxElem:[collocated_from_lX, collocated_ref_idx], WeightedPred:[weighted_pred_flag]
+	read_SliceHeader.se_idx_3 : action ==> MvPredSyntaxElem:[collocated_from_lX, collocated_ref_idx],
+											WeightedPredLuma:[weighted_pred_flag], WeightedPredChroma:[weighted_pred_flag]
 	guard
 		se_idx = 3 and isFifoFull(fifo)
 	var
@@ -2225,7 +2223,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 int(size= 10) delta_chroma_offset_l10;
 	 int(size= 10) delta_chroma_offset_l11;
 	 
-	read_SliceHeader.se_idx_40 : action ==> WeightedPred:[luma_log2_weight_denom, delta_chroma_log2_weight_denom]
+	read_SliceHeader.se_idx_40 : action ==> WeightedPredLuma:[luma_log2_weight_denom, delta_chroma_log2_weight_denom],
+											 WeightedPredChroma:[luma_log2_weight_denom, delta_chroma_log2_weight_denom]
 	guard
 		se_idx = 4 and isFifoFull(fifo),
 		slice_type = P_SLICE or slice_type = B_SLICE,
@@ -2244,7 +2243,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 41;
 	end
 	
-	read_SliceHeader.se_idx_41 : action ==> WeightedPred:[luma_weight_l0_flag[cnt_i - 1]]
+	read_SliceHeader.se_idx_41 : action ==> WeightedPredLuma:[luma_weight_l0_flag[cnt_i - 1]]
 	guard
 		se_idx = 41 and isFifoFull(fifo),
 		cnt_i <num_ref_idx_l0_active
@@ -2265,7 +2264,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 43;
 	end
 	
-	read_SliceHeader.se_idx_43 : action ==> WeightedPred:[chroma_weight_l0_flag[cnt_i - 1]]
+	read_SliceHeader.se_idx_43 : action ==> WeightedPredChroma:[chroma_weight_l0_flag[cnt_i - 1]]
 	guard
 		se_idx = 43 and isFifoFull(fifo),
 		sps_chroma_format_idc[sps_id] = 1,
@@ -2318,7 +2317,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 5;
 	end
 	
-	read_SliceHeader.se_idx_45 : action ==> WeightedPred:[delta_luma_weight_l0, luma_offset_l0]
+	read_SliceHeader.se_idx_45 : action ==> WeightedPredLuma:[delta_luma_weight_l0, luma_offset_l0]
 	guard
 		se_idx = 45 and isFifoFull(fifo),
 		luma_weight_l0_flag[cnt_i] = 1,
@@ -2352,7 +2351,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 45;
 	end
 	
-	read_SliceHeader.se_idx_46 : action ==> WeightedPred:[delta_chroma_weight_l00]
+	read_SliceHeader.se_idx_46 : action ==> WeightedPredChroma:[delta_chroma_weight_l00]
 	guard
 		se_idx = 46 and isFifoFull(fifo),
 		cnt_i < num_ref_idx_l0_active,
@@ -2365,7 +2364,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 47;
 	end
 	
-	read_SliceHeader.se_idx_47 : action ==> WeightedPred:[delta_chroma_offset_l00, delta_chroma_weight_l01, delta_chroma_offset_l01]
+	read_SliceHeader.se_idx_47 : action ==> WeightedPredChroma:[delta_chroma_offset_l00, delta_chroma_weight_l01, delta_chroma_offset_l01]
 	guard
 		se_idx = 47 and isFifoFull(fifo),
 		cnt_i < num_ref_idx_l0_active,
@@ -2385,7 +2384,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	
 	
 	
-	read_SliceHeader.se_idx_48 : action ==>  WeightedPred:[luma_weight_l1_flag[cnt_i-1]]
+	read_SliceHeader.se_idx_48 : action ==>  WeightedPredLuma:[luma_weight_l1_flag[cnt_i-1]]
 	guard
 		se_idx = 48 and isFifoFull(fifo),
 		slice_type = B_SLICE,
@@ -2417,7 +2416,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 52;
 	end
 	
-	read_SliceHeader.se_idx_50 : action ==>  WeightedPred:[chroma_weight_l1_flag[cnt_i - 1]]
+	read_SliceHeader.se_idx_50 : action ==>  WeightedPredChroma:[chroma_weight_l1_flag[cnt_i - 1]]
 	guard
 		se_idx = 50 and isFifoFull(fifo),
 		sps_chroma_format_idc[sps_id] != 0,
@@ -2459,7 +2458,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 5;
 	end
 	
-	read_SliceHeader.se_idx_52 : action ==> WeightedPred:[delta_luma_weight_l1, luma_offset_l1]
+	read_SliceHeader.se_idx_52 : action ==> WeightedPredLuma:[delta_luma_weight_l1, luma_offset_l1]
 	guard
 		se_idx = 52 and isFifoFull(fifo),
 		cnt_i < num_ref_idx_l1_active,
@@ -2493,7 +2492,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 52;
 	end
 	
-	read_SliceHeader.se_idx_53 : action ==> WeightedPred:[delta_chroma_weight_l10]
+	read_SliceHeader.se_idx_53 : action ==> WeightedPredChroma:[delta_chroma_weight_l10]
 	guard
 		se_idx = 53 and isFifoFull(fifo),
 		cnt_i < num_ref_idx_l1_active,
@@ -2506,7 +2505,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		se_idx := 54;
 	end
 	
-	read_SliceHeader.se_idx_54 : action ==> WeightedPred:[delta_chroma_offset_l10,delta_chroma_weight_l11,delta_chroma_offset_l11]
+	read_SliceHeader.se_idx_54 : action ==> WeightedPredChroma:[delta_chroma_offset_l10,delta_chroma_weight_l11,delta_chroma_offset_l11]
 	guard
 		se_idx = 54 and isFifoFull(fifo),
 		cnt_i < num_ref_idx_l1_active,
@@ -3207,7 +3206,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_SaoParam.start
 	 *************************************************************************/	
-	read_SaoParam.start : action ==> SaoSe:[sao_merge]
+	read_SaoParam.start : action ==> SaoSeChromaU:[sao_merge], SaoSeLuma:[sao_merge], SaoSeChromaV:[sao_merge]
 	guard
 		sao_idx = 1 and isFifoFull(fifo)
 	var
@@ -3256,10 +3255,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 *************************************************************************/	
      int(size= 9) sao_typeIdx;
      int(size= 9) sao_eo;
-    read_SaoParam.loop1 : action ==> SaoSe:[sao_typeIdx]
+    read_SaoParam.loop.luma : action ==> SaoSeLuma:[sao_typeIdx]
     guard
         sao_idx  = 2 and isFifoFull(fifo),
-        sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
+        sao_cIdx = 0 and sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
     var
          int(size=32) res[1]
     do
@@ -3274,7 +3273,46 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             sao_cIdx := sao_cIdx + 1;
         end
     end
-	read_SaoParam.loop2 : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo]
+
+    read_SaoParam.loop.chromaU : action ==> SaoSeChromaU:[sao_typeIdx]
+    guard
+        sao_idx  = 2 and isFifoFull(fifo),
+        sao_cIdx = 1 and sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
+    var
+         int(size=32) res[1]
+    do
+        if sao_cIdx != 2 then
+            sao_typeIdx := SAO_NOT_APPLIED;
+            get_SAO_TYPE_IDX(codIRange, codIOffset, ctxTable, fifo, res);
+            sao_typeIdx := res[0];
+        end
+        if sao_typeIdx != SAO_NOT_APPLIED then
+            sao_idx := 4;
+        else
+            sao_cIdx := sao_cIdx + 1;
+        end
+    end
+
+    read_SaoParam.loop.chromaV : action ==> SaoSeChromaV:[sao_typeIdx]
+    guard
+        sao_idx  = 2 and isFifoFull(fifo),
+        sao_cIdx = 2 and sao_cIdx < 3 and slice_sample_adaptive_offset_flag[sao_cIdx] = 1
+    var
+         int(size=32) res[1]
+    do
+        if sao_cIdx != 2 then
+            sao_typeIdx := SAO_NOT_APPLIED;
+            get_SAO_TYPE_IDX(codIRange, codIOffset, ctxTable, fifo, res);
+            sao_typeIdx := res[0];
+        end
+        if sao_typeIdx != SAO_NOT_APPLIED then
+            sao_idx := 5;
+        else
+            sao_cIdx := sao_cIdx + 1;
+        end
+    end
+
+	read_SaoParam.loop2_luma : action ==> SaoSeLuma:[offset[0],offset[1],offset[2],offset[3],sao_eo]
 	guard
 		sao_idx  = 3 and isFifoFull(fifo)
 	var
@@ -3308,6 +3346,77 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		sao_cIdx := sao_cIdx + 1;
         sao_idx  := 2;
 	end
+
+	read_SaoParam.loop2_chromaU : action ==> SaoSeChromaU:[offset[0],offset[1],offset[2],offset[3],sao_eo]
+	guard
+		sao_idx  = 4 and isFifoFull(fifo)
+	var
+		uint(size= 8) offsetTh   = (1<<3)-1,
+		 int(size= 9) offset[4] := [0, 0, 0, 0],
+		 int(size=32) res[1]    := [0]
+	do
+        foreach int i in 0 .. 3 do
+            get_SAO_OFFSET_ABS(offsetTh, codIRange, codIOffset, fifo, res);            
+            offset[i] := res[0];
+        end
+        if sao_typeIdx = SAO_BAND then
+			foreach int i in 0 .. 3 do
+				if offset[i] != 0 then
+					get_SAO_OFFSET_SIGN(codIRange, codIOffset, fifo, res);
+					if res[0] != 0 then
+						offset[i] := -offset[i];
+					end 
+				end
+			end
+			get_SAO_BAND_POSITION(codIRange, codIOffset, fifo, res);
+			sao_eo := res[0];
+		else
+		    offset[2] := -offset[2];
+		    offset[3] := -offset[3];
+			if sao_cIdx != 2 then
+				get_SAO_EO(codIRange, codIOffset, fifo, res);
+				sao_eo := res[0];
+			end
+		end
+		sao_cIdx := sao_cIdx + 1;
+        sao_idx  := 2;
+	end
+
+	read_SaoParam.loop2_chromaV : action ==> SaoSeChromaV:[offset[0],offset[1],offset[2],offset[3],sao_eo]
+	guard
+		sao_idx  = 5 and isFifoFull(fifo)
+	var
+		uint(size= 8) offsetTh   = (1<<3)-1,
+		 int(size= 9) offset[4] := [0, 0, 0, 0],
+		 int(size=32) res[1]    := [0]
+	do
+        foreach int i in 0 .. 3 do
+            get_SAO_OFFSET_ABS(offsetTh, codIRange, codIOffset, fifo, res);            
+            offset[i] := res[0];
+        end
+        if sao_typeIdx = SAO_BAND then
+			foreach int i in 0 .. 3 do
+				if offset[i] != 0 then
+					get_SAO_OFFSET_SIGN(codIRange, codIOffset, fifo, res);
+					if res[0] != 0 then
+						offset[i] := -offset[i];
+					end 
+				end
+			end
+			get_SAO_BAND_POSITION(codIRange, codIOffset, fifo, res);
+			sao_eo := res[0];
+		else
+		    offset[2] := -offset[2];
+		    offset[3] := -offset[3];
+			if sao_cIdx != 2 then
+				get_SAO_EO(codIRange, codIOffset, fifo, res);
+				sao_eo := res[0];
+			end
+		end
+		sao_cIdx := sao_cIdx + 1;
+        sao_idx  := 2;
+	end
+
 	read_SaoParam.nextLoop : action ==>
 	guard
 		sao_idx  = 2 ,

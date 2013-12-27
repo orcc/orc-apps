@@ -66,17 +66,13 @@ actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=8)  LcuSizeMax,
 	uint(size=4)  PartMode,
 	uint(size=16) PictSize,
-	uint(size=8)  Sample_y,
-	uint(size=8)  Sample_u,
-	uint(size=8)  Sample_v,
+	uint(size=8)  Sample,
 	uint(size=16) SliceAddr,
 	bool          SplitTransform,
 	bool 		  StrongIntraSmoothing,
 	uint(size=16) TilesCoord
 		==>
-	uint(size=8) PredSample_y,
-	uint(size=8) PredSample_u,
-	uint(size=8) PredSample_v
+	uint(size=8) PredSample
 		:
 
 	uint(size=16) NEIGHB_TAB_SZ   = 2*PICT_WIDTH;
@@ -1046,15 +1042,11 @@ actor IntraPrediction(bool EnabSkipInPix)
 	end
 
 	/* Sending One 4x4 luma blocks and the corresponding chroma values. */
-	sendSamples.launch: action ==> PredSample_y:[sampleVal_y] repeat 16,
-									PredSample_u:[sampleVal_u] repeat 4,
-									PredSample_v:[sampleVal_v] repeat 4
+	sendSamples.launch: action ==> PredSample:[sampleVal] repeat 16 + 2*4
 	guard
 		idxBlk < numBlkToSend
 	var
-		uint(size=8) sampleVal_y[16],
-		uint(size=8) sampleVal_u[4],
-		uint(size=8) sampleVal_v[4],
+		uint(size=8) sampleVal[16 + 2*4],
 		uint(size=7) idxSample := 0,
 		uint(size=16) blkAddr[2]
 	do
@@ -1064,25 +1056,23 @@ actor IntraPrediction(bool EnabSkipInPix)
 		do
 			foreach uint x in blkAddr[0] .. blkAddr[0]+3
 			do
-				sampleVal_y[idxSample] := lumaComp[x][y];
+				sampleVal[idxSample] := lumaComp[x][y];
 				idxSample := idxSample + 1;
 			end
 		end
-		
-		idxSample := 0;
 		blkAddr[0] := blkAddr[0]>>1;
 		blkAddr[1] := blkAddr[1]>>1;
-		
-		foreach uint y in blkAddr[1] .. blkAddr[1]+1
+		foreach uint comp in 0 .. 1
 		do
-			foreach uint x in blkAddr[0] .. blkAddr[0]+1
+			foreach uint y in blkAddr[1] .. blkAddr[1]+1
 			do
-				sampleVal_u[idxSample] := chrComp[0][x][y];
-				sampleVal_v[idxSample] := chrComp[1][x][y];
-				idxSample := idxSample + 1;
+				foreach uint x in blkAddr[0] .. blkAddr[0]+1
+				do
+					sampleVal[idxSample] := chrComp[comp][x][y];
+					idxSample := idxSample + 1;
+				end
 			end
 		end
-		
 		idxBlk := idxBlk + 1;
 	end
 
@@ -1094,15 +1084,14 @@ actor IntraPrediction(bool EnabSkipInPix)
 	end
 
 	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
-	getSamples.launch: action Sample_y:[sample_y] repeat 16,
-							  Sample_u:[sample_u] repeat 4,
-							  Sample_v:[sample_v] repeat 4 ==>
+	getSamples.launch: action Sample:[sample] repeat 16 + 2*4 ==>
 	guard
 		idxBlk < numBlkToSend && (not EnabSkipInPix || getInSamp)
 	var
 		uint(size=16) blkAddr[2],
 		bool bottomBlk := false,
 		bool leftBlk := false,
+		uint(size=5) sampOff := 16,
 		uint(size=16) tabIdx
 	do
 		rasterScanToAbsCoord(idxBlk, blkAddr);
@@ -1120,7 +1109,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 			foreach uint x in 0 .. 3
 			do
 				tabIdx := pictSize[0][1] - (blkAddr[1] + 3) + blkAddr[0] + x;
-				puNeighb[0][tabIdx] := sample_y[4*3+x];
+				puNeighb[0][tabIdx] := sample[4*3+x];
 				puIsIntra[0][tabIdx]   := cuMode = INTRA;
 			end
 		end
@@ -1129,7 +1118,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 			foreach uint y in 0 .. 3
 			do
 				tabIdx := pictSize[0][1] - (blkAddr[1] + y) + blkAddr[0] + 3;
-				puNeighb[0][tabIdx] := sample_y[4*y+3];
+				puNeighb[0][tabIdx] := sample[4*y+3];
 				puIsIntra[0][tabIdx]   := cuMode = INTRA;
 			end
 		end
@@ -1137,30 +1126,26 @@ actor IntraPrediction(bool EnabSkipInPix)
 		blkAddr[0] := blkAddr[0]>>1;
 		blkAddr[1] := blkAddr[1]>>1;
 
-		if(bottomBlk) then
-			foreach uint x in 0 .. 1
-			do
-				tabIdx := pictSize[1][1] - (blkAddr[1] + 1) + blkAddr[0] + x;
-				puNeighb[1][tabIdx]  := sample_u[2*1+x];
-				puIsIntra[1][tabIdx] := cuMode = INTRA;
-				
-				tabIdx := pictSize[1][1] - (blkAddr[1] + 1) + blkAddr[0] + x;
-				puNeighb[2][tabIdx]  := sample_v[2*1+x];
-				puIsIntra[2][tabIdx] := cuMode = INTRA;
+		foreach uint comp in 1 .. 2
+		do
+			if(bottomBlk) then
+				foreach uint x in 0 .. 1
+				do
+					tabIdx := pictSize[1][1] - (blkAddr[1] + 1) + blkAddr[0] + x;
+					puNeighb[comp][tabIdx]  := sample[2*1+x+sampOff];
+					puIsIntra[comp][tabIdx] := cuMode = INTRA;
+				end
 			end
-		end
-
-		if(leftBlk) then
-			foreach uint y in 0 .. 1
-			do
-				tabIdx := pictSize[1][1] - (blkAddr[1] + y) + blkAddr[0] + 1;
-				puNeighb[1][tabIdx]  := sample_u[2*y+1];
-				puIsIntra[1][tabIdx] := cuMode = INTRA;
-				
-				tabIdx := pictSize[1][1] - (blkAddr[1] + y) + blkAddr[0] + 1;
-				puNeighb[2][tabIdx]  := sample_v[2*y+1];
-				puIsIntra[2][tabIdx] := cuMode = INTRA;
+	
+			if(leftBlk) then
+				foreach uint y in 0 .. 1
+				do
+					tabIdx := pictSize[1][1] - (blkAddr[1] + y) + blkAddr[0] + 1;
+					puNeighb[comp][tabIdx]  := sample[2*y+1+sampOff];
+					puIsIntra[comp][tabIdx] := cuMode = INTRA;
+				end
 			end
+			sampOff := sampOff + 4;
 		end
 
 		idxBlk := idxBlk + 1;

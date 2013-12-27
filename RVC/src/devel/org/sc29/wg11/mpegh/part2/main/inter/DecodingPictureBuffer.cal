@@ -66,15 +66,13 @@ actor DecodingPictureBuffer ()
 	uint(size=1)  IsReadOrNewSlc,
 	int (size=32) Mv,
 	uint(size=16) PicSize,
-	uint(size=16) Poc,
+	int(size=16) Poc,
 	int (size=16) PocRef,
 	uint(size=7)  PredCuSize,
 	int (size=16) RpsPoc,
 	uint(size=8)  Sample
 		==>
-	uint(size=8)  RefSample_y,
-	uint(size=8)  RefSample_u,
-	uint(size=8)  RefSample_v
+	uint(size=8)  RefSample
 		:
 
 
@@ -86,7 +84,7 @@ actor DecodingPictureBuffer ()
 	int (size=16) pocRef[DPB_SIZE];
 	bool          isRef[DPB_SIZE];
 	bool          isStillRef[DPB_SIZE];
-	
+	uint(size=7)  sideMax;
 
 	int (size=4)  currIdx := -1;
 	int (size=4)  lastIdx := -1;
@@ -98,6 +96,7 @@ actor DecodingPictureBuffer ()
 	uint(size=3)  nbList;
 	uint(size=3)  sizeOfList;
 	bool          isNewPicture;
+	uint(size=8)  RefCu[(64+7)*(64+7)+(32+3)*(32+3)*2];
 
 	/** Getting informations from new slice/picture. Updating these informations **/
 	isNewSlice: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
@@ -301,20 +300,16 @@ uint pictNum;
 	/* We get all the informations needed for sending the reference Cu. We save
 	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
 	 */
-	getMvInfo.launch.is64: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_y:[RefCu_y] repeat (64+7)*(64+7), RefSample_u:[RefCu_u] repeat(32+3)*(32+3), 
-						  RefSample_v:[RefCu_v] repeat(32+3)*(32+3)
+	getMvInfo.launch: action PocRef:[poc], PredCuSize:[predCuSize],
+		Mv:[mvX, mvY] ==>
 	guard
-		numPocRef != 0 && predCuSize = 64
+		numPocRef != 0
 	var
 		uint(size=3) idx := 0,
 		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 64,
-		uint(size=8)  RefCu_y[(64+7)*(64+7)],
-		uint(size=8)  RefCu_u[(32+3)*(32+3)],
-		uint(size=8)  RefCu_v[(32+3)*(32+3)]
+		int (size=32) yOffset
 	do
+		sideMax := predCuSize;
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
 			if(pocRef[i] = poc and isRef[i]) then
@@ -343,7 +338,7 @@ uint pictNum;
 		do
 			foreach int x in 0 .. sideMax+7 -1
 			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
+				RefCu[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
 					[y+yOffset];
 			end
 		end
@@ -362,311 +357,50 @@ uint pictNum;
 		/* We also need the 2 next pixels for the prediction, that's why we
 		 * add 3 to sideMax
 		 */
-		
-		foreach int y in 0 .. sideMax/2+3 -1
+		foreach int comp in 1 .. 2
 		do
-			foreach int x in 0 .. sideMax/2+3 -1
+			foreach int y in 0 .. sideMax/2+3 -1
 			do
-				RefCu_u[x+y*(sideMax/2+3)] := pictureBuffer[idx][1][x+xOffset][y+yOffset];
-				RefCu_v[x+y*(sideMax/2+3)] := pictureBuffer[idx][2][x+xOffset][y+yOffset];
+				foreach int x in 0 .. sideMax/2+3 -1
+				do
+					RefCu[x+y*(sideMax/2+3) + (sideMax+7)*(sideMax+7) +
+						(comp-1)*(sideMax/2+3)*(sideMax/2+3)]
+						:= pictureBuffer[idx][comp][x+xOffset][y+yOffset];
+				end
 			end
 		end
 		numPocRef := numPocRef - 1;
 	end
-	
-	getMvInfo.launch.is32: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_y:[RefCu_y] repeat (32+7)*(32+7), RefSample_u:[RefCu_u] repeat(16+3)*(16+3), 
-						  RefSample_v:[RefCu_v] repeat(16+3)*(16+3)
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.is64x64: action ==> RefSample:[RefCu] repeat (64+7)*(64+7)+
+		(32+3)*(32+3)*2
 	guard
-		numPocRef != 0 && predCuSize = 32
-	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 32,
-		uint(size=8)  RefCu_y[(32+7)*(32+7)],
-		uint(size=8)  RefCu_u[(16+3)*(16+3)],
-		uint(size=8)  RefCu_v[(16+3)*(16+3)]
-	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
-					[y+yOffset];
-			end
-		end
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
-		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_u[x+y*(sideMax/2+3)] := pictureBuffer[idx][1][x+xOffset][y+yOffset];
-				RefCu_v[x+y*(sideMax/2+3)] := pictureBuffer[idx][2][x+xOffset][y+yOffset];
-			end
-		end
-		numPocRef := numPocRef - 1;
+		sideMax = 64
 	end
-	
-	getMvInfo.launch.is16: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_y:[RefCu_y] repeat (16+7)*(16+7), RefSample_u:[RefCu_u] repeat(8+3)*(8+3), 
-						  RefSample_v:[RefCu_v] repeat(8+3)*(8+3)
+
+	sendCu.is32x32: action ==> RefSample:[RefCu] repeat (32+7)*(32+7)+
+		(16+3)*(16+3)*2
 	guard
-		numPocRef != 0 && predCuSize = 16
-	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 16,
-		uint(size=8)  RefCu_y[(16+7)*(16+7)],
-		uint(size=8)  RefCu_u[(8+3)*(8+3)],
-		uint(size=8)  RefCu_v[(8+3)*(8+3)]
-	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
-					[y+yOffset];
-			end
-		end
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
-		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_u[x+y*(sideMax/2+3)] := pictureBuffer[idx][1][x+xOffset][y+yOffset];
-				RefCu_v[x+y*(sideMax/2+3)] := pictureBuffer[idx][2][x+xOffset][y+yOffset];
-			end
-		end
-		numPocRef := numPocRef - 1;
+		sideMax = 32
 	end
-	
-	getMvInfo.launch.is8: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_y:[RefCu_y] repeat (8+7)*(8+7), RefSample_u:[RefCu_u] repeat(4+3)*(4+3), 
-						  RefSample_v:[RefCu_v] repeat(4+3)*(4+3)
+
+	sendCu.is16x16: action ==> RefSample:[RefCu] repeat (16+7)*(16+7)+
+		(8+3)*(8+3)*2
 	guard
-		numPocRef != 0 && predCuSize = 8
-	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 8,
-		uint(size=8)  RefCu_y[(8+7)*(8+7)],
-		uint(size=8)  RefCu_u[(4+3)*(4+3)],
-		uint(size=8)  RefCu_v[(4+3)*(4+3)]
-	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
-					[y+yOffset];
-			end
-		end
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
-		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_u[x+y*(sideMax/2+3)] := pictureBuffer[idx][1][x+xOffset][y+yOffset];
-				RefCu_v[x+y*(sideMax/2+3)] := pictureBuffer[idx][2][x+xOffset][y+yOffset];
-			end
-		end
-		numPocRef := numPocRef - 1;
+		sideMax = 16
 	end
-	
-	getMvInfo.launch.is4: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_y:[RefCu_y] repeat (4+7)*(4+7), RefSample_u:[RefCu_u] repeat(2+3)*(2+3), 
-						  RefSample_v:[RefCu_v] repeat(2+3)*(2+3)
+
+	sendCu.is8x8: action ==> RefSample:[RefCu] repeat (8+7)*(8+7)+(4+3)*(4+3)*2
 	guard
-		numPocRef != 0 && predCuSize = 4
-	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 4,
-		uint(size=8)  RefCu_y[(4+7)*(4+7)],
-		uint(size=8)  RefCu_u[(2+3)*(2+3)],
-		uint(size=8)  RefCu_v[(2+3)*(2+3)]
-	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][0][x+xOffset]
-					[y+yOffset];
-			end
-		end
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
-		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_u[x+y*(sideMax/2+3)] := pictureBuffer[idx][1][x+xOffset][y+yOffset];
-				RefCu_v[x+y*(sideMax/2+3)] := pictureBuffer[idx][2][x+xOffset][y+yOffset];
-			end
-		end
-		numPocRef := numPocRef - 1;
+		sideMax = 8
 	end
-	
-	
+
+	sendCu.is4x4: action ==> RefSample:[RefCu] repeat (4+7)*(4+7)+(2+3)*(2+3)*2
+	guard
+		sideMax = 4
+	end
+
 	getMvInfo.done: action ==>
 	guard
 		numPocRef = 0
@@ -707,7 +441,8 @@ uint pictNum;
 		GetCuPix (getCuPix.launch )--> GetCuPix;
 		GetCuPix (getCuPix.done   )--> IsNewSlice;
 
-		GetMvInfo (getMvInfo.launch )--> GetMvInfo;
+		GetMvInfo (getMvInfo.launch )--> SendCu;
 		GetMvInfo (getMvInfo.done   )--> IsNewSlice;
+		SendCu    (sendCu           )--> GetMvInfo;
 	end
 end
