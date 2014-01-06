@@ -1,0 +1,267 @@
+/*
+ * Copyright (c) 2012, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+ 
+/**
+ * Decoding process for intra blocks.
+ * 
+ * 
+ * @input CUInfo : Informations related to the current CU
+ *        (size, address and mode : INTRA,INTER,...).
+ * 
+ * @input InterSample : Pixel's value from the Inter-prediction CU.
+ * 
+ * @input IntraSample : Pixel's value from the Intra-prediction CU.
+ * 
+ * @input PartMode : Giving the partitioning mode of the current CU.
+ * 
+ * @input ResidualSample : Residual values for the current CU.
+ * 
+ * 
+ * @output Sample : Pixel's value before inLoop filter.
+ * 
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
+ 
+package org.ietr.mpegh.part2;
+
+import std.util.Math.*;
+import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
+
+actor SelectCuChroma()
+	uint(size=16) CUInfo,
+	uint(size=8)  InterSample_v,
+	uint(size=8)  IntraSample,
+	uint(size=4)  PartMode,
+	int (size=9)  ResidualSample
+		==>
+	uint(size=8) Sample_v
+		:
+
+	uint(size=8)  SCU_SIZE = 4;
+	uint(size=4)  numPart;
+	uint(size=3)  numPartDecoded;
+	uint(size=7)  cuSize[4][2];
+	uint(size=5)  cuMode;
+	uint(size=4)  partMode;
+	uint(size=5)  cuOff[4][2] := [[0,0],[0,0],[0,0],[0,0]];
+	uint(size=7)  cuWidth;
+	uint(size=9)  nbBlk;
+	uint(size=9)  idxBlk;
+	uint(size=8)  interSamp[16][16][SCU_SIZE];
+	uint(size=5)  xIdx;
+	uint(size=5)  yIdx;
+
+	isNewSlice: action PartMode:[partModeVal] ==>
+	guard
+		partModeVal = PART_MODE_SLICE_DEP || partModeVal = PART_MODE_SLICE_INDEP ||
+		partModeVal = PART_MODE_PICT
+	end
+
+	getPartMode: action PartMode:[partModeVal] ==>
+	guard
+		partModeVal != PART_MODE_SLICE_DEP && partModeVal != PART_MODE_SLICE_INDEP &&
+		partModeVal != PART_MODE_PICT
+	do
+		partMode := partModeVal;
+		numPart := partModeToNumPart[partModeVal];
+		numPartDecoded := 0;
+	end
+
+	/* Getting informations of the next CU. */
+	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
+	guard
+		numPartDecoded < numPart && numPart != 2
+	do
+		cuMode  := cuInfo[0];
+		cuWidth := cuInfo[3];
+		nbBlk   := cuWidth*cuWidth/16;
+		idxBlk  := 0;
+		cuSize := [[cuInfo[i]/4:for int i in 3 .. 4]:for int j in 0 .. 3];
+		cuOff[1] := [0:for int i in 0 .. 1];
+	end
+
+	/* Getting informations of the next CU when there are two part.
+	 * Get twice informations in order to have all the informations concerning
+	 * this CU.
+	 */
+	getCuInfo.launch.numPart2: action CUInfo:[cuInfo] repeat 10 ==>
+	guard
+		numPartDecoded < numPart && numPart = 2
+	do
+		cuMode := cuInfo[0];
+		cuSize  := [[cuInfo[i+5*j]/4:for uint i in 3 .. 4]:
+			for uint j in 0 .. 1];
+		cuWidth := max(cuInfo[3], cuInfo[4]);
+		nbBlk   := cuWidth*cuWidth/16;
+		idxBlk  := 0;
+		if(partMode=PART_2NxN || partMode=PART_2NxnU ||
+			partMode=PART_2NxnD) then
+			cuOff[1][0] := 0;
+			cuOff[1][1] := cuInfo[4]/4;
+		else
+			cuOff[1][0] := cuInfo[3]/4;
+			cuOff[1][1] := 0;
+		end
+		numPartDecoded := 0;
+	end
+
+	getCuInfo.done: action ==>
+	guard
+		numPartDecoded = numPart
+	end
+
+	/** Checking type of prediction.  **/
+	getCuMode.isIntra: action ==>
+	guard
+		cuMode = INTRA
+	do
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	getCuMode.isInter: action ==>
+	guard
+		cuMode = INTER || cuMode = SKIP
+	do
+		xIdx := 0;
+		yIdx := 0;
+	end
+
+	getCuMode.isOther: action ==>
+	guard
+		cuMode = OTHER
+	do
+		numPartDecoded := numPartDecoded + 1;
+	end
+
+	/* Getting samples from intraPrediction */
+	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
+		ResidualSample:[resSample] repeat SCU_SIZE
+		==> Sample_v:[sample_v] repeat 4
+	guard
+		idxBlk < nbBlk
+	var
+		uint(size=8) sample_v[4]
+	do
+		idxBlk := idxBlk + 1;
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
+		
+		foreach int i in 0 .. 4-1
+		do
+			sample_v[i] := clip_i32(intraSample[i]+resSample[i], 0, 255);
+		end
+	end
+
+	/* Getting prediction samples from interPrediction */
+	getCuSample.isInter: action InterSample_v:[interSample_v] repeat 4 
+								 ==>
+	guard
+		idxBlk < nbBlk
+	var
+		/* Offset is not null when numPart = 2 and partIdx = 1. */
+		uint xOff = cuOff[numPartDecoded][0],
+		uint yOff = cuOff[numPartDecoded][1]
+	do
+		/* Saving the inter prediction part because it's in ZScan instead of
+		 * RasterScan.
+		 */
+
+		foreach uint i in 0 .. 4-1
+		do
+			interSamp[xIdx+xOff][yIdx+yOff][i] := interSample_v[i];
+		end
+		/* Computing the location of the next block. */
+		xIdx := xIdx + 1;
+		if(xIdx = cuSize[numPartDecoded][0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+			if(yIdx = cuSize[numPartDecoded][1]) then
+				yIdx := 0;
+				numPartDecoded := numPartDecoded + 1;
+			end
+		end
+
+		idxBlk := idxBlk + 1;
+	end
+
+	/* Getting the residual part for interPrediction then computing the
+	 * result.
+	 */
+	getCuSample.isInterRes: action ResidualSample:[resSample] repeat SCU_SIZE
+		==> Sample_v:[sample_v] repeat 4
+	guard
+		idxBlk < nbBlk
+	var
+		uint(size=8) sample_v[4],
+		uint(size=16) interIdx[2]
+	do
+		rasterScanToAbsCoord(idxBlk, interIdx);
+		interIdx[0] := interIdx[0]>>2;
+		interIdx[1] := interIdx[1]>>2;
+		idxBlk := idxBlk + 1;
+		
+		foreach int i in 0 .. 4-1
+		do
+			sample_v[i] := clip_i32(interSamp[interIdx[0]][interIdx[1]][i] +
+				resSample[i], 0, 255);
+		end
+	end
+
+	getCuSample.done: action ==>
+	guard
+		idxBlk = nbBlk
+	do
+		idxBlk := 0;
+	end
+
+	schedule fsm GetPartMode:
+		GetPartMode (isNewSlice       )--> GetPartMode;
+		GetPartMode (getPartMode      )--> GetCuInfo;
+
+		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
+		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
+
+		GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
+		GetCuMode (getCuMode.isInter )--> GetCuSampleInter;
+		GetCuMode (getCuMode.isOther )--> GetCuInfo;
+
+		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
+
+		GetCuSampleInter (getCuSample.isInter )--> GetCuSampleInter;
+		GetCuSampleInter (getCuSample.done    )--> GetCuResInter;
+
+		GetCuResInter (getCuSample.isInterRes )--> GetCuResInter;
+		GetCuResInter (getCuSample.done       )--> GetCuInfo;
+	end
+end
