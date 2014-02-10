@@ -25,7 +25,9 @@ actor IT_yuv()
  	uint(size=9) partIdx := 0;
  
  	int(size=16) lumaBlk[32*32];
- 	int(size=16) chrBlk[2][16*16];
+ 	int(size=16) chrBlk_u[16*16];
+ 	int(size=16) chrBlk_v[16*16];
+ 	
  
  	int(size=16) block[32*32];
  	int(size=16) firstPassBlk[32*32];
@@ -300,19 +302,19 @@ actor IT_yuv()
 			if(tuSize = 4) then
 				offset := 16*blk4x4Idx;
 			end
-			foreach uint yPartIdx in 0 .. tuSize/4 - 1
+			foreach int yPartIdx in 0 .. tuSize/4 - 1
 			do
 				inBlkIdx := yPartIdx*4 *tuSize;
-				foreach uint xPartIdx in 0 .. tuSize/4 - 1
+				foreach int xPartIdx in 0 .. tuSize/4 - 1
 				do
 					blkCoord := [xPartIdx, yPartIdx];
 					outPixIdx := absCoordInBlkToZScan(blkCoord);
 					outPixIdx := outPixIdx * 16;
 	
 					inPixIdx := inBlkIdx + 4*xPartIdx;
-					foreach uint y in 0 .. 3
+					foreach int y in 0 .. 3
 					do
-						foreach uint x in 0 .. 3
+						foreach int x in 0 .. 3
 						do
 							lumaBlk[outPixIdx + offset] := block[inPixIdx + x];
 							outPixIdx := outPixIdx + 1;
@@ -321,22 +323,44 @@ actor IT_yuv()
 					end
 				end
 			end
-		else
-			foreach uint yPartIdx in 0 .. tuSize/2 - 1
+		elsif(cIdx = 1) then
+			foreach int yPartIdx in 0 .. tuSize/2 - 1
 			do
 				inBlkIdx := yPartIdx*2 *tuSize;
-				foreach uint xPartIdx in 0 .. tuSize/2 - 1
+				foreach int xPartIdx in 0 .. tuSize/2 - 1
 				do
 					blkCoord := [xPartIdx, yPartIdx];
 					outPixIdx := absCoordInBlkToZScan(blkCoord);
 					outPixIdx := outPixIdx * 4;
 	
 					inPixIdx := inBlkIdx + 2*xPartIdx;
-					foreach uint y in 0 .. 1
+					foreach int y in 0 .. 1
 					do
-						foreach uint x in 0 .. 1
+						foreach int x in 0 .. 1
 						do
-							chrBlk[cIdx-1][outPixIdx] := block[inPixIdx + x];
+							chrBlk_u[outPixIdx] := block[inPixIdx + x];
+							outPixIdx := outPixIdx + 1;
+						end
+						inPixIdx := inPixIdx + tuSize;
+					end
+				end
+			end
+		else
+			foreach int yPartIdx in 0 .. tuSize/2 - 1
+			do
+				inBlkIdx := yPartIdx*2 *tuSize;
+				foreach int xPartIdx in 0 .. tuSize/2 - 1
+				do
+					blkCoord := [xPartIdx, yPartIdx];
+					outPixIdx := absCoordInBlkToZScan(blkCoord);
+					outPixIdx := outPixIdx * 4;
+	
+					inPixIdx := inBlkIdx + 2*xPartIdx;
+					foreach int y in 0 .. 1
+					do
+						foreach int x in 0 .. 1
+						do
+							chrBlk_v[outPixIdx] := block[inPixIdx + x];
 							outPixIdx := outPixIdx + 1;
 						end
 						inPixIdx := inPixIdx + tuSize;
@@ -355,7 +379,8 @@ actor IT_yuv()
 	var
 		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 2,
 		int transformSkipShift = shift,
-		int offset = (1 << (transformSkipShift -1))
+		int offset = (1 << (transformSkipShift -1)),
+		int(size=8) tuSize = 4
 	do
 		block := [coeff[i]: for int i in 0 .. 4*4-1];
 
@@ -373,9 +398,9 @@ actor IT_yuv()
 				it4x4_1d(firstPassBlk, block, 12);
 			end
 		end
-
-		reorderTu(sizeOfTU);
-		incIdx(sizeOfTU);
+		
+		reorderTu(tuSize);
+		incIdx(tuSize);
 		numPartToSend := 4;
 	end
 
@@ -384,16 +409,20 @@ actor IT_yuv()
 			==>
 	guard
 		sizeOfTU = 4 and RCskip != 0
+	var
+		int(size=8) tuSize = 4
 	do
 		if(cIdx = 0) then
 			foreach int i in 0 .. 4*4-1
 			do
 				lumaBlk[16*blk4x4Idx +i] := 0;
 			end
+		elsif(cIdx = 1) then
+			chrBlk_u := [0: for int i in 0 .. 4*4-1];
 		else
-			chrBlk[cIdx-1] := [0: for int i in 0 .. 4*4-1];
+			chrBlk_v := [0: for int i in 0 .. 4*4-1];
 		end
-		incIdx(sizeOfTU);
+		incIdx(tuSize);
 		numPartToSend := 4;
 	end
 
@@ -408,7 +437,8 @@ actor IT_yuv()
 	var
 		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 3,
 		int transformSkipShift = shift,
-		int offset = (1 << (transformSkipShift -1))
+		int offset = (1 << (transformSkipShift -1)),
+		int(size=8) tuSize = 8
 	do
 		block := [coeff[i]: for int i in 0 .. 8*8-1];
 
@@ -422,8 +452,8 @@ actor IT_yuv()
 			it8x8_1d(firstPassBlk, block, 12);
 		end
 
-		reorderTu(sizeOfTU);
-		incIdx(sizeOfTU);
+		reorderTu(tuSize);
+		incIdx(tuSize);
 	end
 
 	getCoeff.is8x8.skip: action
@@ -431,13 +461,17 @@ actor IT_yuv()
 			==>
 	guard
 		sizeOfTU = 8 and RCskip != 0
+	var
+		int(size=8) tuSize = 8
 	do
 		if(cIdx = 0) then
 			lumaBlk := [0: for int i in 0 .. 8*8-1];
+		elsif(cIdx = 1) then
+			chrBlk_u := [0: for int i in 0 .. 8*8-1];
 		else
-			chrBlk[cIdx-1] := [0: for int i in 0 .. 8*8-1];
+			chrBlk_v := [0: for int i in 0 .. 8*8-1];
 		end
-		incIdx(sizeOfTU);
+		incIdx(tuSize);
 	end
 
 
@@ -451,7 +485,8 @@ actor IT_yuv()
 	var
 		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 4,
 		int transformSkipShift = shift,
-		int offset = (1 << (transformSkipShift -1))
+		int offset = (1 << (transformSkipShift -1)),
+		int(size=8) tuSize = 16
 	do
 		block := [coeff[i]: for int i in 0 .. 16*16-1];
 
@@ -465,11 +500,11 @@ actor IT_yuv()
 			it16x16_1d(firstPassBlk, block, 12);
 		end
 
-		reorderTu(sizeOfTU);
+		reorderTu(tuSize);
 		if(cIdx = 0) then
 			numPartToSend := 16;
 		end
-		incIdx(sizeOfTU);
+		incIdx(tuSize);
 	end
 
 	getCoeff.is16x16.skip: action
@@ -477,14 +512,18 @@ actor IT_yuv()
 			==>
 	guard
 		sizeOfTU = 16 and RCskip != 0
+	var
+		int(size=8) tuSize = 16
 	do
 		if(cIdx = 0) then
 			numPartToSend := 16;
 			lumaBlk := [0: for int i in 0 .. 16*16-1];
+		elsif(cIdx = 1) then
+			chrBlk_u := [0: for int i in 0 .. 16*16-1];
 		else
-			chrBlk[cIdx-1] := [0: for int i in 0 .. 16*16-1];
+			chrBlk_v := [0: for int i in 0 .. 16*16-1];
 		end
-		incIdx(sizeOfTU);
+		incIdx(tuSize);
 	end
 
 	/* cIdx will be 0 */
@@ -500,6 +539,7 @@ actor IT_yuv()
 		uint(size=10) inPixIdx,
 		uint(size=16) blkCoord[2],
 		uint(size=10) outPixIdx[2],
+		int(size=8) tuSize = 32,
 
 		int transformSkipShift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 5,
 		int offset = (1 << (transformSkipShift -1))
@@ -511,19 +551,19 @@ actor IT_yuv()
 			do
 				block[i] := (block[i] + offset) >> transformSkipShift;
 			end
-			foreach uint yPartIdx in 0 .. 32/4 - 1
+			foreach int yPartIdx in 0 .. 32/4 - 1
 			do
 				inBlkIdx := yPartIdx*4 *32;
-				foreach uint xPartIdx in 0 .. 32/4 - 1
+				foreach int xPartIdx in 0 .. 32/4 - 1
 				do
 					blkCoord := [xPartIdx, yPartIdx];
 					outPixIdx[0] := absCoordInBlkToZScan(blkCoord);
 					outPixIdx[0] := outPixIdx[0] * 16;
 	
 					inPixIdx := inBlkIdx + 4*xPartIdx;
-					foreach uint y in 0 .. 3
+					foreach int y in 0 .. 3
 					do
-						foreach uint x in 0 .. 3
+						foreach int x in 0 .. 3
 						do
 							lumaBlk[outPixIdx[0]] := block[inPixIdx + x];
 							outPixIdx[0] := outPixIdx[0] + 1;
@@ -540,7 +580,7 @@ actor IT_yuv()
 		end
 
 		numPartToSend := 64;
-		incIdx(sizeOfTU);
+		incIdx(tuSize);
 	end
 
 	getCoeff.is32x32.skip: action
@@ -551,7 +591,7 @@ actor IT_yuv()
 	do
 		lumaBlk := [0: for int i in 0 .. 32*32-1];
 		numPartToSend := 64;
-		incIdx(sizeOfTU);
+		incIdx(32);
 	end
 
 
@@ -598,8 +638,8 @@ actor IT_yuv()
 	end
 
 	sendBlock.launch: action ==> Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 15]] repeat 16, 
-								 Block_u:[[chrBlk[0][4*idx + i]: for int i in 0 .. 3]] repeat 4, 
-								 Block_v:[[chrBlk[1][4*idx + i]: for int i in 0 .. 3]] repeat 4
+								 Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 3]] repeat 4, 
+								 Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 3]] repeat 4
 	guard
 		partIdx < numPartToSend
 	var
