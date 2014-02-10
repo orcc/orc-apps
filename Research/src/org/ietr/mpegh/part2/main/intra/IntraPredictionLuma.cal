@@ -81,9 +81,6 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	uint(size=6) INTRA_PLANAR = 0;
 	uint(size=6) INTRA_DC = 1;
 
-	uint(size=1) ABOVE = 0;
-	uint(size=1) LEFT  = 1;
-
 	uint(size=8) leftBlkAvail[256] =
 	[0, 1, 0, 1, 2, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1,
 	 4, 1, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
@@ -140,15 +137,20 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	int(size=16) iLoop;
 
 	uint(size=16) numTiles;
-	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
-	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
+	uint(size=16) tilesBeg_x[MAX_NUM_TILES];
+	uint(size=16) tilesBeg_y[MAX_NUM_TILES];
+	uint(size=16) tilesEnd_x[MAX_NUM_TILES];
+	uint(size=16) tilesEnd_y[MAX_NUM_TILES];
 
-	int(size=16) puTilesBeg[2];
-	int(size=16) puTilesEnd[2];
+	int(size=16) puTilesBeg_x;
+	int(size=16) puTilesBeg_y;
+	int(size=16) puTilesEnd_x;
+	int(size=16) puTilesEnd_y;
 
 	uint(size=7)  nS;
 	uint(size=3)  log2NS;
-	uint(size=16) cuAddr[2];
+	uint(size=16) cuAddr_x;
+	uint(size=16) cuAddr_y;
 	uint(size=5)  cuMode;
 	uint(size=16) treeAddr[2];
 	uint(size=16) pictSize[2];
@@ -166,12 +168,13 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	int (size=4) trafoTreeDepth;
 	uint(size=3) trafoTreeIdx[6];
 
-	uint(size=8)  pNeighb[2][129];
+	uint(size=8)  pNeighb_above[129];
+	uint(size=8)  pNeighb_left [129];
 	uint(size=8)  puNeighb[NEIGHB_TAB_SZ];
 	bool          puIsIntra[NEIGHB_TAB_SZ];
 	uint(size=7)  neighbBlkSz;
 
-	uint(size=8) lumaComp[64][64];
+	uint(size=8) lumaComp[64*64];
 	uint(size=9) numBlkToSend;
 	uint(size=9) idxBlk;
 
@@ -210,17 +213,17 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		origPixIdx := pictSize[1] - cuAddr[1] + cuAddr[0];
 		foreach int y in yMin .. yMax-1
 		do
-			pNeighb[LEFT][y+1] :=
+			pNeighb_left[y+1] :=
 				puNeighb[(origPixIdx-1-y)&NEIGHB_TAB_MASK];
 		end
 	
 		foreach int x in xMin .. xMax-1
 		do
-			pNeighb[ABOVE][x] :=
+			pNeighb_above[x] :=
 				puNeighb[(origPixIdx+1+x-1)&NEIGHB_TAB_MASK];
 		end
 
-		pNeighb[LEFT][0] := pNeighb[ABOVE][0];
+		pNeighb_left[0] := pNeighb_above[0];
 		if(constrIntraPred) then
 			if(yMax = 0 || not puIsIntra[(origPixIdx-1-(yMax-1))&NEIGHB_TAB_MASK]) then
 				pixVal := 128;
@@ -229,40 +232,40 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 				while(xIdx >= xMin)
 				do
 					if(puIsIntra[(origPixIdx+1+xIdx-1)&NEIGHB_TAB_MASK]) then
-						pixVal := pNeighb[ABOVE][xIdx];
+						pixVal := pNeighb_above[xIdx];
 					end
 					xIdx := xIdx - 1;
 				end
 	
 				if(puIsIntra[origPixIdx & NEIGHB_TAB_MASK]) then
-					pixVal := pNeighb[LEFT][0];
+					pixVal := pNeighb_left[0];
 				end
 				foreach int y in yMin .. yMax-2
 				do
 					if(puIsIntra[(origPixIdx-1-y)&NEIGHB_TAB_MASK]) then
-						pNeighb[LEFT][y+1] := pNeighb[LEFT][y+2];
+						pNeighb_left[y+1] := pNeighb_left[y+2];
 					end
 				end
-				pNeighb[LEFT][yMax-1+1] := pixVal;
+				pNeighb_left[yMax-1+1] := pixVal;
 			end
 	
 			yIdx := yMax - 2;
 			while(yIdx >= yMin)
 			do
 				if(not puIsIntra[(origPixIdx-1-yIdx)&NEIGHB_TAB_MASK]) then
-					pNeighb[LEFT][yIdx+1] := pNeighb[LEFT][yIdx+2];
+					pNeighb_left[yIdx+1] := pNeighb_left[yIdx+2];
 				end
 				yIdx := yIdx - 1;
 			end
 	
 			if(not puIsIntra[origPixIdx & NEIGHB_TAB_MASK])then
-				pNeighb[LEFT][0]  := pNeighb[LEFT][1];
-				pNeighb[ABOVE][0] := pNeighb[LEFT][1];
+				pNeighb_left[0]  := pNeighb_left[1];
+				pNeighb_above[0] := pNeighb_left[1];
 			end
 			foreach int x in xMin .. xMax - 1
 			do
 				if(not puIsIntra[(origPixIdx+1+x)&NEIGHB_TAB_MASK]) then
-					pNeighb[ABOVE][x+1] := pNeighb[ABOVE][x];
+					pNeighb_above[x+1] := pNeighb_above[x];
 				end
 			end
 		end
@@ -270,22 +273,22 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		if(yMax != yMin) then
 			foreach int y in 0 .. yMin-1
 			do
-				pNeighb[LEFT][y+1] := pNeighb[LEFT][yMin+1];
+				pNeighb_left[y+1] := pNeighb_left[yMin+1];
 			end
 			foreach int y in yMax .. 2*nS-1
 			do
-				pNeighb[LEFT][y+1] := pNeighb[LEFT][yMax-1+1];
+				pNeighb_left[y+1] := pNeighb_left[yMax-1+1];
 			end
 		end
 
 		if(xMax != xMin) then
 			foreach int x in 0 .. xMin-1
 			do
-				pNeighb[ABOVE][x] := pNeighb[LEFT][0+1];
+				pNeighb_above[x] := pNeighb_left[0+1];
 			end
 			foreach int x in xMax .. 2*nS
 			do
-				pNeighb[ABOVE][x] := pNeighb[ABOVE][xMax-1];
+				pNeighb_above[x] := pNeighb_above[xMax-1];
 			end
 		end
 
@@ -295,24 +298,24 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		if(xMax=xMin && yMax=yMin) then
 			foreach int idx in 0 .. 2*nS
 			do
-				pNeighb[ABOVE][idx] := 128;
-				pNeighb[LEFT][idx]  := 128;
+				pNeighb_above[idx] := 128;
+				pNeighb_left[idx]  := 128;
 			end
 		else if(xMax=xMin && yMax!=yMin) then
 			foreach int x in 0 .. 2*nS
 			do
-				pNeighb[ABOVE][x] := pNeighb[LEFT][0+1];
+				pNeighb_above[x] := pNeighb_left[0+1];
 			end
 		else if(xMax!=xMin && yMax=yMin) then
 			foreach int y in 0 .. 2*nS-1
 			do
-				pNeighb[LEFT][y+1] := pNeighb[ABOVE][0+1];
+				pNeighb_left[y+1] := pNeighb_above[0+1];
 			end
-			pNeighb[ABOVE][0] := pNeighb[ABOVE][0+1];
+			pNeighb_above[0] := pNeighb_above[0+1];
 		else if(xMin!=0 || yMin != 0) then
-			pNeighb[ABOVE][0] := pNeighb[LEFT][0+1];
+			pNeighb_above[0] := pNeighb_left[0+1];
 		else if(not constrIntraPred) then
-				pNeighb[ABOVE][0] :=
+				pNeighb_above[0] :=
 					puNeighb[origPixIdx&NEIGHB_TAB_MASK];
 		end end end end end
 		
@@ -353,14 +356,14 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 					end end
 				end
 			end
-			if(puTilesBeg[0] > cuAddr[0]-1) then
+			if(puTilesBeg_x > cuAddr[0]-1) then
 				yMin := yMax;
 			else
-				if(puTilesBeg[1] - cuAddr[1] > yMin) then
-					yMin := max(puTilesBeg[1] - cuAddr[1] + 1, yMin);
+				if(puTilesBeg_y - cuAddr[1] > yMin) then
+					yMin := max(puTilesBeg_y - cuAddr[1] + 1, yMin);
 				end
-				if(puTilesEnd[1] - cuAddr[1] < yMax) then
-					yMax := min(puTilesEnd[1] - cuAddr[1] + 1, yMax);
+				if(puTilesBeg_y - cuAddr[1] < yMax) then
+					yMax := min(puTilesEnd_y - cuAddr[1] + 1, yMax);
 				end
 			end
 		end
@@ -386,14 +389,14 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 					end end
 				end end
 			end
-			if(puTilesBeg[1] > cuAddr[1]-1) then
+			if(puTilesBeg_y > cuAddr[1]-1) then
 				xMin := xMax;
 			else
-				if(puTilesBeg[0] - cuAddr[0] > xMin) then
-					xMin := max(puTilesBeg[0] - cuAddr[0] + 1, xMin);
+				if(puTilesBeg_x - cuAddr[0] > xMin) then
+					xMin := max(puTilesBeg_x - cuAddr[0] + 1, xMin);
 				end
-				if(puTilesEnd[0] - cuAddr[0] < xMax) then
-					xMax := min(puTilesEnd[0] - cuAddr[0] + 1, xMax);
+				if(puTilesEnd_x - cuAddr[0] < xMax) then
+					xMax := min(puTilesEnd_x - cuAddr[0] + 1, xMax);
 				end
 			end
 		end
@@ -409,9 +412,9 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	var
 		uint bitDepthY = 8,
 		uint threshold = 1<<(bitDepthY-5),
-		uint(size=8) bottomLeft = pNeighb[LEFT][2*nS],
-		uint(size=8) topLeft = pNeighb[ABOVE][0],
-		uint(size=8) topRight = pNeighb[ABOVE][2*nS],
+		uint(size=8) bottomLeft = pNeighb_left[2*nS],
+		uint(size=8) topLeft = pNeighb_above[0],
+		uint(size=8) topRight = pNeighb_above[2*nS],
 		uint(size=8) edgePix[2] = [topRight, bottomLeft],
 		bool bilinearLeft,
 		bool bilinearAbove,
@@ -426,8 +429,8 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 			   nS=32 && minDistVertHor>0 ||
 			   nS=64 && minDistVertHor>10) then
 				if(strongIntraSmoothing) then
-					bilinearLeft  := abs(bottomLeft+topLeft-2*pNeighb[LEFT][nS]) < threshold;
-					bilinearAbove := abs(topLeft+topRight-2*pNeighb[ABOVE][nS]) < threshold;
+					bilinearLeft  := abs(bottomLeft+topLeft-2*pNeighb_left[nS]) < threshold;
+					bilinearAbove := abs(topLeft+topRight-2*pNeighb_above[nS]) < threshold;
 
 					if(nS>=32 && bilinearLeft && bilinearAbove) then
 						foreach uint neighb in 0 .. 1
@@ -437,52 +440,50 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 								pFNeighb[neighb][i] := ((2*nS-i)*topLeft+ i*edgePix[neighb]+nS)>>log2NS+1;
 							end
 						end
-						foreach uint neighb in 0 .. 1
+						
+						foreach uint i in 1 .. nS*2-1
 						do
-							foreach uint i in 1 .. nS*2-1
-							do
-								pNeighb[neighb][i] := pFNeighb[neighb][i];
-							end
+							pNeighb_above[i] := pFNeighb[0][i];
+							pNeighb_left [i] := pFNeighb[1][i];
 						end
+						
 					else
-						foreach uint neighb in 0 .. 1
-						do
-							pFNeighb[neighb][0] := (pNeighb[ABOVE][0] + 2*pNeighb[neighb][0+1] +
-									pNeighb[neighb][1+1] + 2) >> 2;
-							foreach uint i in 1 .. nS*2-2
-							do
-								pFNeighb[neighb][i] := (pNeighb[neighb][i-1+1] + 2*pNeighb[neighb][i+1] +
-									pNeighb[neighb][i+1+1] + 2) >> 2;
-							end
-						end
-						pNeighb[ABOVE][0] := (pNeighb[LEFT][0+1] + 2*pNeighb[ABOVE][0] + pNeighb[ABOVE][0+1] + 2) >> 2;
-						foreach uint neighb in 0 .. 1
-						do
-							foreach uint i in 0 .. nS*2-2
-							do
-								pNeighb[neighb][i+1] := pFNeighb[neighb][i];
-							end
-						end
-	 				end
-				else
-					foreach uint neighb in 0 .. 1
-					do
-						pFNeighb[neighb][0] := (pNeighb[ABOVE][0] + 2*pNeighb[neighb][0+1] +
-								pNeighb[neighb][1+1] + 2) >> 2;
+						
+						pFNeighb[0][0] := (pNeighb_above[0] + 2*pNeighb_above[0+1] + pNeighb_above[1+1] + 2) >> 2;
+						pFNeighb[1][0] := (pNeighb_above[0] + 2*pNeighb_left[0+1] + pNeighb_left[1+1] + 2) >> 2;
 						foreach uint i in 1 .. nS*2-2
 						do
-							pFNeighb[neighb][i] := (pNeighb[neighb][i-1+1] + 2*pNeighb[neighb][i+1] +
-								pNeighb[neighb][i+1+1] + 2) >> 2;
+							pFNeighb[0][i] := (pNeighb_above[i-1+1] + 2*pNeighb_above[i+1] + pNeighb_above[i+1+1] + 2) >> 2;
+							pFNeighb[1][i] := (pNeighb_left[i-1+1] + 2*pNeighb_left[i+1] + pNeighb_left[i+1+1] + 2) >> 2;
 						end
-					end
-					pNeighb[ABOVE][0] := (pNeighb[LEFT][0+1] + 2*pNeighb[ABOVE][0] + pNeighb[ABOVE][0+1] + 2) >> 2;
-					foreach uint neighb in 0 .. 1
-					do
+							
+						pNeighb_above[0] := (pNeighb_left[0+1] + 2*pNeighb_above[0] + pNeighb_above[0+1] + 2) >> 2;
+						
 						foreach uint i in 0 .. nS*2-2
 						do
-							pNeighb[neighb][i+1] := pFNeighb[neighb][i];
+							pNeighb_above[i+1] := pFNeighb[0][i];
+							pNeighb_left [i+1] := pFNeighb[1][i];
 						end
+						
+	 				end
+				else
+					
+					pFNeighb[0][0] := (pNeighb_above[0] + 2*pNeighb_above[0+1] + pNeighb_above[1+1] + 2) >> 2;
+					pFNeighb[1][0] := (pNeighb_above[0] + 2*pNeighb_left[0+1] + pNeighb_left[1+1] + 2) >> 2;
+					foreach uint i in 1 .. nS*2-2
+					do
+						pFNeighb[0][i] := (pNeighb_above[i-1+1] + 2*pNeighb_above[i+1] + pNeighb_above[i+1+1] + 2) >> 2;
+						pFNeighb[1][i] := (pNeighb_left[i-1+1] + 2*pNeighb_left[i+1] + pNeighb_left[i+1+1] + 2) >> 2;
 					end
+					
+					pNeighb_above[0] := (pNeighb_left[0+1] + 2*pNeighb_above[0] + pNeighb_above[0+1] + 2) >> 2;
+					
+					foreach uint i in 0 .. nS*2-2
+					do
+						pNeighb_above[i+1] := pFNeighb[0][i];
+						pNeighb_left [i+1] := pFNeighb[1][i];
+					end
+					
 	 			end
 	 		end
 		end
@@ -494,14 +495,14 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		uint(size=8) pUpRight,
 		uint(size=8) pBottomLeft
 	begin
-		pUpRight    := pNeighb[ABOVE][nS+1];
-		pBottomLeft := pNeighb[LEFT][nS+1];
+		pUpRight    := pNeighb_above[nS+1];
+		pBottomLeft := pNeighb_left[nS+1];
 		foreach uint y in 0 .. nS-1
 		do
 			foreach uint x in 0 .. nS-1
 			do
-				lumaComp[x][y] := ((nS-1-x)*pNeighb[LEFT][y+1] +
-					(x+1)*pUpRight + (nS-1-y)*pNeighb[ABOVE][x+1] +
+				lumaComp[x + y *64] := ((nS-1-x)*pNeighb_left[y+1] +
+					(x+1)*pUpRight + (nS-1-y)*pNeighb_above[x+1] +
 					(y+1)*pBottomLeft + nS) >> (log2NS+1);
 			end
 		end
@@ -516,33 +517,33 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		dcVal := nS;
 		foreach uint x in 0 .. nS-1
 		do
-			dcVal := dcVal + pNeighb[ABOVE][x+1];
+			dcVal := dcVal + pNeighb_above[x+1];
 		end
 		foreach uint y in 0 .. nS-1
 		do
-			dcVal := dcVal + pNeighb[LEFT][y+1];
+			dcVal := dcVal + pNeighb_left[y+1];
 		end
 		dcVal := dcVal >> (log2NS+1);
 
 		
 		minVal := if(nS>16) then 0 else 1 end;
 		if(nS<=16) then
-			lumaComp[0][0] := (pNeighb[LEFT][0+1] + 2*dcVal +
-				pNeighb[ABOVE][0+1] + 2)>>2;
+			lumaComp[0] := (pNeighb_left[0+1] + 2*dcVal +
+				pNeighb_above[0+1] + 2)>>2;
 			foreach uint x in 1 .. nS-1
 			do
-				lumaComp[x][0] := (pNeighb[ABOVE][x+1] + 3*dcVal + 2)>>2;
+				lumaComp[x] := (pNeighb_above[x+1] + 3*dcVal + 2)>>2;
 			end
 			foreach uint y in 1 .. nS-1
 			do
-				lumaComp[0][y] := (pNeighb[LEFT][y+1] + 3*dcVal + 2)>>2;
+				lumaComp[y * 64] := (pNeighb_left[y+1] + 3*dcVal + 2)>>2;
 			end
 		end
 		foreach uint y in minVal .. nS-1
 		do
 			foreach uint x in minVal .. nS-1
 			do
-				lumaComp[x][y] := dcVal;
+				lumaComp[x + y * 64] := dcVal;
 			end
 		end
 		
@@ -553,7 +554,6 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	var
 		uint(size=6) OFFSET = 33,
 		uint(size=6) angle := predMode & 63,
-		uint(size=1) neighbIdx,
 		uint(size=8) refMain[128+33],
 		int(size=9) iIdx,
 		uint(size=5) iFact
@@ -564,23 +564,41 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
 			 * mode.
 			 */
-			neighbIdx := if(angle>=18) then ABOVE else LEFT end;
-			refMain[OFFSET] := pNeighb[ABOVE][0];
-			foreach uint x in 1 .. nS
-			do
-				refMain[x+OFFSET] := pNeighb[neighbIdx][x-1+1];
-			end
-			if(intraPredAngle[angle]<0) then
-				neighbIdx := neighbIdx^1;
-				foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
+			if(angle>=18) then 
+				refMain[OFFSET] := pNeighb_above[0];
+				foreach uint x in 1 .. nS
 				do
-					refMain[k+OFFSET] :=
-						pNeighb[neighbIdx][((k*invAngle[angle]+128)>>8)-1+1];
+					refMain[x+OFFSET] := pNeighb_above[x-1+1];
 				end
-			else
-				foreach uint x in nS+1 .. 2*nS
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_left[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					foreach uint x in nS+1 .. 2*nS
+					do
+						refMain[x+OFFSET] := pNeighb_above[x-1+1];
+					end
+				end
+			else  
+				refMain[OFFSET] := pNeighb_above[0];
+				foreach uint x in 1 .. nS
 				do
-					refMain[x+OFFSET] := pNeighb[neighbIdx][x-1+1];
+					refMain[x+OFFSET] := pNeighb_left[x-1+1];
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_above[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					foreach uint x in nS+1 .. 2*nS
+					do
+						refMain[x+OFFSET] := pNeighb_left[x-1+1];
+					end
 				end
 			end
 			if(angle>=18) then
@@ -591,11 +609,11 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 					foreach uint x in 0 .. nS-1
 					do
 						if(iFact!=0) then
-							lumaComp[x][y] :=
+							lumaComp[x + y * 64] :=
 								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
 								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
 						else
-							lumaComp[x][y] := refMain[x+iIdx+1 +OFFSET];
+							lumaComp[x + y * 64] := refMain[x+iIdx+1 +OFFSET];
 						end
 					end
 				end
@@ -607,11 +625,11 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 					foreach uint x in 0 .. nS-1
 					do
 						if(iFact!=0) then
-							lumaComp[y][x] :=
+							lumaComp[y + x * 64] :=
 								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
 								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
 						else
-							lumaComp[y][x] := refMain[x+iIdx+1 +OFFSET];
+							lumaComp[y + x * 64] := refMain[x+iIdx+1 +OFFSET];
 						end
 					end
 				end
@@ -630,30 +648,30 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 			if(minVal!=0) then
 				foreach uint y in 0 .. nS-1
 				do
-					lumaComp[0][y] := clip_i32(pNeighb[ABOVE][0+1]+
-						((pNeighb[LEFT][y+1]-pNeighb[ABOVE][0])>>1), 0, 255);
+					lumaComp[y * 64] := clip_i32(pNeighb_above[0+1]+
+						((pNeighb_left[y+1]-pNeighb_above[0])>>1), 0, 255);
 				end
 			end
 			foreach uint x in minVal .. nS-1
 			do
 				foreach uint y in 0 .. nS-1
 				do
-					lumaComp[x][y] := pNeighb[ABOVE][x+1];
+					lumaComp[x + y * 64] := pNeighb_above[x+1];
 				end
 			end
 		else
 			if(minVal!=0) then
 				foreach uint x in 0 .. nS-1
 				do
-					lumaComp[x][0] := clip_i32(pNeighb[LEFT][0+1]+
-						((pNeighb[ABOVE][x+1]-pNeighb[ABOVE][0])>>1), 0, 255);
+					lumaComp[x] := clip_i32(pNeighb_left[0+1]+
+						((pNeighb_above[x+1]-pNeighb_above[0])>>1), 0, 255);
 				end
 			end
 			foreach uint x in 0 .. nS-1
 			do
 				foreach uint y in minVal .. nS-1
 				do
-					lumaComp[x][y] := pNeighb[LEFT][y+1];
+					lumaComp[x + y * 64] := pNeighb_left[y+1];
 				end
 			end
 		end
@@ -694,8 +712,10 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	guard
 		iLoop < numTiles
 	do
-		tilesBeg[iLoop] := [tilesCoord[0], tilesCoord[1]];
-		tilesEnd[iLoop] := [tilesCoord[2], tilesCoord[3]];
+		tilesBeg_x[iLoop] := tilesCoord[0];
+		tilesBeg_y[iLoop] := tilesCoord[1];
+		tilesEnd_x[iLoop] := tilesCoord[2];
+		tilesEnd_y[iLoop] := tilesCoord[3];
 		iLoop := iLoop + 1;
 	end
 
@@ -736,7 +756,8 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 			cuMode := cuMode - NO_IN_SAMP;
 		end
 		nS := cuInfo[3];
-		cuAddr := [cuInfo[1], cuInfo[2]];
+		cuAddr_x := cuInfo[1];
+		cuAddr_y := cuInfo[2];
 		numPartDecoded := numPartDecoded + 1;
 	end
 
@@ -793,10 +814,12 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	do
 		foreach int tileIdx in 0 .. numTiles - 1
 		do
-			if(cuAddr[0] >= tilesBeg[tileIdx][0] && cuAddr[0] < tilesEnd[tileIdx][0] &&
-			   cuAddr[1] >= tilesBeg[tileIdx][1] && cuAddr[1] < tilesEnd[tileIdx][1]) then
-			   	puTilesBeg := [tilesBeg[tileIdx][0], tilesBeg[tileIdx][1]];
-			   	puTilesEnd := [tilesEnd[tileIdx][0], tilesEnd[tileIdx][1]];
+			if(cuAddr_x >= tilesBeg_x[tileIdx] && cuAddr_x < tilesEnd_x[tileIdx] &&
+			   cuAddr_y >= tilesBeg_y[tileIdx] && cuAddr_y < tilesEnd_y[tileIdx]) then
+			   	puTilesBeg_x := tilesBeg_x[tileIdx];
+			   	puTilesBeg_y := tilesBeg_y[tileIdx];
+			   	puTilesEnd_x := tilesEnd_x[tileIdx];
+			   	puTilesEnd_y := tilesEnd_y[tileIdx];
 			 end
 		end
 
@@ -820,7 +843,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		idxBlk := 0;
 		numBlkToSend := nS*nS/16;
 		neighbBlkSz  := nS;
-		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		treeAddr := [cuAddr_x, cuAddr_y];
 		trafoTreeDepth  := 0;
 		trafoTreeIdx[0] := 3;
 	end
@@ -856,7 +879,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		/* Computing the size and the address of the current block. */
 		treeLog2NS := log2NS - trafoTreeDepth;
 		treeNS := nS;
-		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
+		treeAddr := [cuAddr_x ,cuAddr_y];
 		foreach uint idx in 1 .. trafoTreeDepth
 		do
 			treeNS := treeNS >> 1;
@@ -945,7 +968,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		do
 			foreach uint x in blkAddr[0] .. blkAddr[0]+3
 			do
-				sampleVal[idxSample] := lumaComp[x][y];
+				sampleVal[idxSample] := lumaComp[x + y * 64];
 				idxSample := idxSample + 1;
 			end
 		end
