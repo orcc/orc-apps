@@ -3866,7 +3866,7 @@ read_CodingQuadTree.start : action ==>
                  PartMode:[PART_2Nx2N], SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
                                                                                                                                 1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,     //cb
                                                                                                                                 1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
-                                                                                                                                , Qp:[qp_y]
+                                                                                                                                , Qp:[qp_y, qp_y, qp_y]
         guard
                 cu_idx = 2,
                 skip_flag != 0
@@ -4209,7 +4209,7 @@ read_CodingQuadTree.start : action ==>
         read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
                                                                                                                                 1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,     //cb
                                                                                                                                 1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
-                                                                                                                                Cbf:[false], Qp:[qp_y]
+                                                                                                                                Cbf:[false], Qp:[qp_y, qp_y, qp_y]
         guard
                 cu_idx = 11
         do
@@ -4878,17 +4878,11 @@ read_CodingQuadTree.start : action ==>
          *************************************************************************/
         read_TransformUnit.skipResidualCodingLuma : action ==> TUSize:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0], Qp:[qp_y]
         guard
-                (tu_idx = 8 or tu_idx = 10 or tu_idx = 12) and rc_cIdx = 0
+                tu_idx = 8 or tu_idx = 10 or tu_idx = 12
         do
                 tu_idx := tu_idx - 5;
         end
         
-        read_TransformUnit.skipResidualCodingChroma : action ==> TUSize:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0]
-        guard
-                (tu_idx = 8 or tu_idx = 10 or tu_idx = 12) and rc_cIdx != 0
-        do
-                tu_idx := tu_idx - 5;
-        end
         /**************************************************************************
          * read_TransformUnit_end
          *************************************************************************/
@@ -4936,14 +4930,14 @@ read_CodingQuadTree.start : action ==>
          int(size=16) qp;
          
 		
-        read_ResidualCoding.startLuma : action ==> TUSize:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
+        read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
                                                                                         if rc_cIdx = TEXT_CHROMA_U then
                                                                                                 pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
                                                                                 		else
                                                                                                 pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
                                                                                         end], Qp:[qp]
         guard
-                isFifoFull(fifo), rc_cIdx = 0
+                isFifoFull(fifo)
         var
          int(size=32) res[1],
         uint(size=16) xS := 0,
@@ -5064,135 +5058,6 @@ read_CodingQuadTree.start : action ==>
             	xC := (xS << 2) + ScanOrder[2][rc_scanIdx][rc_lastScanPos][0];
             	yC := (yS << 2) + ScanOrder[2][rc_scanIdx][rc_lastScanPos][1]; //                      println(xC+", "+LastSignificantCoeffX+" : "+yC+", "+LastSignificantCoeffY+", rc_lastSubBlock = "+rc_lastSubBlock+", rc_lastScanPos = "+rc_lastScanPos);
             end //              println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_lastSubBlock = "+(rc_lastSubBlock)+" rc_scanIdx = "+rc_scanIdx);
-            rc_i := rc_lastSubBlock;
-        end
-        
-        read_ResidualCoding.startChroma : action ==> TUSize:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
-                                                                                        if rc_cIdx = TEXT_CHROMA_U then
-                                                                                                pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
-                                                                                		else
-                                                                                                pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
-                                                                                        end]
-        guard
-                isFifoFull(fifo), rc_cIdx != 0
-        var
-         int(size=32) res[1],
-        uint(size=16) xS := 0,
-        uint(size=16) yS := 0,
-         int(size=16) xC := -1,
-         int(size=16) yC := -1,
-         int sz = 1 << rc_log2TrafoSize,
-         uint(size=1) transform_skip_flag,
-         int matrix_id,
-         int qp_offset,
-         int(size=16) qp_i,
-         
-         
-        uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
-                uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
-                 uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
-        do
-            if DEBUG_CABAC and DEBUG_TRACE1 then
-                    println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end+"("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
-            elsif DEBUG_CABAC then
-                    println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end);
-            end
-
-            
-            shift := if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5
-                                                      else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end;
-            if rc_cIdx = 0 then
-        		qp := qp_y + qp_bd_offset_luma;
-    		else
-                if rc_cIdx = 1 then
-                        qp_offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-                else
-                        qp_offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-                end
-        		qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
-        		if qp_i < 30 then
-            		qp := qp_i;
-        		elsif qp_i > 43 then
-            		qp := qp_i - 6;
-        		else
-            		qp := qp_c[qp_i - 30];
-        		end
-            	qp := qp + qp_bd_offset_luma;
-        	end
-            add := 1 << (shift - 1 );
-            scale := levelScale[ rem6[qp] ] << (div6[qp]);
-            scale_m := 16;
-            if sps_scaling_list_enabled_flag[sps_id] = 1 then
-       			matrix_id := if predMode != INTRA then 1 else 0 end;
-        		if rc_log2TrafoSize != 5 then
-            		matrix_id := 3 * matrix_id + rc_cIdx;
-                end
-                if pps_scaling_list_data_present_flag[pps_id] = 1 then
-                	foreach int i in 0 .. 63 do
-                    	scale_matrix[i] := pps_sl[pps_id][rc_log2TrafoSize - 2][matrix_id][i];
-                	end
-                	if rc_log2TrafoSize >= 4 then
-                    	dc_scale := pps_sl_dc[pps_id][rc_log2TrafoSize - 4][matrix_id];
-                	end
-            	else
-                    foreach int i in 0 .. 63 do
-                            scale_matrix[i] := sps_sl[sps_id][rc_log2TrafoSize - 2][matrix_id][i];
-                    end
-                	if rc_log2TrafoSize >= 4 then
-                    	dc_scale := sps_sl_dc[sps_id][rc_log2TrafoSize - 4][matrix_id];
-                	end
-            	end
-    		end
-        	
-            foreach int i in 0 .. sz * sz - 1 do
-                    tabTransCoeffLevel[i] := 0;
-            end
-            coded_sub_block_flag := [[0     : for int j in 0 .. 7]  : for int i in 0 .. 7];
-            if pps_transform_skip_enabled_flag[pps_id] = 1 and cu_transquant_bypass_flag = 0 and
-                    rc_log2TrafoSize = 2 then
-                    get_TRANSFORM_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, rc_cIdx);
-                    transform_skip_flag := res[0];
-            else
-                    transform_skip_flag := 0;
-            end
-
-            get_LAST_SIGNIFICANT_COEFF_X_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
-            LastSignificantCoeffX := res[0];
-            get_LAST_SIGNIFICANT_COEFF_Y_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
-            LastSignificantCoeffY := res[0];
-            if LastSignificantCoeffX > 3 then
-                    get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffX);
-                    LastSignificantCoeffX := (1 << ((LastSignificantCoeffX >> 1) - 1)) *
-                                                                     (2  +  (LastSignificantCoeffX & 1 )) + res[0];
-            end
-            if LastSignificantCoeffY > 3 then
-                    get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffY);
-                    LastSignificantCoeffY := (1 << ((LastSignificantCoeffY >> 1) - 1)) *
-                                                                     (2  +  (LastSignificantCoeffY & 1 )) + res[0];
-            end
-
-
-            if rc_scanIdx = SCAN_VER then
-                    res[0] := LastSignificantCoeffX;
-                    LastSignificantCoeffX := LastSignificantCoeffY;
-                    LastSignificantCoeffY := res[0];
-            end
-
-            rc_lastScanPos  := 16;
-            rc_lastSubBlock := ( 1 << ( rc_log2TrafoSize - 2 ) ) * ( 1 << ( rc_log2TrafoSize - 2 ) ) - 1;
-            while  not( xC = LastSignificantCoeffX and yC = LastSignificantCoeffY) do
-                    if rc_lastScanPos = 0 then
-                            rc_lastScanPos  := 16;
-                            rc_lastSubBlock := rc_lastSubBlock - 1;
-                    end
-                    rc_lastScanPos := rc_lastScanPos - 1;
-                    xS := ScanOrder[rc_log2TrafoSize-2][ rc_scanIdx ][ rc_lastSubBlock ][ 0 ];
-                    yS := ScanOrder[rc_log2TrafoSize-2][ rc_scanIdx ][ rc_lastSubBlock ][ 1 ];
-                    xC := ( xS << 2 ) + ScanOrder[2][ rc_scanIdx ][ rc_lastScanPos ][ 0 ];
-                    yC := ( yS << 2 ) + ScanOrder[2][ rc_scanIdx ][ rc_lastScanPos ][ 1 ];
-//                      println(xC+", "+LastSignificantCoeffX+" : "+yC+", "+LastSignificantCoeffY+", rc_lastSubBlock = "+rc_lastSubBlock+", rc_lastScanPos = "+rc_lastScanPos);
-            end
-//              println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_lastSubBlock = "+(rc_lastSubBlock)+" rc_scanIdx = "+rc_scanIdx);
             rc_i := rc_lastSubBlock;
         end
         
@@ -5530,8 +5395,7 @@ read_CodingQuadTree.start : action ==>
                 read_TransformUnit                          ( read_TransformUnit_gotoResidualCoding) --> read_ResidualCoding;
                 read_TransformUnit                          ( read_TransformUnit_end                    ) --> read_TransformTree;
                 // read_ResidualCoding
-                read_ResidualCoding                             ( read_ResidualCoding.startLuma             ) --> read_ResidualCodingStart;
-                read_ResidualCoding                             ( read_ResidualCoding.startChroma             ) --> read_ResidualCodingStart;
+                read_ResidualCoding                             ( read_ResidualCoding.start             ) --> read_ResidualCodingStart;
                 read_ResidualCodingStart        ( read_ResidualCoding.for_numLastSubset.start ) --> read_ResidualCodingGreater1;
                 read_ResidualCodingGreater1     ( read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG ) --> read_ResidualCodingGetCoeff;
                 read_ResidualCodingGetCoeff     ( read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL ) --> read_ResidualCodingGetCoeff;
