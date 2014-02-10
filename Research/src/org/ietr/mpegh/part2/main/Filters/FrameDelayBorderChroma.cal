@@ -1,0 +1,223 @@
+/*
+ * Copyright (c) 2012, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+package org.ietr.mpegh.part2.main.Filters;
+
+import std.util.Math.*;
+import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
+
+
+//There should be much less division.
+//There should be a function for the code which test if two pixels are in the same slice thanks to the variable filtAcrSlc.
+actor FrameDelayBorderChroma()
+	uint(size=2)  IsPicSlcLcu,
+	uint(size=8)  LcuSizeMax,
+	uint(size=2)  LFAcrossSlcTile,
+	uint(size=16) PicSize,
+	uint(size=8)  SampleIn,
+	uint(size=16) TilesCoord
+		==>
+	uint(size=8)  FiltSample
+		:
+		
+	
+	uint(size=8) OrigPict[PICT_WIDTH_POW_2/4][PICT_HEIGHT/4];
+	
+	uint(size=8)  lcuSizeMax;
+	uint(size=6)  picSizeInMb[2];
+	uint(size=8)  xCu := 0;
+	uint(size=8)  yCu := 0;
+	
+	uint(size=16) numTokenPerLcu;
+	uint(size=16) tokenGot;
+	
+	int(size=16) iLoop;
+	
+	uint(size=16) numTiles;
+	uint(size=16) lcuTileIdx;
+	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
+	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
+	
+	procedure nextLcuAddress()
+	begin
+		xCu := xCu + 1;
+		if(xCu = tilesEnd[lcuTileIdx][0]) then
+			xCu := tilesBeg[lcuTileIdx][0];
+			yCu := yCu + 1;
+			if(yCu = tilesEnd[lcuTileIdx][1]) then
+				lcuTileIdx := lcuTileIdx + 1;
+				xCu := tilesBeg[lcuTileIdx][0];
+				yCu := tilesBeg[lcuTileIdx][1];
+			end
+		end
+	end
+
+	procedure nextMbAddr()
+	begin
+		xCu := xCu + 1;
+		if(xCu = picSizeInMb[0]) then
+			xCu := 0;
+			yCu := yCu + 1;
+		end
+	end
+
+	uint numPict;
+	
+	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu],
+		LcuSizeMax:[lcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
+		PicSize:[picWidthInPix, picHeightInPix] ==>
+	guard
+		isNewPicSlcLcu = NEW_PIC
+	do
+		//println("Pict num : " + numPict + ". Pic size : {" + picWidthInPix + " ; " + picHeightInPix + "}");
+		numPict := numPict + 1;
+
+		lcuSizeMax := lcuSz;
+		picSizeInMb := [(picWidthInPix+15)/16, (picHeightInPix+15)/16];
+		lcuTileIdx := 0;
+		numTokenPerLcu := lcuSz * lcuSz / 4;
+	end
+	
+	//There should be slice SAO enable for each independent slice.
+	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu],
+		LcuSizeMax:[lcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
+		PicSize:[picWidthInPix, picHeightInPix]/*, SaoSe:[saoSe]*/ ==>
+	guard
+		isNewPicSlcLcu = NEW_SLC
+	do
+		lcuSizeMax := lcuSz;
+	end
+	
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBeg[iLoop] := [tilesCoord[0]/lcuSizeMax, tilesCoord[1]/lcuSizeMax];
+		tilesEnd[iLoop] := [(tilesCoord[2]+(lcuSizeMax - 1))/lcuSizeMax, (tilesCoord[3]+(lcuSizeMax - 1))/lcuSizeMax];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
+
+	getCuPix.launch.init: action IsPicSlcLcu:[isNewLcu] ==>
+	guard
+		lcuTileIdx < numTiles
+	do
+		tokenGot := 0;
+	end
+
+	getCuPix.launch.chroma: action SampleIn:[samp] repeat 8 ==>
+	guard
+		tokenGot < numTokenPerLcu
+	var
+		uint(size=16) xPic,
+		uint(size=16) yPic
+	do
+		xPic := (xCu * (lcuSizeMax >> 1)) + (tokenGot & ((lcuSizeMax - 1) >> 1));
+		yPic := (yCu * (lcuSizeMax >> 1)) + tokenGot / (lcuSizeMax >> 1);
+
+		foreach uint x in 0 .. 7
+		do
+			OrigPict[x+xPic][yPic] := samp[x]; 
+		end
+
+		tokenGot := tokenGot + 8;
+	end
+
+	getCuPix.launch.chromaDone: action ==>
+	guard
+		tokenGot = numTokenPerLcu
+	do
+		tokenGot := 0;
+		nextLcuAddress();
+	end
+
+	getCuPix.done: action ==>
+	guard
+		lcuTileIdx = numTiles
+	do
+		xCu := 0;
+		yCu := 0;
+	end
+	
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 8*8 
+	guard
+		yCu < picSizeInMb[1]
+	var
+		uint(size=8) filtSamp[8*8],
+		uint(size=16) blkAddrX, uint(size=16) blkAddrY
+	do
+		blkAddrX := xCu*8;
+		blkAddrY := yCu*8;
+		foreach uint y in 0 .. 7
+		do
+			foreach uint x in 0 .. 7
+			do
+				filtSamp[x+y*8] := OrigPict[blkAddrX+x][blkAddrY+y];
+			end
+		end
+
+		nextMbAddr();
+	end
+
+	sendSamples.done: action ==>
+	guard
+		yCu = picSizeInMb[1]
+	do
+		xCu := 0;
+		yCu := 0;
+	end
+
+	schedule fsm IsNewPict:
+		IsNewPict (isNewPict )--> GetNumTiles;
+
+		GetCuPix (isNewSlice           )--> GetNumTiles;
+		GetCuPix (getCuPix.launch.init )--> GetCuPixChr;
+		GetCuPix (getCuPix.done        )--> SendSamples;
+
+		GetCuPixChr (getCuPix.launch.chroma     )--> GetCuPixChr;
+		GetCuPixChr (getCuPix.launch.chromaDone )--> GetCuPix;
+
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetCuPix;
+
+		SendSamples (sendSamples.launch )--> SendSamples;
+		SendSamples (sendSamples.done   )--> IsNewPict;
+	end
+end
