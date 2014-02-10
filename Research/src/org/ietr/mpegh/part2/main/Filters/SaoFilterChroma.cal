@@ -36,7 +36,7 @@ import  testBench.common.SourceUnit.*;
 
 //There should be much less division.
 //There should be a function for the code which test if two pixels are in the same slice thanks to the variable filtAcrSlc.
-actor SaoFilter_luma()
+actor SaoFilterChroma()
 	uint(size=2)  IsPicSlcLcu,
 	uint(size=8)  LcuSizeMax,
 	uint(size=2)  LFAcrossSlcTile,
@@ -65,6 +65,7 @@ actor SaoFilter_luma()
 	uint(size=8) FiltPict[PICT_HEIGHT][PICT_WIDTH];
 
 	
+	uint(size=2)  cIdx;
 	uint(size=2)  saoTypeIdx[PICT_WIDTH/64][PICT_HEIGHT/64];
 	int (size=9)  saoOffset[PICT_WIDTH/64][PICT_HEIGHT/64][5];
 	uint(size=2)  saoEoClass[PICT_WIDTH/64][PICT_HEIGHT/64];
@@ -127,17 +128,16 @@ actor SaoFilter_luma()
 
 	procedure copyCu(uint(size=16) addrBeg[2], uint(size=16) addrEnd[2])
 	begin
-		foreach int x in addrBeg[0] .. addrEnd[0]
+		foreach uint x in addrBeg[0] .. addrEnd[0]
 		do
-			foreach int y in addrBeg[1] .. addrEnd[1]
+			foreach uint y in addrBeg[1] .. addrEnd[1]
 			do
 				FiltPict[y][x] := OrigPict[y][x];
 			end
 		end
 	end
 
-	procedure saoFilterEdgeLuma_Horiz(uint(size=16) rx, uint(size=16) ry,
-		uint(size=16) picSize[2], bool lcuIsPictBorder)
+	procedure saoFilterEdgeChroma_Horiz(uint(size=16) rx, uint(size=16) ry, uint(size=16) picSize[2], bool lcuIsPictBorder)
 	var
 		uint(size=16) xIdx,
 		uint(size=16) yIdx,
@@ -147,185 +147,176 @@ actor SaoFilter_luma()
 		uint(size=3) edgeIdx,
 		int(size=2) sign3Result
 	begin
-		foreach int y in 0 .. (lcuSizeMax - 1)
+		foreach uint(size=3) y in 0 .. (lcuSizeMax - 1) >> 1
 		do
 			yIdx := ry + y;
-			foreach int x in 0 .. (lcuSizeMax - 1)
+			foreach uint(size=3) x in 0 .. (lcuSizeMax - 1) >> 1
 			do
 				xIdx := rx + x;
-				if(not lcuIsPictBorder || xIdx < picSize[0] && yIdx < picSize[1]) then
-						xPix1 := xIdx - 1;
-						xPix2 := xIdx + 1;
-
-						pixIsInPict := true;
-						if(lcuIsPictBorder &&
-							(xPix1 >= picSize[0] ||
-							 xPix2 >= picSize[0])) then
-							pixIsInPict := false;
-						//if xPix1 and xPix2 are in the same slice, then
-						//the 3 pixels used for the Sao are in the same slice.
-						else if(not filtAcrSlc[xIdx/lcuSizeMax][yIdx/lcuSizeMax] &&
-							numSlc[xPix1/lcuSizeMax][yIdx/lcuSizeMax] !=
-							numSlc[xPix2/lcuSizeMax][yIdx/lcuSizeMax]) then
-							pixIsInPict := false;
-						else if(not filtAcrTile[xIdx/lcuSizeMax][yIdx/lcuSizeMax] &&
-							numTile[xPix1/lcuSizeMax][yIdx/lcuSizeMax] !=
-							numTile[xPix2/lcuSizeMax][yIdx/lcuSizeMax]) then
-							
-							pixIsInPict := false;
-						end end end
-
-						if(pixIsInPict) then
-							edgeIdx := 2;
-
-							//Check if the value has already been computed.
-							if(x=0) then
-								sign3Result := Sign3(OrigPict[yIdx][xIdx] -
-									OrigPict[yIdx][xPix1]);
-							end
-							edgeIdx := edgeIdx + sign3Result;
-
-							sign3Result := Sign3(OrigPict[yIdx][xIdx] -
-								OrigPict[yIdx][xPix2]);
-							edgeIdx := edgeIdx + sign3Result;
-
-							edgeIdx := edgeIdxConv[edgeIdx];
-							//Saving the value to avoid computing it again and Sign3(B-A) = -Sign3(A-B)
-							sign3Result := -sign3Result;
-						else
-							edgeIdx := 0;
-							sign3Result := Sign3(OrigPict[yIdx][xPix2] -
-								OrigPict[yIdx][xIdx]);
-						end
-						FiltPict[yIdx][xIdx] := clip_i32(OrigPict[yIdx][xIdx] +
-							saoOffset[xCuFilt][yCuFilt][edgeIdx], 0, 255);
-				end		
-			end
-		end
-	end
-
-	procedure saoFilterEdgeLuma_Vert(uint(size=16) rx, uint(size=16) ry,
-		uint(size=16) picSize[2], bool lcuIsPictBorder)
-	var
-		uint(size=16) xIdx,
-		uint(size=16) yIdx,
-		uint(size=16) yPix1,
-		uint(size=16) yPix2,
-		bool pixIsInPict,
-		uint(size=3) edgeIdx,
-		int(size=2) sign3Result
-	begin
-		foreach int x in 0 .. (lcuSizeMax - 1)
-		do
-			xIdx := rx + x;
-			foreach int y in 0 .. (lcuSizeMax - 1)
-			do
-				yIdx := ry + y;
 				if(not lcuIsPictBorder || xIdx<picSize[0] && yIdx<picSize[1]) then
-						yPix1 := yIdx - 1;
-						yPix2 := yIdx + 1;
+					xPix1 := xIdx - 1;
+					xPix2 := xIdx + 1;
 
-						pixIsInPict := true;
-						if(lcuIsPictBorder && (yPix1>=picSize[1] ||
-							yPix2>=picSize[1])) then
-							pixIsInPict := false;
-						//if yPix1 and yPix2 are in the same slice, then
-						//the 3 pixels used for the Sao are in the same slice.
-						else if(not filtAcrSlc[xIdx/lcuSizeMax][yIdx/lcuSizeMax] &&
-							numSlc[xIdx/lcuSizeMax][yPix1/lcuSizeMax] !=
-							numSlc[xIdx/lcuSizeMax][yPix2/lcuSizeMax]) then
-							pixIsInPict := false;
-						else if(not filtAcrTile[xIdx/lcuSizeMax][yIdx/lcuSizeMax] &&
-							numTile[xIdx/lcuSizeMax][yPix1/lcuSizeMax] !=
-							numTile[xIdx/lcuSizeMax][yPix2/lcuSizeMax]) then
-							pixIsInPict := false;
-						end end end
+					pixIsInPict := true;
+					if(lcuIsPictBorder && (xPix1 >= picSize[0] ||
+						xPix2 >= picSize[0])) then
+						pixIsInPict := false;
+					//if xPix1 and xPix2 are in the same slice, then
+					//the 3 pixels used for the Sao are in the same slice.
+					else if(not filtAcrSlc[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] &&
+						numSlc[xPix1 / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] !=
+						numSlc[xPix2 / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)]) then
+						pixIsInPict := false;
+					else if(not filtAcrTile[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] &&
+						numTile[xPix1 / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] !=
+						numTile[xPix2 / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)]) then
+						pixIsInPict := false;
+					end end end
 
-						if(pixIsInPict) then
-							edgeIdx := 2;
-
-							//Check if the value has already been computed.
-							if(y=0) then
-								sign3Result := Sign3(OrigPict[yIdx][xIdx] -
-									OrigPict[yPix1][xIdx]);
-							end
-							edgeIdx := edgeIdx + sign3Result;
-
+					if(pixIsInPict) then
+						edgeIdx := 2;
+						if(x=0) then
 							sign3Result := Sign3(OrigPict[yIdx][xIdx] -
-								OrigPict[yPix2][xIdx]);
-							edgeIdx := edgeIdx + sign3Result;
-
-							edgeIdx := edgeIdxConv[edgeIdx];
-							//Saving the value to avoid computing it again and Sign3(B-A) = -Sign3(A-B)
-							sign3Result := -sign3Result;
-						else
-							edgeIdx := 0;
-							sign3Result := Sign3(OrigPict[yPix2][xIdx] -
-								OrigPict[yIdx][xIdx]);
+								OrigPict[yIdx][xPix1]);
 						end
-						FiltPict[yIdx][xIdx] := clip_i32(OrigPict[yIdx][xIdx] +
-							saoOffset[xCuFilt][yCuFilt][edgeIdx], 0, 255);
-				end		
+						edgeIdx := edgeIdx + sign3Result;
+
+						sign3Result := Sign3(OrigPict[yIdx][xIdx] -
+								OrigPict[yIdx][xPix2]);
+						edgeIdx := edgeIdx + sign3Result;
+
+						edgeIdx := edgeIdxConv[edgeIdx];
+						//Saving the value to avoid computing it again and Sign3(B-A) = -Sign3(A-B)
+						sign3Result := -sign3Result;
+					else
+						edgeIdx := 0;
+						sign3Result := Sign3(OrigPict[yIdx][xPix2] -
+							OrigPict[yIdx][xIdx]);
+					end
+					FiltPict[yIdx][xIdx] := clip_i32(OrigPict[yIdx][xIdx] +
+						saoOffset[xCuFilt][yCuFilt][edgeIdx], 0, 255);
+				end
 			end
 		end
 	end
 
-	procedure codingTreeBlockModifLuma(uint(size=16) rx, uint(size=16) ry,
-		uint(size=16) picSize[2], bool lcuIsPictBorder)
+	procedure saoFilterEdgeChroma_Vert(uint(size=16) rx, uint(size=16) ry, uint(size=16) picSize[2], bool lcuIsPictBorder)
 	var
 		uint(size=16) xIdx,
 		uint(size=16) yIdx,
 		uint(size=16) pixIdx[2][2],
-		bool          pixIsInPict,
-		uint(size=3)  edgeIdx,
-		uint(size=3)  bandShift = BIT_DEPTH-5,
-		uint(size=3)  bandIdx,
-		int(size=2)   sign3Result,
+		bool pixIsInPict,
+		uint(size=3) edgeIdx,
+		int(size=2) sign3Result
+	begin
+		foreach uint(size=3) x in 0 .. (lcuSizeMax - 1) >> 1
+		do
+			xIdx := rx + x;
+			foreach uint(size=3) y in 0 .. (lcuSizeMax - 1) >> 1
+			do
+				yIdx := ry + y;
+				if(not lcuIsPictBorder || xIdx<picSize[0] && yIdx<picSize[1]) then
+					pixIdx[0][1] := yIdx - 1;
+					pixIdx[1][1] := yIdx + 1;
+
+					pixIsInPict := true;
+					if(lcuIsPictBorder && (pixIdx[0][1]>=picSize[1] ||
+						pixIdx[1][1]>=picSize[1])) then
+						pixIsInPict := false;
+					//if yPix1 and yPix2 are in the same slice, then
+					//the 3 pixels used for the Sao are in the same slice.
+					else if(not filtAcrSlc[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] &&
+						numSlc[xIdx / (lcuSizeMax >> 1)][pixIdx[0][1] / (lcuSizeMax >> 1)] !=
+						numSlc[xIdx / (lcuSizeMax >> 1)][pixIdx[1][1] / (lcuSizeMax >> 1)]) then
+						pixIsInPict := false;
+					else if(not filtAcrTile[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] &&
+						numTile[xIdx / (lcuSizeMax >> 1)][pixIdx[0][1] / (lcuSizeMax >> 1)] !=
+						numTile[xIdx / (lcuSizeMax >> 1)][pixIdx[1][1] / (lcuSizeMax >> 1)]) then
+						pixIsInPict := false;
+					end end end
+
+					if(pixIsInPict) then
+						edgeIdx := 2;
+						if(y=0) then
+							sign3Result := Sign3(OrigPict[yIdx][xIdx] -
+								OrigPict[pixIdx[0][1]][xIdx]);
+						end
+						edgeIdx := edgeIdx + sign3Result;
+
+						sign3Result := Sign3(OrigPict[yIdx][xIdx] -
+								OrigPict[pixIdx[1][1]][xIdx]);
+						edgeIdx := edgeIdx + sign3Result;
+
+						edgeIdx := edgeIdxConv[edgeIdx];
+						//Saving the value to avoid computing it again and Sign3(B-A) = -Sign3(A-B)
+						sign3Result := -sign3Result;
+					else
+						edgeIdx := 0;
+						sign3Result := Sign3(OrigPict[pixIdx[1][1]][xIdx] -
+							OrigPict[yIdx][xIdx]);
+					end
+					FiltPict[yIdx][xIdx] := clip_i32(OrigPict[yIdx][xIdx] +
+						saoOffset[xCuFilt][yCuFilt][edgeIdx], 0, 255);
+				end		
+			end
+		end
+	end
+
+	procedure codingTreeBlockModifChroma(uint(size=16) rx, uint(size=16) ry, uint(size=16) picSize[2], bool lcuIsPictBorder)
+	var
+		uint(size=16) xIdx,
+		uint(size=16) yIdx,
+		uint(size=16) pixIdx[2][2],
+		bool pixIsInPict,
+		uint(size=3) edgeIdx,
+		uint(size=3) bandShift = BIT_DEPTH-5,
+		uint(size=3) bandIdx,
+		int(size=2) sign3Result,
 		int(size=2)  xOff[2],
 		int(size=2)  yOff[2]
 	begin
 		if(saoTypeIdx[xCuFilt][yCuFilt] = 2 and saoEoClass[xCuFilt][yCuFilt] = 0) then
-			saoFilterEdgeLuma_Horiz(rx,ry,picSize, lcuIsPictBorder);
+			saoFilterEdgeChroma_Horiz(rx, ry, picSize, lcuIsPictBorder);
 		else if(saoTypeIdx[xCuFilt][yCuFilt] = 2 and saoEoClass[xCuFilt][yCuFilt] = 1) then
-			saoFilterEdgeLuma_Vert(rx,ry,picSize, lcuIsPictBorder);
+			saoFilterEdgeChroma_Vert(rx, ry, picSize, lcuIsPictBorder);
 		else
-			foreach int k in 0 .. 1
+			foreach uint k in 0 .. 1
 			do
 				xOff[k] := constHPos0[saoEoClass[xCuFilt][yCuFilt]][k];
 				yOff[k] := constVPos0[saoEoClass[xCuFilt][yCuFilt]][k];
 			end
-			foreach int y in 0 .. (lcuSizeMax - 1)
+			foreach uint(size=3) y in 0 .. (lcuSizeMax - 1) >> 1
 			do
 				yIdx := ry + y;
-				foreach int x in 0 .. (lcuSizeMax - 1)
+				foreach uint(size=3) x in 0 .. (lcuSizeMax - 1) >> 1
 				do
 					xIdx := rx + x;
 					if(not lcuIsPictBorder || xIdx<picSize[0] && yIdx<picSize[1]) then
 						if(saoTypeIdx[xCuFilt][yCuFilt] = 2) then
 							pixIsInPict := true;
-							foreach int k in 0 .. 1
+							foreach uint k in 0 .. 1
 							do
 								pixIdx[k][0] := xIdx + xOff[k];
 								pixIdx[k][1] := yIdx + yOff[k];
-								if(lcuIsPictBorder && (pixIdx[k][0] >= picSize[0] || pixIdx[k][1]>=picSize[1])) then
+								if(lcuIsPictBorder &&
+									(pixIdx[k][0] >= picSize[0] ||
+									pixIdx[k][1]>=picSize[1])) then
 									pixIsInPict := false;
-								//if yPix1 and yPix2 are in the same slice, then
-								//the 3 pixels used for the Sao are in the same slice.
-								else if(not filtAcrSlc[xIdx/lcuSizeMax][yIdx/lcuSizeMax] &&
-									numSlc[xIdx/lcuSizeMax][yIdx/lcuSizeMax] !=
-									numSlc[pixIdx[k][0]/lcuSizeMax][pixIdx[k][1]/lcuSizeMax]) then
+								else if(not filtAcrSlc[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] &&
+									numSlc[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] !=
+									numSlc[pixIdx[k][0] / (lcuSizeMax >> 1)][pixIdx[k][1] / (lcuSizeMax >> 1)]) then
 									pixIsInPict := false;
-								else if(not filtAcrTile[xIdx/lcuSizeMax][yIdx/lcuSizeMax] &&
-									numTile[xIdx/lcuSizeMax][yIdx/lcuSizeMax] !=
-									numTile[pixIdx[k][0]/lcuSizeMax][pixIdx[k][1]/lcuSizeMax]) then
+								else if(not filtAcrTile[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] &&
+									numTile[xIdx / (lcuSizeMax >> 1)][yIdx / (lcuSizeMax >> 1)] !=
+									numTile[pixIdx[k][0] / (lcuSizeMax >> 1)][pixIdx[k][1] / (lcuSizeMax >> 1)]) then
 									pixIsInPict := false;
 								end end end
 							end
+
 							if(pixIsInPict) then
 								edgeIdx := 2;
-	
 								//Check if the value has already been computed.
-								if(x=0 || y=0 || x=(lcuSizeMax - 1)/* x!=32 || y!=32*/) then
+								if(x=0 || y=0 || x=((lcuSizeMax - 1) >> 1)) then
 									sign3Result := Sign3(OrigPict[yIdx][xIdx] -
 										OrigPict[pixIdx[0][1]][pixIdx[0][0]]);
 								else
@@ -334,15 +325,17 @@ actor SaoFilter_luma()
 								edgeIdx := edgeIdx + sign3Result;
 	
 								sign3Result := Sign3(OrigPict[yIdx][xIdx] -
-									OrigPict[pixIdx[1][1]][pixIdx[1][0]]);
+										OrigPict[pixIdx[1][1]][pixIdx[1][0]]);
 								edgeIdx := edgeIdx + sign3Result;
-
+	
 								//Saving the value to avoid computing it again and Sign3(B-A) = -Sign3(A-B)
-								signResult[(x+xOff[1])&127][(y+yOff[1])&127] := -sign3Result;
+								signResult[(x+xOff[1])&127]
+									[(y+yOff[1])&127] := -sign3Result;
 								edgeIdx := edgeIdxConv[edgeIdx];
 							else
 								edgeIdx := 0;
-								signResult[(x+xOff[1])&127][(y+yOff[1])&127] :=
+								signResult[(x+xOff[1])&127]
+									[(y+yOff[1])&127] :=
 									Sign3(OrigPict[pixIdx[1][1]][pixIdx[1][0] & MASK_WIDTH_POW_2] -
 										OrigPict[yIdx][xIdx]);
 							end
@@ -384,7 +377,7 @@ actor SaoFilter_luma()
 		bool lcuIsPictBorder
 	begin
 		lcuIsPictBorder := lcuFiltIsPictureBorder();
-		picSizeLoc := [picSize[0][0], picSize[0][1]];
+		picSizeLoc := [picSize[1][0], picSize[1][1]];
 		if(saoTypeIdx[xCuFilt][yCuFilt] = 1) then
 			foreach uint i in 0 .. 31
 			do
@@ -396,8 +389,8 @@ actor SaoFilter_luma()
 			end
 		end
 		if(saoTypeIdx[xCuFilt][yCuFilt]!=0) then
-			codingTreeBlockModifLuma((xCuFilt*lcuSizeMax),
-				(yCuFilt*lcuSizeMax), picSizeLoc, lcuIsPictBorder);
+			codingTreeBlockModifChroma((xCuFilt * (lcuSizeMax >> 1)),
+				(yCuFilt * (lcuSizeMax >> 1)), picSizeLoc, lcuIsPictBorder);
 		end
 	end
 
@@ -408,7 +401,6 @@ uint numPict;
 	guard
 		isNewPicSlcLcu = NEW_PIC
 	do
-//		println("Pict num : " + numPict + ". Pic size : {" + picWidthInPix + " ; " + picHeightInPix + "}");
 		numPict := numPict + 1;
 
 		lcuSizeMax := lcuSz;
@@ -470,30 +462,36 @@ uint numPict;
 		numTile[xCu][yCu] := lcuTileIdx;
 		filtAcrSlc[xCu][yCu]  := filtAcrCurrSlc;
 		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
+		cIdx := 1;
 	end
 
-	getCuPix.launch.luma: action SampleIn:[samp] repeat 16 ==>
+	getCuPix.launch.chroma.u: action SampleIn:[samp] repeat 8 ==>
 	guard
-		tokenGot < numTokenPerLcu[0]
+		cIdx = 1
 	var
 		uint(size=16) xPic,
 		uint(size=16) yPic
 	do
-		xPic := (xCu * lcuSizeMax) + (tokenGot & (lcuSizeMax - 1));
-		yPic := (yCu * lcuSizeMax) + tokenGot / lcuSizeMax;
-		foreach uint x in 0 .. 15
+		xPic := (xCu * (lcuSizeMax >> 1)) + (tokenGot & ((lcuSizeMax - 1) >> 1));
+		yPic := (yCu * (lcuSizeMax >> 1)) + tokenGot / (lcuSizeMax >> 1);
+
+		foreach uint x in 0 .. 7
 		do
 			OrigPict[yPic][x+xPic] := samp[x]; 
 		end
 
-		tokenGot := tokenGot + 16;
+		tokenGot := tokenGot + 8;
+		if(tokenGot = numTokenPerLcu[1]) then
+			tokenGot := 0;
+			cIdx := 3;
+		end
 	end
-
-	getCuPix.launch.lumaDone: action ==>
+	
+	getCuPix.launch.chromaDone: action ==>
 	guard
-		tokenGot = numTokenPerLcu[0]
+		cIdx = 3
 	do
-		tokenGot := 0;
+		cIdx := 1;
 	end
 
 	getCuPix.done: action ==>
@@ -537,9 +535,9 @@ uint numPict;
 		saoTypeIdx[xCu][yCu] := saoTypeIdx[xMerge][yMerge];
 		if(saoTypeIdx[xCu][yCu] = 0) then
 			addrBeg :=
-					[xCu * lcuSizeMax, yCu * lcuSizeMax];
+					[xCu * (lcuSizeMax >> 1), yCu * (lcuSizeMax >> 1)];
 			addrEnd :=
-					[(xCu * lcuSizeMax)+(lcuSizeMax - 1), (yCu * lcuSizeMax)+(lcuSizeMax - 1)];
+					[(xCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1), (yCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1)];
 	
 			copyCu(addrBeg, addrEnd);
 		else
@@ -562,9 +560,10 @@ uint numPict;
 		uint(size=16) addrEnd[2]
 	do
 		saoTypeIdx[xCu][yCu] := 0;
-		addrBeg := [xCu * lcuSizeMax, yCu * lcuSizeMax];
-		addrEnd := [(xCu * lcuSizeMax)+(lcuSizeMax - 1),
-			(yCu * lcuSizeMax)+(lcuSizeMax - 1)];
+
+		addrBeg := [xCu * (lcuSizeMax >> 1), yCu * (lcuSizeMax >> 1)];
+		addrEnd := [(xCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1),
+		        (yCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1)];
 		copyCu(addrBeg, addrEnd);
 
 		filtPrevLcu();
@@ -573,7 +572,7 @@ uint numPict;
 
 	getSaoTypeIdx.is0: action SaoSe:[typeIdx] ==>
 	guard
-		slcSaoCompEn[0] && typeIdx = 0
+		slcSaoCompEn[1] && typeIdx = 0
 	var
 		uint(size=16) addrBeg[2],
 		uint(size=16) addrEnd[2]
@@ -584,18 +583,18 @@ uint numPict;
 		end
 		
 		addrBeg :=
-				[xCu * lcuSizeMax, yCu * lcuSizeMax];
+				[xCu * (lcuSizeMax >> 1), yCu * (lcuSizeMax >> 1)];
 		addrEnd :=
-				[(xCu * lcuSizeMax)+(lcuSizeMax - 1), (yCu * lcuSizeMax)+(lcuSizeMax - 1)];
+				[(xCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1),
+					(yCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1)];
 
 		copyCu(addrBeg, addrEnd);
-		
 		saoTypeIdx[xCu][yCu] := 0;
 	end
 
 	getSaoTypeIdx.isNot0: action SaoSe:[saoSe] repeat 6 ==>
 	guard
-		slcSaoCompEn[0] && saoSe[0] != 0
+		slcSaoCompEn[1] && saoSe[0] != 0
 	do
 		if (DEBUG_Trace) then
 			println("=== getSaoTypeIdx.isNot0 ===");
@@ -621,16 +620,16 @@ uint numPict;
 
 	getSaoTypeIdx.skip: action ==>
 	guard
-		not slcSaoCompEn[0]
+		not slcSaoCompEn[1]
 	var
 		uint(size=16) addrBeg[2],
 		uint(size=16) addrEnd[2]
 	do
 		addrBeg :=
-				[xCu * lcuSizeMax, yCu * lcuSizeMax];
+				[xCu * (lcuSizeMax >> 1), yCu * (lcuSizeMax >> 1)];
 		addrEnd :=
-				[(xCu * lcuSizeMax)+(lcuSizeMax - 1), (yCu * lcuSizeMax)+(lcuSizeMax - 1)];
-				
+				[(xCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1), (yCu * (lcuSizeMax >> 1))+ ((lcuSizeMax - 1) >> 1)];
+
 		saoTypeIdx[xCu][yCu] := 0;
 		copyCu(addrBeg, addrEnd);
 	end
@@ -643,20 +642,23 @@ uint numPict;
 
 	
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 16*16
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 8*8
 	guard
 		yCu < picSizeInMb[1]
 	var
-		uint(size=8) filtSamp[16*16],
+		uint(size=8) filtSamp[8*8],
 		uint(size=16) blkAddrX, uint(size=16) blkAddrY
 	do
 		blkAddrX := xCu*16;
 		blkAddrY := yCu*16;
-		foreach uint y in 0 .. 15
+
+		blkAddrX := blkAddrX>>1;
+		blkAddrY := blkAddrY>>1;
+		foreach uint y in 0 .. 7
 		do
-			foreach uint x in 0 .. 15
+			foreach uint x in 0 .. 7
 			do
-				filtSamp[x+y*16] := FiltPict[blkAddrY+y][blkAddrX+x];
+				filtSamp[x+y*8] := FiltPict[blkAddrY+y][blkAddrX+x];
 			end
 		end
 
@@ -677,11 +679,11 @@ uint numPict;
 		IsNewPict (isNewPict )--> GetNumTiles;
 
 		GetCuPix (isNewSlice           )--> GetNumTiles;
-		GetCuPix (getCuPix.launch.init )--> GetCuPixLuma;
+		GetCuPix (getCuPix.launch.init )--> GetCuPixChr;
 		GetCuPix (getCuPix.done        )--> SendSamples;
 
-		GetCuPixLuma (getCuPix.launch.luma     )--> GetCuPixLuma;
-		GetCuPixLuma (getCuPix.launch.lumaDone )--> GetSaoMerge;
+		GetCuPixChr (getCuPix.launch.chroma     )--> GetCuPixChr;
+		GetCuPixChr (getCuPix.launch.chromaDone )--> GetSaoMerge;
 
 		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
@@ -691,8 +693,8 @@ uint numPict;
 		GetSaoMerge (getSaoMerge.merge   )--> GetCuPix;
 		GetSaoMerge (getSaoMerge.noMerge )--> GetSaoTypeIdx;
 
-		GetSaoTypeIdx(getSaoTypeIdx     )--> getSaoTypeIdxDone;
-		getSaoTypeIdxDone(getSaoTypeIdxDone )--> GetCuPix;
+		GetSaoTypeIdx(getSaoTypeIdx     )--> GetSaoTypeIdxDone;
+		GetSaoTypeIdxDone(getSaoTypeIdxDone )--> GetCuPix;
 
 		SendSamples (sendSamples.launch )--> SendSamples;
 		SendSamples (sendSamples.done   )--> IsNewPict;
