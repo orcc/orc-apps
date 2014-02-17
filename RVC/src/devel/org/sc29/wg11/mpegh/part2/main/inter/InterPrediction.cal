@@ -71,7 +71,7 @@ actor InterPrediction()
 	uint(size=2)  IsBiPredOrLx,
 	int (size=32) Mv,
 	uint(size=4)  PartMode,
-	int(size=16) Poc,
+	int (size=16) Poc,
 	uint(size=3)  RefIdx,
 	int (size=16) RefList,
 	uint(size=8)  Sample,
@@ -82,7 +82,6 @@ actor InterPrediction()
 		:
 
 	uint(size=8) SZ_REF_LIST = 16;
-	bool refPicListComb = false; /* Fix me !! */
 
 	int(size=16)  currPoc;
 	uint(size=2)  listIdx;
@@ -98,7 +97,7 @@ actor InterPrediction()
 	int           offset[SZ_REF_LIST][2][3];
 	uint(size=3)  numPartDecoded;
 	uint(size=3)  numPart;
-	uint(size=7)  cuSize[2];
+	uint(size=7)  puSize[2];
 	uint(size=2)  cuMode;
 	int logWD[3];
 	int weightCu[3][2];
@@ -199,11 +198,9 @@ actor InterPrediction()
 	/* We have a new slice, we will update differents value then get the new
 	 * refList and weights
 	 */
+//		partMode = PART_MODE_SLICE_INDEP || partMode = PART_MODE_PICT
 	isNewSlice.notDep: action PartMode:[partMode], Poc:[poc], SliceType:[sliceType],
 		WeightedPredSe:[weightPredIdc] ==>
-	guard
-		partMode = PART_MODE_SLICE_INDEP ||
-		partMode = PART_MODE_PICT
 	do
 		isBSlice := sliceType = B_SLICE;
 		currPoc  := poc;
@@ -286,19 +283,13 @@ actor InterPrediction()
 
 	getWeightLX.launch: action ==>
 	guard
-		listIdx = 0 && (not isBSlice || not refPicListComb) ||
-		listIdx = 1 && isBSlice
+		listIdx = 0 || listIdx = 1 && isBSlice
 	do
 		iLoop := 0;
 		if(listIdx = 0) then
 			refIdxLxAct := numRefIdxLxAct[0];
 		else
-			if(not refPicListComb) then
-				refIdxLxAct := numRefIdxLxAct[1];
-			else
-				println(" Actor InterPrediction : we don't manage LC yet");
-				while(true) do end
-			end
+			refIdxLxAct := numRefIdxLxAct[1];
 		end
 	end
 
@@ -403,13 +394,14 @@ actor InterPrediction()
 		offset[iLoop][listIdx][2] := 0;
 		iLoop := iLoop + 1;
 	end
+
 	/* Get the size of each part of the current Cu. */
 	getCuInfo.launch: action CUInfo:[cuInfo] repeat 5 ==>
 	guard
 		numPartDecoded < numPart
 	do
 		cuMode := cuInfo[0];
-		cuSize := [cuInfo[i]: for int i in 3 .. 4];
+		puSize := [cuInfo[i]: for int i in 3 .. 4];
 		predCuSize := max(cuInfo[3], cuInfo[4]);
 		numPartDecoded := numPartDecoded + 1;
 	end
@@ -571,7 +563,7 @@ actor InterPrediction()
 		if( not (refIdxLx[listIdx] = -1 || listIdx = 1 && numList = 1 &&
 			refIdxLx[0]!=-1)) then
 
-			compPuIdxMax := [cuSize[i]-1:for int i in 0 .. 1];
+			compPuIdxMax := [puSize[i]-1:for int i in 0 .. 1];
 			foreach int component in 0 .. 2 /* Y, Cb, Cr */
 			do
 				/* We just need to do the fractionnal part of the movement
@@ -612,7 +604,7 @@ actor InterPrediction()
 						put_hevc_epel_hv_cal(predSamples, listIdx,refSamples, (predCuSize>>1) + 3, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1], component);
 					end
 				end
-				compPuIdxMax := [(cuSize[i]>>1)-1:for int i in 0 .. 1];
+				compPuIdxMax := [(puSize[i]>>1)-1:for int i in 0 .. 1];
 			end
 		end
 		listIdx := listIdx + 1;
@@ -625,7 +617,7 @@ actor InterPrediction()
 		uint(size=7) compPuIdxMax[2],
 		uint(size=1) rdList = if(isBiPredOrLx = PRED_L1) then 1 else 0 end
 	do
-		compPuIdxMax := [cuSize[i]-1:for int i in 0 .. 1];
+		compPuIdxMax := [puSize[i]-1:for int i in 0 .. 1];
 		foreach int component in 0 .. 2 /* Y, Cb, Cr */
 		do
 			if(numList = 1) then
@@ -652,7 +644,7 @@ actor InterPrediction()
 
 	sendCu.launch: action ==> PredSample:[pix] repeat 16+2*4
 	guard
-		jLoop < cuSize[1]
+		jLoop < puSize[1]
 	var
 		uint(size=8) pix[16+2*4],
 		uint(size=5) off
@@ -661,7 +653,7 @@ actor InterPrediction()
 		do
 			foreach uint x in 0 .. 3
 			do
-				pix[y*4+x] := predSamples[0][0][iLoop+x + (jLoop+y)*cuSize[0]];
+				pix[y*4+x] := predSamples[0][0][iLoop+x + (jLoop+y)*puSize[0]];
 			end
 		end
 		off := 16;
@@ -671,13 +663,13 @@ actor InterPrediction()
 			do
 				foreach uint x in 0 .. 1
 				do
-					pix[y*2+x+off] := predSamples[0][component][iLoop/2+x + (jLoop/2+y) * cuSize[0]/2];
+					pix[y*2+x+off] := predSamples[0][component][iLoop/2+x + (jLoop/2+y) * puSize[0]/2];
 				end
 			end
 			off := off + 4;
 		end
 		iLoop := iLoop + 4;
-		if(iLoop = cuSize[0]) then
+		if(iLoop = puSize[0]) then
 			iLoop := 0;
 			jLoop := jLoop + 4;
 		end
@@ -685,7 +677,7 @@ actor InterPrediction()
 
 	sendCu.done: action ==>
 	guard
-		jLoop = cuSize[1]
+		jLoop = puSize[1]
 	do
 		iLoop := 0;
 		jLoop := 0;
@@ -738,6 +730,7 @@ actor InterPrediction()
 		SendCu (sendCu.done   )--> GetCuInfo;
 	end
 	priority
+		getPartMode > isNewSlice.dep > isNewSlice.notDep;
 		getWeightLX.launch > getWeightLX.skip >getWeightLX.done;
 	end
 end
