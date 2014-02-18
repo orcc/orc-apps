@@ -6,6 +6,7 @@ package org.ietr.mpegh.part2.main.IT;
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import devel.org.sc29.wg11.mpegh.part2.main.IT.CommonConstant.*;
+import org.ietr.mpegh.part2.main.IT.TransformFunctions.*;
 
 actor IT_yuv()
 	int(size=8)  Size,                                          
@@ -18,7 +19,7 @@ actor IT_yuv()
 
 	int 	MAX_TR_DYNAMIC_RANGE = 15; // Maximum transform dynamic range (excluding sign bit)
 	int 	BIT_DEPTH = 8; // assuming 8bits for samples
-
+	
  	uint(size=2) cIdx := 0;
  	uint(size=3) blk4x4Idx := 0;
  	uint(size=9) numPartToSend;
@@ -27,257 +28,8 @@ actor IT_yuv()
  	int(size=16) lumaBlk[32*32];
  	int(size=16) chrBlk_u[16*16];
  	int(size=16) chrBlk_v[16*16];
- 	
- 
- 	int(size=16) block[32*32];
- 	int(size=16) firstPassBlk[32*32];
- 
 
-	procedure invDst4x4(int(size=16) input[32*32], int(size=16) output[32*32], int(size=8) shift)
-	var
-		int(size=16) rounding = 1 << (shift-1),
-		int(size=32) c[4]
-	begin
-		foreach int i in 0 .. 3
-		do
-			c:= [
-				input[  i] + input[ 8+i],
-	    		input[8+i] + input[12+i],
-	    		input[  i] - input[12+i],
-	    		74* input[4+i]
-	    		];
-		    output[4*i+0] := clip_i32((29 * c[0] + 55 * c[1]     + c[3]            + rounding) >> shift, -32768, 32767);
-		    output[4*i+1] := clip_i32((55 * c[2] - 29 * c[1]     + c[3]            + rounding) >> shift, -32768, 32767);
-		    output[4*i+2] := clip_i32((74 * (input[i] - input[8+i]  + input[12+i]) + rounding) >> shift, -32768, 32767);
-		    output[4*i+3] := clip_i32((55 * c[0] + 29 * c[2]     - c[3]            + rounding) >> shift, -32768, 32767);
-		end
-	end
-
- 	procedure it4x4_1d(int(size=16) input[32*32], int(size=16) output[32*32], int shift)
- 	var    
- 		int x0, int x1, int x2, int x3,
-		int rounding = 1 << (shift - 1)
-	begin
-		foreach int i in 0 .. 3 do
-			x0 := (input[i + 4*0] * g_aiT4[0][0]) + (input[i + 4*2] * g_aiT4[2][0]);
-			x2 := (input[i + 4*0] * g_aiT4[0][1]) + (input[i + 4*2] * g_aiT4[2][1]);        
-			x1 := (input[i + 4*1] * g_aiT4[1][0]) + (input[i + 4*3] * g_aiT4[3][0]);
-			x3 := (input[i + 4*1] * g_aiT4[1][1]) + (input[i + 4*3] * g_aiT4[3][1]);                      
-			output[4*i + 0] := (x0 + x1 + rounding) >> shift;
-			output[4*i + 1] := (x2 + x3 + rounding) >> shift;
-			output[4*i + 2] := (x2 - x3 + rounding) >> shift;
-			output[4*i + 3] := (x0 - x1 + rounding) >> shift;
-		end
-	end
-
-	procedure it8x8_1d(int(size=16) input[32*32], int(size=16) output[32*32], int shift)
-	var
-		int(size=26) even[4],
-		int(size=26) odd[4],
-		int(size=26) rounding = 1 << shift - 1
-	begin
-		foreach int i in 0 .. 7 do
-			even[0] := input[i + 8*0] * g_aiT8[0][0] + input[i + 8*4] * g_aiT8[4][0] +
-			           input[i + 8*2] * g_aiT8[2][0] + input[i + 8*6] * g_aiT8[6][0];
-			even[1] := input[i + 8*0] * g_aiT8[0][1] + input[i + 8*4] * g_aiT8[4][1] +
-			           input[i + 8*2] * g_aiT8[2][1] + input[i + 8*6] * g_aiT8[6][1];
-			even[2] := input[i + 8*0] * g_aiT8[0][1] + input[i + 8*4] * g_aiT8[4][1] -
-			          (input[i + 8*2] * g_aiT8[2][1] + input[i + 8*6] * g_aiT8[6][1]);
-			even[3] := input[i + 8*0] * g_aiT8[0][0] + input[i + 8*4] * g_aiT8[4][0] -
-			          (input[i + 8*2] * g_aiT8[2][0] + input[i + 8*6] * g_aiT8[6][0]);
-	
-			odd[0]  := input[i + 8*1] * g_aiT8[1][0] + input[i + 8*3] * g_aiT8[3][0] +
-			           input[i + 8*5] * g_aiT8[5][0] + input[i + 8*7] * g_aiT8[7][0];
-			odd[1]  := input[i + 8*1] * g_aiT8[1][1] + input[i + 8*3] * g_aiT8[3][1] +
-			           input[i + 8*5] * g_aiT8[5][1] + input[i + 8*7] * g_aiT8[7][1];
-			odd[2]  := input[i + 8*1] * g_aiT8[1][2] + input[i + 8*3] * g_aiT8[3][2] +
-			           input[i + 8*5] * g_aiT8[5][2] + input[i + 8*7] * g_aiT8[7][2];
-			odd[3]  := input[i + 8*1] * g_aiT8[1][3] + input[i + 8*3] * g_aiT8[3][3] +
-			           input[i + 8*5] * g_aiT8[5][3] + input[i + 8*7] * g_aiT8[7][3];
-	
-			output[8*i +  0] := (even[0] + odd[0] + rounding) >> shift;
-			output[8*i +  1] := (even[1] + odd[1] + rounding) >> shift;
-			output[8*i +  2] := (even[2] + odd[2] + rounding) >> shift;
-			output[8*i +  3] := (even[3] + odd[3] + rounding) >> shift;
-			output[8*i +  4] := (even[3] - odd[3] + rounding) >> shift;
-			output[8*i +  5] := (even[2] - odd[2] + rounding) >> shift;
-			output[8*i +  6] := (even[1] - odd[1] + rounding) >> shift;
-			output[8*i +  7] := (even[0] - odd[0] + rounding) >> shift;
-		end
-	end
-
-	procedure it16x16_1d(int(size=16) input[32*32], int(size=16) output[32*32], int(size=8) shift)
-	var
-		int(size=25) evenEvenEven[2],
-		int(size=25) evenEvenOdd[2],
-		int(size=26) evenEven[4],
-		int(size=26) evenOdd[4],
-		int(size=27) even[8],
-		int(size=27) odd[8],
-   		int   		 rounding = 1 << (shift - 1)
-	begin
-		foreach int i in 0 .. 15
-		do
-		    evenEvenEven := [( input[i + 16*0] * g_aiT16[0][0] ) + ( input[i + 16*8] * g_aiT16[8][0] ),
-		                     ( input[i + 16*0] * g_aiT16[0][1] ) + ( input[i + 16*8] * g_aiT16[8][1] )
-		                    ];
-		                      
-		    evenEvenOdd  := [( input[i + 16*4] * g_aiT16[4][0] ) + ( input[i + 16*12] * g_aiT16[12][0] ),
-		                     ( input[i + 16*4] * g_aiT16[4][1] ) + ( input[i + 16*12] * g_aiT16[12][1] )
-		                    ]; 
-		                    
-		    evenEven := [ evenEvenEven[0] + evenEvenOdd[0],
-		                  evenEvenEven[1] + evenEvenOdd[1],
-		                  evenEvenEven[1] - evenEvenOdd[1],
-		                  evenEvenEven[0] - evenEvenOdd[0]
-		                ];                                        
-		                 
-		    evenOdd  := [( input[i + 16*2] * g_aiT16[2][0] ) + ( input[i + 16*6] * g_aiT16[6][0] ) + ( input[i + 16*10] * g_aiT16[10][0] ) + ( input[i + 16*14] * g_aiT16[14][0] ),
-		                 ( input[i + 16*2] * g_aiT16[2][1] ) + ( input[i + 16*6] * g_aiT16[6][1] ) + ( input[i + 16*10] * g_aiT16[10][1] ) + ( input[i + 16*14] * g_aiT16[14][1] ),
-		                 ( input[i + 16*2] * g_aiT16[2][2] ) + ( input[i + 16*6] * g_aiT16[6][2] ) + ( input[i + 16*10] * g_aiT16[10][2] ) + ( input[i + 16*14] * g_aiT16[14][2] ),
-		                 ( input[i + 16*2] * g_aiT16[2][3] ) + ( input[i + 16*6] * g_aiT16[6][3] ) + ( input[i + 16*10] * g_aiT16[10][3] ) + ( input[i + 16*14] * g_aiT16[14][3] )
-		                ]; 
-		                
-		    even := [ evenEven[0] + evenOdd[0],
-		    	      evenEven[1] + evenOdd[1],
-		    	      evenEven[2] + evenOdd[2],
-		    	      evenEven[3] + evenOdd[3],
-		    	      evenEven[3] - evenOdd[3],
-		    	      evenEven[2] - evenOdd[2],
-		    	      evenEven[1] - evenOdd[1],
-		    	      evenEven[0] - evenOdd[0]
-		            ];                       
-		         
-		    odd  := [( input[i + 16*1] * g_aiT16[1][0] ) + ( input[i + 16*3]  * g_aiT16[3] [0] ) + ( input[i + 16*5]  * g_aiT16[5] [0] ) + ( input[i + 16*7]  * g_aiT16[7] [0] ) +
-		    	     ( input[i + 16*9] * g_aiT16[9][0] ) + ( input[i + 16*11] * g_aiT16[11][0] ) + ( input[i + 16*13] * g_aiT16[13][0] ) + ( input[i + 16*15] * g_aiT16[15][0] ),
-		    	      
-		             ( input[i + 16*1] * g_aiT16[1][1] ) + ( input[i + 16*3]  * g_aiT16[3] [1] ) + ( input[i + 16*5]  * g_aiT16[5] [1] ) + ( input[i + 16*7]  * g_aiT16[7] [1] ) +
-		             ( input[i + 16*9] * g_aiT16[9][1] ) + ( input[i + 16*11] * g_aiT16[11][1] ) + ( input[i + 16*13] * g_aiT16[13][1] ) + ( input[i + 16*15] * g_aiT16[15][1] ),
-		                          
-		             ( input[i + 16*1] * g_aiT16[1][2] ) + ( input[i + 16*3]  * g_aiT16[3] [2] ) + ( input[i + 16*5]  * g_aiT16[5] [2] ) + ( input[i + 16*7]  * g_aiT16[7] [2] ) +
-		             ( input[i + 16*9] * g_aiT16[9][2] ) + ( input[i + 16*11] * g_aiT16[11][2] ) + ( input[i + 16*13] * g_aiT16[13][2] ) + ( input[i + 16*15] * g_aiT16[15][2] ),
-		             
-		             ( input[i + 16*1] * g_aiT16[1][3] ) + ( input[i + 16*3]  * g_aiT16[3] [3] ) + ( input[i + 16*5]  * g_aiT16[5] [3] ) + ( input[i + 16*7]  * g_aiT16[7] [3] ) +
-		             ( input[i + 16*9] * g_aiT16[9][3] ) + ( input[i + 16*11] * g_aiT16[11][3] ) + ( input[i + 16*13] * g_aiT16[13][3] ) + ( input[i + 16*15] * g_aiT16[15][3] ),
-		             
-		             ( input[i + 16*1] * g_aiT16[1][4] ) + ( input[i + 16*3]  * g_aiT16[3] [4] ) + ( input[i + 16*5]  * g_aiT16[5] [4] ) + ( input[i + 16*7]  * g_aiT16[7] [4] ) +
-		             ( input[i + 16*9] * g_aiT16[9][4] ) + ( input[i + 16*11] * g_aiT16[11][4] ) + ( input[i + 16*13] * g_aiT16[13][4] ) + ( input[i + 16*15] * g_aiT16[15][4] ),
-		             
-		             ( input[i + 16*1] * g_aiT16[1][5] ) + ( input[i + 16*3]  * g_aiT16[3] [5] ) + ( input[i + 16*5]  * g_aiT16[5] [5] ) + ( input[i + 16*7]  * g_aiT16[7] [5] ) +
-		             ( input[i + 16*9] * g_aiT16[9][5] ) + ( input[i + 16*11] * g_aiT16[11][5] ) + ( input[i + 16*13] * g_aiT16[13][5] ) + ( input[i + 16*15] * g_aiT16[15][5] ),
-		             
-		             ( input[i + 16*1] * g_aiT16[1][6] ) + ( input[i + 16*3]  * g_aiT16[3] [6] ) + ( input[i + 16*5]  * g_aiT16[5] [6] ) + ( input[i + 16*7]  * g_aiT16[7] [6] ) +
-		             ( input[i + 16*9] * g_aiT16[9][6] ) + ( input[i + 16*11] * g_aiT16[11][6] ) + ( input[i + 16*13] * g_aiT16[13][6] ) + ( input[i + 16*15] * g_aiT16[15][6] ),
-		             
-		             ( input[i + 16*1] * g_aiT16[1][7] ) + ( input[i + 16*3]  * g_aiT16[3] [7] ) + ( input[i + 16*5]  * g_aiT16[5] [7] ) + ( input[i + 16*7]  * g_aiT16[7] [7] ) +
-		             ( input[i + 16*9] * g_aiT16[9][7] ) + ( input[i + 16*11] * g_aiT16[11][7] ) + ( input[i + 16*13] * g_aiT16[13][7] ) + ( input[i + 16*15] * g_aiT16[15][7] )             
-		            ];
-			output[16*i +  0] := (even[0] + odd[0]+ rounding) >> shift;
-			output[16*i +  1] := (even[1] + odd[1] + rounding) >> shift;
-			output[16*i +  2] := (even[2] + odd[2] + rounding) >> shift;
-			output[16*i +  3] := (even[3] + odd[3] + rounding) >> shift;
-			output[16*i +  4] := (even[4] + odd[4] + rounding) >> shift;
-			output[16*i +  5] := (even[5] + odd[5] + rounding) >> shift;
-			output[16*i +  6] := (even[6] + odd[6] + rounding) >> shift;
-			output[16*i +  7] := (even[7] + odd[7] + rounding) >> shift;
-			output[16*i +  8] := (even[7] - odd[7] + rounding) >> shift;
-			output[16*i +  9] := (even[6] - odd[6] + rounding) >> shift;
-			output[16*i + 10] := (even[5] - odd[5] + rounding) >> shift;
-			output[16*i + 11] := (even[4] - odd[4] + rounding) >> shift;
-			output[16*i + 12] := (even[3] - odd[3] + rounding) >> shift;
-			output[16*i + 13] := (even[2] - odd[2] + rounding) >> shift;
-			output[16*i + 14] := (even[1] - odd[1] + rounding) >> shift;
-			output[16*i + 15] := (even[0] - odd[0] + rounding) >> shift;
-		end
-	end
-
-	procedure it32x32_1d(int(size=16) input[32*32], int(size=16) output[32*32], bool isFirstPart)
-	var
-		uint(size=16) yBlk,
-		uint(size=16) blkCoord[2],
-		uint(size=10) outPixIdx[2],
-		int(size=25) evenEvenEvenEven[2],
-		int(size=25) evenEvenEvenOdd[2],
-		int(size=26) evenEvenEven[4],
-		int(size=26) evenEvenOdd[4],
-		int(size=27) evenEven[8],
-		int(size=27) evenOdd[8],
-		int(size=28) even[16],
-		int(size=28) odd[16]
-	begin
-		foreach int y in 0 .. 31
-		do
-			yBlk := y >> 2;
-			evenEvenEvenEven := [( input[y + 32*0] * g_aiT32[0][0] ) + ( input[y + 32*16] * g_aiT32[16][0] ),
-	                         ( input[y + 32*0] * g_aiT32[0][1] ) + ( input[y + 32*16] * g_aiT32[16][1] )
-	                        ];
-	
-			evenEvenEvenOdd  := [( input[y + 32*8] * g_aiT32[8][0] ) + ( input[y + 32*24] * g_aiT32[24][0] ),
-	                         ( input[y + 32*8] * g_aiT32[8][1] ) + ( input[y + 32*24] * g_aiT32[24][1] )
-	                        ];
-	
-			foreach int i in 0 .. 1
-			do
-				evenEvenEven[i]   := evenEvenEvenEven[i] + evenEvenEvenOdd[i];
-				evenEvenEven[3-i] := evenEvenEvenEven[i] - evenEvenEvenOdd[i];
-			end
-			evenEvenOdd  := [ ( input[y + 32*4] * g_aiT32[4][i] ) + ( input[y + 32*12] * g_aiT32[12][i] ) + ( input[y + 32*20] * g_aiT32[20][i] ) + ( input[y + 32*28] * g_aiT32[28][i] )
-	    	              : for int i in 0 .. 3
-	                    ];
-	
-			foreach int i in 0 .. 3
-			do
-				evenEven[i]    := evenEvenEven[i] + evenEvenOdd[i];
-				evenEven[7-i]  := evenEvenEven[i] - evenEvenOdd[i];
-			end
-	
-			evenOdd  := [( input[y + 32*2]  * g_aiT32[2] [i] ) + ( input[y + 32*6]  * g_aiT32[6] [i] ) + ( input[y + 32*10] * g_aiT32[10][i] ) + ( input[y + 32*14] * g_aiT32[14][i] ) +
-	    	         ( input[y + 32*18] * g_aiT32[18][i] ) + ( input[y + 32*22] * g_aiT32[22][i] ) + ( input[y + 32*26] * g_aiT32[26][i] ) + ( input[y + 32*30] * g_aiT32[30][i] )
-	    	         : for int i in 0 .. 7
-	    	        ];
-	
-			foreach int i in 0 .. 7
-			do
-				even[i]    := evenEven[i] + evenOdd[i];
-				even[15-i] := evenEven[i] - evenOdd[i];
-			end
-	
-			odd  := [( input[y + 32*1]  * g_aiT32[1] [i] ) + ( input[y + 32*3]  * g_aiT32[3] [i] ) + ( input[y + 32*5]  * g_aiT32[5] [i] ) + ( input[y + 32*7]  * g_aiT32[7] [i] ) +
-	    	     ( input[y + 32*9]  * g_aiT32[9] [i] ) + ( input[y + 32*11] * g_aiT32[11][i] ) + ( input[y + 32*13] * g_aiT32[13][i] ) + ( input[y + 32*15] * g_aiT32[15][i] ) +
-	    	     ( input[y + 32*17] * g_aiT32[17][i] ) + ( input[y + 32*19] * g_aiT32[19][i] ) + ( input[y + 32*21] * g_aiT32[21][i] ) + ( input[y + 32*23] * g_aiT32[23][i] ) +
-	    	     ( input[y + 32*25] * g_aiT32[25][i] ) + ( input[y + 32*27] * g_aiT32[27][i] ) + ( input[y + 32*29] * g_aiT32[29][i] ) + ( input[y + 32*31] * g_aiT32[31][i] )
-	    	     : for int i in 0 .. 15
-	    	    ];
-
-			if isFirstPart then
-				foreach int x in 0 .. 15
-				do
-					output[32*y + x]    := (even[x] + odd[x] + (1 << (7 - 1))) >> 7;
-					output[32*y + 31-x] := (even[x] - odd[x] + (1 << (7 - 1))) >> 7;
-				end
-			else
-				foreach int xBlk in 0 .. 3
-				do
-					blkCoord := [xBlk, yBlk];
-					outPixIdx[0] := absCoordInBlkToZScan(blkCoord);
-					outPixIdx[0] := outPixIdx[0] * 16;
-					outPixIdx[0] := outPixIdx[0] + (y&3)*4;
-
-					blkCoord := [7 - xBlk, yBlk];
-					outPixIdx[1] := absCoordInBlkToZScan(blkCoord);
-					outPixIdx[1] := outPixIdx[1] * 16;
-					outPixIdx[1] := outPixIdx[1] + (y&3)*4 + 3;
-					foreach int x in 4*xBlk .. 4*xBlk + 3
-					do
-						lumaBlk[outPixIdx[0] + (x&3)] := (even[x] + odd[x] + (1 << (12 - 1))) >> 12;
-						lumaBlk[outPixIdx[1] - (x&3)] := (even[x] - odd[x] + (1 << (12 - 1))) >> 12;
-					end
-				end
-			end
-		end
-	end
-
-	procedure incIdx(int(size=7) tuSize)
+	procedure incIdx(int tuSize)
 	begin
 		if(tuSize = 4 and cIdx = 0) then
 			blk4x4Idx := blk4x4Idx + 1;
@@ -290,7 +42,7 @@ actor IT_yuv()
 		end
 	end
 
-	procedure reorderTu(uint(size=7) tuSize)
+	procedure reorderTu(int(size=16) block[32*32], uint(size=7) tuSize)
 	var
 		uint(size=10) inBlkIdx,
 		uint(size=10) inPixIdx,
@@ -378,28 +130,19 @@ actor IT_yuv()
 		sizeOfTU = 4 and RCskip = 0
 	var
 		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 2,
-		int transformSkipShift = shift,
-		int offset = (1 << (transformSkipShift -1)),
-		int(size=8) tuSize = 4
+		int offset = (1 << (shift -1)),
+		int(size=8) tuSize = 4,
+		int(size=16) block[4*4]
 	do
-		block := [coeff[i]: for int i in 0 .. 4*4-1];
-
 		if(transfSkipFlag = 1) then
-			foreach int i in 0 .. 15
-			do
-				block[i] := (block[i] + offset) >> transformSkipShift;
-			end
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 15];
+		elsif(isDST = 1) then
+			transform_4x4_luma(block, coeff, 4);
 		else
-			if(isDST = 1) then
-				invDst4x4(block, firstPassBlk, 7);
-				invDst4x4(firstPassBlk, block, 12);
-			else
-				it4x4_1d(block, firstPassBlk, 7);
-				it4x4_1d(firstPassBlk, block, 12);
-			end
+			transform_4x4(block, coeff, 4);
 		end
-		
-		reorderTu(tuSize);
+
+		reorderTu(block, tuSize);
 		incIdx(tuSize);
 		numPartToSend := 4;
 	end
@@ -413,20 +156,18 @@ actor IT_yuv()
 		int(size=8) tuSize = 4
 	do
 		if(cIdx = 0) then
-			foreach int i in 0 .. 4*4-1
+			foreach int i in 0 .. 15
 			do
 				lumaBlk[16*blk4x4Idx +i] := 0;
 			end
 		elsif(cIdx = 1) then
-			chrBlk_u := [0: for int i in 0 .. 4*4-1];
+			chrBlk_u := [0: for int i in 0 .. 15];
 		else
-			chrBlk_v := [0: for int i in 0 .. 4*4-1];
+			chrBlk_v := [0: for int i in 0 .. 15];
 		end
 		incIdx(tuSize);
 		numPartToSend := 4;
 	end
-
-
 
 	getCoeff.is8x8: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
@@ -436,23 +177,17 @@ actor IT_yuv()
 		sizeOfTU = 8 and RCskip = 0
 	var
 		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 3,
-		int transformSkipShift = shift,
-		int offset = (1 << (transformSkipShift -1)),
-		int(size=8) tuSize = 8
+		int offset = (1 << (shift -1)),
+		int(size=8) tuSize = 8,
+	 	int(size=16) block[8*8]
 	do
-		block := [coeff[i]: for int i in 0 .. 8*8-1];
-
 		if(transfSkipFlag = 1) then
-			foreach int i in 0 .. 63
-			do
-				block[i] := (block[i] + offset) >> transformSkipShift;
-			end
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 63];
 		else
-			it8x8_1d(block, firstPassBlk, 7);
-			it8x8_1d(firstPassBlk, block, 12);
+			transform_8x8(block, coeff, 4);
 		end
 
-		reorderTu(tuSize);
+		reorderTu(block, tuSize);
 		incIdx(tuSize);
 	end
 
@@ -465,16 +200,14 @@ actor IT_yuv()
 		int(size=8) tuSize = 8
 	do
 		if(cIdx = 0) then
-			lumaBlk := [0: for int i in 0 .. 8*8-1];
+			lumaBlk := [0: for int i in 0 .. 63];
 		elsif(cIdx = 1) then
-			chrBlk_u := [0: for int i in 0 .. 8*8-1];
+			chrBlk_u := [0: for int i in 0 .. 63];
 		else
-			chrBlk_v := [0: for int i in 0 .. 8*8-1];
+			chrBlk_v := [0: for int i in 0 .. 63];
 		end
 		incIdx(tuSize);
 	end
-
-
 
 	getCoeff.is16x16: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
@@ -484,23 +217,17 @@ actor IT_yuv()
 		sizeOfTU = 16 and RCskip = 0
 	var
 		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 4,
-		int transformSkipShift = shift,
-		int offset = (1 << (transformSkipShift -1)),
-		int(size=8) tuSize = 16
+		int offset = (1 << (shift -1)),
+		int(size=8) tuSize = 16,
+	 	int(size=16) block[16*16]
 	do
-		block := [coeff[i]: for int i in 0 .. 16*16-1];
-
 		if(transfSkipFlag = 1) then
-			foreach int i in 0 .. 255
-			do
-				block[i] := (block[i] + offset) >> transformSkipShift;
-			end
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 255];
 		else
-			it16x16_1d(block, firstPassBlk, 7);
-			it16x16_1d(firstPassBlk, block, 12);
+			transform_16x16(block, coeff, 16);
 		end
 
-		reorderTu(tuSize);
+		reorderTu(block, tuSize);
 		if(cIdx = 0) then
 			numPartToSend := 16;
 		end
@@ -517,11 +244,11 @@ actor IT_yuv()
 	do
 		if(cIdx = 0) then
 			numPartToSend := 16;
-			lumaBlk := [0: for int i in 0 .. 16*16-1];
+			lumaBlk := [0: for int i in 0 .. 255];
 		elsif(cIdx = 1) then
-			chrBlk_u := [0: for int i in 0 .. 16*16-1];
+			chrBlk_u := [0: for int i in 0 .. 255];
 		else
-			chrBlk_v := [0: for int i in 0 .. 16*16-1];
+			chrBlk_v := [0: for int i in 0 .. 255];
 		end
 		incIdx(tuSize);
 	end
@@ -534,51 +261,18 @@ actor IT_yuv()
 	guard
 		sizeOfTU = 32 and RCskip = 0
 	var
-
-		uint(size=10) inBlkIdx,
-		uint(size=10) inPixIdx,
-		uint(size=16) blkCoord[2],
-		uint(size=10) outPixIdx[2],
 		int(size=8) tuSize = 32,
-
-		int transformSkipShift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 5,
-		int offset = (1 << (transformSkipShift -1))
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 5,
+		int offset = (1 << (shift -1)),
+	 	int(size=16) block[32*32]
 	do
-		block := [coeff[i]: for int i in 0 .. 32*32-1];
-
 		if(transfSkipFlag = 1) then
-			foreach int i in 0 .. 1023
-			do
-				block[i] := (block[i] + offset) >> transformSkipShift;
-			end
-			foreach int yPartIdx in 0 .. 32/4 - 1
-			do
-				inBlkIdx := yPartIdx*4 *32;
-				foreach int xPartIdx in 0 .. 32/4 - 1
-				do
-					blkCoord := [xPartIdx, yPartIdx];
-					outPixIdx[0] := absCoordInBlkToZScan(blkCoord);
-					outPixIdx[0] := outPixIdx[0] * 16;
-	
-					inPixIdx := inBlkIdx + 4*xPartIdx;
-					foreach int y in 0 .. 3
-					do
-						foreach int x in 0 .. 3
-						do
-							lumaBlk[outPixIdx[0]] := block[inPixIdx + x];
-							outPixIdx[0] := outPixIdx[0] + 1;
-						end
-						inPixIdx := inPixIdx + 32;
-					end
-				end
-			end
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 1023];
 		else
-			@inline
-			it32x32_1d(block, firstPassBlk, true);
-			@inline
-			it32x32_1d(firstPassBlk, firstPassBlk, false);
+			transform_32x32(block, coeff, 32);
 		end
-
+		
+		reorderTu(block, tuSize);
 		numPartToSend := 64;
 		incIdx(tuSize);
 	end
@@ -589,12 +283,10 @@ actor IT_yuv()
 	guard
 		sizeOfTU = 32 and RCskip != 0
 	do
-		lumaBlk := [0: for int i in 0 .. 32*32-1];
+		lumaBlk := [0: for int i in 0 .. 1023];
 		numPartToSend := 64;
 		incIdx(32);
 	end
-
-
 
 	getCoeff_is64x64.skip: action
 		Size:[param] repeat 7*3
@@ -605,8 +297,6 @@ actor IT_yuv()
 		partIdx := 0;
 		numPartToSend := 256;
 	end
-
-
 
 	sendToken.launch.launch: action ==>
 	guard
@@ -621,9 +311,11 @@ actor IT_yuv()
 		cIdx < 3
 	end
 
-	sendEmptyBlock.launch: action ==> Block_y:[[0: for int i in 0 .. 15]] repeat 16, 
-									  Block_u:[[0: for int i in 0 .. 4]] repeat 4, 
-									  Block_v:[[0: for int i in 0 .. 4]] repeat 4
+	sendEmptyBlock.launch: action 
+			==> 
+		Block_y:[[0: for int i in 0 .. 15]] repeat 16, 
+		Block_u:[[0: for int i in 0 .. 4]] repeat 4, 
+		Block_v:[[0: for int i in 0 .. 4]] repeat 4
 	guard
 		partIdx < numPartToSend
 	do
@@ -637,9 +329,11 @@ actor IT_yuv()
 		partIdx := 0;
 	end
 
-	sendBlock.launch: action ==> Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 15]] repeat 16, 
-								 Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 3]] repeat 4, 
-								 Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 3]] repeat 4
+	sendBlock.launch: action 
+			==> 
+		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 15]] repeat 16, 
+		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 3]] repeat 4, 
+		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 3]] repeat 4
 	guard
 		partIdx < numPartToSend
 	var
