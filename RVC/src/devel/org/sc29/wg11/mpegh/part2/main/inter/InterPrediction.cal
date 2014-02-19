@@ -63,7 +63,6 @@ package devel.org.sc29.wg11.mpegh.part2.main.inter;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 import devel.org.sc29.wg11.mpegh.part2.main.inter.InterFunctions.*;
 
 actor InterPrediction()
@@ -99,9 +98,15 @@ actor InterPrediction()
 	uint(size=3)  numPart;
 	uint(size=7)  puSize[2];
 	uint(size=2)  cuMode;
-	int logWD[3];
-	int weightCu[3][2];
-	int offsetCu[3][2];
+	int logWD_y;
+	int logWD_u;
+	int logWD_v;
+	int weightCu_y[2];
+	int weightCu_u[2];
+	int weightCu_v[2];
+	int offsetCu_y[2];
+	int offsetCu_u[2];
+	int offsetCu_v[2];
 	uint(size=2)  isBiPredOrLx;
 	int (size=4)  refIdxLx[2];
 	int (size=32) mvLx[2][2];
@@ -111,8 +116,16 @@ actor InterPrediction()
 	int weightCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][3][2];
 	int offsetCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][3][2];
 
-	uint(size=8) refSamples[3][(64+7)*(64+7)];
-	int (size=16) predSamples[2][3][64*64];
+	uint(size=8) refSamples_y[(64+7)*(64+7)];
+	uint(size=8) refSamples_u[(64+7)*(64+7)];
+	uint(size=8) refSamples_v[(64+7)*(64+7)];
+	int (size=16) predSamples_y[2][64*64];
+	int (size=16) predSamples_u[2][64*64];
+	int (size=16) predSamples_v[2][64*64];
+	int (size=16) weightSamples_y[64*64];
+	int (size=16) weightSamples_u[64*64];
+	int (size=16) weightSamples_v[64*64];
+	
 /* Coefficients used for the 8-tap filter (luma component) and 4-tap filter
  * (chroma component).
  */
@@ -447,15 +460,21 @@ actor InterPrediction()
 		end
 		idxL0 := refIdxLx[0]+1;
 		idxL1 := refIdxLx[1]+1;
-		foreach int component in 0 .. 2
+		
+		logWD_y := logWDTab[idxL0][idxL1][0];
+		logWD_u := logWDTab[idxL0][idxL1][1];
+		logWD_v := logWDTab[idxL0][idxL1][2];
+		
+		foreach int list in 0 .. 1
 		do
-			logWD[component] := logWDTab[idxL0][idxL1][component];
-			foreach int list in 0 .. 1
-			do
-				weightCu[component][list] := weightCuTab[idxL0][idxL1][component][list];
-				offsetCu[component][list] := offsetCuTab[idxL0][idxL1][component][list];
-			end
+			weightCu_y[list] := weightCuTab[idxL0][idxL1][0][list];
+			offsetCu_y[list] := offsetCuTab[idxL0][idxL1][0][list];
+			weightCu_u[list] := weightCuTab[idxL0][idxL1][1][list];
+			offsetCu_u[list] := offsetCuTab[idxL0][idxL1][1][list];
+			weightCu_v[list] := weightCuTab[idxL0][idxL1][2][list];
+			offsetCu_v[list] := offsetCuTab[idxL0][idxL1][2][list];
 		end
+	
 		numList := 1;
 	end
 
@@ -470,15 +489,20 @@ actor InterPrediction()
 		refIdxLx := [refIndexLx[i]: for uint i in 0 .. 1];
 		idxL0 := refIdxLx[0]+1;
 		idxL1 := refIdxLx[1]+1;
-		foreach int component in 0 .. 2
+		
+		logWD_y := logWDTab[idxL0][idxL1][0];
+		logWD_u := logWDTab[idxL0][idxL1][1];
+		logWD_v := logWDTab[idxL0][idxL1][2];
+		foreach int list in 0 .. 1
 		do
-			logWD[component] := logWDTab[idxL0][idxL1][component];
-			foreach int list in 0 .. 1
-			do
-				weightCu[component][list] := weightCuTab[idxL0][idxL1][component][list];
-				offsetCu[component][list] := offsetCuTab[idxL0][idxL1][component][list];
-			end
+			weightCu_y[list] := weightCuTab[idxL0][idxL1][0][list];
+			offsetCu_y[list] := offsetCuTab[idxL0][idxL1][0][list];
+			weightCu_u[list] := weightCuTab[idxL0][idxL1][1][list];
+			offsetCu_u[list] := offsetCuTab[idxL0][idxL1][1][list];
+			weightCu_v[list] := weightCuTab[idxL0][idxL1][2][list];
+			offsetCu_v[list] := offsetCuTab[idxL0][idxL1][2][list];
 		end
+			
 		listIdx := 0;
 		numList :=
 			/* If we have the same picture with the same movement vectors we 
@@ -501,9 +525,9 @@ actor InterPrediction()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 64
 	do
-		refSamples[0] := [sample[i]:for uint i in 0 .. (64+7)*(64+7)-1];
-		refSamples[1] := [sample[i+5041]:for uint i in 0 .. (32+3)*(32+3)-1];
-		refSamples[2] := [sample[i+6266]:for uint i in 0 .. (32+3)*(32+3)-1];
+		refSamples_y := [sample[i]:for uint i in 0 .. (64+7)*(64+7)-1];
+		refSamples_u := [sample[i+5041]:for uint i in 0 .. (32+3)*(32+3)-1];
+		refSamples_v := [sample[i+6266]:for uint i in 0 .. (32+3)*(32+3)-1];
 	end
 
 	getSamples.launch.is32x32: action Sample:[sample] repeat (32+7)*(32+7)+
@@ -513,9 +537,9 @@ actor InterPrediction()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 32
 	do
-		refSamples[0] := [sample[i]:for uint i in 0 .. (32+7)*(32+7)-1];
-		refSamples[1] := [sample[i+1521]:for uint i in 0 .. (16+3)*(16+3)-1];
-		refSamples[2] := [sample[i+1882]:for uint i in 0 .. (16+3)*(16+3)-1];
+		refSamples_y := [sample[i]:for uint i in 0 .. (32+7)*(32+7)-1];
+		refSamples_u := [sample[i+1521]:for uint i in 0 .. (16+3)*(16+3)-1];
+		refSamples_v := [sample[i+1882]:for uint i in 0 .. (16+3)*(16+3)-1];
 	end
 
 	getSamples.launch.is16x16: action Sample:[sample] repeat (16+7)*(16+7)+
@@ -525,9 +549,9 @@ actor InterPrediction()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 16
 	do
-		refSamples[0] := [sample[i]:for uint i in 0 .. (16+7)*(16+7)-1];
-		refSamples[1] := [sample[i+529]:for uint i in 0 .. (8+3)*(8+3)-1];
-		refSamples[2] := [sample[i+650]:for uint i in 0 .. (8+3)*(8+3)-1];
+		refSamples_y := [sample[i]:for uint i in 0 .. (16+7)*(16+7)-1];
+		refSamples_u := [sample[i+529]:for uint i in 0 .. (8+3)*(8+3)-1];
+		refSamples_v := [sample[i+650]:for uint i in 0 .. (8+3)*(8+3)-1];
 	end
 
 	getSamples.launch.is8x8: action Sample:[sample] repeat (8+7)*(8+7)+
@@ -537,9 +561,9 @@ actor InterPrediction()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 8
 	do
-		refSamples[0] := [sample[i]:for uint i in 0 .. (8+7)*(8+7)-1];
-		refSamples[1] := [sample[i+225]:for uint i in 0 .. (4+3)*(4+3)-1];
-		refSamples[2] := [sample[i+274]:for uint i in 0 .. (4+3)*(4+3)-1];
+		refSamples_y := [sample[i]:for uint i in 0 .. (8+7)*(8+7)-1];
+		refSamples_u := [sample[i+225]:for uint i in 0 .. (4+3)*(4+3)-1];
+		refSamples_v := [sample[i+274]:for uint i in 0 .. (4+3)*(4+3)-1];
 	end
 
 	getSamples.launch.is4x4: action Sample:[sample] repeat (4+7)*(4+7)+
@@ -549,9 +573,9 @@ actor InterPrediction()
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 4
 	do
-		refSamples[0] := [sample[i]:for uint i in 0 .. (4+7)*(4+7)-1];
-		refSamples[1] := [sample[i+225]:for uint i in 0 .. (2+3)*(2+3)-1];
-		refSamples[2] := [sample[i+274]:for uint i in 0 .. (2+3)*(2+3)-1];
+		refSamples_y := [sample[i]:for uint i in 0 .. (4+7)*(4+7)-1];
+		refSamples_u := [sample[i+225]:for uint i in 0 .. (2+3)*(2+3)-1];
+		refSamples_v := [sample[i+274]:for uint i in 0 .. (2+3)*(2+3)-1];
 	end
 
 	interpolateSamples: action ==>
@@ -581,27 +605,35 @@ actor InterPrediction()
 				 */
  				if(mvQuartPix[0]=0 && mvQuartPix[1]=0) then
 					if component=0 then
-						put_hevc_qpel_pixel_cal(predSamples, listIdx, refSamples, predCuSize + 7, compPuIdxMax[0], compPuIdxMax[1]);
+						put_hevc_qpel_pixel_cal(predSamples_y, listIdx, refSamples_y, predCuSize + 7, compPuIdxMax[0], compPuIdxMax[1]);
+					elsif component=1 then
+						put_hevc_epel_pixel_cal(predSamples_u, listIdx, refSamples_u, (predCuSize>>1) + 3, compPuIdxMax[0], compPuIdxMax[1]);
 					else
-						put_hevc_epel_pixel_cal(predSamples, listIdx, refSamples, (predCuSize>>1) + 3, compPuIdxMax[0], compPuIdxMax[1], component);
+						put_hevc_epel_pixel_cal(predSamples_v, listIdx, refSamples_v, (predCuSize>>1) + 3, compPuIdxMax[0], compPuIdxMax[1]);
 					end
 				elsif(mvQuartPix[1]=0) then
 					if component=0 then
-						put_hevc_qpel_h_cal(predSamples, listIdx, refSamples, predCuSize + 7, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1]);
+						put_hevc_qpel_h_cal(predSamples_y, listIdx, refSamples_y, predCuSize + 7, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1]);
+					elsif component=1 then
+						put_hevc_epel_h_cal(predSamples_u, listIdx, refSamples_u, (predCuSize>>1) + 3, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1]);
 					else
-						put_hevc_epel_h_cal(predSamples, listIdx, refSamples, (predCuSize>>1) + 3, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1], component);
+						put_hevc_epel_h_cal(predSamples_v, listIdx, refSamples_v, (predCuSize>>1) + 3, mvQuartPix[0], compPuIdxMax[0], compPuIdxMax[1]);
 					end
 				elsif(mvQuartPix[0] = 0) then
 					if component=0 then
-						put_hevc_qpel_v_cal(predSamples, listIdx, refSamples, predCuSize + 7, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1]);
+						put_hevc_qpel_v_cal(predSamples_y, listIdx, refSamples_y, predCuSize + 7, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1]);
+					elsif component=1 then
+						put_hevc_epel_v_cal(predSamples_u, listIdx, refSamples_u, (predCuSize>>1) + 3, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1]);
 					else
-						put_hevc_epel_v_cal(predSamples, listIdx, refSamples, (predCuSize>>1) + 3, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1], component);
+						put_hevc_epel_v_cal(predSamples_v, listIdx, refSamples_v, (predCuSize>>1) + 3, mvQuartPix[1], compPuIdxMax[0], compPuIdxMax[1]);
 					end
 				else
 					if component=0 then
-						put_hevc_qpel_hv_cal(predSamples, listIdx,refSamples, predCuSize + 7, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1]);
+						put_hevc_qpel_hv_cal(predSamples_y, listIdx, refSamples_y, predCuSize + 7, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1]);
+					elsif component=1 then
+						put_hevc_epel_hv_cal(predSamples_u, listIdx,refSamples_u, (predCuSize>>1) + 3, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1]);
 					else
-						put_hevc_epel_hv_cal(predSamples, listIdx,refSamples, (predCuSize>>1) + 3, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1], component);
+						put_hevc_epel_hv_cal(predSamples_v, listIdx,refSamples_v, (predCuSize>>1) + 3, mvQuartPix, compPuIdxMax[0], compPuIdxMax[1]);
 					end
 				end
 				compPuIdxMax := [(puSize[i]>>1)-1:for int i in 0 .. 1];
@@ -618,26 +650,35 @@ actor InterPrediction()
 		uint(size=1) rdList = if(isBiPredOrLx = PRED_L1) then 1 else 0 end
 	do
 		compPuIdxMax := [puSize[i]-1:for int i in 0 .. 1];
-		foreach int component in 0 .. 2 /* Y, Cb, Cr */
-		do
-			if(numList = 1) then
-				if(wpIdc = 0) then
-					put_unweighted_pred(predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, component);
-				else
-					if(isBiPredOrLx != BI_PRED) then
-						weighted_pred (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, component);
-					else
-						weighted_pred_mono (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
-					end
-				end
+		
+		if(numList = 1) then
+			if(wpIdc = 0) then
+				put_unweighted_pred(predSamples_y, compPuIdxMax[0], compPuIdxMax[1], rdList, weightSamples_y);
+				put_unweighted_pred(predSamples_u, compPuIdxMax[0], compPuIdxMax[1], rdList, weightSamples_u);
+				put_unweighted_pred(predSamples_v, compPuIdxMax[0], compPuIdxMax[1], rdList, weightSamples_v);
 			else
-				if(wpIdc = 0) then
-					put_weighted_pred_avg (predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
+				if(isBiPredOrLx != BI_PRED) then
+					weighted_pred(logWD_y , weightCu_y, offsetCu_y, predSamples_y, compPuIdxMax[0], compPuIdxMax[1], rdList, weightSamples_y);
+					weighted_pred(logWD_u , weightCu_u, offsetCu_u, predSamples_u, compPuIdxMax[0], compPuIdxMax[1], rdList, weightSamples_u);
+					weighted_pred(logWD_v , weightCu_v, offsetCu_v, predSamples_v, compPuIdxMax[0], compPuIdxMax[1], rdList, weightSamples_v);
 				else
-					weighted_pred_avg (logWD, weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], component);
+					weighted_pred_mono(logWD_y , weightCu_y, offsetCu_y, predSamples_y, compPuIdxMax[0], compPuIdxMax[1], weightSamples_y);
+					weighted_pred_mono(logWD_u , weightCu_u, offsetCu_u, predSamples_u, compPuIdxMax[0], compPuIdxMax[1], weightSamples_u);
+					weighted_pred_mono(logWD_v , weightCu_v, offsetCu_v, predSamples_v, compPuIdxMax[0], compPuIdxMax[1], weightSamples_v);
 				end
 			end
-		end	
+		else
+			if(wpIdc = 0) then
+				put_weighted_pred_avg(predSamples_y, compPuIdxMax[0], compPuIdxMax[1], weightSamples_y);
+				put_weighted_pred_avg(predSamples_u, compPuIdxMax[0], compPuIdxMax[1], weightSamples_u);
+				put_weighted_pred_avg(predSamples_v, compPuIdxMax[0], compPuIdxMax[1], weightSamples_v);
+			else
+				weighted_pred_avg(logWD_y, weightCu_y, offsetCu_y, predSamples_y, compPuIdxMax[0], compPuIdxMax[1], weightSamples_y);
+				weighted_pred_avg(logWD_u, weightCu_u, offsetCu_u, predSamples_u, compPuIdxMax[0], compPuIdxMax[1], weightSamples_u);
+				weighted_pred_avg(logWD_v, weightCu_v, offsetCu_v, predSamples_v, compPuIdxMax[0], compPuIdxMax[1], weightSamples_v);
+			end
+		end
+		
 		iLoop := 0;
 		jLoop := 0;
 	end
@@ -646,27 +687,23 @@ actor InterPrediction()
 	guard
 		jLoop < puSize[1]
 	var
-		uint(size=8) pix[16+2*4],
-		uint(size=5) off
+		uint(size=8) pix[16+2*4]
 	do
 		foreach uint y in 0 .. 3
 		do
 			foreach uint x in 0 .. 3
 			do
-				pix[y*4+x] := predSamples[0][0][iLoop+x + (jLoop+y)*puSize[0]];
+				pix[y*4+x] := weightSamples_y[iLoop+x + (jLoop+y) * puSize[0]];
 			end
 		end
-		off := 16;
-		foreach uint component in 1 .. 2
+		
+		foreach uint y in 0 .. 1
 		do
-			foreach uint y in 0 .. 1
+			foreach uint x in 0 .. 1
 			do
-				foreach uint x in 0 .. 1
-				do
-					pix[y*2+x+off] := predSamples[0][component][iLoop/2+x + (jLoop/2+y) * puSize[0]/2];
-				end
+				pix[16 + y*2+x] := weightSamples_u[iLoop/2+x + (jLoop/2+y) * puSize[0]/2];
+				pix[20 + y*2+x] := weightSamples_v[iLoop/2+x + (jLoop/2+y) * puSize[0]/2];
 			end
-			off := off + 4;
 		end
 		iLoop := iLoop + 4;
 		if(iLoop = puSize[0]) then
