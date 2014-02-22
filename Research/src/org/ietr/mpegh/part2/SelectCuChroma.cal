@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, EPFL
+ * Copyright (c) 2014, EPFL
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -55,6 +55,7 @@ package org.ietr.mpegh.part2;
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
+import org.ietr.mpegh.part2.SelectCuFunctions.*;
 
 actor SelectCuChroma()
 	uint(size=16) CUInfo,
@@ -66,9 +67,15 @@ actor SelectCuChroma()
 	uint(size=8) Sample_v
 		:
 
+    uint(size=16) PU_SIZE_TO_NB_BLK_TO_CLIP[17] =
+		[0, 1, 4, 4, 16, 16, 16, 16, 64, 64, 64,
+			64, 64, 64, 64, 64, 256];
 	uint(size=8)  SCU_SIZE = 4;
 	uint(size=4)  numPart;
 	uint(size=3)  numPartDecoded;
+    uint(size=8)  predSamp[32 * 32];
+	bool          sampGot[512];
+    uint(size=16)  nbBlkToClip;
 	uint(size=7)  cuSize[4][2];
 	uint(size=5)  cuMode;
 	uint(size=4)  partMode;
@@ -76,10 +83,15 @@ actor SelectCuChroma()
 	uint(size=7)  cuWidth;
 	uint(size=9)  nbBlk;
 	uint(size=9)  idxBlk;
-	uint(size=8)  interSamp[16][16][SCU_SIZE];
-	uint(size=5)  xIdx;
-	uint(size=5)  yIdx;
+    uint(size=9)  idxBlkInterpred;
+	// uint(size=8)  interSamp[16][16][SCU_SIZE];
+	uint(size=7)  xIdx;
+	uint(size=7)  yIdx;
 
+	initialize ==>
+	do
+		sampGot := [false: for int i in 0 .. 511];
+	end
 	isNewSlice: action PartMode:[partModeVal] ==>
 	guard
 		partModeVal = PART_MODE_SLICE_DEP || partModeVal = PART_MODE_SLICE_INDEP ||
@@ -103,10 +115,12 @@ actor SelectCuChroma()
 	do
 		cuMode  := cuInfo[0];
 		cuWidth := cuInfo[3];
-		nbBlk   := cuWidth*cuWidth/16;
+        nbBlkToClip := PU_SIZE_TO_NB_BLK_TO_CLIP[cuWidth >> 2];
+		nbBlk   := nbBlkToClip;
+		// nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
 		cuSize := [[cuInfo[i]/4:for int i in 3 .. 4]:for int j in 0 .. 3];
-		cuOff[1] := [0:for int i in 0 .. 1];
+		cuOff[0] := [0:for int i in 0 .. 1];
 	end
 
 	/* Getting informations of the next CU when there are two part.
@@ -123,6 +137,7 @@ actor SelectCuChroma()
 		cuWidth := max(cuInfo[3], cuInfo[4]);
 		nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
+		nbBlkToClip := PU_SIZE_TO_NB_BLK_TO_CLIP[min(cuInfo[3], cuInfo[4]) >> 2];
 		if(partMode=PART_2NxN || partMode=PART_2NxnU ||
 			partMode=PART_2NxnD) then
 			cuOff[1][0] := 0;
@@ -153,6 +168,7 @@ actor SelectCuChroma()
 	do
 		xIdx := 0;
 		yIdx := 0;
+		idxBlkInterpred := 0;
 	end
 
 	getCuMode.isOther: action ==>
@@ -165,13 +181,12 @@ actor SelectCuChroma()
 	/* Getting samples from intraPrediction */
 	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
 		ResidualSample:[resSample] repeat SCU_SIZE
-		==> Sample_v:[sample_v] repeat 4
-	guard
-		idxBlk < nbBlk
+		==> Sample_v:[sample_v] repeat SCU_SIZE
+	// guard
+		// idxBlk < nbBlk
 	var
-		uint(size=8) sample_v[4]
+		uint(size=8) sample_v[SCU_SIZE]
 	do
-		idxBlk := idxBlk + 1;
 		/* Reordering the sample is not needed because both (Residual and
 		 * prediction parts) sample are in the rasterScan order
 		 */
@@ -180,27 +195,38 @@ actor SelectCuChroma()
 		do
 			sample_v[i] := clip_i32(intraSample[i]+resSample[i], 0, 255);
 		end
+        idxBlk := idxBlk + 1;
 	end
 
 	/* Getting prediction samples from interPrediction */
-	getCuSample.isInter: action InterSample_v:[interSample_v] repeat 4 
-								 ==>
+	getCuSample.isInter: action InterSample_v:[interSample_v] repeat SCU_SIZE ==> 
 	guard
-		idxBlk < nbBlk
+		idxBlkInterpred < nbBlk
 	var
+		uint(size=16) blkAddr[2],
 		/* Offset is not null when numPart = 2 and partIdx = 1. */
 		uint xOff = cuOff[numPartDecoded][0],
-		uint yOff = cuOff[numPartDecoded][1]
+		uint yOff = cuOff[numPartDecoded][1],
+		uint blkIdx
 	do
-		/* Saving the inter prediction part because it's in ZScan instead of
-		 * RasterScan.
-		 */
-
-		foreach uint i in 0 .. 4-1
+		blkAddr := [xIdx+xOff, yIdx+yOff];
+		blkIdx := absCoordInBlkToZScan(blkAddr);
+		foreach int i in 0 .. SCU_SIZE-1
 		do
-			interSamp[xIdx+xOff][yIdx+yOff][i] := interSample_v[i];
+			predSamp[SCU_SIZE*blkIdx + i] := interSample_v[i];
 		end
-		/* Computing the location of the next block. */
+		sampGot[blkIdx] := true;
+        // DR 1402: use SSE optimized procedure if available
+        /***
+	    copy_8_8_16_output1616_cal (
+	      interSample_y,
+		  interSamp,
+		  xIdx,
+		  xOff,
+		  yIdx,
+		  yOff);
+        ***/
+		/* Computing the location of the next block (it's sent in ZScan order instead of RasterScan. */
 		xIdx := xIdx + 1;
 		if(xIdx = cuSize[numPartDecoded][0]) then
 			xIdx := 0;
@@ -211,37 +237,183 @@ actor SelectCuChroma()
 			end
 		end
 
-		idxBlk := idxBlk + 1;
+		idxBlkInterpred := idxBlkInterpred + 1;
+	end
+
+	chekNbBlkToClip.is1: action ==>
+	guard
+		nbBlkToClip = 1
+	end
+
+	chekNbBlkToClip.is4: action ==>
+	guard
+		nbBlkToClip = 4
+	end
+
+	chekNbBlkToClip.is16: action ==>
+	guard
+		nbBlkToClip = 16
+	end
+
+	chekNbBlkToClip.is64: action ==>
+	guard
+		nbBlkToClip = 64
+	end
+
+	chekNbBlkToClip.is256: action ==>
+	guard
+		nbBlkToClip = 256
 	end
 
 	/* Getting the residual part for interPrediction then computing the
 	 * result.
 	 */
-	getCuSample.isInterRes: action ResidualSample:[resSample] repeat SCU_SIZE
-		==> Sample_v:[sample_v] repeat 4
+	getInterRes.get1Blk: action ResidualSample:[resSample] repeat SCU_SIZE
+		==> Sample_v:[sample_v] repeat SCU_SIZE
 	guard
-		idxBlk < nbBlk
+		sampGot[idxBlk]
 	var
-		uint(size=8) sample_v[4],
-		uint(size=16) interIdx[2]
+		uint(size=8) sample_v[SCU_SIZE]
 	do
-		zScanToAbsCoord(idxBlk, interIdx);
-		interIdx[0] := interIdx[0]>>2;
-		interIdx[1] := interIdx[1]>>2;
-		idxBlk := idxBlk + 1;
-		
-		foreach int i in 0 .. 4-1
+		foreach int i in 0 .. SCU_SIZE-1
 		do
-			sample_v[i] := clip_i32(interSamp[interIdx[0]][interIdx[1]][i] +
-				resSample[i], 0, 255);
+			sample_v[i] := clip_i32(predSamp[SCU_SIZE*idxBlk + i] +
+						resSample[i], 0, 255);
 		end
-	end
+		idxBlk := idxBlk + 1;
+        
+        // DR 1402: it doesn't work, as the lists are not correctly handled in this case
+        /*
+        add_8_16_clip_16_cal (
+          interSamp[interIdx[0]][interIdx[1]],
+		  resSample,
+          sample_y);	
+        )
+        */
+        /*
+		add_8_16_clip_16_pred1616_cal (
+		  interSamp,
+		  resSample,
+          sample_y,
+          interIdx[0],
+          interIdx[1]);
+        */
+     end
+
+    /* Getting the residual part for interPrediction then computing the
+	 * result.
+	 */
+	getInterRes.get4Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 4
+		==> Sample_v:[sample_v] repeat SCU_SIZE * 4
+	guard
+		sampGot[idxBlk + 3]
+	var
+		uint(size=8) sample_v[SCU_SIZE * 4]
+	do
+		foreach int i in 0 .. SCU_SIZE * 4 - 1
+		do
+			sample_v[i] := clip_i32(predSamp[SCU_SIZE*idxBlk + i] +
+						resSample[i], 0, 255);
+		end
+		idxBlk := idxBlk + 4;
+        
+        // DR 1402: it doesn't work, as the lists are not correctly handled in this case
+        /*
+        add_8_16_clip_16_cal (
+          interSamp[interIdx[0]][interIdx[1]],
+		  resSample,
+          sample_y);	
+        )
+        */
+        /*
+		add_8_16_clip_16_pred1616_cal (
+		  interSamp,
+		  resSample,
+          sample_y,
+          interIdx[0],
+          interIdx[1]);
+        */
+     end
+
+    /* Getting the residual part for interPrediction then computing the
+	 * result.
+	 */
+	getInterRes.get16Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 16
+		==> Sample_v:[sample_v] repeat SCU_SIZE * 16
+	guard
+		sampGot[idxBlk + 15]
+	var
+		uint(size=8) sample_v[SCU_SIZE * 16]
+	do
+		foreach int i in 0 .. SCU_SIZE * 16 - 1
+		do
+			sample_v[i] := clip_i32(predSamp[SCU_SIZE*idxBlk + i] +
+						resSample[i], 0, 255);
+		end
+		idxBlk := idxBlk + 16;
+        
+        // DR 1402: it doesn't work, as the lists are not correctly handled in this case
+        /*
+        add_8_16_clip_16_cal (
+          interSamp[interIdx[0]][interIdx[1]],
+		  resSample,
+          sample_y);	
+        )
+        */
+        /*
+		add_8_16_clip_16_pred1616_cal (
+		  interSamp,
+		  resSample,
+          sample_y,
+          interIdx[0],
+          interIdx[1]);
+        */
+     end
+
+    /* Getting the residual part for interPrediction then computing the
+	 * result.
+	 */
+	getInterRes.get64Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 64
+		==> Sample_v:[sample_v] repeat SCU_SIZE * 64
+	guard
+		sampGot[idxBlk + 63]
+	var
+		uint(size=8) sample_v[SCU_SIZE * 64]
+	do
+		foreach int i in 0 .. SCU_SIZE * 64 - 1
+		do
+			sample_v[i] := clip_i32(predSamp[SCU_SIZE*idxBlk + i] +
+						resSample[i], 0, 255);
+		end
+		idxBlk := idxBlk + 64;
+        
+        // DR 1402: it doesn't work, as the lists are not correctly handled in this case
+        /*
+        add_8_16_clip_16_cal (
+          interSamp[interIdx[0]][interIdx[1]],
+		  resSample,
+          sample_y);	
+        )
+        */
+        /*
+		add_8_16_clip_16_pred1616_cal (
+		  interSamp,
+		  resSample,
+          sample_y,
+          interIdx[0],
+          interIdx[1]);
+        */
+     end
 
 	getCuSample.done: action ==>
 	guard
 		idxBlk = nbBlk
 	do
 		idxBlk := 0;
+		foreach int i in 0 .. nbBlk - 1
+		do
+			sampGot[i] := false;
+		end
 	end
 
 	schedule fsm GetPartMode:
@@ -252,16 +424,43 @@ actor SelectCuChroma()
 		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
 
 		GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
-		GetCuMode (getCuMode.isInter )--> GetCuSampleInter;
+		GetCuMode (getCuMode.isInter )--> CheckNbBlkToClip;
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
 
 		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
 
-		GetCuSampleInter (getCuSample.isInter )--> GetCuSampleInter;
-		GetCuSampleInter (getCuSample.done    )--> GetCuResInter;
 
-		GetCuResInter (getCuSample.isInterRes )--> GetCuResInter;
-		GetCuResInter (getCuSample.done       )--> GetCuInfo;
+		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
+		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;
+		CheckNbBlkToClip (chekNbBlkToClip.is16  )--> GetCuSampleInter16Blk;
+		CheckNbBlkToClip (chekNbBlkToClip.is64  )--> GetCuSampleInter64Blk;
+		CheckNbBlkToClip (chekNbBlkToClip.is256 )--> GetCuSampleInter256Blk;
+
+		GetCuSampleInter1Blk (getCuSample.isInter )--> GetCuSampleInter1Blk;
+		GetCuSampleInter1Blk (getInterRes.get1Blk )--> GetCuSampleInter1Blk;
+		GetCuSampleInter1Blk (getCuSample.done    )--> GetCuInfo;
+
+		GetCuSampleInter4Blk (getCuSample.isInter    )--> GetCuSampleInter4Blk;
+		GetCuSampleInter4Blk (getInterRes.get4Blk )--> GetCuSampleInter4Blk;
+		GetCuSampleInter4Blk (getCuSample.done       )--> GetCuInfo;
+
+		GetCuSampleInter16Blk (getCuSample.isInter    )--> GetCuSampleInter16Blk;
+		GetCuSampleInter16Blk (getInterRes.get16Blk )--> GetCuSampleInter16Blk;
+		GetCuSampleInter16Blk (getCuSample.done       )--> GetCuInfo;
+
+		GetCuSampleInter64Blk (getCuSample.isInter    )--> GetCuSampleInter64Blk;
+		GetCuSampleInter64Blk (getInterRes.get64Blk )--> GetCuSampleInter64Blk;
+		GetCuSampleInter64Blk (getCuSample.done       )--> GetCuInfo;
+
+		GetCuSampleInter256Blk (getCuSample.isInter    )--> GetCuSampleInter256Blk;
+		GetCuSampleInter256Blk (getInterRes.get64Blk )--> GetCuSampleInter256Blk;
+		GetCuSampleInter256Blk (getCuSample.done       )--> GetCuInfo;
+	end
+	priority
+		getCuSample.done > getCuSample.isIntra;
+		getCuSample.done > getInterRes > getCuSample.isInter;
+		chekNbBlkToClip.is64 > chekNbBlkToClip.is16  > chekNbBlkToClip.is4;
+		chekNbBlkToClip.is4  > chekNbBlkToClip.is256 > chekNbBlkToClip.is1;
 	end
 end
