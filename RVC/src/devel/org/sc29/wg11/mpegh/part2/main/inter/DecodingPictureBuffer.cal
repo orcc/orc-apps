@@ -111,6 +111,49 @@ actor DecodingPictureBuffer()
 	int (size=32) lastMvRef[2];
 	bool          isNewPicture;
 
+	/* We get the whole Cu decoded (luma and chroma components) and we save
+	 * it in the Dpb (pictureBuffer).
+	 */
+	getPix: action Sample:[samp] repeat 16*16 + 8*8*2==>
+	guard
+		yIdx < picSizeInCu[1]
+	var
+		uint(size=16) xPixIdx,
+		uint(size=16) yPixIdx,
+		uint tokenOffset
+	do
+		xPixIdx := BORDER_SIZE_LUM + xIdx*16;
+		yPixIdx := BORDER_SIZE_LUM + yIdx*16;
+		foreach uint y in 0 .. 15
+		do
+			foreach uint x in 0 .. 15
+			do
+				pictureBuffer[lastIdx][0][xPixIdx+x][yPixIdx+y] := samp[x+y*16];
+			end
+		end
+
+		xPixIdx := BORDER_SIZE_CHR + xIdx*8;
+		yPixIdx := BORDER_SIZE_CHR + yIdx*8;
+		foreach uint component in 1 .. 2
+		do
+			tokenOffset:= 16*16 + 8*8*(component-1);
+			foreach uint y in 0 .. 7
+			do
+				foreach uint x in 0 .. 7
+				do
+					pictureBuffer[lastIdx][component][xPixIdx+x][yPixIdx+y] :=
+						samp[x+y*8 + tokenOffset];
+				end
+			end
+		end
+
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+
 	/** Getting informations from new slice/picture. Updating these informations **/
 	isNewSlice: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
 		picHeightInPix], Poc:[poc] ==>
@@ -197,49 +240,6 @@ actor DecodingPictureBuffer()
 		nbList := nbList + 1;
 	end
 
-	/* We get the whole Cu decoded (luma and chroma components) and we save
-	 * it in the Dpb (pictureBuffer).
-	 */
-	getCuPix.launch: action Sample:[samp] repeat 16*16 + 8*8*2==>
-	guard
-		yIdx < picSizeInCu[1]
-	var
-		uint(size=16) xPixIdx,
-		uint(size=16) yPixIdx,
-		uint tokenOffset
-	do
-		xPixIdx := BORDER_SIZE_LUM + xIdx*16;
-		yPixIdx := BORDER_SIZE_LUM + yIdx*16;
-		foreach uint y in 0 .. 15
-		do
-			foreach uint x in 0 .. 15
-			do
-				pictureBuffer[lastIdx][0][xPixIdx+x][yPixIdx+y] := samp[x+y*16];
-			end
-		end
-
-		xPixIdx := BORDER_SIZE_CHR + xIdx*8;
-		yPixIdx := BORDER_SIZE_CHR + yIdx*8;
-		foreach uint component in 1 .. 2
-		do
-			tokenOffset:= 16*16 + 8*8*(component-1);
-			foreach uint y in 0 .. 7
-			do
-				foreach uint x in 0 .. 7
-				do
-					pictureBuffer[lastIdx][component][xPixIdx+x][yPixIdx+y] :=
-						samp[x+y*8 + tokenOffset];
-				end
-			end
-		end
-
-		xIdx := xIdx + 1;
-		if(xIdx = picSizeInCu[0]) then
-			xIdx := 0;
-			yIdx := yIdx + 1;
-		end
-	end
-
 	/* When we get the picture we add the border (in order to be able to give a
 	 * reference pixels which can be outside of the picture).
 	 */
@@ -313,39 +313,36 @@ actor DecodingPictureBuffer()
 	/* We get all the informations needed for sending the reference Cu. We save
 	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
 	 */
-	getMvInfo.launch: action PocRef:[poc], PredCuSize:[predCuSize],
+	getMvInfo.launch: action PocRef:[poc], PredCuSize:[predUnitSize] repeat 2,
 		Mv:[mvX, mvY] ==>
 	guard
 		numPocRef != 0
 	var
 		uint(size=7)  sideMax,
-		uint(size=7)  sideMaxChr
+		uint(size=7)  sideMaxChr,
+		uint(size=7) predCuSize = max(predUnitSize[0], predUnitSize[1])
 	do
 		lastPocRef := poc;
 		lastMvRef  := [mvX, mvY];
 		if(predCuSize = 64) then
 			puSize := [64 + 7: for int i in 0 .. 1];
 			puSizeChr := [32 + 3: for int i in 0 .. 1];
-			sideMax := 64;
 		else if(predCuSize = 32) then
 			puSize := [32 + 7: for int i in 0 .. 1];
 			puSizeChr := [16 + 3: for int i in 0 .. 1];
-			sideMax := 32;
 		else if(predCuSize = 16) then
 			puSize := [16 + 7: for int i in 0 .. 1];
 			puSizeChr := [8 + 3: for int i in 0 .. 1];
-			sideMax := 16;
 		else if(predCuSize = 8) then
 			puSize := [8 + 7: for int i in 0 .. 1];
 			puSizeChr := [4 + 3: for int i in 0 .. 1];
-			sideMax := 8;
 		else
 			puSize := [4 + 7: for int i in 0 .. 1];
 			puSizeChr := [2 + 3: for int i in 0 .. 1];
-			sideMax := 4;
 		end end end end
-		sideMaxChr := sideMax / 2;
 
+		sideMax := max(predUnitSize[0], predUnitSize[1]);
+		sideMaxChr := sideMax >> 1;
 		refPicIdx := 0;
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -473,7 +470,7 @@ actor DecodingPictureBuffer()
 		CheckIsNewPict (checkIsNewPict.isTrue  )--> GetCuPix;
 		CheckIsNewPict (checkIsNewPict.isFalse )--> IsNewSlice;
 
-		GetCuPix (getCuPix.launch )--> GetCuPix;
+		GetCuPix (getPix          )--> GetCuPix;
 		GetCuPix (getCuPix.done   )--> IsNewSlice;
 
 		GetMvInfo (getMvInfo.launch )--> SendCuLuma;
