@@ -182,7 +182,7 @@ actor IT_yuv()
 		if(transfSkipFlag = 1) then
 			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 63];
 		else
-			transform_8x8(block, coeff, 4);
+			transform_8x8(block, coeff, 8);
 		end
 
 		reorderTu(block, tuSize);
@@ -286,17 +286,17 @@ actor IT_yuv()
 		incIdx(32);
 	end
 
-	getCoeff_is64x64.skip: action
+	getCoeff_is64x64: action
 		Size:[param] repeat 7*3
 			==>
+		Block_y:[[0: for int i in 0 .. 4095]] repeat 4096, 
+		Block_u:[[0: for int i in 0 .. 1023]] repeat 1024, 
+		Block_v:[[0: for int i in 0 .. 1023]] repeat 1024
 	guard
 		param[0] = 64 //sizeOfTU = 64
-	do
-		partIdx := 0;
-		numPartToSend := 256;
 	end
 
-	sendToken.launch.launch: action ==>
+	sendToken.launch: action ==>
 	guard
 		cIdx = 3
 	do
@@ -309,35 +309,17 @@ actor IT_yuv()
 		cIdx < 3
 	end
 
-	sendEmptyBlock.launch: action 
-			==> 
-		Block_y:[[0: for int i in 0 .. 15]] repeat 16, 
-		Block_u:[[0: for int i in 0 .. 4]] repeat 4, 
-		Block_v:[[0: for int i in 0 .. 4]] repeat 4
-	guard
-		partIdx < numPartToSend
-	do
-		partIdx := partIdx + 1;
-	end
-
-	sendEmptyBlock.done: action ==>
-	guard
-		partIdx = numPartToSend
-	do
-		partIdx := 0;
-	end
-
 	sendBlock.launch: action 
 			==> 
-		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 15]] repeat 16, 
-		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 3]] repeat 4, 
-		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 3]] repeat 4
+		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 63]] repeat 64, 
+		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 15]] repeat 16, 
+		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 15]] repeat 16
 	guard
 		partIdx < numPartToSend
 	var
 		uint(size=9) idx = partIdx
 	do
-		partIdx := partIdx + 1;
+		partIdx := partIdx + 4;
 	end
 
 	sendBlock.done: action ==>
@@ -349,14 +331,11 @@ actor IT_yuv()
 
 	schedule fsm GetCoeff:
 		GetCoeff  (getCoeff         )--> SendToken;
-		GetCoeff  (getCoeff_is64x64 )--> SendEmptyBlock;
+		GetCoeff  (getCoeff_is64x64 )--> GetCoeff;
 		SendToken (sendToken.skip   )--> GetCoeff;
 		SendToken (sendToken.launch )--> SendBlock;
 
 		SendBlock (sendBlock.launch )--> SendBlock;
 		SendBlock (sendBlock.done   )--> GetCoeff;
-
-		SendEmptyBlock (sendEmptyBlock.launch )--> SendEmptyBlock;
-		SendEmptyBlock (sendEmptyBlock.done   )--> GetCoeff;
 	end
 end
