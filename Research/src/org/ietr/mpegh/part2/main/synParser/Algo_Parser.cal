@@ -5018,6 +5018,44 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size= 1) coded_sub_block_flag[8][8];
 	uint(size= 8) LastSignificantCoeffX;
 	uint(size= 8) LastSignificantCoeffY;
+	
+	// DR 1403
+	
+	uint(size=16) num_coeff;
+	
+    uint(size= 8) horiz_scan8x8_inv[8][8] = [
+      [  0,  1,  2,  3, 16, 17, 18, 19 ],
+      [  4,  5,  6,  7, 20, 21, 22, 23 ],
+      [  8,  9, 10, 11, 24, 25, 26, 27 ],
+      [ 12, 13, 14, 15, 28, 29, 30, 31 ],
+      [ 32, 33, 34, 35, 48, 49, 50, 51 ],
+      [ 36, 37, 38, 39, 52, 53, 54, 55 ],
+      [ 40, 41, 42, 43, 56, 57, 58, 59 ],
+      [ 44, 45, 46, 47, 60, 61, 62, 63 ]
+    ];
+
+    uint(size= 8)  diag_scan8x8_inv[8][8] = [
+      [  0,  2,  5,  9, 14, 20, 27, 35 ],
+      [  1,  4,  8, 13, 19, 26, 34, 42 ],
+      [  3,  7, 12, 18, 25, 33, 41, 48 ],
+      [  6, 11, 17, 24, 32, 40, 47, 53 ],
+      [ 10, 16, 23, 31, 39, 46, 52, 57 ],
+      [ 15, 22, 30, 38, 45, 51, 56, 60 ],
+      [ 21, 29, 37, 44, 50, 55, 59, 62 ],
+      [ 28, 36, 43, 49, 54, 58, 61, 63 ]
+    ];
+
+    uint(size= 8) diag_scan4x4_inv[4][4] = [
+      [ 0,  2,  5,  9 ],
+      [ 1,  4,  8, 12 ],
+      [ 3,  7, 11, 14 ],
+      [ 6, 10, 13, 15 ]
+    ];
+
+    uint(size= 8) diag_scan2x2_inv[2][2] = [
+      [ 0, 2 ],
+      [ 1, 3 ]
+    ];
 		
 	/**************************************************************************
 	 * read_ResidualCoding.start
@@ -5046,8 +5084,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		isFifoFull(fifo)
 	var
 		 int(size=32) res[1],
-		uint(size=16) xS := 0,
-		uint(size=16) yS := 0,
+		 uint(size=16) xS := 0,
+		 uint(size=16) yS := 0,
 		 int(size=16) xC := -1,
 		 int(size=16) yC := -1,
 		 int sz = 1 << rc_log2TrafoSize,
@@ -5055,6 +5093,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		 int matrix_id,
 		 int qp_offset,
 		 int(size=16) qp_i,
+		 
+		 int x_cg_last_sig, 
+		 int y_cg_last_sig,
+		 int last_x_c,
+         int last_y_c,
          
          
         uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
@@ -5147,22 +5190,35 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			LastSignificantCoeffX := LastSignificantCoeffY;
 			LastSignificantCoeffY := res[0];
 		end
+		
+		x_cg_last_sig := LastSignificantCoeffX >> 2;
+        y_cg_last_sig := LastSignificantCoeffY >> 2;
 
-		rc_lastScanPos := 16;
-        rc_lastSubBlock := (1 << (rc_log2TrafoSize - 2)) * (1 << (rc_log2TrafoSize - 2)) - 1;
-        while not(xC = LastSignificantCoeffX and yC = LastSignificantCoeffY) do
-			if rc_lastScanPos = 0 then
-				rc_lastScanPos := 16;
-				rc_lastSubBlock := rc_lastSubBlock - 1;
-			end
-			rc_lastScanPos := rc_lastScanPos - 1;
-	        xS := ScanOrder[rc_log2TrafoSize - 2][rc_scanIdx][rc_lastSubBlock][0];
-	        yS := ScanOrder[rc_log2TrafoSize - 2][rc_scanIdx][rc_lastSubBlock][1];
-			xC := (xS << 2) + ScanOrder[2][ rc_scanIdx ][ rc_lastScanPos ][ 0 ];
-	        yC := (yS << 2) + ScanOrder[2][rc_scanIdx][rc_lastScanPos][1]; 
-	        //                      println(xC+", "+LastSignificantCoeffX+" : "+yC+", "+LastSignificantCoeffY+", rc_lastSubBlock = "+rc_lastSubBlock+", rc_lastScanPos = "+rc_lastScanPos);
+        if rc_scanIdx = 0 then
+          last_x_c := LastSignificantCoeffX & 3;
+          last_y_c := LastSignificantCoeffY & 3;
+
+          num_coeff := diag_scan4x4_inv[last_y_c][last_x_c];
+
+          if rc_log2TrafoSize = 3 then
+            num_coeff := (num_coeff + (diag_scan2x2_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+          elsif rc_log2TrafoSize = 4 then
+            num_coeff := (num_coeff + (diag_scan4x4_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+           else // rc_log2TrafoSize = 5 then
+            num_coeff := (num_coeff + (diag_scan8x8_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+          end
+        
+        elsif rc_scanIdx = 1 then
+          num_coeff := horiz_scan8x8_inv[LastSignificantCoeffY][LastSignificantCoeffX];
+        
+        elsif rc_scanIdx = 2 then
+          num_coeff := horiz_scan8x8_inv[LastSignificantCoeffX][LastSignificantCoeffY];
         end
-        //              println("LastSignificantCoeffX = "+LastSignificantCoeffX+", LastSignificantCoeffY = "+LastSignificantCoeffY+", rc_lastSubBlock = "+(rc_lastSubBlock)+" rc_scanIdx = "+rc_scanIdx);
+      
+        num_coeff := num_coeff + 1;
+        rc_lastSubBlock := (num_coeff - 1) >> 4;
+        rc_lastScanPos := num_coeff - (rc_lastSubBlock << 4) - 1;
+
 		rc_i := rc_lastSubBlock;
  	end
         
