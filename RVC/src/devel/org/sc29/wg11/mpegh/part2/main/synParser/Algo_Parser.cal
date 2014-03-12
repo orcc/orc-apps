@@ -988,7 +988,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size= 8) sps_max_transform_hierarchy_depth_inter[NB_MAX_SPS];
 	    uint(size= 8) sps_max_transform_hierarchy_depth_intra[NB_MAX_SPS];
 	    uint(size= 1) sps_scaling_list_enabled_flag[NB_MAX_SPS];
-	    int(size=32) ctb_width;
+	    uint(size=16) sps_ctb_width[NB_MAX_SPS];
+	    uint(size=16) sps_log2_ctb_size[NB_MAX_SPS];
 	    int(size=32) min_cb_width;
 	    
 	
@@ -1009,7 +1010,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        
 	        min_cb_width := sps_pic_width_in_luma_samples[sps_id] >>
 	        sps_log2_min_coding_block_size[sps_id];
-	        
+	        sps_log2_ctb_size[sps_id] := sps_log2_min_coding_block_size[sps_id] + sps_log2_diff_max_min_transform_block_size[sps_id];
+	        sps_ctb_width[sps_id] := (sps_pic_width_in_luma_samples[sps_id]  + (1 << sps_log2_ctb_size[sps_id]) - 1) >> sps_log2_ctb_size[sps_id];
 	        
 	        if sps_scaling_list_enabled_flag[sps_id] = 1 then
 	        	se_idx := 60;
@@ -3232,46 +3234,38 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             if CtbAddrRS != 0 then
             	indexRS_0 := CtbAddrRS - 1;
             end
-            if CtbAddrTS >= ctb_width then
-            	indexRS_1 := CtbAddrTS - ctb_width;
+            if CtbAddrTS >= sps_ctb_width[sps_id] then
+            	indexRS_1 := CtbAddrTS - sps_ctb_width[sps_id];
             end
            
-            xCtb := InverseRasterScan(CtbAddrRS, CtbSize, CtbSize,
-            sps_pic_width_in_luma_samples[sps_id], 0);
-            yCtb := InverseRasterScan(CtbAddrRS, CtbSize, CtbSize,
-            sps_pic_width_in_luma_samples[sps_id], 1);
+            xCtb := InverseRasterScan(CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0);
+            yCtb := InverseRasterScan(CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1);
             if pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
             	if (xCtb = 0 and (yCtb & (CtbSize - 1)) = 0) then
             		first_qp_group := 1;
             	end
-            	elsif pps_tiles_enabled_flag[pps_id] = 1 then if (CtbAddrTS
-            	!= 0 and TileId[CtbAddrTS] != TileId[indexTS]) then
+            	elsif pps_tiles_enabled_flag[pps_id] = 1 then if (CtbAddrTS != 0 and TileId[CtbAddrTS] != TileId[indexTS]) then
             		first_qp_group := 1;
             	end
             end
             if (pps_tiles_enabled_flag[pps_id] = 1) then
-            	tile_left_boundary := if (xCtb > 0 && TileId[CtbAddrTS] !=
-            	TileId[ctbAddrRStoTS[indexRS_0]]) then
+            	tile_left_boundary := if (xCtb > 0 && TileId[CtbAddrTS] != TileId[ctbAddrRStoTS[indexRS_0]]) then
             		1
             	else
             		0
             	end;
-            	
-            	tile_up_boundary := if (yCtb > 0 && TileId[CtbAddrTS] !=
-            	TileId[ctbAddrRStoTS[indexRS_1]]) then
+            	tile_up_boundary := if (yCtb > 0 && TileId[CtbAddrTS] != TileId[ctbAddrRStoTS[indexRS_1]]) then
             		1
             	else
             		0
-            	end;	
+            	end;
             else
             	tile_left_boundary := 0;
-            	tile_up_boundary := 0;           	
+            	tile_up_boundary := 0;
             end
             
-            ctb_left_flag := (xCtb > 0) and (ctb_addr_in_slice > 0) and
-            (tile_left_boundary = 0);
-            ctb_up_flag := (yCtb > 0) && (ctb_addr_in_slice >= ctb_width)
-            && tile_up_boundary = 0;
+            ctb_left_flag := (xCtb > 0) and (ctb_addr_in_slice > 0) and (tile_left_boundary = 0);
+            ctb_up_flag := (yCtb > 0) && (ctb_addr_in_slice >= sps_ctb_width[sps_id]) && tile_up_boundary = 0;
             
             CtbAddrInSlice := CtbAddrRS - slice_segment_address;
             codingTree_idx := 2;
