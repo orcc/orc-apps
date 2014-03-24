@@ -1,0 +1,341 @@
+// Authors: Eduardo Juarez, Wei Jianguo and Ren Rong <eduardo.juarez@upm.es> of UPM (Spain) 
+// modified by: Damien de Saint Jorre <damien.desaintjorre@epfl.ch>
+
+package org.ietr.mpegh.part2.main.IT;
+
+import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.ietr.mpegh.part2.main.IT.TransformFunctions.*;
+
+actor IT_yuv()
+	int(size=8)  Size,                                          
+	int(size=16) Coeff
+		==>                                    
+	int(size=16)  Block_y,
+	int(size=16)  Block_u, 
+	int(size=16)  Block_v  
+		:
+
+	int 	MAX_TR_DYNAMIC_RANGE = 15; // Maximum transform dynamic range (excluding sign bit)
+	int 	BIT_DEPTH = 8; // assuming 8bits for samples
+	
+ 	uint(size=2) cIdx := 0;
+ 	uint(size=3) blk4x4Idx := 0;
+ 	uint(size=9) numPartToSend;
+ 	uint(size=9) partIdx := 0;
+ 
+ 	int(size=16) lumaBlk[32*32];
+ 	int(size=16) chrBlk_u[16*16];
+ 	int(size=16) chrBlk_v[16*16];
+
+	procedure incIdx(int tuSize)
+	begin
+		if(tuSize = 4 and cIdx = 0) then
+			blk4x4Idx := blk4x4Idx + 1;
+			if(blk4x4Idx = 4) then
+				blk4x4Idx := 0;
+				cIdx := cIdx + 1;
+			end
+		else
+			cIdx := cIdx + 1;
+		end
+	end
+
+	procedure reorderTu(int(size=16) block[32*32], uint(size=7) tuSize)
+	var
+		uint(size=10) inBlkIdx,
+		uint(size=10) inPixIdx,
+		uint(size=16) blkCoord[2],
+		uint(size=10) outPixIdx,
+		uint(size=6) offset := 0
+	begin
+		if(cIdx = 0) then
+			if(tuSize = 4) then
+				offset := 16*blk4x4Idx;
+			end
+			foreach int yPartIdx in 0 .. tuSize/4 - 1
+			do
+				inBlkIdx := yPartIdx*4 *tuSize;
+				foreach int xPartIdx in 0 .. tuSize/4 - 1
+				do
+					blkCoord := [xPartIdx, yPartIdx];
+					outPixIdx := absCoordInBlkToZScan(blkCoord);
+					outPixIdx := outPixIdx * 16;
+	
+					inPixIdx := inBlkIdx + 4*xPartIdx;
+					foreach int y in 0 .. 3
+					do
+						foreach int x in 0 .. 3
+						do
+							lumaBlk[outPixIdx + offset] := block[inPixIdx + x];
+							outPixIdx := outPixIdx + 1;
+						end
+						inPixIdx := inPixIdx + tuSize;
+					end
+				end
+			end
+		elsif(cIdx = 1) then
+			foreach int yPartIdx in 0 .. tuSize/2 - 1
+			do
+				inBlkIdx := yPartIdx*2 *tuSize;
+				foreach int xPartIdx in 0 .. tuSize/2 - 1
+				do
+					blkCoord := [xPartIdx, yPartIdx];
+					outPixIdx := absCoordInBlkToZScan(blkCoord);
+					outPixIdx := outPixIdx * 4;
+	
+					inPixIdx := inBlkIdx + 2*xPartIdx;
+					foreach int y in 0 .. 1
+					do
+						foreach int x in 0 .. 1
+						do
+							chrBlk_u[outPixIdx] := block[inPixIdx + x];
+							outPixIdx := outPixIdx + 1;
+						end
+						inPixIdx := inPixIdx + tuSize;
+					end
+				end
+			end
+		else
+			foreach int yPartIdx in 0 .. tuSize/2 - 1
+			do
+				inBlkIdx := yPartIdx*2 *tuSize;
+				foreach int xPartIdx in 0 .. tuSize/2 - 1
+				do
+					blkCoord := [xPartIdx, yPartIdx];
+					outPixIdx := absCoordInBlkToZScan(blkCoord);
+					outPixIdx := outPixIdx * 4;
+	
+					inPixIdx := inBlkIdx + 2*xPartIdx;
+					foreach int y in 0 .. 1
+					do
+						foreach int x in 0 .. 1
+						do
+							chrBlk_v[outPixIdx] := block[inPixIdx + x];
+							outPixIdx := outPixIdx + 1;
+						end
+						inPixIdx := inPixIdx + tuSize;
+					end
+				end
+			end
+		end
+	end
+
+	getCoeff.is4x4: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 4*4
+			==>
+	guard
+		sizeOfTU = 4 and RCskip = 0
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 2,
+		int offset = (1 << (shift -1)),
+		int(size=8) tuSize = 4,
+		int(size=16) block[4*4]
+	do
+		if(transfSkipFlag = 1) then
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 15];
+		elsif(isDST = 1) then
+			transform_4x4_luma(block, coeff, 4);
+		else
+			transform_4x4(block, coeff, 4);
+		end
+
+		reorderTu(block, tuSize);
+		incIdx(tuSize);
+		numPartToSend := 4;
+	end
+
+	getCoeff.is4x4.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+	guard
+		sizeOfTU = 4 and RCskip != 0
+	var
+		int(size=8) tuSize = 4
+	do
+		if(cIdx = 0) then
+			foreach int i in 0 .. 15
+			do
+				lumaBlk[16*blk4x4Idx +i] := 0;
+			end
+		elsif(cIdx = 1) then
+			chrBlk_u := [0: for int i in 0 .. 15];
+		else
+			chrBlk_v := [0: for int i in 0 .. 15];
+		end
+		incIdx(tuSize);
+		numPartToSend := 4;
+	end
+
+	getCoeff.is8x8: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 8*8
+			==>
+	guard
+		sizeOfTU = 8 and RCskip = 0
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 3,
+		int offset = (1 << (shift -1)),
+		int(size=8) tuSize = 8,
+	 	int(size=16) block[8*8]
+	do
+		if(transfSkipFlag = 1) then
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 63];
+		else
+			transform_8x8(block, coeff, 8);
+		end
+
+		reorderTu(block, tuSize);
+		incIdx(tuSize);
+	end
+
+	getCoeff.is8x8.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+	guard
+		sizeOfTU = 8 and RCskip != 0
+	var
+		int(size=8) tuSize = 8
+	do
+		if(cIdx = 0) then
+			lumaBlk := [0: for int i in 0 .. 63];
+		elsif(cIdx = 1) then
+			chrBlk_u := [0: for int i in 0 .. 63];
+		else
+			chrBlk_v := [0: for int i in 0 .. 63];
+		end
+		incIdx(tuSize);
+	end
+
+	getCoeff.is16x16: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 16*16
+			==>
+	guard
+		sizeOfTU = 16 and RCskip = 0
+	var
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 4,
+		int offset = (1 << (shift -1)),
+		int(size=8) tuSize = 16,
+	 	int(size=16) block[16*16]
+	do
+		if(transfSkipFlag = 1) then
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 255];
+		else
+			transform_16x16(block, coeff, 16);
+		end
+
+		reorderTu(block, tuSize);
+		if(cIdx = 0) then
+			numPartToSend := 16;
+		end
+		incIdx(tuSize);
+	end
+
+	getCoeff.is16x16.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+	guard
+		sizeOfTU = 16 and RCskip != 0
+	var
+		int(size=8) tuSize = 16
+	do
+		if(cIdx = 0) then
+			numPartToSend := 16;
+			lumaBlk := [0: for int i in 0 .. 255];
+		elsif(cIdx = 1) then
+			chrBlk_u := [0: for int i in 0 .. 255];
+		else
+			chrBlk_v := [0: for int i in 0 .. 255];
+		end
+		incIdx(tuSize);
+	end
+
+	/* cIdx will be 0 */
+	getCoeff.is32x32: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 32*32
+			==>
+	guard
+		sizeOfTU = 32 and RCskip = 0
+	var
+		int(size=8) tuSize = 32,
+		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 5,
+		int offset = (1 << (shift -1)),
+	 	int(size=16) block[32*32]
+	do
+		if(transfSkipFlag = 1) then
+			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 1023];
+		else
+			transform_32x32(block, coeff, 32);
+		end
+		
+		reorderTu(block, tuSize);
+		numPartToSend := 64;
+		incIdx(tuSize);
+	end
+
+	getCoeff.is32x32.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+	guard
+		sizeOfTU = 32 and RCskip != 0
+	do
+		lumaBlk := [0: for int i in 0 .. 1023];
+		numPartToSend := 64;
+		incIdx(32);
+	end
+
+	getCoeff_is64x64: action
+		Size:[param] repeat 7*3
+			==>
+		Block_y:[[0: for int i in 0 .. 4095]] repeat 4096, 
+		Block_u:[[0: for int i in 0 .. 1023]] repeat 1024, 
+		Block_v:[[0: for int i in 0 .. 1023]] repeat 1024
+	guard
+		param[0] = 64 //sizeOfTU = 64
+	end
+
+	sendToken.launch: action ==>
+	guard
+		cIdx = 3
+	do
+		cIdx    := 0;
+		partIdx := 0;
+	end
+
+	sendToken.skip: action ==>
+	guard
+		cIdx < 3
+	end
+
+	sendBlock.launch: action 
+			==> 
+		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 63]] repeat 64, 
+		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 15]] repeat 16, 
+		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 15]] repeat 16
+	guard
+		partIdx < numPartToSend
+	var
+		uint(size=9) idx = partIdx
+	do
+		partIdx := partIdx + 4;
+	end
+
+	sendBlock.done: action ==>
+	guard
+		partIdx = numPartToSend
+	do
+		partIdx := 0;
+	end
+
+	schedule fsm GetCoeff:
+		GetCoeff  (getCoeff         )--> SendToken;
+		GetCoeff  (getCoeff_is64x64 )--> GetCoeff;
+		SendToken (sendToken.skip   )--> GetCoeff;
+		SendToken (sendToken.launch )--> SendBlock;
+
+		SendBlock (sendBlock.launch )--> SendBlock;
+		SendBlock (sendBlock.done   )--> GetCoeff;
+	end
+end

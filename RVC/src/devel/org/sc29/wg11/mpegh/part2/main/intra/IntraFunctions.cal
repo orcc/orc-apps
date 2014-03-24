@@ -1,0 +1,1136 @@
+package devel.org.sc29.wg11.mpegh.part2.main.intra;
+import std.util.Math.*;
+
+unit  IntraFunctions :
+	
+	int(size=7) intraPredAngle[64] = [0, 0, 32, 26, 21, 17, 13, 9, 5, 2, 0, -2,
+	-5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9, -5, -2, 0, 2, 5,
+	9, 13, 17, 21, 26, 32];
+
+	int(size=16) invAngle[64] =
+	[  0,     0,  -256, -315,  -390,  -482, -630,  -910, -1638, -4096,
+	   0, -4096, -1638, -910,  -630,  -482, -390,  -315,  -256,  -315,
+	-390,  -482,  -630, -910, -1638, -4096,    0, -4096, -1638,  -910,
+	-630,  -482,  -390, -315,  -256];
+	
+	@optimize_c(condition="defined(OPENHEVC_ENABLE)", name="pred_planar_orcc")
+	procedure intraPlanarPred(uint(size=8) src[64 * 64], uint(size=8) top[129] , uint(size=8) left [129], int  stride, int log2Size)
+	begin
+		if log2Size = 2 then
+			intraPlanarPred0(src, top, left, stride);
+		elsif log2Size = 3 then
+			intraPlanarPred1(src, top, left, stride);
+		elsif log2Size = 4 then
+			intraPlanarPred2(src, top, left, stride);
+		else
+			intraPlanarPred3(src, top, left, stride);
+		end
+	end
+	
+	@optimize_c(condition="defined(OPENHEVC_ENABLE) && defined(__SSE4_1__)", name="pred_angular_orcc")
+	procedure intraAngularPred(uint(size=8)src[4096], uint(size=8) top[129], uint(size=8) left[129], int stride, int idx, uint(size=8)mode, int log2Size)
+	begin
+		if (log2Size = 2) then
+			intraAngularPred0(src, top, left, stride, idx, mode);
+		elsif(log2Size = 3) then
+			intraAngularPred1(src, top, left, stride, idx, mode);
+		elsif(log2Size = 4) then
+			intraAngularPred2(src, top, left, stride, idx, mode);
+		else
+			intraAngularPred3(src, top, left, stride, idx, mode);
+		end	
+	end
+	
+	procedure intraPlanarPred0(uint(size=8) src[64 * 64], 
+		uint(size=8) top[129] , uint(size=8) left [129], 
+		int  stride)
+	begin
+		foreach int y in 0 .. 4-1
+		do
+			foreach int x in 0 .. 4-1
+			do
+				src[x + y * stride] := ((3 - x) * left[y + 1] + (x + 1) * top[5] + (3 - y) * top[x + 1]  + (y + 1) * left[5] + 4) >> 3;
+			end
+		end
+	end
+	
+	procedure intraPlanarPred1(uint(size=8) src[64 * 64], 
+		uint(size=8) top[129] , uint(size=8) left [129], 
+		int  stride)
+	begin
+		foreach int y in 0 .. 8-1
+		do
+			foreach int x in 0 .. 8-1
+			do
+				src[x + y * stride] := ((7 - x) * left[y + 1] + (x + 1) * top[9] + (7 - y) * top[x + 1]  + (y + 1) * left[9] + 8) >> 4;
+			end
+		end
+	end
+	
+	procedure intraPlanarPred2(uint(size=8) src[64 * 64], 
+		uint(size=8) top[129] , uint(size=8) left [129], 
+		int  stride)
+	var
+		int x := 0,
+		int y := 0
+	begin
+		while (y < 16)
+		do
+			while (x < 16) 
+			do
+				src[x + y * stride] := ((15 - x) * left[y + 1] + (x + 1) * top[17]  + (15 - y) * top[x + 1]  + (y + 1) * left[17] + 16) >> 5;
+				src[x + 1 + y * stride] := ((15 - (x + 1)) * left[y + 1] + (x + 1 + 1) * top[17]  + (15 - y) * top[x + 1 + 1]  + (y + 1) * left[17] + 16) >> 5;
+				src[x + 2 + y * stride] := ((15 - (x + 2)) * left[y + 1] + (x + 2 + 1) * top[17]  + (15 - y) * top[x + 2 + 1]  + (y + 1) * left[17] + 16) >> 5;
+				src[x + 3 + y * stride] := ((15 - (x + 3)) * left[y + 1] + (x + 3 + 1) * top[17]  + (15 - y) * top[x + 3 + 1]  + (y + 1) * left[17] + 16) >> 5;
+				x := x + 4;
+			end
+			x := 0;
+			while (x < 16) 
+			do
+				src[x + (y + 1) * stride] := ((15 - x) * left[(y + 1) + 1] + (x + 1) * top[17]  + (15 - (y + 1)) * top[x + 1]  + ((y + 1) + 1) * left[17] + 16) >> 5;
+				src[x + 1 + (y + 1) * stride] := ((15 - (x + 1)) * left[(y + 1) + 1] + (x + 1 + 1) * top[17]  + (15 - (y + 1)) * top[x + 1 + 1]  + ((y + 1) + 1) * left[17] + 16) >> 5;
+				src[x + 2 + (y + 1) * stride] := ((15 - (x + 2)) * left[(y + 1) + 1] + (x + 2 + 1) * top[17]  + (15 - (y + 1)) * top[x + 2 + 1]  + ((y + 1) + 1) * left[17] + 16) >> 5;
+				src[x + 3 + (y + 1) * stride] := ((15 - (x + 3)) * left[(y + 1) + 1] + (x + 3 + 1) * top[17]  + (15 - (y + 1)) * top[x + 3 + 1]  + ((y + 1) + 1) * left[17] + 16) >> 5;
+				x := x + 4;
+			end
+			x := 0;
+			while (x < 16) 
+			do
+				src[x + (y + 2) * stride] := ((15 - x) * left[(y + 2) + 1] + (x + 1) * top[17]  + (15 - (y + 2)) * top[x + 1]  + ((y + 2) + 1) * left[17] + 16) >> 5;
+				src[x + 1 + (y + 2) * stride] := ((15 - (x + 1)) * left[(y + 2) + 1] + (x + 1 + 1) * top[17]  + (15 - (y + 2)) * top[x + 1 + 1]  + ((y + 2) + 1) * left[17] + 16) >> 5;
+				src[x + 2 + (y + 2) * stride] := ((15 - (x + 2)) * left[(y + 2) + 1] + (x + 2 + 1) * top[17]  + (15 - (y + 2)) * top[x + 2 + 1]  + ((y + 2) + 1) * left[17] + 16) >> 5;
+				src[x + 3 + (y + 2) * stride] := ((15 - (x + 3)) * left[(y + 2) + 1] + (x + 3 + 1) * top[17]  + (15 - (y + 2)) * top[x + 3 + 1]  + ((y + 2) + 1) * left[17] + 16) >> 5;
+				x := x + 4;
+			end
+			x := 0;
+			while (x < 16) 
+			do
+				src[x + (y + 3) * stride] := ((15 - x) * left[(y + 3) + 1] + (x + 1) * top[17]  + (15 - (y + 3)) * top[x + 1]  + ((y + 3) + 1) * left[17] + 16) >> 5;
+				src[x + 1 + (y + 3) * stride] := ((15 - (x + 1)) * left[(y + 3) + 1] + (x + 1 + 1) * top[17]  + (15 - (y + 3)) * top[x + 1 + 1]  + ((y + 3) + 1) * left[17] + 16) >> 5;
+				src[x + 2 + (y + 3) * stride] := ((15 - (x + 2)) * left[(y + 3) + 1] + (x + 2 + 1) * top[17]  + (15 - (y + 3)) * top[x + 2 + 1]  + ((y + 3) + 1) * left[17] + 16) >> 5;
+				src[x + 3 + (y + 3) * stride] := ((15 - (x + 3)) * left[(y + 3) + 1] + (x + 3 + 1) * top[17]  + (15 - (y + 3)) * top[x + 3 + 1]  + ((y + 3) + 1) * left[17] + 16) >> 5;
+				x := x + 4;
+			end
+			x := 0;
+			y := y + 4;
+		end
+	end
+	
+	procedure intraPlanarPred3(uint(size=8) src[64 * 64], 
+		uint(size=8) top[129] , uint(size=8) left [129], 
+		int  stride)
+		var
+		int x := 0,
+		int y := 0
+	begin
+		while(y < 32)
+		do
+			while (x < 32)
+			do
+				src[x + y * stride] := ((31 - x) * left[y + 1] + (x + 1) * top[33]  + (31 - y) * top[x + 1]  + (y + 1) * left[33] + 32) >> 6;
+				src[x + 1 + y * stride] := ((31 - (x + 1)) * left[y + 1] + (x + 1 + 1) * top[33]  + (31 - y) * top[x + 1 + 1]  + (y + 1) * left[33] + 32) >> 6;
+				src[x + 2 + y * stride] := ((31 - (x + 2)) * left[y + 1] + (x + 2 + 1) * top[33]  + (31 - y) * top[x + 2 + 1]  + (y + 1) * left[33] + 32) >> 6;
+				src[x + 3 + y * stride] := ((31 - (x + 3)) * left[y + 1] + (x + 3 + 1) * top[33]  + (31 - y) * top[x + 3 + 1]  + (y + 1) * left[33] + 32) >> 6;
+				x := x + 4;
+			end
+			x := 0;
+			while (x < 32)
+			do
+				src[x + (y + 1) * stride] := ((31 - x) * left[(y + 1) + 1] + (x + 1) * top[33]  + (31 - (y + 1)) * top[x + 1]  + ((y + 1) + 1) * left[33] + 32) >> 6;
+				src[x + 1 + (y + 1) * stride] := ((31 - (x + 1)) * left[(y + 1) + 1] + (x + 1 + 1) * top[33]  + (31 - (y + 1)) * top[x + 1 + 1]  + ((y + 1) + 1) * left[33] + 32) >> 6;
+				src[x + 2 + (y + 1) * stride] := ((31 - (x + 2)) * left[(y + 1) + 1] + (x + 2 + 1) * top[33]  + (31 - (y + 1)) * top[x + 2 + 1]  + ((y + 1) + 1) * left[33] + 32) >> 6;
+				src[x + 3 + (y + 1) * stride] := ((31 - (x + 3)) * left[(y + 1) + 1] + (x + 3 + 1) * top[33]  + (31 - (y + 1)) * top[x + 3 + 1]  + ((y + 1) + 1) * left[33] + 32) >> 6;
+				x := x + 4;
+			end
+			x := 0;
+			while (x < 32)
+			do
+				src[x + (y + 2) * stride] := ((31 - x) * left[(y + 2) + 1] + (x + 1) * top[33]  + (31 - (y + 2)) * top[x + 1]  + ((y + 2) + 1) * left[33] + 32) >> 6;
+				src[x + 1 + (y + 2) * stride] := ((31 - (x + 1)) * left[(y + 2) + 1] + (x + 1 + 1) * top[33]  + (31 - (y + 2)) * top[x + 1 + 1]  + ((y + 2) + 1) * left[33] + 32) >> 6;
+				src[x + 2 + (y + 2) * stride] := ((31 - (x + 2)) * left[(y + 2) + 1] + (x + 2 + 1) * top[33]  + (31 - (y + 2)) * top[x + 2 + 1]  + ((y + 2) + 1) * left[33] + 32) >> 6;
+				src[x + 3 + (y + 2) * stride] := ((31 - (x + 3)) * left[(y + 2) + 1] + (x + 3 + 1) * top[33]  + (31 - (y + 2)) * top[x + 3 + 1]  + ((y + 2) + 1) * left[33] + 32) >> 6;
+				x := x + 4;
+			end
+			x := 0;
+			while (x < 32)
+			do
+				src[x + (y + 3) * stride] := ((31 - x) * left[(y + 3) + 1] + (x + 1) * top[33]  + (31 - (y + 3)) * top[x + 1]  + ((y + 3) + 1) * left[33] + 32) >> 6;
+				src[x + 1 + (y + 3) * stride] := ((31 - (x + 1)) * left[(y + 3) + 1] + (x + 1 + 1) * top[33]  + (31 - (y + 3)) * top[x + 1 + 1]  + ((y + 3) + 1) * left[33] + 32) >> 6;
+				src[x + 2 + (y + 3) * stride] := ((31 - (x + 2)) * left[(y + 3) + 1] + (x + 2 + 1) * top[33]  + (31 - (y + 3)) * top[x + 2 + 1]  + ((y + 3) + 1) * left[33] + 32) >> 6;
+				src[x + 3 + (y + 3) * stride] := ((31 - (x + 3)) * left[(y + 3) + 1] + (x + 3 + 1) * top[33]  + (31 - (y + 3)) * top[x + 3 + 1]  + ((y + 3) + 1) * left[33] + 32) >> 6;
+				x := x + 4;
+			end
+			x := 0;
+			y := y + 4;
+		end
+		
+	end
+	
+	procedure intraAngularPred0(uint(size=8)comp[4096], 
+		uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], 
+		int stride, int idx, uint(size=8)mode)
+	var
+		uint(size=6) OFFSET = 33,
+		uint(size=6) angle := mode & 63,
+		uint(size=8) refMain[128+33],
+		int(size=9) iIdx,
+		uint(size=5) iFact
+	begin
+		if(angle=26 || angle = 10) then
+			if idx = 0 then
+				intraAngularVertOrHor0(angle=26,comp, pNeighb_above, pNeighb_left, stride);
+			else
+				intraAngularVertOrHor_chroma_0(angle=26,comp, pNeighb_above, pNeighb_left, stride);
+			end
+		else
+			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
+			 * mode.
+			 */
+			if(angle>=18) then 
+				refMain[OFFSET] := pNeighb_above[0];
+				
+				refMain[1 + OFFSET] := pNeighb_above[1 - 1 + 1];
+				refMain[2 + OFFSET] := pNeighb_above[2 - 1 + 1];
+				refMain[3 + OFFSET] := pNeighb_above[3 - 1 + 1];
+				refMain[4 + OFFSET] := pNeighb_above[4 - 1 + 1];
+		
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (4*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_left[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+				
+					refMain[5 + OFFSET] := pNeighb_above[5 - 1 + 1];
+					refMain[6 + OFFSET] := pNeighb_above[6 - 1 + 1];
+					refMain[7 + OFFSET] := pNeighb_above[7 - 1 + 1];
+					refMain[8 + OFFSET] := pNeighb_above[8 - 1 + 1];
+					
+				end
+			else  
+				refMain[OFFSET] := pNeighb_above[0];
+				
+				refMain[1+OFFSET] := pNeighb_left[1-1+1];
+				refMain[2+OFFSET] := pNeighb_left[2-1+1];
+				refMain[3+OFFSET] := pNeighb_left[3-1+1];
+				refMain[4+OFFSET] := pNeighb_left[4-1+1];
+					
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (4*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_above[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					refMain[5+OFFSET] := pNeighb_left[5-1+1];
+					refMain[6+OFFSET] := pNeighb_left[6-1+1];
+					refMain[7+OFFSET] := pNeighb_left[7-1+1];
+					refMain[8+OFFSET] := pNeighb_left[8-1+1];
+				end
+			end
+			if(angle>=18) then
+				foreach uint y in 0 .. 4-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					if(iFact!=0) then
+						comp[0 + y * stride] := ((32-iFact)*refMain[0+iIdx+1 +OFFSET] + iFact*refMain[0+iIdx+2 +OFFSET]+16) >> 5;
+						comp[1 + y * stride] := ((32-iFact)*refMain[1+iIdx+1 +OFFSET] + iFact*refMain[1+iIdx+2 +OFFSET]+16) >> 5;
+						comp[2 + y * stride] := ((32-iFact)*refMain[2+iIdx+1 +OFFSET] + iFact*refMain[2+iIdx+2 +OFFSET]+16) >> 5;
+						comp[3 + y * stride] := ((32-iFact)*refMain[3+iIdx+1 +OFFSET] + iFact*refMain[3+iIdx+2 +OFFSET]+16) >> 5;
+					else
+						comp[0 + y * stride] := refMain[0 + iIdx + 1 + OFFSET];
+						comp[1 + y * stride] := refMain[1 + iIdx + 1 + OFFSET];
+						comp[2 + y * stride] := refMain[2 + iIdx + 1 + OFFSET];
+						comp[3 + y * stride] := refMain[3 + iIdx + 1 + OFFSET];
+					end
+				end
+			else
+				foreach uint y in 0 .. 4-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					
+					if(iFact!=0) then
+						comp[y + 0 * stride] := ((32-iFact)*refMain[0+iIdx+1 +OFFSET] + iFact*refMain[0+iIdx+2 +OFFSET]+16) >> 5;
+						comp[y + 1 * stride] := ((32-iFact)*refMain[1+iIdx+1 +OFFSET] + iFact*refMain[1+iIdx+2 +OFFSET]+16) >> 5;
+						comp[y + 2 * stride] := ((32-iFact)*refMain[2+iIdx+1 +OFFSET] + iFact*refMain[2+iIdx+2 +OFFSET]+16) >> 5;
+						comp[y + 3 * stride] := ((32-iFact)*refMain[3+iIdx+1 +OFFSET] + iFact*refMain[3+iIdx+2 +OFFSET]+16) >> 5;
+					else
+						comp[y + 0 * stride] := refMain[0 + iIdx + 1 + OFFSET];
+						comp[y + 1 * stride] := refMain[1 + iIdx + 1 + OFFSET];
+						comp[y + 2 * stride] := refMain[2 + iIdx + 1 + OFFSET];
+						comp[y + 3 * stride] := refMain[3 + iIdx + 1 + OFFSET];
+					end
+				end
+			end
+		end
+	end
+	
+	procedure intraAngularPred1(uint(size=8)lumaComp[4096], 
+		uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], 
+		int stride, int idx, uint(size=8)mode)
+	var
+		uint(size=6) OFFSET = 33,
+		uint(size=6) angle := mode & 63,
+		uint(size=8) refMain[128+33],
+		int(size=9) iIdx,
+		uint(size=5) iFact
+	begin
+		if(angle=26 || angle = 10) then
+			if idx = 0 then
+				intraAngularVertOrHor1(angle=26,lumaComp, pNeighb_above, pNeighb_left, stride);
+			else
+				intraAngularVertOrHor_chroma_1(angle=26,lumaComp, pNeighb_above, pNeighb_left, stride);
+			end
+		else
+			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
+			 * mode.
+			 */
+			if(angle>=18) then 
+				refMain[OFFSET] := pNeighb_above[0];
+				foreach uint x in 1 .. 8
+				do
+					refMain[x+OFFSET] := pNeighb_above[x-1+1];
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (8*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_left[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					foreach uint x in 8+1 .. 2*8
+					do
+						refMain[x+OFFSET] := pNeighb_above[x-1+1];
+					end
+				end
+			else  
+				refMain[OFFSET] := pNeighb_above[0];
+				foreach uint x in 1 .. 8
+				do
+					refMain[x+OFFSET] := pNeighb_left[x-1+1];
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (8*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_above[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					foreach uint x in 8+1 .. 2*8
+					do
+						refMain[x+OFFSET] := pNeighb_left[x-1+1];
+					end
+				end
+			end
+			if(angle>=18) then
+				foreach uint y in 0 .. 8-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					foreach uint x in 0 .. 8-1
+					do
+						if(iFact!=0) then
+							lumaComp[x + y * stride] :=
+								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							lumaComp[x + y * stride] := refMain[x+iIdx+1 +OFFSET];
+						end
+					end
+				end
+			else
+				foreach uint y in 0 .. 8-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					foreach uint x in 0 .. 8-1
+					do
+						if(iFact!=0) then
+							lumaComp[y + x * stride] :=
+								((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+								iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							lumaComp[y + x * stride] := refMain[x+iIdx+1 +OFFSET];
+						end
+					end
+				end
+			end
+		end
+	end
+	
+	procedure intraAngularPred2(uint(size=8)comp[4096], 
+		uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], 
+		int stride, int idx, uint(size=8)mode)
+	var
+		uint(size=6) OFFSET = 33,
+		uint(size=6) angle := mode & 63,
+		uint(size=8) refMain[128+33],
+		int(size=9) iIdx,
+		uint(size=5) iFact,
+		int x := 0
+	begin
+		if(angle=26 || angle = 10) then
+			if idx = 0 then
+				intraAngularVertOrHor2(angle=26,comp, pNeighb_above, pNeighb_left, stride);
+			else
+				intraAngularVertOrHor_chroma_2(angle=26,comp, pNeighb_above, pNeighb_left, stride);
+			end
+		else
+			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
+			 * mode.
+			 */
+			if(angle>=18) then 
+				refMain[OFFSET] := pNeighb_above[0];
+				x := 1;
+				while (x <= 16)
+				do
+					refMain[x+OFFSET] := pNeighb_above[x-1+1];
+					refMain[x + 1 +OFFSET] := pNeighb_above[x + 1 -1+1];
+					refMain[x + 2 +OFFSET] := pNeighb_above[x + 2 -1+1];
+					refMain[x + 3 +OFFSET] := pNeighb_above[x + 3 -1+1];
+					x := x + 4;
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (16*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_left[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					x := 17;
+					while (x <= 32)
+					do
+						refMain[x+OFFSET] := pNeighb_above[x-1+1];
+						refMain[x + 1 +OFFSET] := pNeighb_above[x + 1 -1+1];
+						refMain[x + 2 +OFFSET] := pNeighb_above[x + 2 -1+1];
+						refMain[x + 3 +OFFSET] := pNeighb_above[x + 3 -1+1];
+						x := x + 4;
+					end
+				end
+			else  
+				refMain[OFFSET] := pNeighb_above[0];
+				x := 1;
+				while (x <= 16)
+				do
+					refMain[x+OFFSET] := pNeighb_left[x-1+1];
+					refMain[x + 1 +OFFSET] := pNeighb_left[x + 1 -1+1];
+					refMain[x + 2 +OFFSET] := pNeighb_left[x + 2 -1+1];
+					refMain[x + 3 +OFFSET] := pNeighb_left[x + 3 -1+1];
+					x := x + 4;
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (16*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_above[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					x := 17;
+					while (x <= 32)
+					do
+						refMain[x+OFFSET] := pNeighb_left[x-1+1];
+						refMain[x + 1 +OFFSET] := pNeighb_left[x + 1 -1+1];
+						refMain[x + 2 +OFFSET] := pNeighb_left[x + 2 -1+1];
+						refMain[x + 3 +OFFSET] := pNeighb_left[x + 3 -1+1];
+						x := x + 4;
+					end
+				end
+			end
+			if(angle>=18) then
+				foreach uint y in 0 .. 16-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					x := 0;
+					while (x < 16)
+					do
+						if(iFact!=0) then
+							comp[x + y * stride] := ((32-iFact)*refMain[x +iIdx+1 +OFFSET] + iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							comp[x + 1 + y * stride] := ((32-iFact)*refMain[x + 1 +iIdx+1 +OFFSET] + iFact*refMain[x + 1 +iIdx+2 +OFFSET]+16) >> 5;
+							comp[x + 2 + y * stride] := ((32-iFact)*refMain[x + 2 +iIdx+1 +OFFSET] + iFact*refMain[x + 2 +iIdx+2 +OFFSET]+16) >> 5;
+							comp[x + 3 + y * stride] := ((32-iFact)*refMain[x + 3 +iIdx+1 +OFFSET] + iFact*refMain[x + 3 +iIdx+2 +OFFSET]+16) >> 5;
+						else
+							comp[x + y * stride] := refMain[x+iIdx+1 +OFFSET];
+							comp[x + 1 + y * stride] := refMain[x + 1 +iIdx+1 +OFFSET];
+							comp[x + 2 + y * stride] := refMain[x + 2 +iIdx+1 +OFFSET];
+							comp[x + 3 + y * stride] := refMain[x + 3 +iIdx+1 +OFFSET];
+						end
+						x := x + 4;
+					end
+				end
+			else
+				foreach uint y in 0 .. 16-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					x := 0;
+					while (x < 16)
+					do
+						if(iFact!=0) then
+							comp[y + x * stride] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] + iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							comp[y + (x + 1) * stride] := ((32-iFact)*refMain[(x + 1)+iIdx+1 +OFFSET] + iFact*refMain[(x + 1)+iIdx+2 +OFFSET]+16) >> 5;
+							comp[y + (x + 2) * stride] := ((32-iFact)*refMain[(x + 2)+iIdx+1 +OFFSET] + iFact*refMain[(x + 2)+iIdx+2 +OFFSET]+16) >> 5;
+							comp[y + (x + 3) * stride] := ((32-iFact)*refMain[(x + 3)+iIdx+1 +OFFSET] + iFact*refMain[(x + 3)+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							comp[y + x * stride] := refMain[x+iIdx+1 +OFFSET];
+							comp[y + (x + 1) * stride] := refMain[(x + 1)+iIdx+1 +OFFSET];
+							comp[y + (x + 2) * stride] := refMain[(x + 2)+iIdx+1 +OFFSET];
+							comp[y + (x + 3) * stride] := refMain[(x + 3)+iIdx+1 +OFFSET];
+						end
+						x := x + 4;
+					end
+				end
+			end
+		end
+	end
+	
+	procedure intraAngularPred3(uint(size=8)comp[4096], 
+		uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], 
+		int stride, int idx, uint(size=8) mode)
+	var
+		uint(size=6) OFFSET = 33,
+		uint(size=6) angle := mode & 63,
+		uint(size=8) refMain[128+33],
+		int(size=9) iIdx,
+		uint(size=5) iFact,
+		int x := 0
+	begin
+		if(angle=26 || angle = 10) then
+			if idx = 0 then
+				intraAngularVertOrHor3(angle=26,comp, pNeighb_above, pNeighb_left, stride);
+			else
+				intraAngularVertOrHor_chroma_3(angle=26,comp, pNeighb_above, pNeighb_left, stride);
+			end
+		else
+			/* Implementation of Intra_Angular(2..9,11..25,27..34) prediction
+			 * mode.
+			 */
+			if(angle>=18) then 
+				refMain[OFFSET] := pNeighb_above[0];
+				x := 1;
+				while (x <= 32)
+				do
+					refMain[x+OFFSET] := pNeighb_above[x-1+1];
+					refMain[x + 1 +OFFSET] := pNeighb_above[x + 1 -1+1];
+					refMain[x + 2 +OFFSET] := pNeighb_above[x + 2 -1+1];
+					refMain[x + 3 +OFFSET] := pNeighb_above[x + 3 -1+1];
+					x := x + 4;
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (32*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_left[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					x := 33;
+					while (x <= 64)
+					do
+						refMain[x+OFFSET] := pNeighb_above[x-1+1];
+						refMain[x + 1 +OFFSET] := pNeighb_above[x + 1 -1+1];
+						refMain[x + 2 +OFFSET] := pNeighb_above[x + 2 -1+1];
+						refMain[x + 3 +OFFSET] := pNeighb_above[x + 3 -1+1];
+						x := x + 4;
+					end
+				end
+			else  
+				refMain[OFFSET] := pNeighb_above[0];
+				x := 1;
+				while (x <= 32)
+				do
+					refMain[x+OFFSET] := pNeighb_left[x-1+1];
+					refMain[x + 1 +OFFSET] := pNeighb_left[x + 1 -1+1];
+					refMain[x + 2 +OFFSET] := pNeighb_left[x + 2 -1+1];
+					refMain[x + 3 +OFFSET] := pNeighb_left[x + 3 -1+1];
+					x := x + 4;
+				end
+				if(intraPredAngle[angle]<0) then
+					foreach int k in (32*intraPredAngle[angle])>>5 .. -1
+					do
+						refMain[k+OFFSET] :=
+							pNeighb_above[((k*invAngle[angle]+128)>>8)-1+1];
+					end
+				else
+					x := 33;
+					while (x <= 64)
+					do
+						refMain[x+OFFSET] := pNeighb_left[x-1+1];
+						refMain[x + 1 +OFFSET] := pNeighb_left[x + 1 -1+1];
+						refMain[x + 2 +OFFSET] := pNeighb_left[x + 2 -1+1];
+						refMain[x + 3 +OFFSET] := pNeighb_left[x + 3 -1+1];
+						x := x + 4;
+					end
+				end
+			end
+			if(angle>=18) then
+				foreach uint y in 0 .. 32-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					x := 0;
+					while (x < 32)
+					do
+						if(iFact!=0) then
+							comp[x + y * stride] := ((32-iFact)*refMain[x +iIdx+1 +OFFSET] + iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							comp[x + 1 + y * stride] := ((32-iFact)*refMain[x + 1 +iIdx+1 +OFFSET] + iFact*refMain[x + 1 +iIdx+2 +OFFSET]+16) >> 5;
+							comp[x + 2 + y * stride] := ((32-iFact)*refMain[x + 2 +iIdx+1 +OFFSET] + iFact*refMain[x + 2 +iIdx+2 +OFFSET]+16) >> 5;
+							comp[x + 3 + y * stride] := ((32-iFact)*refMain[x + 3 +iIdx+1 +OFFSET] + iFact*refMain[x + 3 +iIdx+2 +OFFSET]+16) >> 5;
+						else
+							comp[x + y * stride] := refMain[x+iIdx+1 +OFFSET];
+							comp[x + 1 + y * stride] := refMain[x + 1 +iIdx+1 +OFFSET];
+							comp[x + 2 + y * stride] := refMain[x + 2 +iIdx+1 +OFFSET];
+							comp[x + 3 + y * stride] := refMain[x + 3 +iIdx+1 +OFFSET];
+						end
+						x := x + 4;
+					end
+				end
+			else
+				foreach uint y in 0 .. 32-1
+				do
+					iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+					iFact := ((y+1)*intraPredAngle[angle])&31;
+					x := 0;
+					while (x < 32)
+					do
+						if(iFact!=0) then
+							comp[y + x * stride] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] + iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+							comp[y + (x + 1) * stride] := ((32-iFact)*refMain[(x + 1)+iIdx+1 +OFFSET] + iFact*refMain[(x + 1)+iIdx+2 +OFFSET]+16) >> 5;
+							comp[y + (x + 2) * stride] := ((32-iFact)*refMain[(x + 2)+iIdx+1 +OFFSET] + iFact*refMain[(x + 2)+iIdx+2 +OFFSET]+16) >> 5;
+							comp[y + (x + 3) * stride] := ((32-iFact)*refMain[(x + 3)+iIdx+1 +OFFSET] + iFact*refMain[(x + 3)+iIdx+2 +OFFSET]+16) >> 5;
+						else
+							comp[y + x * stride] := refMain[x+iIdx+1 +OFFSET];
+							comp[y + (x + 1) * stride] := refMain[(x + 1)+iIdx+1 +OFFSET];
+							comp[y + (x + 2) * stride] := refMain[(x + 2)+iIdx+1 +OFFSET];
+							comp[y + (x + 3) * stride] := refMain[(x + 3)+iIdx+1 +OFFSET];
+						end
+						x := x + 4;
+					end
+				end
+			end
+		end
+	end
+
+	/* Implementation of Intra_angular(10,26) prediction mode. */
+	procedure intraAngularVertOrHor0(bool isVertical, uint(size=8)lumaComp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) minVal
+	begin
+		minVal := if(4>16) then 0 else 1 end;
+		if(isVertical) then
+			if(minVal!=0) then
+				foreach uint y in 0 .. 4-1
+				do
+					lumaComp[y * stride] := clip_i32(pNeighb_above[0+1]+
+						((pNeighb_left[y+1]-pNeighb_above[0])>>1), 0, 255);
+				end
+			end
+			foreach uint x in minVal .. 4-1
+			do
+				foreach uint y in 0 .. 4-1
+				do
+					lumaComp[x + y * stride] := pNeighb_above[x+1];
+				end
+			end
+		else
+			if(minVal!=0) then
+				foreach uint x in 0 .. 4-1
+				do
+					lumaComp[x] := clip_i32(pNeighb_left[0+1]+
+						((pNeighb_above[x+1]-pNeighb_above[0])>>1), 0, 255);
+				end
+			end
+			foreach uint x in 0 .. 4-1
+			do
+				foreach uint y in minVal .. 4-1
+				do
+					lumaComp[x + y * stride] := pNeighb_left[y+1];
+				end
+			end
+		end
+	end
+	
+	/* Implementation of Intra_angular(10,26) prediction mode. */
+	procedure intraAngularVertOrHor1(bool isVertical, uint(size=8)lumaComp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) minVal
+	begin
+		minVal := if(8>16) then 0 else 1 end;
+		if(isVertical) then
+			if(minVal!=0) then
+				foreach uint y in 0 .. 8-1
+				do
+					lumaComp[y * stride] := clip_i32(pNeighb_above[0+1]+
+						((pNeighb_left[y+1]-pNeighb_above[0])>>1), 0, 255);
+				end
+			end
+			foreach uint x in minVal .. 8-1
+			do
+				foreach uint y in 0 .. 8-1
+				do
+					lumaComp[x + y * stride] := pNeighb_above[x+1];
+				end
+			end
+		else
+			if(minVal!=0) then
+				foreach uint x in 0 .. 8-1
+				do
+					lumaComp[x] := clip_i32(pNeighb_left[0+1]+
+						((pNeighb_above[x+1]-pNeighb_above[0])>>1), 0, 255);
+				end
+			end
+			foreach uint x in 0 .. 8-1
+			do
+				foreach uint y in minVal .. 8-1
+				do
+					lumaComp[x + y * stride] := pNeighb_left[y+1];
+				end
+			end
+		end
+	end
+	/* Implementation of Intra_angular(10,26) prediction mode. */
+	procedure intraAngularVertOrHor2(bool isVertical, uint(size=8)comp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) minVal,
+		int x := 0,
+		int y := 0
+	begin
+		minVal := if(16>16) then 0 else 1 end;
+		if(isVertical) then
+			if(minVal!=0) then
+				y := 0;
+				while (y < 16)
+				do
+					comp[y * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[y+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[(y + 1) * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[(y + 1)+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[(y + 2) * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[(y + 2)+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[(y + 3) * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[(y + 3)+1]-pNeighb_above[0])>>1), 0, 255);
+					y := y + 4;
+				end
+				x := 1;
+				while (x < 16)
+				do
+					y := 0;
+					while (y < 16)
+					do
+						comp[x + y * stride] := pNeighb_above[x+1];
+						comp[x + (y + 1) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 2) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 3) * stride] := pNeighb_above[x+1];
+						y := y + 4;
+					end
+					x := x + 1;
+				end
+			else
+				x := 0;
+				while (x < 16)
+				do
+					y := 0;
+					while (y < 16)
+					do
+						comp[x + y * stride] := pNeighb_above[x+1];
+						comp[x + (y + 1) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 2) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 3) * stride] := pNeighb_above[x+1];
+						y := y + 4;
+					end
+					x := x + 1;
+				end
+			end
+		else
+			if(minVal!=0) then
+				x := 0;
+				while (x < 16)
+				do
+					comp[x] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[x + 1] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x + 1 +1]-pNeighb_above[0])>>1), 0, 255);
+					comp[x + 2] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x + 2 +1]-pNeighb_above[0])>>1), 0, 255);
+					comp[x + 3] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x + 3 +1]-pNeighb_above[0])>>1), 0, 255);
+					x := x + 4; 
+				end
+				x := 0;
+				while (x < 16)
+				do
+					y := 1;
+					while (y < 16)
+					do
+						comp[x + y * stride] := pNeighb_left[y+1];
+						y := y + 1;
+					end
+					x := x + 1;
+				end
+			else
+				while (x < 16)
+				do
+					y := 0;
+					while (y < 16)
+					do
+						comp[x + y * stride] := pNeighb_left[y+1];
+						comp[x + (y + 1) * stride] := pNeighb_left[(y + 1)+1];
+						comp[x + (y + 2) * stride] := pNeighb_left[(y + 2)+1];
+						comp[x + (y + 3) * stride] := pNeighb_left[(y + 3)+1];
+						y := y + 4;
+					end
+					x := x + 1;
+				end
+			end
+		end
+	end
+	
+	/* Implementation of Intra_angular(10,26) prediction mode. */
+	procedure intraAngularVertOrHor3(bool isVertical, uint(size=8)comp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) minVal,
+		int x := 0,
+		int y := 0
+	begin
+		minVal := if(32>16) then 0 else 1 end;
+		if(isVertical) then
+			if(minVal!=0) then
+				y := 0;
+				while (y < 32)
+				do
+					comp[y * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[y+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[(y + 1) * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[(y + 1)+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[(y + 2) * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[(y + 2)+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[(y + 3) * stride] := clip_i32(pNeighb_above[0+1]+ ((pNeighb_left[(y + 3)+1]-pNeighb_above[0])>>1), 0, 255);
+					y := y + 4;
+				end
+				x := 1;
+				while (x < 32)
+				do
+					y := 0;
+					while (y < 32)
+					do
+						comp[x + y * stride] := pNeighb_above[x+1];
+						comp[x + (y + 1) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 2) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 3) * stride] := pNeighb_above[x+1];
+						y := y + 4;
+					end
+					x := x + 1;
+				end
+			else
+				x := 0;
+				while (x < 32)
+				do
+					y := 0;
+					while (y < 32)
+					do
+						comp[x + y * stride] := pNeighb_above[x+1];
+						comp[x + (y + 1) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 2) * stride] := pNeighb_above[x+1];
+						comp[x + (y + 3) * stride] := pNeighb_above[x+1];
+						y := y + 4;
+					end
+					x := x + 1;
+				end
+			end
+		else
+			if(minVal!=0) then
+				x := 0;
+				while (x < 32)
+				do
+					comp[x] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x+1]-pNeighb_above[0])>>1), 0, 255);
+					comp[x + 1] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x + 1 +1]-pNeighb_above[0])>>1), 0, 255);
+					comp[x + 2] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x + 2 +1]-pNeighb_above[0])>>1), 0, 255);
+					comp[x + 3] := clip_i32(pNeighb_left[0+1]+ ((pNeighb_above[x + 3 +1]-pNeighb_above[0])>>1), 0, 255);
+					x := x + 4; 
+				end
+				x := 0;
+				while (x < 32)
+				do
+					y := 1;
+					while (y < 32)
+					do
+						comp[x + y * stride] := pNeighb_left[y+1];
+						y := y + 1;
+					end
+					x := x + 1;
+				end
+			else
+				while (x < 32)
+				do
+					y := 0;
+					while (y < 32)
+					do
+						comp[x + y * stride] := pNeighb_left[y+1];
+						comp[x + (y + 1) * stride] := pNeighb_left[(y + 1)+1];
+						comp[x + (y + 2) * stride] := pNeighb_left[(y + 2)+1];
+						comp[x + (y + 3) * stride] := pNeighb_left[(y + 3)+1];
+						y := y + 4;
+					end
+					x := x + 1;
+				end
+			end
+		end
+	end
+	
+	procedure intraAngularVertOrHor_chroma_0(bool isVertical, uint(size=8)comp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) neighbIdx = if(isVertical) then 0 else 1 end
+	begin
+		foreach uint x in 0 .. 4-1
+		do
+			if(neighbIdx=0) then
+				comp[x + stride * 0] := pNeighb_above[x+1];
+				comp[x + stride * 1] := pNeighb_above[x+1];
+				comp[x + stride * 2] := pNeighb_above[x+1];
+				comp[x + stride * 3] := pNeighb_above[x+1];
+			else
+				comp[0 + stride * x] := pNeighb_left[x+1];
+				comp[1 + stride * x] := pNeighb_left[x+1];
+				comp[2 + stride * x] := pNeighb_left[x+1];
+				comp[3 + stride * x] := pNeighb_left[x+1];
+			end
+		end
+	end
+	
+	procedure intraAngularVertOrHor_chroma_1(bool isVertical, uint(size=8)lumaComp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) neighbIdx = if(isVertical) then 0 else 1 end
+	begin
+		foreach uint x in 0 .. 8-1
+		do
+			foreach uint y in 0 .. 8-1
+			do
+				if(neighbIdx=0) then
+					lumaComp[x + stride * y] := pNeighb_above[x+1];
+				else
+					lumaComp[y + stride * x] := pNeighb_left[x+1];
+				end
+			end
+		end
+	end
+	
+	procedure intraAngularVertOrHor_chroma_2(bool isVertical, uint(size=8)comp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) neighbIdx = if(isVertical) then 0 else 1 end,
+		int y := 0
+	begin
+		foreach uint x in 0 .. 16-1
+		do
+			y := 0;
+			while (y < 16)
+			do
+				if(neighbIdx=0) then
+					comp[x + stride * y] := pNeighb_above[x+1];
+					comp[x + stride * (y + 1)] := pNeighb_above[x+1];
+					comp[x + stride * (y + 2)] := pNeighb_above[x+1];
+					comp[x + stride * (y + 3)] := pNeighb_above[x+1];
+				else
+					comp[y + stride * x] := pNeighb_left[x+1];
+					comp[(y + 1) + stride * x] := pNeighb_left[x+1];
+					comp[(y + 2) + stride * x] := pNeighb_left[x+1];
+					comp[(y + 3) + stride * x] := pNeighb_left[x+1];
+				end
+				y := y + 4;
+			end
+		end
+	end
+	
+	procedure intraAngularVertOrHor_chroma_3(bool isVertical, uint(size=8)comp[4096], uint(size=8) pNeighb_above[129], uint(size=8) pNeighb_left[129], int stride)
+	var
+		uint(size=1) neighbIdx = if(isVertical) then 0 else 1 end,
+		int y := 0
+	begin
+		foreach uint x in 0 .. 32-1
+		do
+			y := 0;
+			while (y < 32)
+			do
+				if(neighbIdx=0) then
+					comp[x + stride * y] := pNeighb_above[x+1];
+					comp[x + stride * (y + 1)] := pNeighb_above[x+1];
+					comp[x + stride * (y + 2)] := pNeighb_above[x+1];
+					comp[x + stride * (y + 3)] := pNeighb_above[x+1];
+				else
+					comp[y + stride * x] := pNeighb_left[x+1];
+					comp[(y + 1) + stride * x] := pNeighb_left[x+1];
+					comp[(y + 2) + stride * x] := pNeighb_left[x+1];
+					comp[(y + 3) + stride * x] := pNeighb_left[x+1];
+				end
+				y := y + 4;
+			end
+		end
+	end
+	
+	
+//	procedure intraPlanarPred_generic(uint(size=8) src[64 * 64], uint(size=8) top[129] , uint(size=8) left [129], 
+//		int  stride, int trafoSize)
+//	var
+//		int size_ := 1 << trafoSize
+//	begin
+//		foreach uint y in 0 .. size_-1
+//		do
+//			foreach uint x in 0 .. size_-1
+//			do
+//				src[x + y * stride] := ((size_ - 1 - x) * left[y + 1] + (x + 1) * top[size_ + 1] + (size_ - 1 - y) * top[x + 1]  + (y + 1) * left[size_ + 1] + size_) >> (trafoSize + 1);
+//			end
+//		end
+//	end
+	
+//////////////////////////////////////////////////OldProc//////////////////////////////////////////////////////
+//	procedure intraAngularPred_(uint(size=7) nS)
+//	var
+//		uint(size=6) OFFSET = 33,
+//		uint(size=6) angle := predMode & 63,
+//		uint(size=8) refMain[128+33],
+//		int(size=9) iIdx,
+//		uint(size=5) iFact
+//	begin
+//		if(angle>=18) then 
+//			refMain[OFFSET] := pNeighb_above[0];
+//			foreach uint x in 1 .. nS
+//			do
+//				refMain[x+OFFSET] := pNeighb_above[x-1+1];
+//			end
+//			if(intraPredAngle[angle]<0) then
+//				foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
+//				do
+//					refMain[k+OFFSET] :=
+//						pNeighb_left[((k*invAngle[angle]+128)>>8)-1+1];
+//				end
+//			else
+//				foreach uint x in nS+1 .. 2*nS
+//				do
+//					refMain[x+OFFSET] := pNeighb_above[x-1+1];
+//				end
+//			end
+//		else  
+//			refMain[OFFSET] := pNeighb_above[0];
+//			foreach uint x in 1 .. nS
+//			do
+//				refMain[x+OFFSET] := pNeighb_left[x-1+1];
+//			end
+//			if(intraPredAngle[angle]<0) then
+//				foreach int k in (nS*intraPredAngle[angle])>>5 .. -1
+//				do
+//					refMain[k+OFFSET] :=
+//						pNeighb_above[((k*invAngle[angle]+128)>>8)-1+1];
+//				end
+//			else
+//				foreach uint x in nS+1 .. 2*nS
+//				do
+//					refMain[x+OFFSET] := pNeighb_left[x-1+1];
+//				end
+//			end
+//		end
+//		if(angle>=18) then
+//			foreach uint y in 0 .. nS-1
+//			do
+//				iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+//				iFact := ((y+1)*intraPredAngle[angle])&31;
+//				foreach uint x in 0 .. nS-1
+//				do
+//					if(iFact!=0) then
+//						comp[x + y * 64] :=
+//							((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+//							iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+//					else
+//						comp[x + y * 64] := refMain[x+iIdx+1 +OFFSET];
+//					end
+//				end
+//			end
+//		else
+//			foreach uint y in 0 .. nS-1
+//			do
+//				iIdx  := ((y+1)*intraPredAngle[angle])>>5;
+//				iFact := ((y+1)*intraPredAngle[angle])&31;
+//				foreach uint x in 0 .. nS-1
+//				do
+//					if(iFact!=0) then
+//						comp[y + x * 64] :=
+//							((32-iFact)*refMain[x+iIdx+1 +OFFSET] +
+//							iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+//					else
+//						comp[y + x * 64] := refMain[x+iIdx+1 +OFFSET];
+//					end
+//				end
+//			end
+//		end
+//	end
+//	
+
+
+//////////////////////////////////////////////////NewProc//////////////////////////////////////////////////////
+//if(predMode>=18) then 
+//			refMain[OFFSET] := pNeighb_above[0];
+//			if angle < 0 and last < -1 then
+//				foreach int x in 1 .. size_
+//				do
+//					refMain[x+OFFSET] := pNeighb_above[x-1+1];
+//				end
+//				foreach int m in 0 .. last + 1 do
+//					x_ := last; 
+//            		refMain[x_+OFFSET] := pNeighb_left[-1 + ((x_ * invAngle[predMode - 11] + 128) >> 8)];
+//            		x_ := x_ - 1;
+//            	end
+//			end
+//			foreach uint y in 0 .. size_-1
+//			do
+//				iIdx  := ((y+1)*angle)>>5;
+//				iFact := ((y+1)*angle)&31;
+//				if(iFact!=0) then
+//					foreach uint x in 0 .. size_-1
+//					do
+//						comp[x + y * 64] := ((32-iFact)*refMain[x+iIdx+1 +OFFSET] + iFact*refMain[x+iIdx+2 +OFFSET]+16) >> 5;
+//					end
+//				else 
+//					foreach uint x in 0 .. size_-1 
+//					do
+//						comp[x + y * 64] := refMain[x+iIdx+1 +OFFSET];
+//					end
+//				end
+//			end
+//			if (predMode = 26 ) then
+//				foreach uint y in 0 .. size_-1
+//				do
+//					comp[y * 64] := clip_i32(pNeighb_above[0+1] + ((pNeighb_left[y+1]-pNeighb_left[0])>>1), 0, 255);
+//				end
+//			end
+//		else  
+//			refMain[OFFSET] := pNeighb_above[0];
+//			if angle < 0 and last < -1 then
+//				foreach int x in 1 .. size_
+//				do
+//					refMain[x+OFFSET] := pNeighb_above[x-1+1];
+//				end
+//				foreach int m in 0 .. last + 1 do
+//					x_ := last; 
+//            		refMain[x_+OFFSET] := pNeighb_above[-1 + ((x_ * invAngle[predMode - 11] + 128) >> 8)];
+//            		x_ := x_ - 1;
+//            	end
+//			end
+//			foreach uint x in 0 .. size_ - 1
+//			do
+//				iIdx  := ((x+1)*angle)>>5;
+//				iFact := ((x+1)*angle)&31;
+//				
+//					if(iFact!=0) then
+//						foreach uint y in 0 .. size_-1
+//						do
+//						comp[x + y * 64] :=
+//							((32-iFact)*refMain[y+iIdx+1 +OFFSET] +
+//							iFact*refMain[y+iIdx+2 +OFFSET]+16) >> 5;
+//						end
+//					else
+//						foreach uint y in 0 .. size_-1
+//						do
+//							comp[x + y * 64] := refMain[y+iIdx+1 +OFFSET];
+//						end
+//					end
+//				end
+//			end
+//			if (predMode = 10 ) then
+//				foreach uint x in 0 .. size_-1
+//				do
+//					comp[x] := clip_i32(pNeighb_left[0+1] + ((pNeighb_above[x+1]-pNeighb_above[0])>>1), 0, 255);
+//				end
+//			end	
+//		end		
+	
+
+end

@@ -61,6 +61,8 @@ package org.ietr.mpegh.part2.main.inter;
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
+import org.ietr.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+
 actor DecodingPictureBufferLuma ()
 	uint(size=2)  IsBiPredOrLx,
 	uint(size=1)  IsReadOrNewSlc,
@@ -72,12 +74,13 @@ actor DecodingPictureBufferLuma ()
 	int (size=16) RpsPoc,
 	uint(size=8)  Sample
 		==>
-	uint(size=8)  RefSample_Luma
+	uint(size=8)  RefSample
 		:
 
 
 	/* /!\ : Check the size of the border. */
-	uint(size = 16) BORDER_SIZE = 64 + 8;
+	/* Same values have to be used in DecodingPictureBufferFunctions ! */
+	uint(size = 16) BORDER_SIZE = 128;
 	uint(size = 8) DPB_SIZE = 17;
 
 	uint(size=8)  pictureBuffer[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE][PICT_WIDTH+2*BORDER_SIZE];
@@ -195,13 +198,13 @@ uint pictNum;
 	do
 		xPixIdx := BORDER_SIZE + xIdx*16;
 		yPixIdx := BORDER_SIZE + yIdx*16;
-		foreach int y in 0 .. 15
-		do
-			foreach int x in 0 .. 15
-			do
-				pictureBuffer[lastIdx][yPixIdx+y][xPixIdx+x] := samp[x+y*16];
-			end
-		end
+		
+		copy_cu_dpb_luma_cal(
+          samp,
+  	      pictureBuffer,
+  	      xPixIdx,
+  	      yPixIdx,
+  	      lastIdx);
 
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
@@ -221,26 +224,12 @@ uint pictNum;
 		int ySize := picSize[1]
 	do
 		/* Fill in luma border */
-		foreach int y in 0 .. BORDER_SIZE - 1
-		do
-			foreach int x in BORDER_SIZE .. xSize + BORDER_SIZE - 1
-			do
-				pictureBuffer[lastIdx][y][x] :=
-					pictureBuffer[lastIdx][BORDER_SIZE][x];
-				pictureBuffer[lastIdx][y+ySize+BORDER_SIZE][x] :=
-					pictureBuffer[lastIdx][ySize+BORDER_SIZE-1][x];
-			end
-		end
-		foreach int y in 0 .. ySize + 2*BORDER_SIZE - 1
-		do
-			foreach int x in 0 .. BORDER_SIZE - 1
-			do
-				pictureBuffer[lastIdx][y][x] :=
-					pictureBuffer[lastIdx][y][BORDER_SIZE];
-				pictureBuffer[lastIdx][y][x+xSize+BORDER_SIZE] :=
-					pictureBuffer[lastIdx][y][xSize+BORDER_SIZE-1];
-			end
-		end
+		fillBorder_luma_cal(
+			pictureBuffer,
+			lastIdx,
+			xSize,
+			ySize,
+			BORDER_SIZE);
 	end
 
 	getReadAddr: action IsReadOrNewSlc:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
@@ -259,7 +248,7 @@ uint pictNum;
 	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
 	 */
 	getMvInfo.launch.is64: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Luma:[RefCu_y] repeat (64+7)*(64+7)
+		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (64+7)*(64+7)
 	guard
 		numPocRef != 0 && predCuSize = 64
 	var
@@ -267,7 +256,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 64,
-		uint(size=8)  RefCu_y[(64+7)*(64+7)]
+		uint(size=8)  RefCu[(64+7)*(64+7)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -293,18 +282,18 @@ uint pictNum;
 		/* We also need the 2 next pixels for the prediction, that's why we
 		 * add 7 to sideMax
 		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_64_luma_cal(
+  	      pictureBuffer,
+  	      RefCu,
+  	      idx, 
+  	      sideMax + 7, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is32: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Luma:[RefCu_y] repeat (32+7)*(32+7)
+		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (32+7)*(32+7)
 	guard
 		numPocRef != 0 && predCuSize = 32
 	var
@@ -312,7 +301,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 32,
-		uint(size=8)  RefCu_y[(32+7)*(32+7)]
+		uint(size=8)  RefCu[(32+7)*(32+7)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -338,18 +327,18 @@ uint pictNum;
 		/* We also need the 2 next pixels for the prediction, that's why we
 		 * add 7 to sideMax
 		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_32_luma_cal(
+  	      pictureBuffer,
+  	      RefCu,
+  	      idx, 
+  	      sideMax + 7, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is16: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Luma:[RefCu_y] repeat (16+7)*(16+7)
+		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (16+7)*(16+7)
 	guard
 		numPocRef != 0 && predCuSize = 16
 	var
@@ -357,7 +346,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 16,
-		uint(size=8)  RefCu_y[(16+7)*(16+7)]
+		uint(size=8)  RefCu[(16+7)*(16+7)]
 	do
 		foreach int i in 0 .. DPB_SIZE - 1
 		do
@@ -383,18 +372,18 @@ uint pictNum;
 		/* We also need the 2 next pixels for the prediction, that's why we
 		 * add 7 to sideMax
 		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_16_luma_cal(
+  	      pictureBuffer,
+  	      RefCu,
+  	      idx, 
+  	      sideMax + 7, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is8: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Luma:[RefCu_y] repeat (8+7)*(8+7)
+		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (8+7)*(8+7)
 	guard
 		numPocRef != 0 && predCuSize = 8
 	var
@@ -402,7 +391,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 8,
-		uint(size=8)  RefCu_y[(8+7)*(8+7)]
+		uint(size=8)  RefCu[(8+7)*(8+7)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -410,7 +399,7 @@ uint pictNum;
 				idx := i;
 			end
 		end
-		/* The mv components correspond to the absolute movement vector, that's
+		/* The mv components correspond to the absolute motion vector, that's
 		 * why we don't need to add the address of the current Cu
 		 */
 
@@ -428,18 +417,18 @@ uint pictNum;
 		/* We also need the 2 next pixels for the prediction, that's why we
 		 * add 7 to sideMax
 		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_8_luma_cal(
+  	      pictureBuffer,
+  	      RefCu,
+  	      idx, 
+  	      sideMax + 7, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is4: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Luma:[RefCu_y] repeat (4+7)*(4+7)
+		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (4+7)*(4+7)
 	guard
 		numPocRef != 0 && predCuSize = 4
 	var
@@ -447,7 +436,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 4,
-		uint(size=8)  RefCu_y[(4+7)*(4+7)]
+		uint(size=8)  refCu[(4+7)*(4+7)]
 	do
 		foreach int i in 0 .. DPB_SIZE - 1
 		do
@@ -477,7 +466,7 @@ uint pictNum;
 		do
 			foreach int x in 0 .. sideMax+7 -1
 			do
-				RefCu_y[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+				refCu[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
 			end
 		end
 		numPocRef := numPocRef - 1;

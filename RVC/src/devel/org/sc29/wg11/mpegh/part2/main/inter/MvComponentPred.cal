@@ -75,7 +75,6 @@ package devel.org.sc29.wg11.mpegh.part2.main.inter;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	uint(size=16) CUInfo,
@@ -150,7 +149,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	int(size=16)  pocRefList[17][MAX_NUM_SLICE][2][16];
 	uint(size=16) slcAddrRef[17][MAX_NUM_SLICE][2];
 	int(size=4)   refIdxRef[17][PICT_WIDTH/4][PICT_HEIGHT/4][2];
-	uint(size=4)  modeRef[17][PICT_WIDTH/4][PICT_HEIGHT/4];
+//	uint(size=4)  modeRef[17][PICT_WIDTH/4][PICT_HEIGHT/4];
 	int(size=16)  mvRef[17][PICT_WIDTH/4][PICT_HEIGHT/4][2][2];
 	int           neighbLocation[2];
 	int           nPSH;
@@ -191,7 +190,8 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			   xN < slcAddr[0]))) then
 				if(xN >= puTilesBeg[0] && xN < puTilesEnd[0] &&
 				   yN >= puTilesBeg[1] && yN < puTilesEnd[1]) then
-					modeRef[currIdx][xN][yN] = INTER // and what about Skip ?
+					refIdxRef[currIdx][xN][yN][0] != -1 ||
+					refIdxRef[currIdx][xN][yN][1] != -1
 				else
 					false
 				end
@@ -222,10 +222,10 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		int yNOrig = orig[1],
 		int xNNeighb = neighb[0],
 		int yNNeighb = neighb[1],
-		int xNOrigMasked = orig[0] & (MASK_WIDTH>>2),
-		int yNOrigMasked = orig[1] & (MASK_HEIGHT>>2),
-		int xNNeighbMasked = neighb[0] & (MASK_WIDTH>>2),
-		int yNNeighbMasked = neighb[1] & (MASK_HEIGHT>>2),
+		int xNOrigMasked = orig[0] & (MASK_WIDTH_POW_2>>2),
+		int yNOrigMasked = orig[1] & (MASK_HEIGHT_POW_2>>2),
+		int xNNeighbMasked = neighb[0] & (MASK_WIDTH_POW_2>>2),
+		int yNNeighbMasked = neighb[1] & (MASK_HEIGHT_POW_2>>2),
 		int refIdxCurrCu[2] = [refIdxRef[currIdx][xNOrigMasked]
 			[yNOrigMasked][i]:for int i in 0 .. 1],
 		int refIdxNeighb[2] = [refIdxRef[currIdx][xNNeighbMasked]
@@ -239,7 +239,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			yNNeighb < picSizeInPart[1]) then
 
 			if(not (xNOrig >= 0 && yNOrig >= 0 && xNOrig < picSizeInPart[0] &&
-				yNOrig < picSizeInPart[0])) then
+				yNOrig < picSizeInPart[1])) then
 
 				false
 			else
@@ -266,7 +266,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		foreach int i in 0 .. numSlcPerPict[colRefIdx] - 1
 		do
 			pocSlcAddr := [slcAddrRef[colRefIdx][i][j]: for int j in 0 .. 1];
-			if(partAddr[1] >= pocSlcAddr[1] + maskLcuSzMax / 4 ||
+			if(partAddr[1] >= pocSlcAddr[1] + lcuSizeMax / 4 ||
 					(partAddr[1] >= pocSlcAddr[1] && partAddr[0] >= pocSlcAddr[0])) then
 				if(colSlcIdx != -1) then
 					if(pocSlcAddr[1] > slcAddrRef[colRefIdx][colSlcIdx][1] ||
@@ -297,7 +297,6 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			do
 				refIdxRef[currIdx][x][y] := [refIdxToSave[i]:
 					for int i in 0 .. 1];
-				modeRef[currIdx][x][y] := INTER;
 			end
 		end
 	end
@@ -362,7 +361,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end end end end end end
 
 		if(not depSlcOrCol && (neighbLocation[1] < slcAddr[1] ||
-			(neighbLocation[1]< slcAddr[1] + maskLcuSzMax/4 &&
+			(neighbLocation[1]< slcAddr[1] + lcuSizeMax/4 &&
 				neighbLocation[0] < slcAddr[0]))) then
 			neighbLocation[1] := -1;
 		end
@@ -802,10 +801,13 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			numSlcPerPict[currIdx] := 1;
 			slcAddrRef[currIdx][0] := [slcAddr[i]: for int i in 0 .. 1];
 
-			refIdxRef[currIdx]:= [[[-1:for int i in 0 .. 1]:
-				for int j in 0 .. PICT_HEIGHT/4-1]:for int k in 0 .. PICT_WIDTH/4-1];
-			modeRef[currIdx]:= [[OTHER:for int j in 0 .. PICT_HEIGHT/4-1]:
-				for int k in 0 .. PICT_WIDTH/4-1];
+			foreach int x in 0 .. (picSize[0] - 1) / 4
+			do
+				foreach int y in 0 .. (picSize[1] - 1) / 4
+				do
+					refIdxRef[currIdx][x][y] := [-1, -1];
+				end
+			end
 		end
 		
 		isRef[currIdx] := true;
@@ -873,16 +875,6 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	getCuMode.isNotInter: action ==>
 	guard
 		not(cuMode = INTER || cuMode = SKIP)
-	do
-		foreach int x in partAddr[0] .. partAddr[0] + nPSW - 1
-		do
-			foreach int y in partAddr[1] .. partAddr[1] + nPSH - 1
-			do
-				modeRef[currIdx][x][y] := INTRA;
-				refIdxRef[currIdx][x][y][0] := -1;
-				refIdxRef[currIdx][x][y][1] := -1;
-			end
-		end
 	end
 
 	getCuMode.isInter: action SyntaxElem:[mergeIndex] ==>
@@ -1086,7 +1078,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 
 	getMvd: action SyntaxElem:[mvd] repeat 4 ==> IsBiPredOrLx:[isBiPredOrLx],
 		IsReadOrNewSlice:[1], Mv:[mvToSend] repeat 2, RefIdx:[refIdxToSend],
-		PocRef:[pocToSend], PredCuSize:[predCuSize]
+		PocRef:[pocToSend], PredCuSize:[cuSize] repeat 2
 	var
 		int idxMvInfo,
 		int(size=16) mv[2][2],
@@ -1122,6 +1114,14 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		if(not isBSlice || refIdx[0]!=-1 && refIdx[1] !=-1 &&
 			predCuSize = 8 && (cuSize[0] < 8 || cuSize[1]<8)) then
 			refIdx[1] := -1;
+			mv[1][0] := 0;
+			mv[1][1] := 0;
+		end
+		if(refIdx[0] = -1) then
+			mv[0][0] := 0;
+			mv[0][1] := 0;
+		end
+		if(refIdx[1] = -1) then
 			mv[1][0] := 0;
 			mv[1][1] := 0;
 		end
@@ -1249,7 +1249,7 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	end
 
 	send2ndMv.launch: action ==> PocRef:[pocToSend], RefIdx:[refIdxToSend],
-		Mv:[mvToSend] repeat 2, PredCuSize:[predCuSize]
+		Mv:[mvToSend] repeat 2, PredCuSize:[cuSize] repeat 2
 	guard
 		isBiPredOrLx = BI_PRED
 	var

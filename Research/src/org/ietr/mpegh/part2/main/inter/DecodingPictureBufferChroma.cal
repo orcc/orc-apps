@@ -61,6 +61,8 @@ package org.ietr.mpegh.part2.main.inter;
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
+import org.ietr.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+
 actor DecodingPictureBufferChroma ()
 	uint(size=2)  IsBiPredOrLx,
 	uint(size=1)  IsReadOrNewSlc,
@@ -72,15 +74,16 @@ actor DecodingPictureBufferChroma ()
 	int (size=16) RpsPoc,
 	uint(size=8)  Sample
 		==>
-	uint(size=8)  RefSample_Chroma
+	uint(size=8)  RefSample
 		:
 
 
 	/* /!\ : Check the size of the border. */
-	uint(size = 16) BORDER_SIZE = 64 + 32;
+	/* Same values have to be used in DecodingPictureBufferFunctions ! */
+	uint(size = 16) BORDER_SIZE = 128;
 	uint(size = 8) DPB_SIZE = 17;
 
-	uint(size=8)  pictureBuffer[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE][PICT_WIDTH+2*BORDER_SIZE];
+	uint(size=8)  pictureBuffer[DPB_SIZE][PICT_HEIGHT/2+2*BORDER_SIZE][PICT_WIDTH/2+2*BORDER_SIZE];
 	int (size=16) pocRef[DPB_SIZE];
 	bool          isRef[DPB_SIZE];
 	bool          isStillRef[DPB_SIZE];
@@ -196,13 +199,12 @@ uint pictNum;
 		xPixIdx := (BORDER_SIZE + xIdx*16)>>1;
 		yPixIdx := (BORDER_SIZE + yIdx*16)>>1;
 		
-		foreach uint y in 0 .. 7
-		do
-			foreach uint x in 0 .. 7
-			do
-				pictureBuffer[lastIdx][yPixIdx+y][xPixIdx+x] := samp[x+y*8];
-			end
-		end
+		copy_cu_dpb_chroma_cal(
+          samp,
+  	      pictureBuffer,
+  	      xPixIdx,
+  	      yPixIdx,
+  	      lastIdx);
 
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
@@ -222,26 +224,13 @@ uint pictNum;
 		uint ySize := picSize[1]
 	do
 	/* Fill in chroma border */
-		foreach uint x in BORDER_SIZE/2 .. xSize/2-1 + BORDER_SIZE/2
-		do
-			foreach uint y in 0 .. BORDER_SIZE/2 - 1
-			do
-				pictureBuffer[lastIdx][y][x] :=
-					pictureBuffer[lastIdx][BORDER_SIZE/2][x];
-				pictureBuffer[lastIdx][y+ySize/2+BORDER_SIZE/2][x] :=
-					pictureBuffer[lastIdx][ySize/2+BORDER_SIZE/2-1][x];
-			end
-		end
-		foreach uint y in 0 .. ySize/2 + BORDER_SIZE - 1
-		do
-			foreach uint x in 0 .. BORDER_SIZE/2 - 1
-			do
-				pictureBuffer[lastIdx][y][x] :=
-					pictureBuffer[lastIdx][y][BORDER_SIZE/2];
-				pictureBuffer[lastIdx][y][x+xSize/2+BORDER_SIZE/2] :=
-					pictureBuffer[lastIdx][y][xSize/2+BORDER_SIZE/2-1];
-			end
-		end
+		
+		fillBorder_chroma_cal(
+		  pictureBuffer,
+		  lastIdx,
+		  xSize / 2,
+		  ySize / 2,
+		  BORDER_SIZE / 2);
 	end
 
 	getReadAddr: action IsReadOrNewSlc:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
@@ -257,10 +246,10 @@ uint pictNum;
 	end
 
 	/* We get all the informations needed for sending the reference Cu. We save
-	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
+	 * these samples in refCu, it will be sent with the actions sendCu.isYxY
 	 */
 	getMvInfo.launch.is64: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Chroma:[RefCu_chroma] repeat(32+3)*(32+3)
+		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat(32+3)*(32+3)
 	guard
 		numPocRef != 0 && predCuSize = 64
 	var
@@ -268,7 +257,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 64,
-		uint(size=8)  RefCu_chroma[(32+3)*(32+3)]
+		uint(size=8)  refCu[(32+3)*(32+3)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -292,18 +281,18 @@ uint pictNum;
 		 * add 3 to sideMax
 		 */
 		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_chroma[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_64_chroma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      idx, 
+  	      sideMax / 2 + 3, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is32: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Chroma:[RefCu_chroma] repeat(16+3)*(16+3)
+		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat(16+3)*(16+3)
 	guard
 		numPocRef != 0 && predCuSize = 32
 	var
@@ -311,7 +300,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 32,
-		uint(size=8)  RefCu_chroma[(16+3)*(16+3)]
+		uint(size=8)  refCu[(16+3)*(16+3)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -335,18 +324,18 @@ uint pictNum;
 		 * add 3 to sideMax
 		 */
 		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_chroma[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_32_chroma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      idx, 
+  	      sideMax / 2 + 3, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is16: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Chroma:[RefCu_chroma] repeat(8+3)*(8+3)
+		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat(8+3)*(8+3)
 	guard
 		numPocRef != 0 && predCuSize = 16
 	var
@@ -354,7 +343,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 16,
-		uint(size=8)  RefCu_chroma[(8+3)*(8+3)]
+		uint(size=8)  refCu[(8+3)*(8+3)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -378,18 +367,18 @@ uint pictNum;
 		 * add 3 to sideMax
 		 */
 		
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				RefCu_chroma[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_16_chroma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      idx, 
+  	      sideMax / 2 + 3, 
+  	      xOffset,
+  	      yOffset);
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is8: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Chroma:[RefCu_chroma] repeat(4+3)*(4+3)
+		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat(4+3)*(4+3)
 	guard
 		numPocRef != 0 && predCuSize = 8
 	var
@@ -397,7 +386,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 8,
-		uint(size=8)  RefCu_chroma[(4+3)*(4+3)]
+		uint(size=8)  refCu[(4+3)*(4+3)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -425,14 +414,14 @@ uint pictNum;
 		do
 			foreach int x in 0 .. sideMax/2+3 -1
 			do
-				RefCu_chroma[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+				refCu[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
 			end
 		end
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is4: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample_Chroma:[RefCu_chroma] repeat(2+3)*(2+3)
+		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat(2+3)*(2+3)
 	guard
 		numPocRef != 0 && predCuSize = 4
 	var
@@ -440,7 +429,7 @@ uint pictNum;
 		int (size=32) xOffset,
 		int (size=32) yOffset,
 		uint(size=7)  sideMax = 4,
-		uint(size=8)  RefCu_chroma[(2+3)*(2+3)]
+		uint(size=8)  refCu[(2+3)*(2+3)]
 	do
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
@@ -468,7 +457,7 @@ uint pictNum;
 		do
 			foreach int x in 0 .. sideMax/2+3 -1
 			do
-				RefCu_chroma[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+				refCu[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
 			end
 		end
 		numPocRef := numPocRef - 1;
