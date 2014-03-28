@@ -1,6 +1,7 @@
 package devel.org.sc29.wg11.mpegh.part2.main.inter;
 
 import std.util.Math.*;
+import  devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
 unit InterFunctions : 
 	
@@ -307,6 +308,8 @@ unit InterFunctions :
 		end
 	end
 	
+	/* Weighted Pred with RasterScan store */
+	
 	@optimize_c(condition="defined(OPENHEVC_ENABLE)", name="put_unweighted_pred_orcc")
 	procedure put_unweighted_pred(int(size=16) src[2][64*64], int width, int height, uint(size=1) rdList, uint(size=8) dst[64*64])
 	begin
@@ -340,11 +343,11 @@ unit InterFunctions :
 	    foreach int y in 0 .. height do
 	        foreach int x in 0 .. width do
 	            src[0][x + y * (width + 1)] :=
-					if(locLogWD >= 1) then
-						((src[rdList][x + y * (width + 1)]*wX + (1<<(locLogWD-1))) >> locLogWD)+oX
-					else
-						src[rdList][x + y * (width + 1)]*wX +oX
-					end;
+				if(locLogWD >= 1) then
+					((src[rdList][x + y * (width + 1)]*wX + (1<<(locLogWD-1))) >> locLogWD)+oX
+				else
+					src[rdList][x + y * (width + 1)]*wX +oX
+				end;
 				dst[x + y * (width + 1)] := clip_i32(src[0][x + y * (width + 1)], 0 , maxPixVal);
 	        end
 	    end
@@ -386,5 +389,149 @@ unit InterFunctions :
 	        end
 	    end
 	end
-
+	
+	/* Weighted Pred with Zscan store */
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && (defined __SSE4_1__)", name="put_unweighted_pred_zscan_orcc")
+	procedure put_unweighted_pred_zscan (int (size=16) src[2][64*64], int width, int height, uint(size=1) rdList, uint (size=8) dst[64*64], int iComp)
+	var
+	  uint(size=16) zScanIdx,
+	  uint(size=16) zScanIdxTmp,
+	  int iStride = if (iComp = 0) then 2 else 1 end  
+	begin 
+	    foreach int y in 0 .. height do
+	        zScanIdxTmp := ((y & ((iStride << 1) - 1)) << iStride) + (y >> iStride) * ((width + 1) << iStride);
+	        foreach int x in 0 .. width do
+	            zScanIdx := zScanIdxTmp + (x & ((iStride << 1) - 1)) + ((x >> iStride) << (iStride << 1));
+	            src[0][x + y * (width + 1)] := (src[rdList][x + y * (width + 1)] + (1 <<(shift1-1)))>>shift1;
+	            dst[zScanIdx] := clip_i32(src[0][x + y * (width + 1)], 0 , maxPixVal);
+	        end
+	    end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && (defined __SSE4_1__)", name="put_weighted_pred_avg_zscan_orcc")
+	procedure put_weighted_pred_avg_zscan (int (size=16) src[2][64*64], int width, int height, uint (size=8) dst[64*64], int iComp)
+	var
+	  uint(size=16) zScanIdx,
+	  uint(size=16) zScanIdxTmp,
+	  int iStride = if (iComp = 0) then 2 else 1 end
+	begin
+	    foreach int y in 0 .. height do
+	        zScanIdxTmp := ((y & ((iStride << 1) - 1)) << iStride) + (y >> iStride) * ((width + 1) << iStride);
+	        foreach int x in 0 .. width do
+	            zScanIdx := zScanIdxTmp + (x & ((iStride << 1) - 1)) + ((x >> iStride) << (iStride << 1));
+	            src[0][x + y * (width + 1)] := (src[0][x + y * (width + 1)] + src[1][x + y * (width + 1)] + 64) >> 7;
+				dst[zScanIdx] := clip_i32(src[0][x + y * (width + 1)], 0 , maxPixVal);
+	        end
+	    end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && defined (__SSE4_1__)", name="weighted_pred_zscan_orcc")
+	procedure weighted_pred_zscan (int logWD, int weightCu [2], int offsetCu [2] ,
+		int (size=16) src[2][64*64], int width, int height, uint(size=1) rdList, uint (size=8) dst[64*64], int iComp)
+	var
+	    int locLogWD,
+	    int wX,
+	    int oX,
+	    uint(size=16) zScanIdx,
+	    uint(size=16) zScanIdxTmp,
+	    int iStride = if (iComp = 0) then 2 else 1 end	
+	begin
+	    
+	    wX := weightCu[rdList];
+		oX := offsetCu[rdList];
+		locLogWD := logWD;
+	
+	    foreach int y in 0 .. height do
+	        zScanIdxTmp := ((y & ((iStride << 1) - 1)) << iStride) + (y >> iStride) * ((width + 1) << iStride);
+	        foreach int x in 0 .. width do
+	            zScanIdx := zScanIdxTmp + (x & ((iStride << 1) - 1)) + ((x >> iStride) << (iStride << 1));
+	            src[0][x + y * (width + 1)] :=
+				if(locLogWD >= 1) then
+					((src[rdList][x + y * (width + 1)]*wX + (1<<(locLogWD-1))) >> locLogWD)+oX
+				else
+					src[rdList][x + y * (width + 1)]*wX +oX
+				end;
+				dst[zScanIdx] := clip_i32(src[0][x + y * (width + 1)], 0 , maxPixVal);
+	        end
+	    end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && (defined __SSE4_1__)", name="weighted_pred_avg_zscan_orcc")
+	procedure weighted_pred_avg_zscan (int logWD , int weightCu [2], int offsetCu [2] ,
+		int (size=16) src[2][64*64], int width, int height, uint (size=8) dst[64*64], int iComp)
+	var
+	    int locLogWD,
+	    int w0,
+	    int w1,
+	    int o0,
+	    int o1,
+	    uint(size=16) zScanIdx,
+	    uint(size=16) zScanIdxTmp,
+	    int iStride = if (iComp = 0) then 2 else 1 end	
+	begin
+		w0 := weightCu[0];
+		w1 := weightCu[1];
+		o0 := offsetCu[0];
+		o1 := offsetCu[1];
+		locLogWD := logWD;
+		foreach int y in 0 .. height do
+		    zScanIdxTmp := ((y & ((iStride << 1) - 1)) << iStride) + (y >> iStride) * ((width + 1) << iStride);
+	        foreach int x in 0 .. width do
+	            zScanIdx := zScanIdxTmp + (x & ((iStride << 1) - 1)) + ((x >> iStride) << (iStride << 1));
+				src[0][x + y * (width + 1)] := (src[0][x + y * (width + 1)]*w0 + src[1][x + y * (width + 1)]*w1 +
+					((o0+o1+1)<<locLogWD))>>(locLogWD+1);
+				
+				dst[zScanIdx] := clip_i32(src[0][x + y * (width + 1)], 0,
+					maxPixVal);
+			end
+		end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && defined(__SSE4_1__)", name="weighted_pred_mono_zscan_orcc")
+	procedure weighted_pred_mono_zscan (int logWD , int weightCu [2], int offsetCu [2] ,
+		int (size=16) src[2][64*64], int width, int height, uint (size=8) dst[64*64], int iComp)
+	var
+	    int locLogWD,
+	    int wX,
+	    int oX,
+	    uint(size=16) zScanIdx,
+	    uint(size=16) zScanIdxTmp,
+	    int iStride = if (iComp = 0) then 2 else 1 end
+	begin
+	    
+	   wX := weightCu[0] + weightCu[1];
+	   oX := offsetCu[0] + offsetCu[1] + 1;
+	   locLogWD := logWD + 1;
+	   foreach int y in 0 .. height do
+	       zScanIdxTmp := ((y & ((iStride << 1) - 1)) << iStride) + (y >> iStride) * ((width + 1) << iStride);
+	       foreach int x in 0 .. width do
+	            zScanIdx := zScanIdxTmp + (x & ((iStride << 1) - 1)) + ((x >> iStride) << (iStride << 1));
+				src[0][x + y * (width + 1)] := ((src[0][x + y * (width + 1)]*wX + (oX<<(locLogWD-1))) >>locLogWD);
+				dst[zScanIdx] := clip_i32(src[0][x + y * (width + 1)], 0 , maxPixVal);
+	        end
+	    end
+	end
+	
+	/* Gather 4x4 non-contiguous elements */
+	@optimize_c(condition="defined(SSE_ENABLE) && (defined __SSE2__)", name="gather32_4x4_orcc")
+	procedure gather32_4x4_cal(
+		uint(size= 8) outputSample[16], 
+		uint(size= 8) inputSample[64 * 64], 
+		uint(size= 9) offsetOut, 
+		uint(size= 9) offsetIn,
+		uint(size= 7) strideOut,
+		uint(size= 7) strideIn)
+	begin
+	foreach uint y in 0 .. 3
+		do
+			foreach uint x in 0 .. 3
+			do
+				outputSample[offsetOut + y * 4 + x] := inputSample[offsetIn + x];
+			end
+			offsetIn := offsetIn + strideIn;
+			offsetOut := offsetOut + strideOut;
+		end
+	end
+	
 end
