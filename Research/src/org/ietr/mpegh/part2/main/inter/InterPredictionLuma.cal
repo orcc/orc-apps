@@ -110,7 +110,6 @@ actor InterPredictionLuma()
 	int weightCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][2];
 	int offsetCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][2];
 
-	uint(size=8) refSamples[(64+7)*(64+7)];
 	int (size=16) predSamples[2][64*64];
 	
     /* Coefficients used for the 8-tap filter (luma component) and 4-tap filter
@@ -447,80 +446,68 @@ actor InterPredictionLuma()
 	end
 
 	/* Getting the samples from the DPB and realizing the interpolation. */
-	getSamples.launch.is64x64: action Sample:[sample] repeat (64+7)*(64+7) ==>
+	getSamples.launch.is64x64: action Sample:[refSamples] repeat (64+7)*(64+7) ==>
 	guard
 		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 64
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (64+7)*(64+7)-1];
+		interpolateSamples(refSamples);
 	end
 
-	getSamples.launch.is32x32: action Sample:[sample] repeat (32+7)*(32+7)==>
+	getSamples.launch.is32x32: action Sample:[refSamples] repeat (32+7)*(32+7)==>
 	guard
 		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 32
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (32+7)*(32+7)-1];
+		interpolateSamples(refSamples);
 	end
 
-	getSamples.launch.is16x16: action Sample:[sample] repeat (16+7)*(16+7) ==>
+	getSamples.launch.is16x16: action Sample:[refSamples] repeat (16+7)*(16+7) ==>
 	guard
 		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 16
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (16+7)*(16+7)-1];
+		interpolateSamples(refSamples);
 	end
 
-	getSamples.launch.is8x8: action Sample:[sample] repeat (8+7)*(8+7) ==>
+	getSamples.launch.is8x8: action Sample:[refSamples] repeat (8+7)*(8+7) ==>
 	guard
 		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 8
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (8+7)*(8+7)-1];
+		interpolateSamples(refSamples);
 	end
 
-	getSamples.launch.is4x4: action Sample:[sample] repeat (4+7)*(4+7) ==>
+	getSamples.launch.is4x4: action Sample:[refSamples] repeat (4+7)*(4+7) ==>
 	guard
 		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
 			isBiPredOrLx = PRED_L1),
 		predCuSize = 4
 	do
-		refSamples := [sample[i]:for uint i in 0 .. (4+7)*(4+7)-1];
+		interpolateSamples(refSamples);
 	end
-
-	interpolateSamples: action ==>
+	
+	procedure interpolateSamples(uint(size=8) refSamples[(64+7)*(64+7)])
 	var
 		uint maskMv = 3,
 		int mvQuartPix[2],
 		uint(size=7) compPuIdxMax[2]
-	do
+	begin
 		if( not (refIdxLx[listIdx] = -1 || listIdx = 1 && numList = 1 &&
 			refIdxLx[0]!=-1)) then
 
 			compPuIdxMax := [cuSize[i]-1:for int i in 0 .. 1];
-
-			/* We just need to do the fractionnal part of the movement
-			 * interpolation.
-			 */
-			mvQuartPix := [mvLx[listIdx][i] & maskMv:
-				for int i in 0 .. 1];
-
-
-			/* if quartPix (or eighthPix for chroma) is not equal to 0 for both
-			 * x and y, we realize the interpolation in 2 steps.
-			 */
-			/* We do the horizontal interpolation for all the samples which
-			 * will be needed for the vertical interpolation.
-			 */
+			
+			mvQuartPix := [mvLx[listIdx][i] & maskMv: for int i in 0 .. 1];
 			put_hevc_qpel_cal(predSamples, listIdx, refSamples, predCuSize + 7, compPuIdxMax[0], compPuIdxMax[1], mvQuartPix[0], mvQuartPix[1]);
 		end
 		listIdx := listIdx + 1;
 	end
-
+	
 	getSamples.done: action ==>
 	guard
 		listIdx=2 || listIdx=1 && isBiPredOrLx = PRED_L0
@@ -739,10 +726,8 @@ actor InterPredictionLuma()
 
 		GetRefIdx (getRefIdx )--> GetSamples;
 
-		GetSamples (getSamples.launch )--> InterpolateSamples;
+		GetSamples (getSamples.launch )--> GetSamples;
 		GetSamples (getSamples.done   )--> SendCu;
-
-		InterpolateSamples (interpolateSamples )--> GetSamples;
 
 		SendCu (sendCu.launch )--> GetCuInfo;
 	end
