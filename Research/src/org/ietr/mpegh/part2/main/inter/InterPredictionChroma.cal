@@ -86,7 +86,6 @@ actor InterPredictionChroma(int comp)
 	int(size=16)  currPoc;
 	uint(size=2)  listIdx;
 	uint(size=7)  iLoop;
-	uint(size=7)  jLoop;
 	int (size=16) refListX[2][SZ_REF_LIST];
 	uint(size=2)  wpIdc;
 	uint(size=4)  numRefIdxLxAct[2];
@@ -98,6 +97,7 @@ actor InterPredictionChroma(int comp)
 	uint(size=3)  numPartDecoded;
 	uint(size=3)  numPart;
 	uint(size=7)  cuSize[2];
+	
 	uint(size=2)  cuMode;
 	int logWD;
 	int weightCu[2];
@@ -112,11 +112,6 @@ actor InterPredictionChroma(int comp)
 	int offsetCuTab[SZ_REF_LIST+1][SZ_REF_LIST+1][2];
 
 	int (size=16) predSamples[2][64*64];
-	// int (size=16) dst[64*64];
-	// uint (size=8) dst[64*64];
-/* Coefficients used for the 8-tap filter (luma component) and 4-tap filter
- * (chroma component).
- */
 
 	/* Computing the weighted prediction coefficients (logWd, w0, w1, o0, o1),
 	 * according to the picture(s) used for the prediction.
@@ -134,7 +129,7 @@ actor InterPredictionChroma(int comp)
 		uint(size=3) idxL0 = refIdxL0+1,
 		uint(size=3) idxL1 = refIdxL1+1
 	begin
-		/*Implicit weighted prediction : we compute the weights thanks the the
+		/* Implicit weighted prediction : we compute the weights thanks the the
 		 * poc value of the reference pictures
 		 */
 		if(wpIdc = 2) then
@@ -171,24 +166,24 @@ actor InterPredictionChroma(int comp)
 				weightCuTab[idxL0][idxL1][0] := 1;
 				weightCuTab[idxL0][idxL1][1] := 1;
 			end
-		/*Explicit weighted prediction : we get the coefficients thanks to the
+			
+		/* Explicit weighted prediction : we get the coefficients thanks to the
 		 * predWeight table (decoded at the beginning of each slice).
 		 */
-		else if (wpIdc = 1) then
-				logWDTab[idxL0][idxL1] := log2WeightDenom + shift1;
-				if(refIdxL0 >=0) then
-					weightCuTab[idxL0][idxL1][0] := weight[refIdxL0][0];
-					offsetCuTab[idxL0][idxL1][0] := offset[refIdxL0][0];
-				end
-				if(refIdxL1 >=0) then
-					weightCuTab[idxL0][idxL1][1] := weight[refIdxL1][1];
-					offsetCuTab[idxL0][idxL1][1] := offset[refIdxL1][1];
-				end
-			end 
+		elsif (wpIdc = 1) then
+			logWDTab[idxL0][idxL1] := log2WeightDenom + shift1;
+			if(refIdxL0 >=0) then
+				weightCuTab[idxL0][idxL1][0] := weight[refIdxL0][0];
+				offsetCuTab[idxL0][idxL1][0] := offset[refIdxL0][0];
+			end
+			if(refIdxL1 >=0) then
+				weightCuTab[idxL0][idxL1][1] := weight[refIdxL1][1];
+				offsetCuTab[idxL0][idxL1][1] := offset[refIdxL1][1];
+			end
 		end
 	end
 
-	/* We have a new slice, we will update differents value then get the new
+	/* We have a new slice, we will update different values then get the new
 	 * refList and weights
 	 */
 	isNewSlice.notDep: action PartMode:[partMode], Poc:[poc], SliceType:[sliceType],
@@ -282,13 +277,11 @@ actor InterPredictionChroma(int comp)
 		iLoop := 0;
 		if(listIdx = 0) then
 			refIdxLxAct := numRefIdxLxAct[0];
+		elsif(not refPicListComb) then
+			refIdxLxAct := numRefIdxLxAct[1];
 		else
-			if(not refPicListComb) then
-				refIdxLxAct := numRefIdxLxAct[1];
-			else
-				println(" Actor InterPrediction : we don't manage LC yet");
-				while(true) do end
-			end
+			println(" Actor InterPrediction : we don't manage LC yet");
+			while(true) do end
 		end
 	end
 
@@ -362,8 +355,8 @@ actor InterPredictionChroma(int comp)
 		numPartDecoded < numPart
 	do
 		cuMode := cuInfo[0];
-		cuSize := [cuInfo[i]: for int i in 3 .. 4];
-		predCuSize := max(cuInfo[3], cuInfo[4]);
+		cuSize := [cuInfo[i] / 2: for int i in 3 .. 4];
+		predCuSize := max(cuSize[0], cuSize[1]);
 		numPartDecoded := numPartDecoded + 1;
 	end
 
@@ -438,51 +431,48 @@ actor InterPredictionChroma(int comp)
 		end
 		
 		listIdx := 0;
-		numList :=
+		
 		/* If we have the same picture with the same movement vectors we 
 		 * can don't need to do the same interpolation twice :)
 		 */
 		if(refListX[0][refIdxLx[0]] = refListX[1][refIdxLx[1]] &&
 			mvLx[0][0] = mvLx[1][0] && mvLx[0][1] = mvLx[1][1] &&
 			refIdxLx[0] = refIdxLx[1]) then
-			1
+			numList := 1;
 		else
-			2
-		end;
+			numList := 2;
+		end
 	end
 	
+	/* Getting the samples from the DPB and realizing the interpolation. */
 	getSamples.launch.is32x32: action Sample:[refSamples] repeat (32+3)*(32+3) ==>
 	guard
-		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
-			isBiPredOrLx = PRED_L1),
-		predCuSize = 64
+		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED || isBiPredOrLx = PRED_L1),
+		predCuSize = 32
 	do
 		interpolateSamples(refSamples, 32+3);
 	end
 
 	getSamples.launch.is16x16: action Sample:[refSamples] repeat (16+3)*(16+3) ==>
 	guard
-		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
-			isBiPredOrLx = PRED_L1),
-		predCuSize = 32
+		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED || isBiPredOrLx = PRED_L1),
+		predCuSize = 16
 	do
 		interpolateSamples(refSamples, 16+3);
 	end
 
 	getSamples.launch.is8x8: action Sample:[refSamples] repeat (8+3)*(8+3) ==>
 	guard
-		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
-			isBiPredOrLx = PRED_L1),
-		predCuSize = 16
+		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED || isBiPredOrLx = PRED_L1),
+		predCuSize = 8
 	do
 		interpolateSamples(refSamples, 8+3);
 	end
 
 	getSamples.launch.is4x4: action Sample:[refSamples] repeat (4+3)*(4+3) ==>
 	guard
-		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED ||
-			isBiPredOrLx = PRED_L1),
-		predCuSize = 8
+		listIdx=0 || listIdx=1 && (isBiPredOrLx = BI_PRED || isBiPredOrLx = PRED_L1),
+		predCuSize = 4
 	do
 		interpolateSamples(refSamples, 4+3);
 	end
@@ -491,15 +481,16 @@ actor InterPredictionChroma(int comp)
 	var
 		uint maskMv = 7,
 		int mvQuartPix[2],
-		uint(size=7) compPuIdxMax[2]
+		uint(size=7) puIdxMax[2]
 	begin
 		if( not (refIdxLx[listIdx] = -1 || listIdx = 1 && numList = 1 &&
 			refIdxLx[0]!=-1)) then
 
-			compPuIdxMax := [(cuSize[i]>>1)-1:for int i in 0 .. 1];
-			
+			puIdxMax := [cuSize[i]-1:for int i in 0 .. 1];
 			mvQuartPix := [mvLx[listIdx][i] & maskMv: for int i in 0 .. 1];
-			put_hevc_epel_cal(predSamples, listIdx, refCu, refCuWidth, compPuIdxMax[0], compPuIdxMax[1], mvQuartPix[0], mvQuartPix[1]);
+			
+			put_hevc_epel_cal(predSamples, listIdx, refCu, refCuWidth, 
+				puIdxMax[0], puIdxMax[1], mvQuartPix[0], mvQuartPix[1]);
 		end
 		listIdx := listIdx + 1;
 	end
@@ -509,165 +500,162 @@ actor InterPredictionChroma(int comp)
 		listIdx=2 || listIdx=1 && isBiPredOrLx = PRED_L0
 	do
 		iLoop := 0;
-		jLoop := 0;
 	end
 	
-	procedure sendSample_weighted_pred_zscan(uint (size=8) dst[64*64])
+	procedure sendSample_weighted_pred_zscan(uint(size=8) dst[64*64])
 	var
-		uint(size=7) compPuIdxMax[2],
+		uint(size=7) puIdxMax[2],
 		uint(size=1) rdList = if(isBiPredOrLx = PRED_L1) then 1 else 0 end
 	begin
-		compPuIdxMax := [(cuSize[i] >> 1)-1:for int i in 0 .. 1];
+		puIdxMax := [cuSize[i]-1: for int i in 0 .. 1];
 		if(numList = 1) then
 			if(wpIdc = 0) then
-				put_unweighted_pred_zscan(predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, dst, 1);
+				put_unweighted_pred_zscan(predSamples, puIdxMax[0], puIdxMax[1], rdList, dst, 1);
+			elsif(isBiPredOrLx != BI_PRED) then
+				weighted_pred_zscan (logWD , weightCu, offsetCu, predSamples, puIdxMax[0], puIdxMax[1], rdList, dst, 1);
 			else
-				if(isBiPredOrLx != BI_PRED) then
-					weighted_pred_zscan (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], rdList, dst, 1);
-				else
-					weighted_pred_mono_zscan (logWD , weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], dst, 1);
-				end
+				weighted_pred_mono_zscan (logWD , weightCu, offsetCu, predSamples, puIdxMax[0], puIdxMax[1], dst, 1);
 			end
 		else
 			if(wpIdc = 0) then
-				put_weighted_pred_avg_zscan (predSamples, compPuIdxMax[0], compPuIdxMax[1], dst, 1);
+				put_weighted_pred_avg_zscan (predSamples, puIdxMax[0], puIdxMax[1], dst, 1);
 			else
-				weighted_pred_avg_zscan (logWD, weightCu, offsetCu, predSamples, compPuIdxMax[0], compPuIdxMax[1], dst, 1);
+				weighted_pred_avg_zscan (logWD, weightCu, offsetCu, predSamples, puIdxMax[0], puIdxMax[1], dst, 1);
 			end
 		end
 	end
 
     sendCu.launch.is2x2: action ==> PredSample:[dst] repeat 2 * 2
 	guard
-		(cuSize[0] >> 1) = 2 && (cuSize[1] >> 1) = 2
+		cuSize[0] = 2 && cuSize[1] = 2
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
     sendCu.launch.is4x2: action ==> PredSample:[dst] repeat 4 * 2
 	guard
-		(cuSize[0] >> 1) = 4 && (cuSize[1] >> 1) = 2 || (cuSize[0] >> 1) = 2 && (cuSize[1] >> 1) = 4
+		cuSize[0] = 4 && cuSize[1] = 2 || cuSize[0] = 2 && cuSize[1] = 4
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is4x4: action ==> PredSample:[dst] repeat 4 * 4
 	guard
-		(cuSize[0] >> 1) = 4 && (cuSize[1] >> 1) = 4
+		cuSize[0] = 4 && cuSize[1] = 4
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is8x8: action ==> PredSample:[dst] repeat 8 * 8
 	guard
-		(cuSize[0] >> 1) = 8 && (cuSize[1] >> 1) = 8
+		cuSize[0] = 8 && cuSize[1] = 8
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is8x6: action ==> PredSample:[dst] repeat 8 * 6
 	guard
-		(cuSize[0] >> 1) = 8 && (cuSize[1] >> 1) = 6 || (cuSize[0] >> 1) = 6 && (cuSize[1] >> 1) = 8
+		cuSize[0] = 8 && cuSize[1] = 6 || cuSize[0] = 6 && cuSize[1] = 8
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is8x4: action ==> PredSample:[dst] repeat 8 * 4
 	guard
-		(cuSize[0] >> 1) = 8 && (cuSize[1] >> 1) = 4 || (cuSize[0] >> 1) = 4 && (cuSize[1] >> 1) = 8
+		cuSize[0] = 8 && cuSize[1] = 4 || cuSize[0] = 4 && cuSize[1] = 8
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is8x2: action ==> PredSample:[dst] repeat 8 * 2
 	guard
-		(cuSize[0] >> 1) = 8 && (cuSize[1] >> 1) = 2 || (cuSize[0] >> 1) = 2 && (cuSize[1] >> 1) = 8
+		cuSize[0] = 8 && cuSize[1] = 2 || cuSize[0] = 2 && cuSize[1] = 8
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is16x16: action ==> PredSample:[dst] repeat 16 * 16
 	guard
-		(cuSize[0] >> 1) = 16 && (cuSize[1] >> 1) = 16
+		cuSize[0] = 16 && cuSize[1] = 16
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is16x12: action ==> PredSample:[dst] repeat 16 * 12
 	guard
-		(cuSize[0] >> 1) = 16 && (cuSize[1] >> 1) = 12 || (cuSize[0] >> 1) = 12 && (cuSize[1] >> 1) = 16
+		cuSize[0] = 16 && cuSize[1] = 12 || cuSize[0] = 12 && cuSize[1] = 16
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is16x8: action ==> PredSample:[dst] repeat 16 * 8
 	guard
-		(cuSize[0] >> 1) = 16 && (cuSize[1] >> 1) = 8 || (cuSize[0] >> 1) = 8 && (cuSize[1] >> 1) = 16
+		cuSize[0] = 16 && cuSize[1] = 8 || cuSize[0] = 8 && cuSize[1] = 16
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is16x4: action ==> PredSample:[dst] repeat 16 * 4
 	guard
-		(cuSize[0] >> 1) = 16 && (cuSize[1] >> 1) = 4 || (cuSize[0] >> 1) = 4 && (cuSize[1] >> 1) = 16
+		cuSize[0] = 16 && cuSize[1] = 4 || cuSize[0] = 4 && cuSize[1] = 16
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is32x32: action ==> PredSample:[dst] repeat 32 * 32
 	guard
-		(cuSize[0] >> 1) = 32 && (cuSize[1] >> 1) = 32
+		cuSize[0] = 32 && cuSize[1] = 32
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is32x24: action ==> PredSample:[dst] repeat 32 * 24
 	guard
-		(cuSize[0] >> 1) = 32 && (cuSize[1] >> 1) = 24 || (cuSize[0] >> 1) = 24 && (cuSize[1] >> 1) = 32
+		cuSize[0] = 32 && cuSize[1] = 24 || cuSize[0] = 24 && cuSize[1] = 32
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is32x16: action ==> PredSample:[dst] repeat 32 * 16
 	guard
-		(cuSize[0] >> 1) = 32 && (cuSize[1] >> 1) = 16 || (cuSize[0] >> 1) = 16 && (cuSize[1] >> 1) = 32
+		cuSize[0] = 32 && cuSize[1] = 16 || cuSize[0] = 16 && cuSize[1] = 32
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
 	
 	sendCu.launch.is32x8: action ==> PredSample:[dst] repeat 32 * 8
 	guard
-		(cuSize[0] >> 1) = 32 && (cuSize[1] >> 1) = 8 || (cuSize[0] >> 1) = 8 && (cuSize[1] >> 1) = 32
+		cuSize[0] = 32 && cuSize[1] = 8 || cuSize[0] = 8 && cuSize[1] = 32
 	var
-		uint (size=8) dst[64*64]
+		uint(size=8) dst[64*64]
 	do
 	    sendSample_weighted_pred_zscan(dst);
 	end
