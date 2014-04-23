@@ -53,7 +53,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 :
         uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
         uint(size= 2) zeroByte := 0;
-        uint(size= 8) se_idx;
+        uint(size= 16) se_idx;
         uint(size=32) cnt_i;
         uint(size=10) sps_id;
         uint(size=10) pps_id;
@@ -1864,19 +1864,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        end
 	    end
 	        
-	    read_SliceHeader.se_idx_11 : action ==> LcuSizeMax:[Log2CtbSize], Poc:[poc], SliceType:[slice_type]
+	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
 	    guard
 	            se_idx = 200 and isFifoFull(fifo)
 	    var
 	        uint(size=32) res[1],
-	        uint(size= 8) numbits := 0,
-	        uint(size= 8) lt_idx_sps := 0,
-	        uint(size= 8) prevDeltaMSB := 0,
-	        uint(size=16) column_width[PICT_WIDTH / MIN_CTB_SIZE_Y]= [pps_column_width[pps_id][ i ] : for int i in 0 .. (PICT_WIDTH / MIN_CTB_SIZE_Y)-1],
-		    uint(size=16) row_height[PICT_HEIGHT / MIN_CTB_SIZE_Y]  = [pps_row_height[pps_id][ i ] : for int i in 0 .. (PICT_HEIGHT / MIN_CTB_SIZE_Y)-1],
-		    uint(size= 8) num_tile_columns_minus1           = pps_num_tile_columns_minus1[pps_id],
-		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
-		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id]
+	        uint(size= 8) numbits := 0
 	    do
 			foreach int i in 0 .. pps_num_extra_slice_header_bits[pps_id] - 1 do
 	            vld_u_name(  1, fifo, res, "slice_reserved_undetermined_flag[i]     ");
@@ -1892,19 +1885,18 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        if sps_separate_colour_plane_flag[sps_id] = 1 then
 	        	vld_u_name(  2, fifo, res, "colour_plane_id                         ");
 	    	end
-	
-	        if nal_unit_type = NAL_IDR_W_DLP or nal_unit_type = NAL_IDR_N_LP then
+	    	if nal_unit_type = NAL_IDR_W_DLP or nal_unit_type = NAL_IDR_N_LP then
 	        	poc := 0;
+	        	se_idx := 302;
 	        	//sps_num_short_term_ref_pic_sets[sps_id] := 0;
 	        else
-	            vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       ");
+	        	vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       ");
 	            pic_order_cnt_lsb := res[0];
 	            //compute the number of POC
 	            compute_POC(res[0]);
 	            vld_u_name(  1, fifo, res, "short_term_ref_pic_set_sps_flag         ");
-	            if res[0] = 0 then
-	            	parseShortTermRefPicSet(sps_id, sps_num_short_term_ref_pic_sets[sps_id], sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
-	            else
+	            short_term_ref_pic_set_sps_flag := res[0];
+	            if short_term_ref_pic_set_sps_flag != 0 then
 	                while ((1 << numbits) < sps_num_short_term_ref_pic_sets[sps_id]) do
 	                    numbits := numbits + 1;
 	                end
@@ -1913,8 +1905,157 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	                	vld_u_name(   numbits, fifo, res, "short_term_ref_pic_set_idx              ");
 	           		end
 	                pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1];
-	                
-	       		end
+	                se_idx := 301;
+	       		else
+	    			se_idx := 300;
+	    		end
+	    	end
+		end
+		
+		uint(size=1) short_term_ref_pic_set_sps_flag;
+		int(size=32) prev;
+		
+		read_SliceHeader.se_idx_12 : action ==> 
+		guard
+			se_idx = 300 and isFifoFull(fifo)
+	    	//parseShortTermRefPicSet(sps_id, sps_num_short_term_ref_pic_sets[sps_id], sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
+	    var
+			uint(size=32) res[1],
+			uint(size= 1) inter_rps_flag := 0,
+			uint(size=16) delta_idx      := 1,
+			uint(size= 8) rIdx,
+			 int(size=32) deltaRPS,
+			 int(size=32) deltaPOC,
+			 int(size=32) k    := 0,
+			 int(size=32) k0   := 0,
+			 int(size=32) k1   := 0,
+			 int(size=32) delta_rps_sign,
+			 int(size=32) abs_delta_rps,
+			uint(size= 8) idx = sps_num_short_term_ref_pic_sets[sps_id]
+   		do
+   			prev := 0;
+   			cnt_i := 0;
+	   		se_idx := 301;
+	 		if (idx != 0) then
+	 			vld_u_name(  1, fifo, res, "inter_ref_pic_set_prediction_flag       "); inter_rps_flag := res[0];
+	 		end
+			if inter_rps_flag = 1 then
+				//if idx = idx then
+	  			vld_ue_name(    fifo, res, "delta_idx_minus1                        "); delta_idx := res[0] + 1;
+	  			//end
+	    		rIdx := idx - delta_idx;
+	    		vld_u_name(  1, fifo, res, "delta_rps_sign                          "); delta_rps_sign	:= res[0];
+	    		vld_ue_name(    fifo, res, "abs_delta_rps_minus1                    "); abs_delta_rps	:= res[0] + 1;
+	    		deltaRPS := (1 - (delta_rps_sign<<1)) * (abs_delta_rps);
+	    		foreach uint(size=8) i in 0 ..  pcRPS[sps_id][rIdx][NUM_PICS] do
+	    			vld_u_name(  1, fifo, res, "used_by_curr_pic_flag                   ");
+	    			if res[0] = 0 then
+		    			vld_u_name(  1, fifo, res, "use_delta_flag                          ");
+		    			res[0] := res[0] << 1;
+	    			end
+	    			if res[0] = 1 or res[0] = 2 then
+	    				if i < pcRPS[sps_id][rIdx][NUM_PICS] then
+	    					deltaPOC := deltaRPS + pcRPS[sps_id][rIdx][DELTAPOC+i];
+	    				else
+	    					deltaPOC := deltaRPS;
+						end
+						pcRPS[sps_id][idx][DELTAPOC+k] := deltaPOC;
+						pcRPS[sps_id][idx][USED+k] := if res[0] = 1 then 1 else 0 end;
+				        if deltaPOC < 0 then
+	          				k0 := k0 + 1;
+	        			else 
+	          				k1 := k1 + 1;
+	        			end
+	        			k := k + 1; 			
+	    			end
+	    		end
+	    		pcRPS[sps_id][idx][NUM_PICS]          := k;
+	    		pcRPS[sps_id][idx][NUM_NEGATIVE_PICS] := k0;
+				pcRPS[sps_id][idx][NUM_POSITIVE_PICS] := k1;
+				sortDeltaPOC(sps_id, idx, pcRPS);
+	  		else
+	    		vld_ue_name(    fifo, res, "num_negative_pics                       ");
+	    		pcRPS[sps_id][idx][NUM_NEGATIVE_PICS] := res[0];
+	    		vld_ue_name(    fifo, res, "num_positive_pics                       ");
+	    		pcRPS[sps_id][idx][NUM_POSITIVE_PICS] := res[0];
+	    		pcRPS[sps_id][idx][NUM_PICS] := pcRPS[sps_id][idx][NUM_NEGATIVE_PICS] + res[0];
+	    		if pcRPS[sps_id][idx][NUM_NEGATIVE_PICS] != 0 then
+	    			se_idx := 310;
+	    		else
+	    			prev := 0;
+					if pcRPS[sps_id][idx][NUM_POSITIVE_PICS] != 0 then
+						se_idx := 320;
+						cnt_i := pcRPS[sps_id][idx][NUM_NEGATIVE_PICS];
+					end
+	    		end
+	    	end
+	    end
+	    
+	    read_SliceHeader.se_idx_12_loop1: action ==> 
+	    guard
+	    	se_idx = 310 and isFifoFull(fifo),
+	    	cnt_i < pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size= 8) idx = sps_num_short_term_ref_pic_sets[sps_id]
+	    do
+	    	
+		    			vld_ue_name(    fifo, res, "delta_poc_s0_minus1                     ");
+						prev := prev-res[0]-1;
+						pcRPS[sps_id][idx][DELTAPOC+cnt_i] := prev;
+						vld_u_name(  1, fifo, res, "used_by_curr_pic_s0_flag                ");
+						pcRPS[sps_id][idx][USED+cnt_i]       := res[0];
+						cnt_i := cnt_i + 1;
+		end
+		
+		read_SliceHeader.se_idx_12_end_loop1: action ==> 
+	    guard
+	    	se_idx = 310, cnt_i = pcRPS[sps_id][idx][NUM_NEGATIVE_PICS]
+	    var
+	    	uint(size= 8) idx = sps_num_short_term_ref_pic_sets[sps_id]
+	    do
+	    	
+	    	if pcRPS[sps_id][idx][NUM_POSITIVE_PICS] != 0 then
+	    		se_idx := 320;
+	    		prev := 0;
+	    	else
+	    		se_idx := 301;
+	    		cnt_i := 0;
+	    	end
+	    end
+	    
+	    read_SliceHeader.se_idx_12_loop2: action ==> 
+	    guard
+	    	se_idx = 320 and isFifoFull(fifo),
+	    	cnt_i < pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS] 
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size= 8) idx = sps_num_short_term_ref_pic_sets[sps_id]
+	    do
+		    			vld_ue_name(    fifo, res, "delta_poc_s1_minus1                     ");
+						prev := prev+res[0]+1;
+						pcRPS[sps_id][idx][DELTAPOC+cnt_i] := prev;
+						vld_u_name(  1, fifo, res, "used_by_curr_pic_s1_flag                ");
+						pcRPS[sps_id][idx][USED+cnt_i]       := res[0];
+						cnt_i := cnt_i + 1;
+		end
+		
+		read_SliceHeader.se_idx_12_end_loop2: action ==> 
+	    guard
+	    	se_idx = 320, cnt_i = pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]
+	    do
+    		se_idx := 301;
+    		cnt_i := 0;
+	    end
+		
+		read_SliceHeader.se_idx_13 : action ==> 
+		guard
+			se_idx = 301 and isFifoFull(fifo)
+		 var
+	        uint(size=32) res[1],
+	        uint(size= 8) lt_idx_sps := 0,
+	        uint(size= 8) prevDeltaMSB := 0
+		do
 	            num_long_term_sps := 0;
 	            num_long_term_pics := 0;
 	
@@ -1925,10 +2066,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        		end
 	                vld_ue_name(    fifo, res, "num_long_term_pics                      ");
 	                num_long_term_pics := res[0];
-	//                                      numbits := 0;
-	//                    while (sps_num_long_term_ref_pics_sps[sps_id] > (1 << numbits)) do
-	//                        numbits := numbits + 1;
-	//                    end
 	                foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
 	                	if i < num_long_term_sps then
 	                		if num_long_term_pics > 1 then
@@ -1962,9 +2099,21 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        		slice_temporal_mvp_enable_flag := res[0];
 	    		else
 	            	slice_temporal_mvp_enable_flag := 0;
-	   			end
-	        end
-	        
+	   			end        
+	        se_idx := 302;
+		end
+		
+		read_SliceHeader.se_idx_14 : action  ==> 
+		guard
+			se_idx = 302 and isFifoFull(fifo)
+		var
+			uint(size=32) res[1],
+			uint(size=16) column_width[PICT_WIDTH / MIN_CTB_SIZE_Y]= [pps_column_width[pps_id][ i ] : for int i in 0 .. (PICT_WIDTH / MIN_CTB_SIZE_Y)-1],
+		    uint(size=16) row_height[PICT_HEIGHT / MIN_CTB_SIZE_Y]  = [pps_row_height[pps_id][ i ] : for int i in 0 .. (PICT_HEIGHT / MIN_CTB_SIZE_Y)-1],
+		    uint(size= 8) num_tile_columns_minus1           = pps_num_tile_columns_minus1[pps_id],
+		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
+		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id]
+		do
 	        if (temporal_id = 0 and nal_unit_type != NAL_TRAIL_N and
 	            nal_unit_type != NAL_TSA_N   and
 	            nal_unit_type != NAL_STSA_N  and
@@ -2832,7 +2981,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         	se_idx = 100
 	    do
             if DEBUG_CABAC or CHECK_CABAC then
-                    println("\tPOC: "+poc);
+            	println("\tPOC: "+poc);
             end
             first_qp_group := if dependent_slice_segment_flag = 1 then 0 else 1 end;
             if (pps_cu_qp_delta_enabled_flag[pps_id] = 0) then
@@ -4838,7 +4987,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                         tu_idx                          := 10;  // skipResidualCoding
                         rc_x0                           := tu_x0;
                         rc_y0                           := tu_y0;
-                        rc_log2TrafoSize        := tu_log2TrafoSize - 1;
+                        rc_log2TrafoSize        		:= tu_log2TrafoSize - 1;
                         if cbf_cb[ cbf_x0 ][ cbf_y0 ][ tu_trafoDepth ] = 1 then
                                 tu_idx                  := 4;
                         end
