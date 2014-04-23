@@ -33,6 +33,7 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
 //Pipelined version broken
 actor DeblockingFilterLuma()
+    uint(size=16) CUInfo,
 	uint(size=2)  Bs,
 	bool          DBFDisable,
 	uint(size=2)  IsPicSlcLcu,
@@ -41,7 +42,8 @@ actor DeblockingFilterLuma()
 	int (size=8)  Qp,
 	uint(size=8)  SampleIn,
 	int (size=8)  SyntaxElem,
-	uint(size=16) TilesCoord
+	uint(size=16) TilesCoord,
+	uint(size=7)  treeNS
 		==>
 	uint(size=8)  FiltSample
 		:
@@ -97,6 +99,9 @@ actor DeblockingFilterLuma()
 	int           qPi;
 	int           tcOffset;
 	uint(size=8)  tc;
+	
+	uint(size=7)  cuWidth;
+	uint(size=5)  cuMode;
 
 	function decisionProcessLumaSamp(uint(size=8) p0, uint(size=8) p3,
 		uint(size=8) q0, uint(size=8) q3, int dpq, int beta) --> bool
@@ -298,6 +303,29 @@ actor DeblockingFilterLuma()
 			end
 		end
 	end
+	
+	/* Getting information about the Intra split transform size. */
+	getSplitTrafo.launch: action treeNS:[treeNs] ==>
+	guard
+		cuMode = INTRA
+	do
+		cuWidth := treeNs;
+	end
+	
+	getSplitTrafo.done: action ==>
+	guard
+		cuMode != INTRA
+	do
+		cuMode := INTER;
+	end
+	
+	/* Getting informations of the next CU. */
+	getCuInfo.launch: action
+	    CUInfo:[cuInfo] repeat 5 ==>
+	do
+		cuWidth := cuInfo[3];
+		cuMode := cuInfo[0];
+	end
 
 	isNewSlc: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix,
 		picHeightInPix], LcuSizeMax:[lcuSz], DBFDisable:[disableFlag],
@@ -402,10 +430,122 @@ actor DeblockingFilterLuma()
 		pixAddr[0] := pixAddr[0] + xAddrVert;
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
-
-	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 4*4 ==>
+	
+	/*
+	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 4 * 4 ==>
 	guard
 		blkIdx < numPartition && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
+	do
+		foreach uint y in 0 .. 3
+		do
+			foreach uint x in 0 .. 3
+			do
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[4*y+x];
+			end
+		end
+		
+		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
+		
+		blkIdx := blkIdx + 1;
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+	 */
+
+	getBlk.launch.is64x64: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 64 * 64 ==>
+	guard
+		cuWidth = 64 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
+	do
+		foreach uint y in 0 .. 63
+		do
+			foreach uint x in 0 .. 63
+			do
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[64*y+x];
+			end
+		end
+		
+		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
+		
+		blkIdx := blkIdx + 1;
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+	
+	getBlk.launch.is32x32: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 32 * 32 ==>
+	guard
+		cuWidth = 32 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
+	do
+		foreach uint y in 0 .. 31
+		do
+			foreach uint x in 0 .. 31
+			do
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[32*y+x];
+			end
+		end
+		
+		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
+		
+		blkIdx := blkIdx + 1;
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+	
+	getBlk.launch.is16x16: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 16 * 16 ==>
+	guard
+		cuWidth = 16 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
+	do
+		foreach uint y in 0 .. 15
+		do
+			foreach uint x in 0 .. 15
+			do
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[16*y+x];
+			end
+		end
+		
+		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
+		
+		blkIdx := blkIdx + 1;
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+	
+	getBlk.launch.is8x8: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 8 * 8 ==>
+	guard
+		cuWidth = 8 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
+	do
+		foreach uint y in 0 .. 7
+		do
+			foreach uint x in 0 .. 7
+			do
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[8*y+x];
+			end
+		end
+		
+		qpTab[pixAddr[1]/4][(pixAddr[0] & PICT_WIDTH-1) >>2] := qp;
+		bSTableVert[blkIdx] := bs[0];
+		bSTableHoriz[yAddrVert/lcuSizeMax][xAddrVert/lcuSizeMax][blkIdx] := bs[1];
+		
+		blkIdx := blkIdx + 1;
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+	
+	getBlk.launch.is4x4: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 4 * 4 ==>
+	guard
+		cuWidth = 4 && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
 		foreach uint y in 0 .. 3
 		do
@@ -554,7 +694,11 @@ actor DeblockingFilterLuma()
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewPict )--> GetNumTiles;
+	    // IsNewPict (isNewPict )--> GetCuInfo;
+	    IsNewPict (isNewPict )--> GetSplitTrafo;
+	    GetSplitTrafo   (getSplitTrafo.launch )--> GetCuInfo;
+	    GetSplitTrafo   (getSplitTrafo.done )--> GetCuInfo;
+		GetCuInfo   (getCuInfo.launch )--> GetNumTiles;
 
 		GetCuPix  (isNewSlc                          )--> GetNumTiles;
 		GetCuPix  (getCuPix.launch.pict              )--> GetPartition;

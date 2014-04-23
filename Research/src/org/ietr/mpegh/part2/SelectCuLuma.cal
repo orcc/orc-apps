@@ -61,7 +61,8 @@ actor SelectCuLuma()
 	uint(size=8)  InterSample,
 	uint(size=8)  IntraSample,
 	uint(size=4)  PartMode,
-	int (size=9)  ResidualSample
+	int (size=9)  ResidualSample,
+	uint(size=7)  treeNS
 		==>
 	uint(size=8) Sample
 		:
@@ -74,7 +75,7 @@ actor SelectCuLuma()
 	uint(size=3)  numPartDecoded;
     uint(size=8)  predSamp[64 * 64]; // + 2 * 32 * 32];
 	bool          sampGot[512];
-    uint(size=16)  nbBlkToClip;
+    uint(size=16) nbBlkToClip;
 	uint(size=7)  cuSize[4][2];
 	uint(size=5)  cuMode;
 	uint(size=4)  partMode;
@@ -86,6 +87,8 @@ actor SelectCuLuma()
 	// uint(size=8)  interSamp[16][16][SCU_SIZE];
 	uint(size=7)  xIdx;
 	uint(size=7)  yIdx;
+	
+	uint(size=7)  splitTreeNS;
 
 	initialize ==>
 	do
@@ -105,6 +108,12 @@ actor SelectCuLuma()
 		partMode := partModeVal;
 		numPart := partModeToNumPart[partModeVal];
 		numPartDecoded := 0;
+	end
+	
+	/* Getting information about the Intra split transform size. */
+	getSplitTrafo.launch: action treeNS:[treeNs] ==>
+	do
+		splitTreeNS := treeNs;
 	end
 
 	/* Getting informations of the next CU. */
@@ -178,6 +187,102 @@ actor SelectCuLuma()
 	end
 
 	/* Getting samples from intraPrediction */
+	getCuSample.isIntra.is4x4: action IntraSample:[intraSample] repeat 4 * 4,
+		ResidualSample:[resSample] repeat 4 * 4
+		==> Sample:[sample] repeat 4 * 4
+	guard
+		splitTreeNS = 4
+	var
+		uint(size=8) sample[4 * 4]
+	do
+
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
+		add_8_16_clip_16_1x16_cal (
+		  intraSample,
+          resSample,
+          sample,
+          0);
+	end
+	
+	getCuSample.isIntra.is8x8: action IntraSample:[intraSample] repeat 8 * 8,
+		ResidualSample:[resSample] repeat 8 * 8
+		==> Sample:[sample] repeat 8 * 8
+	guard
+		splitTreeNS = 8
+	var
+		uint(size=8) sample[8 * 8]
+	do
+
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
+		add_8_16_clip_64_64x64_cal (
+		  intraSample,
+          resSample,
+          sample,
+          0);
+	end
+	
+	getCuSample.isIntra.is16x16: action IntraSample:[intraSample] repeat 16 * 16,
+		ResidualSample:[resSample] repeat 16 * 16
+		==> Sample:[sample] repeat 16 * 16
+	guard
+		splitTreeNS = 16
+	var
+		uint(size=8) sample[16 * 16]
+	do
+
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
+		add_8_16_clip_256_64x64_cal (
+		  intraSample,
+          resSample,
+          sample,
+          0);
+	end
+	
+	getCuSample.isIntra.is32x32: action IntraSample:[intraSample] repeat 32 * 32,
+		ResidualSample:[resSample] repeat 32 * 32
+		==> Sample:[sample] repeat 32 * 32
+	guard
+		splitTreeNS = 32
+	var
+		uint(size=8) sample[32 * 32]
+	do
+
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
+		add_8_16_clip_1024_64x64_cal (
+		  intraSample,
+          resSample,
+          sample,
+          0);
+	end
+	
+	getCuSample.isIntra.is64x64: action IntraSample:[intraSample] repeat 64 * 64,
+		ResidualSample:[resSample] repeat 64 * 64
+		==> Sample:[sample] repeat 64 * 64
+	guard
+		splitTreeNS = 64
+	var
+		uint(size=8) sample[64 * 64]
+	do
+
+		/* Reordering the sample is not needed because both (Residual and
+		 * prediction parts) sample are in the rasterScan order
+		 */
+		add_8_16_clip_4096_64x64_cal (
+		  intraSample,
+          resSample,
+          sample,
+          0);
+	end
+
+    /*
 	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
 		ResidualSample:[resSample] repeat SCU_SIZE
 		==> Sample:[sample] repeat SCU_SIZE
@@ -190,6 +295,7 @@ actor SelectCuLuma()
 		/* Reordering the sample is not needed because both (Residual and
 		 * prediction parts) sample are in the rasterScan order
 		 */
+	/*
 		add_8_16_clip_16_1x16_cal (
 		  intraSample,
           resSample,
@@ -197,7 +303,8 @@ actor SelectCuLuma()
           0);
         idxBlk := idxBlk + 1;
 	end
-
+	*/
+	
 	/* Getting prediction samples from interPrediction */
 	getCuSample.isInter: action InterSample:[interSample] repeat SCU_SIZE ==>
 	guard
@@ -216,7 +323,7 @@ actor SelectCuLuma()
   	      interSample,
   	      SCU_SIZE*blkIdx);
   	    sampGot[blkIdx] := true;
-		/* Computing the location of the next block (it's sent in ZScan order instead of RasterScan. */
+		/* Computing the location of the next block (it's sent in ZScan order instead of RasterScan). */
 		xIdx := xIdx + 1;
 		if(xIdx = cuSize[numPartDecoded][0]) then
 			xIdx := 0;
@@ -329,8 +436,8 @@ actor SelectCuLuma()
 	end
 
 	getCuSample.done: action ==>
-	guard
-		idxBlk = nbBlk
+	// guard
+		// idxBlk = nbBlk
 	do
 		idxBlk := 0;
 		foreach int i in 0 .. nbBlk - 1
@@ -346,13 +453,21 @@ actor SelectCuLuma()
 		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
 
-		GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
+		// GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
+		GetCuMode (getCuMode.isIntra )--> GetSplitTrafo;
+		GetSplitTrafo (getSplitTrafo.launch) --> GetCuSampleIntra;
 		GetCuMode (getCuMode.isInter )--> CheckNbBlkToClip;
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
 
-		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
+        /*
+		GetCuSampleIntra (getCuSample.isIntra.is64x64 )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.isIntra.is32x32 )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.isIntra.is16x16 )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.isIntra.is8x8   )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.isIntra.is4x4   )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
-
+		*/
+        GetCuSampleIntra (getCuSample.isIntra)--> GetCuInfo;
 
 		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
 		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;

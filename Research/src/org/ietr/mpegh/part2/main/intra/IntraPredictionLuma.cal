@@ -72,7 +72,8 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	bool 		  StrongIntraSmoothing,
 	uint(size=16) TilesCoord
 		==>
-	uint(size=8) PredSample
+	uint(size=8) PredSample,
+	uint(size=7) SplitTreeNS
 		:
 
 	uint(size=16) NEIGHB_TAB_SZ   = 2*PICT_WIDTH;
@@ -167,6 +168,10 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	uint(size=8) lumaComp[64*64];
 	uint(size=9) numBlkToSend;
 	uint(size=9) idxBlk;
+	
+	// DR 1304
+	uint(size=7)  treeNS;
+	uint(size=3)  treeLog2NS;
 
 	bool getInSamp;
 
@@ -707,38 +712,11 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		trafoTreeDepth := trafoTreeDepth + 1;
 		trafoTreeIdx[trafoTreeDepth] := 0;
 	end
-
-	/* Check if the intra prediction will not be split again, then realize the
-	 * prediction for this part of CU
-	 */
-	getSplitTrafo.isFalse: action SplitTransform:[splitTrafo] ==>
-	guard
-		not splitTrafo && trafoTreeDepth>-1
+	
+	procedure intraPredSplitTrafo(uint(size=8) lumaComp[64*64], int stride)
 	var
-		uint(size=7)  treeNS,
-		uint(size=3)  treeLog2NS,
-		uint(size=16) locAddr[2],
-		int stride = 64
-	do
-		/* Computing the size and the address of the current block. */
-		treeLog2NS := log2NS - trafoTreeDepth;
-		treeNS := nS;
-		treeAddr := [cuAddr_x ,cuAddr_y];
-		foreach uint idx in 1 .. trafoTreeDepth
-		do
-			treeNS := treeNS >> 1;
-			if((trafoTreeIdx[idx]&1) != 0) then
-				treeAddr[0] := treeAddr[0] + treeNS;
-			end
-			if((trafoTreeIdx[idx]&2) != 0) then
-				treeAddr[1] := treeAddr[1] + treeNS;
-			end
-		end
-
-		numBlkToSend := treeNS*treeNS/16;
-		neighbBlkSz  := treeNS;
-		idxBlk := 0;
-
+		uint(size=16) locAddr[2]
+	begin
 		/* Chroma component are not split if we get a 2x2 block (this problem
 		 * appear with YUV420)
 		 */
@@ -747,7 +725,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		
 		predMode := predModeTab;
 
-		getNeighbSamples(locAddr,treeNS, treeLog2NS);
+		getNeighbSamples(locAddr, treeNS, treeLog2NS);
 
 		if(predMode = INTRA_PLANAR) then
 			intraPlanarPred(lumaComp, pNeighb_above, pNeighb_left, stride, treeLog2NS);
@@ -771,6 +749,38 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 					trafoTreeIdx[trafoTreeDepth] + 1;
 			end
 		end
+	end
+
+	/* Check if the intra prediction will not be split again, then realize the
+	 * prediction for this part of CU
+	 */
+	getSplitTrafo.isFalse: action SplitTransform:[splitTrafo] ==>
+	guard
+		not splitTrafo && trafoTreeDepth>-1
+	// var
+		// uint(size=7)  treeNS,
+		// uint(size=3)  treeLog2NS,
+		// uint(size=16) locAddr[2],
+		// int stride = 64
+	do
+		/* Computing the size and the address of the current block. */
+		treeLog2NS := log2NS - trafoTreeDepth;
+		treeNS := nS;
+		treeAddr := [cuAddr_x ,cuAddr_y];
+		foreach uint idx in 1 .. trafoTreeDepth
+		do
+			treeNS := treeNS >> 1;
+			if((trafoTreeIdx[idx]&1) != 0) then
+				treeAddr[0] := treeAddr[0] + treeNS;
+			end
+			if((trafoTreeIdx[idx]&2) != 0) then
+				treeAddr[1] := treeAddr[1] + treeNS;
+			end
+		end
+
+		numBlkToSend := treeNS*treeNS/16;
+		neighbBlkSz  := treeNS;
+		idxBlk := 0;
 	end
 
 	getSplitTrafo.isInter: action SplitTransform:[splitTrafo] ==>
@@ -797,8 +807,18 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	guard
 		trafoTreeDepth = -1
 	end
+	
+	sendTreeNs.launch: action ==> SplitTreeNS:[splitTreeNS] repeat 1
+	guard
+		idxBlk < numBlkToSend
+	var
+		uint(size=7) splitTreeNS[1]
+	do
+		splitTreeNS[0] := treeNS;
+	end
 
 	/* Sending One 4x4 luma blocks and the corresponding chroma values. */
+	/*
 	sendSamples.launch: action ==> PredSample:[sampleVal] repeat 16
 	guard
 		idxBlk < numBlkToSend
@@ -820,6 +840,61 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		
 		idxBlk := idxBlk + 1;
 	end
+	*/
+	sendSamples.launch.is64x64: action ==> PredSample:[lumaComp] repeat 64 * 64
+	guard
+		idxBlk < numBlkToSend,
+		treeNS = 64
+	var
+		uint(size=8) lumaComp[64*64]
+	do
+		intraPredSplitTrafo(lumaComp, 64);
+		idxBlk := idxBlk + ((64 * 64) / 16);
+	end
+	
+	sendSamples.launch.is32x32: action ==> PredSample:[lumaComp] repeat 32 * 32
+	guard
+		idxBlk < numBlkToSend,
+		treeNS = 32
+	var
+		uint(size=8) lumaComp[64*64]
+	do
+		intraPredSplitTrafo(lumaComp, 32);
+		idxBlk := idxBlk + ((32 * 32) / 16);
+	end
+	
+	sendSamples.launch.is16x16: action ==> PredSample:[lumaComp] repeat 16 * 16
+	guard
+		idxBlk < numBlkToSend,
+		treeNS = 16
+	var
+		uint(size=8) lumaComp[64*64]
+	do
+		intraPredSplitTrafo(lumaComp, 16);
+		idxBlk := idxBlk + ((16 * 16) / 16);
+	end
+	
+	sendSamples.launch.is8x8: action ==> PredSample:[lumaComp] repeat 8 * 8
+	guard
+		idxBlk < numBlkToSend,
+		treeNS = 8
+	var
+		uint(size=8) lumaComp[64*64]
+	do
+		intraPredSplitTrafo(lumaComp, 8);
+		idxBlk := idxBlk + ((8 * 8) / 16);
+	end
+	
+	sendSamples.launch.is4x4: action ==> PredSample:[lumaComp] repeat 4 * 4
+	guard
+		idxBlk < numBlkToSend,
+		treeNS = 4
+	var
+		uint(size=8) lumaComp[64*64]
+	do
+		intraPredSplitTrafo(lumaComp, 4);
+		idxBlk := idxBlk + (4 * 4 / 16);
+	end
 
 	sendSamples.done: action ==>
 	guard
@@ -829,6 +904,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	end
 
 	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
+	/*
 	getSamples.launch: action Sample_y:[sample_y] repeat 16 ==>
 	guard
 		idxBlk < numBlkToSend && (not EnabSkipInPix || getInSamp)
@@ -872,6 +948,136 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		
 		idxBlk := idxBlk + 1;
 	end
+	*/
+	getSamples.launch.is64x64: action Sample_y:[sample_y] repeat 64 * 64 ==>
+	guard
+		treeNS = 64 && 
+		(not EnabSkipInPix || getInSamp)
+	var
+		uint(size=16) tabIdx,
+		uint(size=16) tabIdxOffset,
+		uint(size=16) cuAddr[2]
+	do
+	    cuAddr := [treeAddr[i]:for int i in 0 .. 1];
+		tabIdxOffset := pictSize[1] - cuAddr[1] + cuAddr[0];
+		foreach uint x in 0 .. 63
+		do
+			tabIdx := tabIdxOffset + x;
+			puNeighb[tabIdx] := sample_y[nS * (nS - 1) + x];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+
+		foreach uint y in 0 .. 63
+		do
+			tabIdx := tabIdxOffset - y;
+			puNeighb[tabIdx] := sample_y[nS * y + nS - 1];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+	end
+	
+	getSamples.launch.is32x32: action Sample_y:[sample_y] repeat 32 * 32 ==>
+	guard
+		treeNS = 32 && 
+		(not EnabSkipInPix || getInSamp)
+	var
+		uint(size=16) tabIdx,
+		uint(size=16) tabIdxOffset,
+		uint(size=16) cuAddr[2]
+	do
+	    cuAddr := [treeAddr[i]:for int i in 0 .. 1];
+		tabIdxOffset := pictSize[1] - cuAddr[1] + cuAddr[0];
+		foreach uint x in 0 .. 31
+		do
+			tabIdx := tabIdxOffset + x;
+			puNeighb[tabIdx] := sample_y[nS * (nS - 1) + x];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+
+		foreach uint y in 0 .. 31
+		do
+			tabIdx := tabIdxOffset - y;
+			puNeighb[tabIdx] := sample_y[nS * y + nS - 1];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+	end
+	
+	getSamples.launch.is16x16: action Sample_y:[sample_y] repeat 16 * 16 ==>
+	guard
+		treeNS = 16 && 
+		(not EnabSkipInPix || getInSamp)
+	var
+		uint(size=16) tabIdx,
+		uint(size=16) tabIdxOffset,
+		uint(size=16) cuAddr[2]
+	do
+	    cuAddr := [treeAddr[i]:for int i in 0 .. 1];
+		tabIdxOffset := pictSize[1] - cuAddr[1] + cuAddr[0];
+		foreach uint x in 0 .. 15
+		do
+			tabIdx := tabIdxOffset + x;
+			puNeighb[tabIdx] := sample_y[nS * (nS - 1) + x];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+
+		foreach uint y in 0 .. 15
+		do
+			tabIdx := tabIdxOffset - y;
+			puNeighb[tabIdx] := sample_y[nS * y + nS - 1];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+	end
+	
+	getSamples.launch.is8x8: action Sample_y:[sample_y] repeat 8 * 8 ==>
+	guard
+		treeNS = 8 && 
+		(not EnabSkipInPix || getInSamp)
+	var
+		uint(size=16) tabIdx,
+		uint(size=16) tabIdxOffset,
+		uint(size=16) cuAddr[2]
+	do
+	    cuAddr := [treeAddr[i]:for int i in 0 .. 1];
+		tabIdxOffset := pictSize[1] - cuAddr[1] + cuAddr[0];
+		foreach uint x in 0 .. 7
+		do
+			tabIdx := tabIdxOffset + x;
+			puNeighb[tabIdx] := sample_y[nS * (nS - 1) + x];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+
+		foreach uint y in 0 .. 7
+		do
+			tabIdx := tabIdxOffset - y;
+			puNeighb[tabIdx] := sample_y[nS * y + nS - 1];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+	end
+	
+	getSamples.launch.is4x4: action Sample_y:[sample_y] repeat 4 * 4 ==>
+	guard
+		treeNS = 4 && 
+		(not EnabSkipInPix || getInSamp)
+	var
+		uint(size=16) tabIdx,
+		uint(size=16) tabIdxOffset,
+		uint(size=16) cuAddr[2]
+	do
+	    cuAddr := [treeAddr[i]:for int i in 0 .. 1];
+		tabIdxOffset := pictSize[1] - cuAddr[1] + cuAddr[0];
+		foreach uint x in 0 .. 3
+		do
+			tabIdx := tabIdxOffset + x;
+			puNeighb[tabIdx] := sample_y[nS * (nS - 1) + x];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+
+		foreach uint y in 0 .. 3
+		do
+			tabIdx := tabIdxOffset - y;
+			puNeighb[tabIdx] := sample_y[nS * y + nS - 1];
+			puIsIntra[tabIdx] := cuMode = INTRA;
+		end
+	end
 
 	getSamples.done: action ==>
 	guard
@@ -901,17 +1107,20 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		GetInterSamples (getSamples.done   )--> GetCuInfo;
 
 		GetSplitTrafoIntra (getSplitTrafo.isTrue  )--> GetSplitTrafoIntra;
-		GetSplitTrafoIntra (getSplitTrafo.isFalse )--> SendSamples;
+		GetSplitTrafoIntra (getSplitTrafo.isFalse )--> SendTreeNs;
 		GetSplitTrafoIntra (getSplitTrafo.done    )--> GetCuInfo;
 
 		GetSplitTrafoInter (getSplitTrafo.isInter  )--> GetSplitTrafoInter;
 		GetSplitTrafoInter (getSplitTrafo.done    )--> GetInterSamples;
 
+        SendTreeNs (sendTreeNs.launch) --> SendSamples;
 		SendSamples (sendSamples.launch )--> SendSamples;
 		SendSamples (sendSamples.done   )--> GetIntraSamples;
+		// SendSamples (sendSamples.launch )--> GetIntraSamples;
 
-		GetIntraSamples (getSamples.launch )--> GetIntraSamples;
-		GetIntraSamples (getSamples.done   )--> GetSplitTrafoIntra;
+		// GetIntraSamples (getSamples.launch )--> GetIntraSamples;
+		GetIntraSamples (getSamples.launch )--> GetSplitTrafoIntra;
+		// GetIntraSamples (getSamples.done   )--> GetSplitTrafoIntra;
 
 		GetInSamples (getSamples.launch )--> GetInSamples;
 		GetInSamples (getSamples.done   )--> GetCuInfo;

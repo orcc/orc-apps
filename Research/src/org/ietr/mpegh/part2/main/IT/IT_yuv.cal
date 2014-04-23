@@ -7,12 +7,14 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.ietr.mpegh.part2.main.IT.TransformFunctions.*;
 
 actor IT_yuv()
+    uint(size=16) CUInfo,
 	int(size=8)  Size,                                          
-	int(size=16) Coeff
+	int(size=16) Coeff,
+	uint(size=7)  treeNS
 		==>                                    
 	int(size=16)  Block_y,
 	int(size=16)  Block_u, 
-	int(size=16)  Block_v  
+	int(size=16)  Block_v
 		:
 
 	int 	MAX_TR_DYNAMIC_RANGE = 15; // Maximum transform dynamic range (excluding sign bit)
@@ -22,11 +24,14 @@ actor IT_yuv()
  	uint(size=3) blk4x4Idx := 0;
  	uint(size=9) numPartToSend;
  	uint(size=9) partIdx := 0;
+ 	
+ 	uint(size=7)  cuWidth;
+ 	uint(size=5)  cuMode;
  
  	int(size=16) lumaBlk[32*32];
  	int(size=16) chrBlk_u[16*16];
  	int(size=16) chrBlk_v[16*16];
-
+ 	
 	procedure incIdx(int tuSize)
 	begin
 		if(tuSize = 4 and cIdx = 0) then
@@ -119,6 +124,32 @@ actor IT_yuv()
 			end
 		end
 	end
+	
+	/* Getting information about the Intra split transform size. */
+	getSplitTrafo.launch: action treeNS:[treeNs] ==>
+	guard
+		cuMode = INTRA
+	do
+		cuWidth := treeNs;
+	end
+	
+	getSplitTrafo.done: action ==>
+	guard
+		cuMode != INTRA
+	do
+		cuMode := INTER;
+	end
+	
+	/* Getting informations of the next CU. */
+	getCuInfo.launch: action 
+	    Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+	    CUInfo:[cuInfo] repeat 5 ==>
+	guard
+		RCskip = 0
+	do
+		cuWidth := cuInfo[3];
+		cuMode := cuInfo[0];
+	end
 
 	getCoeff.is4x4: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
@@ -135,12 +166,15 @@ actor IT_yuv()
 		if(transfSkipFlag = 1) then
 			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 15];
 		elsif(isDST = 1) then
-			transform_4x4_luma(block, coeff, 4);
+			// transform_4x4_luma(block, coeff, 4);
+			transform_4x4_luma(block, coeff, cuWidth);
 		else
-			transform_4x4(block, coeff, 4);
+			// transform_4x4(block, coeff, 4);
+			transform_4x4(block, coeff, cuWidth);
+			reorderTu(block, tuSize);
 		end
 
-		reorderTu(block, tuSize);
+		// reorderTu(block, tuSize);
 		incIdx(tuSize);
 		numPartToSend := 4;
 	end
@@ -154,9 +188,14 @@ actor IT_yuv()
 		int(size=8) tuSize = 4
 	do
 		if(cIdx = 0) then
-			foreach int i in 0 .. 15
+			// foreach int i in 0 .. 15
+			foreach int i in 0 .. 3
 			do
-				lumaBlk[16*blk4x4Idx +i] := 0;
+			  foreach int j in 0 .. 3
+			  do
+				// lumaBlk[16 * blk4x4Idx + i] := 0;
+				lumaBlk[i * cuWidth + j] := 0;
+			  end
 			end
 		elsif(cIdx = 1) then
 			chrBlk_u := [0: for int i in 0 .. 15];
@@ -182,10 +221,11 @@ actor IT_yuv()
 		if(transfSkipFlag = 1) then
 			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 63];
 		else
-			transform_8x8(block, coeff, 8);
+			// transform_8x8(block, coeff, 8);
+			transform_8x8(block, coeff, cuWidth);
 		end
 
-		reorderTu(block, tuSize);
+		// reorderTu(block, tuSize);
 		incIdx(tuSize);
 	end
 
@@ -198,7 +238,14 @@ actor IT_yuv()
 		int(size=8) tuSize = 8
 	do
 		if(cIdx = 0) then
-			lumaBlk := [0: for int i in 0 .. 63];
+			//  lumaBlk := [0: for int i in 0 .. 63];
+			foreach int i in 0 .. 7
+			do
+			  foreach int j in 0 .. 7
+			  do
+				lumaBlk[i * cuWidth + j] := 0;
+			  end
+			end
 		elsif(cIdx = 1) then
 			chrBlk_u := [0: for int i in 0 .. 63];
 		else
@@ -222,10 +269,11 @@ actor IT_yuv()
 		if(transfSkipFlag = 1) then
 			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 255];
 		else
-			transform_16x16(block, coeff, 16);
+			// transform_16x16(block, coeff, 16);
+			transform_16x16(block, coeff, cuWidth);
 		end
 
-		reorderTu(block, tuSize);
+		// reorderTu(block, tuSize);
 		if(cIdx = 0) then
 			numPartToSend := 16;
 		end
@@ -242,7 +290,14 @@ actor IT_yuv()
 	do
 		if(cIdx = 0) then
 			numPartToSend := 16;
-			lumaBlk := [0: for int i in 0 .. 255];
+			// lumaBlk := [0: for int i in 0 .. 255];
+			foreach int i in 0 .. 15
+			do
+			  foreach int j in 0 .. 15
+			  do
+				lumaBlk[i * cuWidth + j] := 0;
+			  end
+			end
 		elsif(cIdx = 1) then
 			chrBlk_u := [0: for int i in 0 .. 255];
 		else
@@ -267,10 +322,11 @@ actor IT_yuv()
 		if(transfSkipFlag = 1) then
 			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 1023];
 		else
-			transform_32x32(block, coeff, 32);
+			// transform_32x32(block, coeff, 32);
+			transform_32x32(block, coeff, cuWidth);
 		end
 		
-		reorderTu(block, tuSize);
+		// reorderTu(block, tuSize);
 		numPartToSend := 64;
 		incIdx(tuSize);
 	end
@@ -281,7 +337,14 @@ actor IT_yuv()
 	guard
 		sizeOfTU = 32 and RCskip != 0
 	do
-		lumaBlk := [0: for int i in 0 .. 1023];
+		// lumaBlk := [0: for int i in 0 .. 1023];
+		foreach int i in 0 .. 31
+		do
+		  foreach int j in 0 .. 31
+		  do
+			lumaBlk[i * cuWidth + j] := 0;
+		  end
+		end
 		numPartToSend := 64;
 		incIdx(32);
 	end
@@ -329,7 +392,12 @@ actor IT_yuv()
 		partIdx := 0;
 	end
 
-	schedule fsm GetCoeff:
+	// schedule fsm GetCoeff:
+	schedule fsm GetCuInfo:
+	    GetCuInfo   (getCuInfo.launch )--> GetSplitTrafo;
+	    GetSplitTrafo   (getSplitTrafo.launch )--> GetCoeff;
+	    GetSplitTrafo   (getSplitTrafo.done )--> GetCoeff;
+	    
 		GetCoeff  (getCoeff         )--> SendToken;
 		GetCoeff  (getCoeff_is64x64 )--> GetCoeff;
 		SendToken (sendToken.skip   )--> GetCoeff;
