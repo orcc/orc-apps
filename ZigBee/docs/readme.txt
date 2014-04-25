@@ -32,7 +32,7 @@ Standard GCC compilation with the following
                 <output_folder>/libs/roxml/include
                 <folder_of_SDL_headers>
 - source files: <orc-apps-trunk>/ZigBee/lib/native/embedded.c 
-                OR others.c
+                OR others.c (only for monotoken_tx)
                 <output_folder>/src/*.c, 
                 <output_folder>/libs/orcc-runtime/src/*.c,
                 <output_folder>/libs/orcc-native/src/fps_print.c,
