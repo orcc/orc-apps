@@ -27,29 +27,36 @@ purpose processor.
 
 Compilation:
 Standard GCC compilation with the following
-- headers:      <output_folder>/libs/orcc/include
+- headers:      <output_folder>/libs/orcc-runtime/include
+                <output_folder>/libs/orcc-native/include
                 <output_folder>/libs/roxml/include
+                <folder_of_SDL_headers>
 - source files: <orc-apps-trunk>/ZigBee/lib/native/embedded.c 
                 OR others.c
                 <output_folder>/src/*.c, 
-                <output_folder>/libs/orcc/src/orcc_util.c,
-                <output_folder>/libs/orcc/src/scheduler.c,
+                <output_folder>/libs/orcc-runtime/src/*.c,
+                <output_folder>/libs/orcc-native/src/fps_print.c,
+                <output_folder>/libs/orcc-native/src/native.c,
                 <output_folder>/libs/roxml/src/roxml.c,
                 <output_folder>/libs/roxml/src/roxml-parse-engine.c,
                 <output_folder>/libs/roxml/src/roxml-internal.c
 - libraries:    pthread
+                SDL
 
 e.g.
-gcc -o bin/ZigBee src/*.c libs/orcc/src/orcc_util.c -Ilibs/orcc/include
-libs/orcc/src/scheduler.c -Ilibs/roxml/include libs/roxml/src/roxml.c 
-libs/roxml/src/roxml-parse-engine.c libs/roxml/src/roxml-internal.c
-~/orc-apps/ZigBee/lib/native/others.c -lpthread 
-
+gcc -o bin/tx libs/orcc-runtime/src/*.c libs/orcc-native/src/fps_print.c
+libs/orcc-native/src/native.c -I libs/orcc-native/include 
+-I libs/orcc-runtime/include src/*.c -I libs/roxml/include/
+libs/roxml/src/roxml.c libs/roxml/src/roxml-parse-engine.c
+libs/roxml/src/roxml-internal.c -lpthread -I /usr/include/SDL
+-lSDL /home/user/orc-apps/ZigBee/lib/native/embedded.c -O3
 
 Changelog:
 - initial release 08/10/2012
 - multitoken version of the transmitter 04/03/2013
 - embedded version of the transmitter 26/03/2013
+- severall small improvements to embedded_tx 25/04/2014
 
 Known issues:
 - The FIFO size must be at least 2
+
