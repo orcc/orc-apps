@@ -82,6 +82,7 @@ actor SelectCuLuma()
 	uint(size=5)  cuOff[4][2] := [[0,0],[0,0],[0,0],[0,0]];
 	uint(size=7)  cuWidth;
 	uint(size=9)  nbBlk;
+	uint(size=9)  nbBlkIntra;
 	uint(size=9)  idxBlk;
 	uint(size=9)  idxBlkInterpred;
 	// uint(size=8)  interSamp[16][16][SCU_SIZE];
@@ -111,7 +112,7 @@ actor SelectCuLuma()
 	end
 	
 	/* Getting information about the Intra split transform size. */
-	getSplitTrafo.launch: action treeNS:[treeNs] ==>
+	getTreeNs.launch: action treeNS:[treeNs] ==>
 	do
 		splitTreeNS := treeNs;
 	end
@@ -125,7 +126,7 @@ actor SelectCuLuma()
 		cuWidth := cuInfo[3];
         nbBlkToClip := PU_SIZE_TO_NB_BLK_TO_CLIP[cuWidth >> 2];
 		nbBlk   := nbBlkToClip;
-		// nbBlk   := cuWidth*cuWidth/16;
+		nbBlkIntra   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
 		cuSize := [[cuInfo[i]/4:for int i in 3 .. 4]:for int j in 0 .. 3];
 		cuOff[0] := [0:for int i in 0 .. 1];
@@ -187,11 +188,12 @@ actor SelectCuLuma()
 	end
 
 	/* Getting samples from intraPrediction */
-	getCuSample.isIntra.is4x4: action IntraSample:[intraSample] repeat 4 * 4,
-		ResidualSample:[resSample] repeat 4 * 4
+	getCuSample.isIntra.is4x4: action ResidualSample:[resSample] repeat 4 * 4,
+	    IntraSample:[intraSample] repeat 4 * 4
 		==> Sample:[sample] repeat 4 * 4
 	guard
-		splitTreeNS = 4
+		splitTreeNS = 4,
+		idxBlk < nbBlkIntra
 	var
 		uint(size=8) sample[4 * 4]
 	do
@@ -204,13 +206,16 @@ actor SelectCuLuma()
           resSample,
           sample,
           0);
+          
+        idxBlk := idxBlk + 1;
 	end
 	
-	getCuSample.isIntra.is8x8: action IntraSample:[intraSample] repeat 8 * 8,
-		ResidualSample:[resSample] repeat 8 * 8
+	getCuSample.isIntra.is8x8: action ResidualSample:[resSample] repeat 8 * 8,
+	    IntraSample:[intraSample] repeat 8 * 8
 		==> Sample:[sample] repeat 8 * 8
 	guard
-		splitTreeNS = 8
+		splitTreeNS = 8,
+		idxBlk < nbBlkIntra
 	var
 		uint(size=8) sample[8 * 8]
 	do
@@ -223,13 +228,16 @@ actor SelectCuLuma()
           resSample,
           sample,
           0);
+          
+        idxBlk := idxBlk + 4;
 	end
 	
-	getCuSample.isIntra.is16x16: action IntraSample:[intraSample] repeat 16 * 16,
-		ResidualSample:[resSample] repeat 16 * 16
+	getCuSample.isIntra.is16x16: action ResidualSample:[resSample] repeat 16 * 16,
+	    IntraSample:[intraSample] repeat 16 * 16
 		==> Sample:[sample] repeat 16 * 16
 	guard
-		splitTreeNS = 16
+		splitTreeNS = 16,
+		idxBlk < nbBlkIntra
 	var
 		uint(size=8) sample[16 * 16]
 	do
@@ -242,13 +250,16 @@ actor SelectCuLuma()
           resSample,
           sample,
           0);
+          
+        idxBlk := idxBlk + 16;
 	end
 	
-	getCuSample.isIntra.is32x32: action IntraSample:[intraSample] repeat 32 * 32,
-		ResidualSample:[resSample] repeat 32 * 32
+	getCuSample.isIntra.is32x32: action ResidualSample:[resSample] repeat 32 * 32,
+	    IntraSample:[intraSample] repeat 32 * 32
 		==> Sample:[sample] repeat 32 * 32
 	guard
-		splitTreeNS = 32
+		splitTreeNS = 32,
+		idxBlk < nbBlkIntra
 	var
 		uint(size=8) sample[32 * 32]
 	do
@@ -261,13 +272,16 @@ actor SelectCuLuma()
           resSample,
           sample,
           0);
+          
+        idxBlk := idxBlk + 64;
 	end
 	
-	getCuSample.isIntra.is64x64: action IntraSample:[intraSample] repeat 64 * 64,
-		ResidualSample:[resSample] repeat 64 * 64
+	getCuSample.isIntra.is64x64: action  ResidualSample:[resSample] repeat 64 * 64,
+	    IntraSample:[intraSample] repeat 64 * 64
 		==> Sample:[sample] repeat 64 * 64
 	guard
-		splitTreeNS = 64
+		splitTreeNS = 64,
+		idxBlk < nbBlkIntra
 	var
 		uint(size=8) sample[64 * 64]
 	do
@@ -280,6 +294,8 @@ actor SelectCuLuma()
           resSample,
           sample,
           0);
+          
+        idxBlk := idxBlk + 256;
 	end
 
     /*
@@ -436,8 +452,8 @@ actor SelectCuLuma()
 	end
 
 	getCuSample.done: action ==>
-	// guard
-		// idxBlk = nbBlk
+	guard
+		idxBlk = nbBlk
 	do
 		idxBlk := 0;
 		foreach int i in 0 .. nbBlk - 1
@@ -454,8 +470,8 @@ actor SelectCuLuma()
 		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
 
 		// GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
-		GetCuMode (getCuMode.isIntra )--> GetSplitTrafo;
-		GetSplitTrafo (getSplitTrafo.launch) --> GetCuSampleIntra;
+		GetCuMode (getCuMode.isIntra )--> GetTreeNs;
+		GetTreeNs (getTreeNs.launch) --> GetCuSampleIntra;
 		GetCuMode (getCuMode.isInter )--> CheckNbBlkToClip;
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
 
@@ -467,7 +483,8 @@ actor SelectCuLuma()
 		GetCuSampleIntra (getCuSample.isIntra.is4x4   )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
 		*/
-        GetCuSampleIntra (getCuSample.isIntra)--> GetCuInfo;
+        GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
+		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
 
 		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
 		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;

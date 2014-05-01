@@ -21,17 +21,22 @@ actor IT_yuv()
 	int 	BIT_DEPTH = 8; // assuming 8bits for samples
 	
  	uint(size=2) cIdx := 0;
- 	uint(size=3) blk4x4Idx := 0;
- 	uint(size=9) numPartToSend;
+ 	// uint(size=3) blk4x4Idx := 0;
+ 	// uint(size=9) numPartToSend;
  	uint(size=9) partIdx := 0;
  	
  	uint(size=7)  cuWidth;
  	uint(size=5)  cuMode;
  
- 	int(size=16) lumaBlk[32*32];
- 	int(size=16) chrBlk_u[16*16];
- 	int(size=16) chrBlk_v[16*16];
+ 	int(size=16) lumaBlk[64*64];
+ 	int(size=16) chrBlk_u[32*32];
+ 	int(size=16) chrBlk_v[32*32];
  	
+ 	// int(size=16) block[64*64];
+ 	uint(size=9) elemOffset := 0;
+ 	uint(size=9) numElemToSend;
+ 	
+ 	/*	
 	procedure incIdx(int tuSize)
 	begin
 		if(tuSize = 4 and cIdx = 0) then
@@ -44,7 +49,9 @@ actor IT_yuv()
 			cIdx := cIdx + 1;
 		end
 	end
+	*/
 
+    /*
 	procedure reorderTu(int(size=16) block[32*32], uint(size=7) tuSize)
 	var
 		uint(size=10) inBlkIdx,
@@ -124,20 +131,58 @@ actor IT_yuv()
 			end
 		end
 	end
+	*/
+	// Temporary for debug purposes, can be removed by writing directly into the target buffer (fifo)
+	procedure copyTu(int(size=16) block[64*64], uint(size=7) tuSize, int stride, uint(size=6) offset)
+	begin
+		if (cIdx = 0) then
+			foreach int y in 0 .. tuSize
+			do
+				foreach int x in 0 .. tuSize
+				do
+					lumaBlk[offset + y * stride + x] := block[y * tuSize + x];
+					x := x + 1;
+				end
+				y := y + 1;
+			end
+		elsif (cIdx = 1) then
+			foreach int y in 0 .. tuSize
+			do
+				foreach int x in 0 .. tuSize
+				do
+					chrBlk_u[offset + y * stride + x] := block[y * tuSize + x];
+					x := x + 1;
+				end
+				y := y + 1;
+			end
+		else
+			foreach int y in 0 .. tuSize
+			do
+				foreach int x in 0 .. tuSize
+				do
+					chrBlk_v[offset + y * stride + x] := block[y * tuSize + x];
+					x := x + 1;
+				end
+				y := y + 1;
+			end
+		end
+	end
 	
 	/* Getting information about the Intra split transform size. */
-	getSplitTrafo.launch: action treeNS:[treeNs] ==>
-	guard
-		cuMode = INTRA
+	getTreeNs.launch: action treeNS:[treeNs] ==>
 	do
 		cuWidth := treeNs;
 	end
 	
-	getSplitTrafo.done: action ==>
+	/** Checking type of prediction.  **/
+	getCuMode.isIntra: action ==>
 	guard
-		cuMode != INTRA
-	do
-		cuMode := INTER;
+		cuMode = INTRA
+	end
+
+	getCuMode.isNoIntra: action ==>
+	guard
+		cuMode = OTHER || cuMode = INTER || cuMode = SKIP
 	end
 	
 	/* Getting informations of the next CU. */
@@ -149,6 +194,10 @@ actor IT_yuv()
 	do
 		cuWidth := cuInfo[3];
 		cuMode := cuInfo[0];
+		
+		elemOffset := 0;
+		// Better to separate luma and chroma?
+		numElemToSend := cuWidth * cuWidth + (cuWidth / 2) * (cuWidth / 2) + (cuWidth / 2) * (cuWidth / 2);
 	end
 
 	getCoeff.is4x4: action
@@ -171,12 +220,19 @@ actor IT_yuv()
 		else
 			// transform_4x4(block, coeff, 4);
 			transform_4x4(block, coeff, cuWidth);
-			reorderTu(block, tuSize);
+			// reorderTu(block, tuSize);
+			copyTu(block, tuSize, cuWidth, elemOffset);
 		end
 
 		// reorderTu(block, tuSize);
-		incIdx(tuSize);
-		numPartToSend := 4;
+		copyTu(block, tuSize, cuWidth, elemOffset);
+		// incIdx(tuSize);
+		// numPartToSend := 4;
+		if (elemOffset + 4 < cuWidth) then 
+		  elemOffset := elemOffset + 4;
+		else
+		  elemOffset := elemOffset + cuWidth * 4 - (cuWidth - 4);
+		end
 	end
 
 	getCoeff.is4x4.skip: action
@@ -184,8 +240,6 @@ actor IT_yuv()
 			==>
 	guard
 		sizeOfTU = 4 and RCskip != 0
-	var
-		int(size=8) tuSize = 4
 	do
 		if(cIdx = 0) then
 			// foreach int i in 0 .. 15
@@ -202,8 +256,13 @@ actor IT_yuv()
 		else
 			chrBlk_v := [0: for int i in 0 .. 15];
 		end
-		incIdx(tuSize);
-		numPartToSend := 4;
+		// incIdx(tuSize);
+		// numPartToSend := 4;
+		if (elemOffset + 4 < cuWidth) then 
+		  elemOffset := elemOffset + 4;
+		else
+		  elemOffset := elemOffset + cuWidth * 4 - (cuWidth - 4);
+		end
 	end
 
 	getCoeff.is8x8: action
@@ -226,7 +285,13 @@ actor IT_yuv()
 		end
 
 		// reorderTu(block, tuSize);
-		incIdx(tuSize);
+		copyTu(block, tuSize, cuWidth, elemOffset);
+		// incIdx(tuSize);
+		if (elemOffset + 8 < cuWidth) then 
+		  elemOffset := elemOffset + 8;
+		else
+		  elemOffset := elemOffset + cuWidth * 8 - (cuWidth - 8);
+		end
 	end
 
 	getCoeff.is8x8.skip: action
@@ -234,11 +299,9 @@ actor IT_yuv()
 			==>
 	guard
 		sizeOfTU = 8 and RCskip != 0
-	var
-		int(size=8) tuSize = 8
 	do
 		if(cIdx = 0) then
-			//  lumaBlk := [0: for int i in 0 .. 63];
+			// lumaBlk := [0: for int i in 0 .. 63];
 			foreach int i in 0 .. 7
 			do
 			  foreach int j in 0 .. 7
@@ -251,7 +314,12 @@ actor IT_yuv()
 		else
 			chrBlk_v := [0: for int i in 0 .. 63];
 		end
-		incIdx(tuSize);
+		// incIdx(tuSize);
+		if (elemOffset + 8 < cuWidth) then 
+		  elemOffset := elemOffset + 8;
+		else
+		  elemOffset := elemOffset + cuWidth * 8 - (cuWidth - 8);
+		end
 	end
 
 	getCoeff.is16x16: action
@@ -274,10 +342,18 @@ actor IT_yuv()
 		end
 
 		// reorderTu(block, tuSize);
+		copyTu(block, tuSize, cuWidth, elemOffset);
+		/*
 		if(cIdx = 0) then
 			numPartToSend := 16;
 		end
-		incIdx(tuSize);
+		*/
+		// incIdx(tuSize);
+		if (elemOffset + 16 < cuWidth) then 
+		  elemOffset := elemOffset + 16;
+		else
+		  elemOffset := elemOffset + cuWidth * 16 - (cuWidth - 16);
+		end
 	end
 
 	getCoeff.is16x16.skip: action
@@ -285,11 +361,9 @@ actor IT_yuv()
 			==>
 	guard
 		sizeOfTU = 16 and RCskip != 0
-	var
-		int(size=8) tuSize = 16
 	do
 		if(cIdx = 0) then
-			numPartToSend := 16;
+			// numPartToSend := 16;
 			// lumaBlk := [0: for int i in 0 .. 255];
 			foreach int i in 0 .. 15
 			do
@@ -303,7 +377,12 @@ actor IT_yuv()
 		else
 			chrBlk_v := [0: for int i in 0 .. 255];
 		end
-		incIdx(tuSize);
+		// incIdx(tuSize);
+		if (elemOffset + 16 < cuWidth) then 
+		  elemOffset := elemOffset + 16;
+		else
+		  elemOffset := elemOffset + cuWidth * 16 - (cuWidth - 16);
+		end
 	end
 
 	/* cIdx will be 0 */
@@ -327,8 +406,14 @@ actor IT_yuv()
 		end
 		
 		// reorderTu(block, tuSize);
-		numPartToSend := 64;
-		incIdx(tuSize);
+		copyTu(block, tuSize, cuWidth, elemOffset);
+		// numPartToSend := 64;
+		// incIdx(tuSize);
+		if (elemOffset + 32 < cuWidth) then 
+		  elemOffset := elemOffset + 32;
+		else
+		  elemOffset := elemOffset + cuWidth * 32 - (cuWidth - 32);
+		end
 	end
 
 	getCoeff.is32x32.skip: action
@@ -345,8 +430,13 @@ actor IT_yuv()
 			lumaBlk[i * cuWidth + j] := 0;
 		  end
 		end
-		numPartToSend := 64;
-		incIdx(32);
+		// numPartToSend := 64;
+		// incIdx(32);
+		if (elemOffset + 32 < cuWidth) then 
+		  elemOffset := elemOffset + 32;
+		else
+		  elemOffset := elemOffset + cuWidth * 32 - (cuWidth - 32);
+		end
 	end
 
 	getCoeff_is64x64: action
@@ -356,9 +446,10 @@ actor IT_yuv()
 		Block_u:[[0: for int i in 0 .. 1023]] repeat 1024, 
 		Block_v:[[0: for int i in 0 .. 1023]] repeat 1024
 	guard
-		param[0] = 64 //sizeOfTU = 64
+		param[0] = 64 // sizeOfTU = 64
 	end
-
+	
+	/*
 	sendToken.launch: action ==>
 	guard
 		cIdx = 3
@@ -371,39 +462,84 @@ actor IT_yuv()
 	guard
 		cIdx < 3
 	end
+	*/
 
-	sendBlock.launch: action 
+	sendBlock.launch.is64x64: action 
 			==> 
-		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 63]] repeat 64, 
-		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 15]] repeat 16, 
-		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 15]] repeat 16
+		Block_y:[[lumaBlk[i]: for int i in 0 .. (64 * 64 - 1)]] repeat 64 * 64, 
+		Block_u:[[chrBlk_u[i]: for int i in 0 .. (32 * 32) - 1]] repeat 32 * 32, 
+		Block_v:[[chrBlk_v[i]: for int i in 0 .. (32 * 32) - 1]] repeat 32 * 32
 	guard
-		partIdx < numPartToSend
+	    cuWidth = 64,
+		// partIdx < numPartToSend
+		elemOffset = numElemToSend
+	end
+	
+	sendBlock.launch.is32x32: action 
+			==> 
+		Block_y:[[lumaBlk[i]: for int i in 0 .. (32 * 32) - 1]] repeat 32 * 32, 
+		Block_u:[[chrBlk_u[i]: for int i in 0 .. (16 * 16) - 1]] repeat 16 * 16, 
+		Block_v:[[chrBlk_v[i]: for int i in 0 .. (16 * 16) - 1]] repeat 16 * 16
+	guard
+	    cuWidth = 32,
+		// partIdx < numPartToSend
+		elemOffset = numElemToSend
+	end
+	
+	sendBlock.launch.is16x16: action 
+			==> 
+		Block_y:[[lumaBlk[i]: for int i in 0 .. (16 * 16) - 1]] repeat 16 * 16, 
+		Block_u:[[chrBlk_u[i]: for int i in 0 .. (8 * 8) - 1]] repeat 8 * 8, 
+		Block_v:[[chrBlk_v[i]: for int i in 0 .. (8 * 8) - 1]] repeat 8 * 8
+	guard
+	    cuWidth = 16,
+		// partIdx < numPartToSend
+		elemOffset = numElemToSend
+	end
+	
+	sendBlock.launch.is8x8: action 
+			==> 
+		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. (8 * 8) - 1]] repeat 8 * 8, 
+		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. (4 * 4) - 1]] repeat 4 * 4, 
+		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. (4 * 4) - 1]] repeat 4 * 4
+	guard
+	    cuWidth = 8,
+		// partIdx < numPartToSend
+		elemOffset = numElemToSend
 	var
 		uint(size=9) idx = partIdx
-	do
-		partIdx := partIdx + 4;
+	end
+	
+	sendBlock.launch.is4x4: action 
+			==> 
+		Block_y:[[lumaBlk[i]: for int i in 0 .. (4 * 4) - 1]] repeat 4 * 4, 
+		Block_u:[[chrBlk_u[i]: for int i in 0 .. (2 * 2) - 1]] repeat 2 * 2, 
+		Block_v:[[chrBlk_v[i]: for int i in 0 .. (2 * 2) - 1]] repeat 2 * 2
+	guard
+	    cuWidth = 4,
+		// partIdx < numPartToSend
+		elemOffset = numElemToSend
 	end
 
-	sendBlock.done: action ==>
+	sendBlock.skip: action ==>
 	guard
-		partIdx = numPartToSend
+		// partIdx = numPartToSend
+		elemOffset < numElemToSend
 	do
 		partIdx := 0;
 	end
 
 	// schedule fsm GetCoeff:
 	schedule fsm GetCuInfo:
-	    GetCuInfo   (getCuInfo.launch )--> GetSplitTrafo;
-	    GetSplitTrafo   (getSplitTrafo.launch )--> GetCoeff;
-	    GetSplitTrafo   (getSplitTrafo.done )--> GetCoeff;
+	    GetCuInfo (getCuInfo.launch )   --> GetCuMode;
+	    GetCuMode (getCuMode.isIntra)   --> GetTreeNs;
+	    GetTreeNs (getTreeNs.launch )   --> GetCoeff;
+	    GetCuMode (getCuMode.isNoIntra) --> GetCoeff;
 	    
-		GetCoeff  (getCoeff         )--> SendToken;
+		GetCoeff  (getCoeff) --> SendBlock;
 		GetCoeff  (getCoeff_is64x64 )--> GetCoeff;
-		SendToken (sendToken.skip   )--> GetCoeff;
-		SendToken (sendToken.launch )--> SendBlock;
 
-		SendBlock (sendBlock.launch )--> SendBlock;
-		SendBlock (sendBlock.done   )--> GetCoeff;
+        SendBlock (sendBlock.skip   ) --> GetCoeff;
+		SendBlock (sendBlock.launch ) --> GetCuInfo;
 	end
 end
