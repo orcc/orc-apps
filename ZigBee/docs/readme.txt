@@ -21,9 +21,6 @@ are required when the transmitter is realized as C code and
 compiled for a general purpose processor.
 The same folder has also an input sample sequence and
 a reference output signal. 
-The embedded-version of the transmitter is targeted for the
-TTA backend of Orcc, but is also fully functional on a general
-purpose processor.
 
 Compilation:
 Standard GCC compilation with the following
@@ -31,8 +28,7 @@ Standard GCC compilation with the following
                 <output_folder>/libs/orcc-native/include
                 <output_folder>/libs/roxml/include
                 <folder_of_SDL_headers>
-- source files: <orc-apps-trunk>/ZigBee/lib/native/embedded.c 
-                OR others.c (only for monotoken_tx)
+- source files: <orc-apps-trunk>/ZigBee/lib/native/linux.c 
                 <output_folder>/src/*.c, 
                 <output_folder>/libs/orcc-runtime/src/*.c,
                 <output_folder>/libs/orcc-native/src/fps_print.c,
@@ -49,14 +45,16 @@ libs/orcc-native/src/native.c -I libs/orcc-native/include
 -I libs/orcc-runtime/include src/*.c -I libs/roxml/include/
 libs/roxml/src/roxml.c libs/roxml/src/roxml-parse-engine.c
 libs/roxml/src/roxml-internal.c -lpthread -I /usr/include/SDL
--lSDL /home/user/orc-apps/ZigBee/lib/native/embedded.c -O3
+-lSDL /home/user/orc-apps/ZigBee/lib/native/linux.c -O3
 
 Changelog:
 - initial release 08/10/2012
 - multitoken version of the transmitter 04/03/2013
 - embedded version of the transmitter 26/03/2013
-- severall small improvements to embedded_tx 25/04/2014
+- several small improvements to embedded_tx 25/04/2014
+- rewrote monotoken_tx 06/05/2014
+- moved shared actors to common_tx 06/05/2014
 
 Known issues:
-- The FIFO size must be at least 2
+- The FIFO size must be at least 4 (monotoken_tx)
 

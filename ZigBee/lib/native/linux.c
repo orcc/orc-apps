@@ -1,4 +1,4 @@
-// Native functions to be used with the embedded_tx application
+// Native functions to be used with the Zigbee transmitter
 
 #include <stdio.h>
 #include <stdlib.h>
