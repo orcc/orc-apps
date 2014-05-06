@@ -54,7 +54,3 @@ Changelog:
 - several small improvements to embedded_tx 25/04/2014
 - rewrote monotoken_tx 06/05/2014
 - moved shared actors to common_tx 06/05/2014
-
-Known issues:
-- The FIFO size must be at least 4 (monotoken_tx)
-
