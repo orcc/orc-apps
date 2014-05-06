@@ -21,6 +21,8 @@ are required when the transmitter is realized as C code and
 compiled for a general purpose processor.
 The same folder has also an input sample sequence and
 a reference output signal. 
+The implementation monotoken_tx also works well with Xronos
+HDL generation. In this case the recommended FIFO size is 1.
 
 Compilation:
 Standard GCC compilation with the following
