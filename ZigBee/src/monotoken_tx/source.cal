@@ -33,9 +33,9 @@
 // Changelog:
 // - initial version 01/10/2012
 // - cleanup for release 08/10/2012
+// - TTA compatible natives 24/04/2014
 
 package monotoken_tx;
-
 import monotoken_tx.constants.*;
 
 actor source() 
@@ -43,6 +43,11 @@ actor source()
 // Outputs:
 uint(size=PL_DATA_SZ) pl_bits        // payload bits as octets 
 :
+	@native procedure source_init() end
+
+	@native function source_readByte() --> uint(size=8) end
+
+	@native function source_sizeOfFile() --> int(size=32) end
 
     // the length of the payload
 	uint(size=PAYLOAD_LEN_SZ) octet_count;
@@ -50,29 +55,46 @@ uint(size=PL_DATA_SZ) pl_bits        // payload bits as octets
 	// payload octet counter
 	uint(size=PAYLOAD_LEN_SZ) octet_index;
 
-	@native function native_source_init() --> uint(size=PAYLOAD_LEN_SZ)
-	end
-
-	@native function native_source_produce() --> uint(size=PL_DATA_SZ)
-	end
-
-	@native procedure native_source_close()
-	end
-	
-	init_act: initialize ==> 
+	initialize ==>
 	do
-		octet_count := native_source_init();
+		source_init();
 		octet_index := 0;
+		octet_count := source_sizeOfFile();
 	end
-	
-	produce: action ==> pl_bits : [ sample ]
+
+	// send_length action
+	// transmit payload length in data as part of data frame
+	length: action ==> pl_bits : [ octet_count ]
 	guard
-		octet_index < octet_count + 1
-	var
-		uint(size=PL_DATA_SZ) sample
+		octet_count > 4
+	end 
+	
+	// send_payload_octet
+	// transmit one octet of the data coming from higher layer
+	payload: action ==> pl_bits : [ source_readByte() ]
+	guard
+		octet_index < octet_count
 	do
-		sample := native_source_produce();
 		octet_index := octet_index + 1; 
 	end
 	
+	// done action
+	// transition back to waiting for a new data frame
+	done: action ==>
+	guard
+		octet_index = octet_count 
+	do
+		octet_index := 0;
+		octet_count := source_sizeOfFile();
+	end
+
+	schedule fsm s_length :
+		s_length ( length ) --> s_payload;
+		s_payload ( payload ) --> s_payload;
+		s_payload ( done ) --> s_length;
+	end
+	
+	priority
+		payload > done;
+	end
 end
