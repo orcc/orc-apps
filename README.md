@@ -23,3 +23,4 @@ Orc-apps is a library of open-source applications described in a dynamic dataflo
 - Stereo: Implementation of a stereo matching algorithm.
 - Zigbee: Implementation of the ZigBee protocol.
 - Research: Several on-going research descriptions, derived from the RVC project.
+- CALHSTone: CAL version of the CHStone HLS testbench 
