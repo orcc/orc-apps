@@ -1,0 +1,256 @@
+/*
+ * Copyright (c) 2014, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+package adpcm.decoder;
+
+import adpcm.Constants.*; 
+
+actor Decoder()
+	int In
+		==>  
+			int xOut:
+
+	int ilr;
+	int ih;
+	int rl;
+	int dec_deth := 8;
+	int dec_detl := 32;
+	int dec_dlt;
+
+	int dec_del_bpl[6];
+
+	int dec_del_dltx[6];
+
+	int dec_plt;
+	int dec_plt1;
+	int dec_plt2;
+	int dec_szl;
+	int dec_spl;
+	int dec_sl;
+	int dec_rlt1;
+	int dec_rlt2;
+	int dec_rlt;
+	int dec_al1;
+	int dec_al2;
+	int dl;
+	int dec_nbl;
+	int dec_dh;
+	int dec_nbh;
+	
+	int dec_szh;
+	/* variables used in filtez */
+	int dec_del_bph[6];
+
+	int dec_del_dhx[6];
+	
+	
+
+	/* variables used in filtep */
+	int dec_rh1;
+	int dec_rh2;
+	int dec_ah1;
+	int dec_ah2;
+	int dec_ph;
+	int dec_sph;
+	
+	int dec_sh;
+
+	int dec_ph1;
+	int dec_ph2;
+
+	int rh;
+	
+	int xs;
+	int xd;
+	
+	/* variables for receive quadrature mirror filter here */
+	int accumc[11];
+	int accumd[11];
+
+	
+	action In:[input] ==> xOut:[xout1, xout2]
+	var
+		int(size=64) r,
+		int xout1,
+		int xout2,
+		int i,
+		int xa1,
+		int xa2,
+		int h_ptr   := 0,
+		int ac_ptr  := 0, 
+		int ac_ptr1 := 0, 
+		int ad_ptr  := 0, 
+		int ad_ptr1 := 0
+	do
+		/* split transmitted word from input into ilr and ih */
+  		ilr := input & 0x3f;
+  		ih := input >> 6;
+  	
+  		/* LOWER SUB_BAND DECODER */
+
+  		/* filtez: compute predictor output for zero section */
+  		dec_szl := filtez(dec_del_bpl, dec_del_dltx);
+  		
+  		
+  		 /* filtep: compute predictor output signal for pole section */
+  		dec_spl := filtep(dec_rlt1, dec_al1, dec_rlt2, dec_al2);
+  		
+  		dec_sl := dec_spl + dec_szl;
+  		
+  		/* compute quantized difference signal for adaptive predic */
+  		dec_dlt := (dec_detl * qq4_code4_table[ilr >> 2]) >> 15;
+  		 
+  		/* compute quantized difference signal for decoder output */
+  		r := (dec_detl * qq6_code6_table[ilr]) >> 15;
+  		dl := r;
+
+  		rl := dl + dec_sl;
+  		
+  		/* logscl: quantizer scale factor adaptation in the lower sub-band */
+  		dec_nbl := logscl(ilr, dec_nbl);
+
+  		/* scalel: computes quantizer scale factor in the lower sub band */
+  		dec_detl := scalel(dec_nbl, 8);
+
+  		/* parrec - add pole predictor output to quantized diff. signal */
+  		/* for partially reconstructed signal */
+  		dec_plt := dec_dlt + dec_szl;
+  		
+  		/* upzero: update zero section predictor coefficients */
+  		upzero(dec_dlt, dec_del_dltx, dec_del_bpl);
+  		
+  		/* uppol2: update second predictor coefficient apl2 and delay it as al2 */
+ 		dec_al2 := uppol2(dec_al1, dec_al2, dec_plt, dec_plt1, dec_plt2);
+
+  		/* uppol1: update first predictor coef. (pole setion) */
+  		dec_al1 := uppol1(dec_al1, dec_al2, dec_plt, dec_plt1);
+
+  		/* recons : compute recontructed signal for adaptive predictor */
+  		dec_rlt := dec_sl + dec_dlt;
+  		
+  		/* done with lower sub band decoder, implement delays for next time */
+  		dec_rlt2 := dec_rlt1;
+  		dec_rlt1 := dec_rlt;
+  		dec_plt2 := dec_plt1;
+  		dec_plt1 := dec_plt;
+
+  		/* HIGH SUB-BAND DECODER */
+
+  		/* filtez: compute predictor output for zero section */
+  		dec_szh := filtez(dec_del_bph, dec_del_dhx);
+  		
+  		/* filtep: compute predictor output signal for pole section */
+  		dec_sph := filtep(dec_rh1, dec_ah1, dec_rh2, dec_ah2);
+
+  		/* predic:compute the predictor output value in the higher sub_band decoder */
+  		dec_sh := dec_sph + dec_szh;
+  		
+  		
+  		/* in-place compute the quantized difference signal */
+	  	dec_dh := (dec_deth * qq2_code2_table[ih]) >> 15;
+	
+	  	/* logsch: update logarithmic quantizer scale factor in hi sub band */
+	  	dec_nbh := logsch(ih, dec_nbh);
+	
+	  	/* scalel: compute the quantizer scale factor in the higher sub band */
+	  	dec_deth := scalel(dec_nbh, 10);
+	  	
+  		/* parrec: compute partially recontructed signal */
+	  	dec_ph := dec_dh + dec_szh;
+	
+	  	/* upzero: update zero section predictor coefficients */
+	  	upzero(dec_dh, dec_del_dhx, dec_del_bph);
+	
+	  	/* uppol2: update second predictor coefficient aph2 and delay it as ah2 */
+	  	dec_ah2 := uppol2(dec_ah1, dec_ah2, dec_ph, dec_ph1, dec_ph2);
+	
+	  	/* uppol1: update first predictor coef. (pole setion) */
+	  	dec_ah1 := uppol1(dec_ah1, dec_ah2, dec_ph, dec_ph1);
+	
+	  	/* recons : compute recontructed signal for adaptive predictor */
+	  	rh := dec_sh + dec_dh;
+	
+	  	/* done with high band decode, implementing delays for next time here */
+	  	dec_rh2 := dec_rh1;
+	 	dec_rh1 := rh;
+	  	dec_ph2 := dec_ph1;
+	 	dec_ph1 := dec_ph;
+	 	
+	 	/* end of higher sub_band decoder */
+
+  		/* end with receive quadrature mirror filters */
+  		xd := rl - rh;
+  		xs := rl + rh;
+  		
+	 	xa1 := xd * h[h_ptr];
+	 	h_ptr := h_ptr + 1;
+  		xa2 := xs * h[h_ptr];
+  		h_ptr := h_ptr + 1;
+  		
+  	 	/* main multiply accumulate loop for samples and coefficients */
+  		i := 0;
+  		while i < 10 do
+  			xa1 := xa1 + accumc[ac_ptr] * h[h_ptr];
+  			ac_ptr := ac_ptr + 1;
+  			h_ptr := h_ptr + 1;
+    		xa2 := xa2 + accumd[ad_ptr] * h[h_ptr];
+    		ad_ptr := ad_ptr + 1;
+    		h_ptr := h_ptr + 1;
+    		
+    		i := i + 1;
+  		end
+  		
+  		/* final mult/accumulate */
+		xa1 := xa1 + accumc[ac_ptr] * h[h_ptr];
+		h_ptr := h_ptr + 1;
+		xa2 := xa2 + accumd[ad_ptr] * h[h_ptr];
+		h_ptr := h_ptr + 1;
+    	
+    	/* scale by 2^14 */
+  		xout1 := xa1 >> 14;
+  		xout2 := xa2 >> 14;
+  
+  		/* update delay lines */
+	  	ac_ptr1 := ac_ptr - 1;
+	  	ad_ptr1 := ad_ptr - 1;
+  		i := 0;
+  		while i < 10 do
+  			accumc[ac_ptr] := accumc[ac_ptr1];
+  			ac_ptr := ac_ptr - 1;
+  			ac_ptr1 := ac_ptr1 - 1;
+    		accumd[ad_ptr] := accumd[ad_ptr1];
+  			ad_ptr := ad_ptr - 1;
+  			ad_ptr1 := ad_ptr1 - 1;
+  			i := i + 1;
+  		end
+  		accumc[ac_ptr] := xd;
+  		accumd[ad_ptr] := xs;
+  		
+	end
+	
+end
