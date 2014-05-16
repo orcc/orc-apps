@@ -1,0 +1,265 @@
+/*
+ * Copyright (c) 2014, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+package adpcm.encoder;
+
+import adpcm.Constants.*; 
+
+actor Encoder()
+	int xIn	
+		==>
+			int Out:
+	
+	/* variables for transmitting quadrature mirror filter here */
+	int tqmf[24];
+	
+	
+	int delay_bph[6];
+	int delay_dhx[6];
+	
+	int deth := 8;
+	int sh; /* this comes from adaptive predictor */
+	int eh;
+	int xl;
+	int xh;
+	
+	int il;
+	int szl; 
+	int spl; 
+	int sl; 
+	int el;
+	
+	int nbl; /* delay line */
+	int al1; 
+	int al2;
+	int plt; 
+	int plt1; 
+	int plt2;
+	int dlt;
+	int rlt; 
+	int rlt1; 
+	int rlt2;
+	
+	
+	int detl := 32;
+	
+	int dh; 
+	int ih;
+	int nbh;
+	int szh;
+	int sph;
+	int ph;
+	int yh;
+
+	int ah1;
+	int ah2;
+	int ph1; 
+	int ph2;
+	int rh1;
+	int rh2;
+	
+	int delay_bpl[6];
+
+	int delay_dltx[6];
+	
+	encode:action xIn:[xin1, xin2] ==> Out:[out]
+	var
+		int i,
+		int out,
+		int h_ptr := 0,
+		int tqmf_ptr := 0,
+		int tqmf_ptr1 := 0,
+		int xa,
+		int xb,
+		int decis,
+		int quant_ret[1]
+	do
+		/* transmit quadrature mirror filters implemented here */
+		xa := tqmf[tqmf_ptr] * h[h_ptr];
+		tqmf_ptr := tqmf_ptr + 1;
+		h_ptr := h_ptr + 1;
+		
+		xb := tqmf[tqmf_ptr] * h[h_ptr];
+		tqmf_ptr := tqmf_ptr + 1;
+		h_ptr := h_ptr + 1;
+		
+		
+		
+		/* main multiply accumulate loop for samples and coefficients */
+		i := 0;
+		while i < 10 do
+			xa := xa + tqmf[tqmf_ptr] * h[h_ptr];
+			tqmf_ptr := tqmf_ptr + 1;
+			h_ptr := h_ptr + 1;
+			
+			xb := xb + tqmf[tqmf_ptr] * h[h_ptr];
+			tqmf_ptr := tqmf_ptr + 1;
+			h_ptr := h_ptr + 1;
+			i := i + 1;
+		end
+		
+		/* final mult/accumulate */
+		xa := xa + tqmf[tqmf_ptr] * h[h_ptr];
+		tqmf_ptr := tqmf_ptr + 1;
+		h_ptr := h_ptr + 1;
+		
+		xb := xb + tqmf[tqmf_ptr] * h[h_ptr];
+		h_ptr := h_ptr + 1;
+		
+		/* update delay line tqmf */
+		tqmf_ptr1 := tqmf_ptr - 2;
+		i := 0;
+		while i < 22 do
+			tqmf[tqmf_ptr] := tqmf[tqmf_ptr1];
+			tqmf_ptr := tqmf_ptr - 1;
+			tqmf_ptr1 := tqmf_ptr1 - 1;
+			i := i + 1;
+		end
+		
+		tqmf[tqmf_ptr] := xin1;
+		tqmf_ptr := tqmf_ptr - 1;
+		tqmf[tqmf_ptr] := xin2;
+		
+		/* scale outputs */
+  		xl := (xa + xb) >> 15;
+  		xh := (xa - xb) >> 15; 
+  		
+  		/* end of quadrature mirror filter code */
+  		
+  		/* starting with lower sub band encoder */
+
+  		/* filtez - compute predictor output section - zero section */
+		szl := filtez(delay_bpl, delay_dltx);
+		
+		/* filtep - compute predictor output signal (pole section) */
+  		spl := filtep(rlt1, al1, rlt2, al2);
+  		
+  		/* compute the predictor output value in the lower sub_band encoder */
+  		sl := szl + spl;
+  		el := xl - sl;
+  		
+  		/* quantl: quantize the difference signal */
+  		quantl(el, detl, quant_ret);
+		il := quant_ret[0];
+  		/* computes quantized difference signal */
+  		/* for invqbl, truncate by 2 lsbs, so mode = 3 */
+  		dlt := (detl * qq4_code4_table[il >> 2]) >> 15;
+		
+  		/* logscl: updates logarithmic quant. scale factor in low sub band */
+  		nbl := logscl(il, nbl);
+
+  		/* scalel: compute the quantizer scale factor in the lower sub band */
+  		/* calling parameters nbl and 8 (constant such that scalel can be scaleh) */
+  		detl := scalel(nbl, 8);
+		
+  		/* parrec - simple addition to compute recontructed signal for adaptive pred */
+  		plt := dlt + szl;
+		
+  		/* upzero: update zero section predictor coefficients (sixth order)*/
+  		/* calling parameters: dlt, dlt1, dlt2, ..., dlt6 from dlt */
+  		/*  bpli (linear_buffer in which all six values are delayed */
+  		/* return params:      updated bpli, delayed dltx */
+  		upzero(dlt, delay_dltx, delay_bpl);
+
+  		/* uppol2- update second predictor coefficient apl2 and delay it as al2 */
+  		/* calling parameters: al1, al2, plt, plt1, plt2 */
+  		al2 := uppol2(al1, al2, plt, plt1, plt2);
+  		
+  		/* uppol1 :update first predictor coefficient apl1 and delay it as al1 */
+ 		/* calling parameters: al1, apl2, plt, plt1 */
+ 		al1 := uppol1(al1, al2, plt, plt1);
+ 		 
+ 		 /* recons : compute recontructed signal for adaptive predictor */
+  		rlt := sl + dlt;
+  				
+  		/* done with lower sub_band encoder; now implement delays for next time*/
+		rlt2 := rlt1;
+		rlt1 := rlt;
+		plt2 := plt1;
+		plt1 := plt;
+		
+		/* high band encode */
+
+  		szh := filtez(delay_bph, delay_dhx);
+
+  		sph := filtep(rh1, ah1, rh2, ah2);
+
+  		/* predic: sh = sph + szh */
+  		sh := sph + szh;
+  		/* subtra: eh = xh - sh */
+  		eh := xh - sh;
+  		
+  		/* quanth - quantization of difference signal for higher sub-band */
+  		/* quanth: in-place for speed params: eh, deth (has init. value) */
+ 		 if (eh >= 0) then
+		 	ih := 3; /* 2,3 are pos codes */
+		 else 
+ 		 	ih := 1; /* 0,1 are neg codes */
+		 end
+		 
+		 decis := (564 * deth) >> 12;
+ 		 if (abs(eh) > decis) then
+ 		 	ih := ih- 1;	
+ 		 end
+  		/* compute the quantized difference signal, higher sub-band*/
+  		dh := (deth * qq2_code2_table[ih]) >> 15;
+  		
+  		 /* logsch: update logarithmic quantizer scale factor in hi sub-band*/
+  		nbh := logsch(ih, nbh);
+  		
+  		/* note : scalel and scaleh use same code, different parameters */
+ 	 	deth := scalel(nbh, 10);
+  		
+  		/* parrec - add pole predictor output to quantized diff. signal */
+	  	ph := dh + szh;
+	
+	  	/* upzero: update zero section predictor coefficients (sixth order) */
+	  	/* calling parameters: dh, dhi, bphi */
+	  	/* return params: updated bphi, delayed dhx */
+	  	upzero(dh, delay_dhx, delay_bph);
+	
+	  	/* uppol2: update second predictor coef aph2 and delay as ah2 */
+	  	/* calling params: ah1, ah2, ph, ph1, ph2 */
+	  	ah2 := uppol2(ah1, ah2, ph, ph1, ph2);
+	
+	  	/* uppol1:  update first predictor coef. aph2 and delay it as ah1 */
+	  	ah1 := uppol1(ah1, ah2, ph, ph1);
+	
+	  	/* recons for higher sub-band */
+	  	yh := sh + dh;
+	
+	  	/* done with higher sub-band encoder, now Delay for next time */
+	 	rh2 := rh1;
+	  	rh1 := yh;
+	 	ph2 := ph1;
+	 	ph1 := ph;
+  		
+  		out := il | (ih << 6);
+	end
+			
+end

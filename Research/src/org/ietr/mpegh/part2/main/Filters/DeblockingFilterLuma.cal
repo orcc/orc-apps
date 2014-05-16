@@ -283,19 +283,19 @@ actor DeblockingFilterLuma()
 		end
 	end
 
-	procedure saveRasterScanCu(uint(size=8) sample_y[4*4])
+	procedure saveRasterScanCu(uint(size=8) sample[4*4])
 	var
 		uint(size=16) pixAddr[2]
 	begin
 		zScanToAbsCoord(blkIdx, pixAddr);
 		pixAddr[0] := pixAddr[0] + xAddrVert;
 		pixAddr[1] := pixAddr[1] + yAddrVert;
-		foreach uint y in 0 .. 3
+		foreach int y in 0 .. 3
 		do
-			foreach uint x in 0 .. 3
+			foreach int x in 0 .. 3
 			do
 				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] :=
-					sample_y[4*y+x];
+					sample[4*y+x];
 			end
 		end
 	end
@@ -409,9 +409,9 @@ actor DeblockingFilterLuma()
 	guard
 		blkIdx < numPartition && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
-		foreach uint y in 0 .. 3
+		foreach int y in 0 .. 3
 		do
-			foreach uint x in 0 .. 3
+			foreach int x in 0 .. 3
 			do
 				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[4*y+x];
 			end
@@ -486,24 +486,29 @@ actor DeblockingFilterLuma()
 		yAddrHor := yAddrVert;
 	end
 
-	sendSamples.launch.luma: action ==> FiltSample:[filtSamp] repeat 16
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 16 * 16
 	guard
 		tileIdx < numTiles && tokenSent < numTokenPerLcu[0]
 	var
-		uint(size=8) filtSamp[16],
-		uint(size=16) xOff, uint(size=16) yOff
+		uint(size=8) filtSamp[16 * 16],
+		int xOff, int yOff
 	do
-		xOff := tokenSent & (lcuSizeMax - 1);
-		yOff := tokenSent >> log2_lcuSizeMax;
-		foreach uint x in 0 .. 15
+		foreach int y in 0 .. 15
 		do
-			filtSamp[x] := pictureBuffer[yIdx + yOff][xIdx + xOff + x];
+			xOff := tokenSent & (lcuSizeMax - 1);
+			yOff := tokenSent >> log2_lcuSizeMax;
+			xOff := xOff + xIdx;
+			yOff := yOff + yIdx;
+			foreach int x in 0 .. 15
+			do
+				filtSamp[y * 16 + x] := pictureBuffer[yOff][xOff + x];
+			end
+	
+			tokenSent := tokenSent + 16;
 		end
-
-		tokenSent := tokenSent + 16;
 	end
 
-	sendSamples.launch.lumaDone: action ==>
+	sendSamples.next: action ==>
 	guard
 		tokenSent = numTokenPerLcu[0]
 	do
@@ -537,10 +542,8 @@ actor DeblockingFilterLuma()
 
 		FilterEdges (filterEdges  )--> GetCuPix;
 
-		SendSamples (sendSamples.launch.luma )--> SendSamplesLuma;
-		SendSamples (sendSamples.done        )--> IsNewPict;
-
-		SendSamplesLuma (sendSamples.launch.luma     )--> SendSamplesLuma;
-		SendSamplesLuma (sendSamples.launch.lumaDone )--> SendSamples;
+		SendSamples (sendSamples.launch )--> SendSamples;
+		SendSamples (sendSamples.next   )--> SendSamples;
+		SendSamples (sendSamples.done   )--> IsNewPict;
 	end
 end
