@@ -112,24 +112,36 @@ actor DeblockingFilterChroma(int comp)
 		end
 	end
 	
-	procedure decisionProcessLumaBlkEdge(uint(size=16) addr[2], bool isVertical)
+	procedure decisionProcessChromaBlkEdgeTc(uint(size=16) addr[2], bool isVertical)
 	var
 		uint(size=16) q0X = (addr[0]/4) & (PICT_WIDTH/4-1),
 		uint(size=16) q0Y = addr[1]/4,
-		uint(size=16) p0X, uint(size=16) p0Y
+		uint(size=16) p0X, uint(size=16) p0Y,
+		uint(size=2) bS = 2,
+		int qPC, int Q,
+		uint(size=16) idx
 	begin
-		if(isVertical) then
+	    if(isVertical) then
 			p0X := q0X-1;
 			p0Y := q0Y;
+			idx := addr[0];
 		else
 			p0X := q0X;
 			p0Y := q0Y-1;
+			idx := addr[1];
 		end
 		qPi := ((qpTab[q0Y][q0X] + qpTab[p0Y][p0X] + 1)>>1);
+		qPC := qPcTable[min(qPi + qpChrOff,51)];
+		Q  := clip_i32(qPC + 2*(bS-1) + tcOffset, 0, 53);
+		if (((idx >> 2) & 3) != 0) then 
+		  tc := 0;
+		else
+		  tc := tcTable[Q]<<(BIT_DEPTH - 8);
+		end
 	end
 	
 
-	procedure filtProcessChrBlkEdge(uint(size=16) addr[2], bool isVerticalEdge)
+	procedure filtProcessChrBlkEdge(uint(size=16) addr[2], bool isVerticalEdge, uint(size=8) tc)
 	var
 		uint(size=2) bS = 2,
 		int qPC, int Q,
@@ -145,23 +157,39 @@ actor DeblockingFilterChroma(int comp)
 			do
 				p := [pictureBuffer[addrY+y][addrX-i]: for int i in 1 .. 2];
 				q := [pictureBuffer[addrY+y][addrX+i]: for int i in 0 .. 1];
-				filterProcessChrSamp(p, q);
+				filterProcessChrSamp(p, q, tc);
 				pictureBuffer[addrY+y][addrX-1] := p[0];
 				pictureBuffer[addrY+y][addrX] := q[0];
 			end
 		else
-			foreach int x in 0 .. 1
+			foreach int x in 0 .. 3
 			do
 				p := [pictureBuffer[addrY-i][addrX+x]: for int i in 1 .. 2];
 				q := [pictureBuffer[addrY+i][addrX+x]: for int i in 0 .. 1];
-				filterProcessChrSamp(p, q);
+				filterProcessChrSamp(p, q, tc);
 				pictureBuffer[addrY-1][addrX+x] := p[0];
 				pictureBuffer[addrY][addrX+x] := q[0];
 			end
 		end
 	end
+	
+	procedure filtProcessChrBlkVerticalEdge(uint(size=16) addr[2], uint(size=8) tc)
+	var
+		uint(size=16) addrX = addr[0]>>1,
+		uint(size=16) addrY = addr[1]>>1,
+		uint(size=8) p[2], uint(size=8) q[2]
+	begin
+		foreach int y in 0 .. 3
+		do
+		    p := [pictureBuffer[addrY+y][addrX-i]: for int i in 1 .. 2];
+			q := [pictureBuffer[addrY+y][addrX+i]: for int i in 0 .. 1];
+			filterProcessChrSamp(p, q, tc);
+			pictureBuffer[addrY+y][addrX-1] := p[0];
+			pictureBuffer[addrY+y][addrX] := q[0];
+	    end
+	end
 
-	procedure filterProcessChrSamp(uint(size=8) p[2], uint(size=8) q[2])
+	procedure filterProcessChrSamp(uint(size=8) p[2], uint(size=8) q[2], uint(size=8) tc)
 	var
 		int delta,
 		uint(size=8) p0=p[0], uint(size=8) p1=p[1],
@@ -173,22 +201,143 @@ actor DeblockingFilterChroma(int comp)
 		//There should be the code for reverting filtering if pcm and
 		//pcmLoopFilterDisableFlag is active.
 	end
-
-	procedure filterHorEdges()
+	
+	procedure filterProcessChromaBlkVertical(int idxBlk)
 	var
-		uint(size=16) blkAddr[2]
+	  uint(size=16) blkAddr[2],
+	  uint(size=16) blkAddr2[2][2], 
+	  int tcTab[2],
+	  /* no_p and no_q won't be constant 0 if pcm and
+		pcmLoopFilterDisableFlag are active. */
+	  uint(size=8) no_p[2] = [0 : for int i in 0 .. 1],
+	  uint(size=8) no_q[2] = [0 : for int i in 0 .. 1]
+	begin
+	
+	    /* Tc and Beta calculation */
+	    
+	    // blkAddr2[0] always needed for buffer offset calculation when openHEVC is enabled
+	    zScanToAbsCoord(idxBlk, blkAddr);
+		blkAddr[0] := blkAddr[0] + xAddrVert;
+		blkAddr[1] := blkAddr[1] + yAddrVert;
+		blkAddr2[0][0] := blkAddr[0];
+		blkAddr2[0][1] := blkAddr[1];
+	    
+	    /* First edge */
+	    if (bSTableVert[idxBlk] = 2) then
+		   decisionProcessChromaBlkEdgeTc(blkAddr, true);
+		   tcTab[0] := tc;
+		else
+		   tcTab[0] := 0;
+	    end
+	  
+	    /* Second edge */
+	    if (bSTableVert[idxBlk + 8] = 2) then
+		   zScanToAbsCoord(idxBlk + 8, blkAddr);
+		   blkAddr[0] := blkAddr[0] + xAddrVert;
+		   blkAddr[1] := blkAddr[1] + yAddrVert;
+		   blkAddr2[1][0] := blkAddr[0];
+		   blkAddr2[1][1] := blkAddr[1];
+		   decisionProcessChromaBlkEdgeTc(blkAddr, true);
+		   tcTab[1] := tc;
+		else
+		   tcTab[1] := 0;
+	    end
+		
+	    /* Filtering 2 edges at the same time */
+	    if (tcTab[0] != 0 || tcTab[1] != 0) then
+		  filterProcessChromaEdgeVertical(pictureBuffer, PICT_WIDTH, tcTab, no_p, no_q, blkAddr2, idxBlk);
+	    end
+	end
+	
+	@optimize_c(condition="defined(OPENHEVC_ENABLE)", name="hevc_v_loop_filter_chroma_orcc")
+    procedure filterProcessChromaEdgeVertical(uint(size=8) pix[PICT_HEIGHT][PICT_WIDTH], int stride, int tcTab[2], uint(size=8) no_p[2], uint(size=8) no_q[2], uint(size=16) blkAddr2[2][2], int idxBlk)
+	var
+	  uint(size=16) blkAddr[2]
+	begin
+	  /* Filtering first edge */
+	  if(tcTab[0] != 0) then
+		blkAddr[0] := blkAddr2[0][0];
+		blkAddr[1] := blkAddr2[0][1];
+		filtProcessChrBlkVerticalEdge(blkAddr, tcTab[0]);
+	  end
+
+	  /* Filtering second edge */
+	  if(tcTab[1] != 0) then
+	    blkAddr[0] := blkAddr2[1][0];
+		blkAddr[1] := blkAddr2[1][1];
+		filtProcessChrBlkVerticalEdge(blkAddr, tcTab[1]);
+	  end
+	end
+	
+	procedure filterProcessChromaBlkHorizontal(int idxBlk)
+	var
+	  uint(size=16) blkAddr[2],
+	  uint(size=16) blkAddr2[2][2],
+	  int tcTab[2],
+	  /* no_p and no_q won't be constant 0 if pcm and
+		pcmLoopFilterDisableFlag are active. */
+	  uint(size=8) no_p[2] = [0 : for int i in 0 .. 1],
+	  uint(size=8) no_q[2] = [0 : for int i in 0 .. 1]
+	begin
+	
+	    /* Tc and Beta calculation */
+	    
+	    // blkAddr2[0] always needed for buffer offset calculation when openHEVC is enabled
+	    zScanToAbsCoord(idxBlk, blkAddr);
+		blkAddr[0] := blkAddr[0] + xAddrHor;
+        blkAddr[1] := blkAddr[1] + yAddrHor;
+        blkAddr2[0][0] := blkAddr[0];
+		blkAddr2[0][1] := blkAddr[1];
+	   
+	    /* First edge */
+	    if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk] = 2) then
+		  decisionProcessChromaBlkEdgeTc(blkAddr, false);
+		  tcTab[0] := tc;
+		end
+
+	    /* Second edge */
+	    if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 4] = 2) then
+		  zScanToAbsCoord(idxBlk + 4, blkAddr);
+		  blkAddr[0] := blkAddr[0] + xAddrHor;
+          blkAddr[1] := blkAddr[1] + yAddrHor;
+          blkAddr2[1][0] := blkAddr[0];
+		  blkAddr2[1][1] := blkAddr[1];
+		  decisionProcessChromaBlkEdgeTc(blkAddr, false);
+		  tcTab[1] := tc;
+		end
+		
+	    /* Filtering 2 edges at the same time */
+	    if (tcTab[0] != 0 || tcTab[1] != 0) then
+		  filterProcessChromaEdgeHorizontal(pictureBuffer, PICT_WIDTH, tcTab, no_p, no_q, blkAddr2, idxBlk);
+	    end
+	end
+	
+	@optimize_c(condition="defined(OPENHEVC_ENABLE)", name="hevc_h_loop_filter_chroma_orcc")
+    procedure filterProcessChromaEdgeHorizontal(uint(size=8) pix[2048][4096], int stride, int tcTab[2], uint(size=8) no_p[2], uint(size=8) no_q[2], uint(size=16) blkAddr2[2][2], int idxBlk)
+	var
+	  uint(size=16) blkAddr[2]
+	begin
+	  /* Filtering first edge */
+	  if (tcTab[0] != 0) then
+		blkAddr[0] := blkAddr2[0][0];
+		blkAddr[1] := blkAddr2[0][1];
+		filtProcessChrBlkEdge(blkAddr, false, tcTab[0]);
+	  end
+
+	  /* Filtering second edge */
+	  if (tcTab[1] != 0) then
+	    blkAddr[0] := blkAddr2[1][0];
+		blkAddr[1] := blkAddr2[1][1];
+		filtProcessChrBlkEdge(blkAddr, false, tcTab[1]);
+	  end
+	end
+	
+	procedure filterHorEdges()
 	begin
 		foreach int idxBlk in 0 .. numPartition - 1
 		do
-			if(bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk]!=0) then
-				zScanToAbsCoord(idxBlk, blkAddr);
-				blkAddr[0] := blkAddr[0] + xAddrHor;
-				blkAddr[1] := blkAddr[1] + yAddrHor;
-				decisionProcessLumaBlkEdge(blkAddr, false);
-				if(bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk]=2 && ((blkAddr[1]>>2)&3) = 0 ) then
-					filtProcessChrBlkEdge(blkAddr, false);
-				end
-			end
+			filterProcessChromaBlkHorizontal(idxBlk);
+		    idxBlk := idxBlk + 7;
 		end
 	end
 
@@ -378,21 +527,26 @@ actor DeblockingFilterChroma(int comp)
 	end
 
 	filterEdges: action ==>
-	var
-		uint(size=16) blkAddr[2]
 	do
 		if(not disDbf) then
 			foreach int idxBlk in 0 .. numPartition - 1
 			do
+			    /*
 				if(bSTableVert[idxBlk]!=0) then
 					zScanToAbsCoord(idxBlk, blkAddr);
 					blkAddr[0] := blkAddr[0] + xAddrVert;
 					blkAddr[1] := blkAddr[1] + yAddrVert;
-					decisionProcessLumaBlkEdge(blkAddr, true);
-					if(bSTableVert[idxBlk]=2 && ((blkAddr[0]>>2)&3) = 0 ) then
+					decisionProcessChromaBlkEdge(blkAddr, true);
+					if (bSTableVert[idxBlk] = 2 && ((blkAddr[0] >> 2) & 3) = 0 ) then
 						filtProcessChrBlkEdge(blkAddr, true);
 					end
 				end
+				*/
+				filterProcessChromaBlkVertical(idxBlk);
+				if ((idxBlk & 0x07) != 0) then
+		          idxBlk := idxBlk + 12 - 4;
+		        end
+		        idxBlk := idxBlk + 3;
 			end
 			if(xAddrVert > 0) then
 				xAddrHor := xAddrVert - lcuSizeMax;
