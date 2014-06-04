@@ -192,9 +192,9 @@ actor DeblockingFilterLuma()
 		dp := dp0+dp3;
 		dq := dq0+dq3;
 		d  := dpq0 + dpq3;
-		if(d<beta) then
+		if(d<betaLocal) then
 			dSam0 := decisionProcessLumaSamp(p0[0], p0[3], q0[0], q0[3],
-				2*dpq0, beta);
+				2*dpq0, betaLocal);
 			dSam3 := decisionProcessLumaSamp(p3[0], p3[3], q3[0], q3[3], 2*dpq3, betaLocal);
 	
 			dE := 1;
@@ -259,87 +259,91 @@ actor DeblockingFilterLuma()
 	procedure filterProcessLumaBlkVertical(int idxBlk)
 	var
 	  uint(size=16) blkAddr[2],
-	  uint(size=16) blkAddr2[2][2],
+	  uint(size=16) blkAddr0[2],
 	  int betaTab[2], 
 	  int tcTab[2],
+	  int offset,
 	  /* no_p and no_q won't be constant 0 if pcm and
 		pcmLoopFilterDisableFlag are active. */
 	  uint(size=8) no_p[2] = [0 : for int i in 0 .. 1],
-	  uint(size=8) no_q[2] = [0 : for int i in 0 .. 1]
+	  uint(size=8) no_q[2] = [0 : for int i in 0 .. 1],
+	  uint(size=2) bS0 = bSTableVert[idxBlk],
+	  uint(size=2) bS1 = bSTableVert[idxBlk + 2]
 	begin
 	
-	    /* Tc and Beta calculation */
-	   
-	    /* First edge */
-	    if (bSTableVert[idxBlk] != 0) then
+	    if (bS0 != 0 or bS1 != 0) then
+	    
 	      zScanToAbsCoord(idxBlk, blkAddr);
-		  blkAddr[0] := blkAddr[0] + xAddrVert;
-          blkAddr[1] :=	blkAddr[1] + yAddrVert;
-		  blkAddr2[0][0] := blkAddr[0];
-		  blkAddr2[0][1] := blkAddr[1];
-		  decisionProcessLumaBlkEdgeBetaTc(blkAddr, true, bSTableVert[idxBlk]);
-		  betaTab[0] := beta;
-		  tcTab[0] := tc;
-		else
-		  tcTab[0] := 0;
-	    end
+		  blkAddr0[0] := blkAddr[0] + xAddrVert;
+          blkAddr0[1] := blkAddr[1] + yAddrVert;
+	
+	      /* Tc and Beta calculation */
+	   
+	      /* First edge */
+	      if (bS0 != 0) then
+	        blkAddr[0] := blkAddr0[0];
+		    blkAddr[1] := blkAddr0[1];
+		    decisionProcessLumaBlkEdgeBetaTc(blkAddr, true, bS0);
+		    betaTab[0] := beta;
+		    tcTab[0] := tc;
+		  else
+		    tcTab[0] := 0;
+	      end
 	  
-	    /* Second edge */
-	    if (bSTableVert[idxBlk + 2] != 0) then
-		  zScanToAbsCoord(idxBlk + 2, blkAddr);
-		  blkAddr[0] := blkAddr[0] + xAddrVert;
-		  blkAddr[1] := blkAddr[1] + yAddrVert;
-		  blkAddr2[1][0] := blkAddr[0];
-		  blkAddr2[1][1] := blkAddr[1];
-		  decisionProcessLumaBlkEdgeBetaTc(blkAddr, true, bSTableVert[idxBlk + 2]);
-		  betaTab[1] := beta;
-		  tcTab[1] := tc;
-		else
-		  tcTab[1] := 0;
-	    end
+	      /* Second edge */
+	      if (bS1 != 0) then
+		    blkAddr[0] := blkAddr0[0];
+		    blkAddr[1] := blkAddr0[1] + 4;
+		    decisionProcessLumaBlkEdgeBetaTc(blkAddr, true, bS1);
+		    betaTab[1] := beta;
+		    tcTab[1] := tc;
+		  else
+		    tcTab[1] := 0;
+	      end
 		
-	    /* Filtering 2 edges */
-	    if (bSTableVert[idxBlk] != 0 || bSTableVert[idxBlk + 2] != 0) then
+	      /* Filtering 2 edges */
+	      if (tcTab[0] != 0 || 
+	        tcTab[1] != 0) then
 	    
 	      /* Compute only beta */
 	      
-	      if (bSTableVert[idxBlk] = 0) then
-	        blkAddr2[0][0] := blkAddr2[1][0];
-		    blkAddr2[0][1] := blkAddr2[1][1] - 4;
-		    blkAddr[0] := blkAddr2[0][0];
-		    blkAddr[1] := blkAddr2[0][1];
+	      if (bS0 = 0) then
+		    blkAddr[0] := blkAddr0[0];
+		    blkAddr[1] := blkAddr0[1];
 		    decisionProcessLumaBlkEdgeBeta(blkAddr, true);
 		    betaTab[0] := beta;
 	      end
 	      
-	      if (bSTableVert[idxBlk + 2] = 0) then
-		    blkAddr[0] := blkAddr2[0][0];
-		    blkAddr[1] := blkAddr2[0][1] + 4;
+	      if (bS1 = 0) then
+		    blkAddr[0] := blkAddr0[0];
+		    blkAddr[1] := blkAddr0[1] + 4;
 		    decisionProcessLumaBlkEdgeBeta(blkAddr, true);
 		    betaTab[1] := beta;
 	      end
 	      
-		  filterProcessLumaEdgeVertical(pictureBuffer, 4096, betaTab, tcTab, no_p, no_q, blkAddr2, idxBlk);
+	      offset := 0 * (4096 * 2048) + blkAddr0[1] * 4096 + blkAddr0[0];
+		  filterProcessLumaEdgeVertical(pictureBuffer, offset, 4096, betaTab, tcTab, no_p, no_q, blkAddr0, idxBlk);
 	    end
+	  end
 	end
 	
 	@optimize_c(condition="defined(OPENHEVC_ENABLE)", name="hevc_v_loop_filter_luma_orcc")
-    procedure filterProcessLumaEdgeVertical(uint(size=8) pix[2048][4096], int stride, int betaTab[2], int tcTab[2], uint(size=8) no_p[2], uint(size=8) no_q[2], uint(size=16) blkAddr2[2][2], int idxBlk)
+    procedure filterProcessLumaEdgeVertical(uint(size=8) pix[2048][4096], int offset, int stride, int betaTab[2], int tcTab[2], uint(size=8) no_p[2], uint(size=8) no_q[2], uint(size=16) blkAddr0[2], int idxBlk)
 	var
 	  uint(size=16) blkAddr[2]
 	begin
 	  /* Filtering first edge */
 	  if (bSTableVert[idxBlk] != 0) then
-		blkAddr[0] := blkAddr2[0][0];
-		blkAddr[1] := blkAddr2[0][1];
+		blkAddr[0] := blkAddr0[0];
+		blkAddr[1] := blkAddr0[1];
 		decisionProcessLumaBlkEdge(blkAddr, true, betaTab[0]);
 		filterProcessLumaBlkVerticalEdge(blkAddr, tcTab[0]);
 	  end
 
 	  /* Filtering second edge */
 	  if (bSTableVert[idxBlk + 2] != 0) then
-	    blkAddr[0] := blkAddr2[1][0];
-		blkAddr[1] := blkAddr2[1][1];
+	    blkAddr[0] := blkAddr0[0];
+		blkAddr[1] := blkAddr0[1] + 4;
 		decisionProcessLumaBlkEdge(blkAddr, true, betaTab[1]);
 		filterProcessLumaBlkVerticalEdge(blkAddr, tcTab[1]);
 	  end
@@ -375,32 +379,38 @@ actor DeblockingFilterLuma()
 				end
 			end
 		end
-		//There should be the code for reverting filtering if pcm and
-		//pcmLoopFilterDisableFlag is active.
+		// There should be the code for reverting filtering if pcm and
+		// pcmLoopFilterDisableFlag is active.
 	end
 
     procedure filterProcessLumaBlkHorizontal(int idxBlk)
 	var
 	  uint(size=16) blkAddr[2],
-	  uint(size=16) blkAddr2[2][2],
+	  uint(size=16) blkAddr0[2],
 	  int betaTab[2], 
 	  int tcTab[2],
+	  int offset,
 	  /* no_p and no_q won't be constant 0 if pcm and
 		pcmLoopFilterDisableFlag are active. */
 	  uint(size=8) no_p[2] = [0 : for int i in 0 .. 1],
-	  uint(size=8) no_q[2] = [0 : for int i in 0 .. 1]
+	  uint(size=8) no_q[2] = [0 : for int i in 0 .. 1],
+	  uint(size=2) bS0 = bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk],
+	  uint(size=2) bS1 = bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 1]
 	begin
 	
+	    if (bS0 != 0 or bS1 != 0) then
+	    
+	      zScanToAbsCoord(idxBlk, blkAddr);
+		  blkAddr0[0] := blkAddr[0] + xAddrHor;
+          blkAddr0[1] := blkAddr[1] + yAddrHor;
+	    
 	    /* Tc and Beta calculation */
 	   
 	    /* First edge */
-	    if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk] != 0) then
-	      zScanToAbsCoord(idxBlk, blkAddr);
-		  blkAddr[0] := blkAddr[0] + xAddrHor;
-          blkAddr[1] := blkAddr[1] + yAddrHor;
-          blkAddr2[0][0] := blkAddr[0];
-		  blkAddr2[0][1] := blkAddr[1];
-		  decisionProcessLumaBlkEdgeBetaTc(blkAddr, false, bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk]);
+	      if (bS0 != 0) then
+	        blkAddr[0] := blkAddr0[0];
+            blkAddr[1] := blkAddr0[1];
+		    decisionProcessLumaBlkEdgeBetaTc(blkAddr, false, bS0);
           betaTab[0] := beta;
 		  tcTab[0] := tc;
 		else
@@ -408,13 +418,10 @@ actor DeblockingFilterLuma()
 		end
 
 	    /* Second edge */
-	    if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 1] != 0) then
-		  zScanToAbsCoord(idxBlk + 1, blkAddr);
-		  blkAddr[0] := blkAddr[0] + xAddrHor;
-          blkAddr[1] := blkAddr[1] + yAddrHor;
-          blkAddr2[1][0] := blkAddr[0];
-		  blkAddr2[1][1] := blkAddr[1];
-		  decisionProcessLumaBlkEdgeBetaTc(blkAddr, false, bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 1]);
+	      if (bS1 != 0) then
+		    blkAddr[0] := blkAddr0[0] + 4;
+		    blkAddr[1] := blkAddr0[1];
+		    decisionProcessLumaBlkEdgeBetaTc(blkAddr, false, bS1);
           betaTab[1] := beta;
 		  tcTab[1] := tc;
 		else
@@ -422,48 +429,48 @@ actor DeblockingFilterLuma()
 		end
 		
 	    /* Filtering 2 edges */
-	    if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk] != 0 || 
-	    	bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 1] != 0) then
+	      if (tcTab[0] != 0 || 
+	        tcTab[1] != 0) then
 	    	
 	    	/* Compute only beta */
 	    	
-	    	if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk] = 0) then
-	          blkAddr2[0][0] := blkAddr2[1][0] - 4;
-		      blkAddr2[0][1] := blkAddr2[1][1];
-		      blkAddr[0] := blkAddr2[0][0];
-		      blkAddr[1] := blkAddr2[0][1];
+	    	if (bS0 = 0) then
+		      blkAddr[0] := blkAddr0[0];
+		      blkAddr[1] := blkAddr0[1];
 		      decisionProcessLumaBlkEdgeBeta(blkAddr, false);
 		      betaTab[0] := beta;
 	        end
 	      
-	      if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 1] = 0) then
-		      blkAddr[0] := blkAddr2[0][0] + 4;
-		      blkAddr[1] := blkAddr2[0][1];
+	        if (bS1 = 0) then
+		      blkAddr[0] := blkAddr0[0] + 4;
+		      blkAddr[1] := blkAddr0[1];
 		      decisionProcessLumaBlkEdgeBeta(blkAddr, false);
 		      betaTab[1] := beta;
 	      end
 	      
-		  filterProcessLumaEdgeHorizontal(pictureBuffer, 4096, betaTab, tcTab, no_p, no_q, blkAddr2, idxBlk);
+	      offset := 0 * (4096 * 2048) + blkAddr0[1] * 4096 + blkAddr0[0];
+		  filterProcessLumaEdgeHorizontal(pictureBuffer, offset, 4096, betaTab, tcTab, no_p, no_q, blkAddr0, idxBlk);
 	    end
+	  end
 	end
 	
 	@optimize_c(condition="defined(OPENHEVC_ENABLE)", name="hevc_h_loop_filter_luma_orcc")
-    procedure filterProcessLumaEdgeHorizontal(uint(size=8) pix[2048][4096], int stride, int betaTab[2], int tcTab[2], uint(size=8) no_p[2], uint(size=8) no_q[2], uint(size=16) blkAddr2[2][2], int idxBlk)
+    procedure filterProcessLumaEdgeHorizontal(uint(size=8) pix[2048][4096], int offset, int stride, int betaTab[2], int tcTab[2], uint(size=8) no_p[2], uint(size=8) no_q[2], uint(size=16) blkAddr0[2], int idxBlk)
 	var
 	  uint(size=16) blkAddr[2]
 	begin
 	  /* Filtering first edge */
 	  if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk] != 0) then
-		blkAddr[0] := blkAddr2[0][0];
-		blkAddr[1] := blkAddr2[0][1];
+		blkAddr[0] := blkAddr0[0];
+		blkAddr[1] := blkAddr0[1];
 		decisionProcessLumaBlkEdge(blkAddr, false, betaTab[0]);
 		filterProcessLumaBlkHorizontalEdge(blkAddr, tcTab[0]);
 	  end
 
 	  /* Filtering second edge */
 	  if (bSTableHoriz[yAddrHor >> log2_lcuSizeMax][xAddrHor >> log2_lcuSizeMax][idxBlk + 1] != 0) then
-	    blkAddr[0] := blkAddr2[1][0];
-		blkAddr[1] := blkAddr2[1][1];
+	    blkAddr[0] := blkAddr0[0] + 4;
+		blkAddr[1] := blkAddr0[1];
 		decisionProcessLumaBlkEdge(blkAddr, false, betaTab[1]);
 		filterProcessLumaBlkHorizontalEdge(blkAddr, tcTab[1]);
 	  end
@@ -471,7 +478,7 @@ actor DeblockingFilterLuma()
 	
 	procedure filterHorEdges()
 	begin
-		foreach int idxBlk in 0 .. numPartition - 1
+		foreach int idxBlk in 0 .. numPartition - 2
 		do
 			filterProcessLumaBlkHorizontal(idxBlk);
 			idxBlk := idxBlk + 1;
