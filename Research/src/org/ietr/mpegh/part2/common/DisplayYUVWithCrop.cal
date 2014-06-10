@@ -1,0 +1,201 @@
+/*
+ * Copyright (c) 2011, IETR/INSA of Rennes
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IETR/INSA of Rennes nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Damien de Saint Jorre
+package org.ietr.mpegh.part2.common;
+import  std.video.Display.*;
+import  std.util.Math.*;
+import  std.stdio.Source.*;
+
+import  org.sc29.wg11.common.DisplayYUVFunctions.*;
+
+
+actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE) 
+	uint(size=8)  Y, 
+	uint(size=8)  U, 
+	uint(size=8)  V, 
+	uint(size=14) DispCoord,
+	uint(size=9)  PicSizeInMb
+		==>
+		:
+
+	uint(size=8)  pictureBufferY[MAX_WIDTH * MAX_HEIGHT];
+	uint(size=8)  pictureBufferU[MAX_WIDTH * MAX_HEIGHT / 4];
+	uint(size=8)  pictureBufferV[MAX_WIDTH * MAX_HEIGHT / 4];
+	int (size=32) pictureSizeInMb;
+	int (size=32) nbBlockGot;
+	int (size=32) nbFrameDecoded;
+	uint(size=2)  chromaComponent;
+	uint(size=16) pictureWidthLuma;
+	uint(size=16) cropPicWthLuma;
+	uint(size=16) cropPicHghtLuma;
+	uint(size=12) xIdxLuma;
+	uint(size=12) yIdxLuma;
+	uint(size=12) xIdxChroma;
+	uint(size=32) yIdxChroma;
+	uint(size=14) xMin;
+	uint(size=14) xMax;
+	uint(size=14) yMin;
+	uint(size=14) yMax;
+	
+	// Necessary with backends that do not kill the entire application
+	// when calling source_exit()
+	bool isTerminated := false;
+
+	initialize ==>
+	do
+		if((displayYUV_getFlags() & DISP_ENABLE) != 0) then
+			displayYUV_init();
+		end
+		compareYUV_init();
+		fpsPrintInit();
+		nbFrameDecoded := 0;
+	end
+
+	action ==>
+	guard
+		not isTerminated,
+		source_isMaxLoopsReached() || nbFrameDecoded = displayYUV_getNbFrames()
+	do
+		isTerminated := true;
+		source_exit(0);
+	end
+
+	getPictureSize: action DispCoord:[dispCoord] repeat 4, PicSizeInMb:[picWidth,
+		picHeight] ==>
+	do
+
+		pictureWidthLuma  := picWidth * BLK_SIDE;
+		pictureSizeInMb   := picWidth * picHeight;
+		xMin := dispCoord[0];
+		xMax := dispCoord[1];
+		yMin := dispCoord[2];
+		yMax := dispCoord[3];
+		cropPicWthLuma  := xMax - xMin + 1;
+		cropPicHghtLuma := yMax - yMin + 1;
+		nbBlockGot := 0;
+		xIdxLuma   := 0;
+		yIdxLuma   := 0;
+		xIdxChroma := 0;
+		yIdxChroma := 0;
+	end
+
+	getPixValue.launch.Y.blk16x16: action Y :[Bytes] repeat 256 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 16
+	do
+		nbBlockGot := nbBlockGot + 1;
+		displayYUV_crop_16_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
+		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
+		chromaComponent := 0;
+	end
+
+	getPixValue.launch.Y.blk64x64: action Y :[Bytes] repeat 4096 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		BLK_SIDE = 64
+	do
+		nbBlockGot := nbBlockGot + 1;
+		displayYUV_crop_64_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
+		xIdxLuma := xIdxLuma + 64;
+		chromaComponent := 0;
+	end
+
+	getPixValue.launch.U.blk16x16: action U :[Bytes] repeat 64 ==>
+	guard
+		BLK_SIDE = 16
+	do
+		displayYUV_crop_8_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+	end
+
+	getPixValue.launch.U.blk64x64: action U :[Bytes] repeat 1024 ==>
+	guard
+		BLK_SIDE = 64
+	do
+		displayYUV_crop_32_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+	end
+	
+	getPixValue.launch.V.blk16x16: action V :[Bytes] repeat 64 ==>
+	guard
+		BLK_SIDE = 16
+	do
+		displayYUV_crop_8_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+		
+		xIdxChroma := xIdxChroma + MB_SIZE_CHROMA;
+		if xIdxLuma = pictureWidthLuma then
+			xIdxLuma   := 0;
+			xIdxChroma := 0;
+			yIdxLuma   := yIdxLuma + MB_SIZE_LUMA;
+			yIdxChroma := yIdxChroma + MB_SIZE_CHROMA;
+		end
+		
+	end
+
+	getPixValue.launch.V.blk64x64: action V :[Bytes] repeat 1024 ==>
+	guard
+		BLK_SIDE = 64
+	do
+		displayYUV_crop_32_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+		
+		xIdxChroma := xIdxChroma + 32;
+		if xIdxLuma = pictureWidthLuma then
+			xIdxLuma   := 0;
+			xIdxChroma := 0;
+			yIdxLuma   := yIdxLuma + 64;
+			yIdxChroma := yIdxChroma + 32;
+		end
+	end
+
+	displayPicture: action ==>
+	guard
+		nbBlockGot >= pictureSizeInMb
+	do
+		fpsPrintNewPicDecoded();
+		if((displayYUV_getFlags() & DISP_ENABLE) != 0) then
+			displayYUV_displayPicture(pictureBufferY, pictureBufferU, pictureBufferV, cropPicWthLuma, cropPicHghtLuma);
+		end
+		compareYUV_comparePicture(pictureBufferY, pictureBufferU, pictureBufferV, cropPicWthLuma, cropPicHghtLuma);
+		nbFrameDecoded := nbFrameDecoded + 1;
+	end
+	
+	schedule fsm GetPictureSize:
+		GetPictureSize    (getPictureSize            )--> GetLumaBlock;
+		GetLumaBlock      (getPixValue.launch.Y   )--> GetChroma1Block;
+		GetChroma1Block   (getPixValue.launch.U )--> GetChroma2Block;
+		GetChroma2Block   (getPixValue.launch.V )--> GetLumaBlock;
+		
+		GetLumaBlock      (displayPicture            )--> GetPictureSize;
+	end
+
+	priority
+		getPixValue > displayPicture;
+	end
+
+end
