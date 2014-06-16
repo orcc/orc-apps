@@ -86,15 +86,84 @@ actor SelectCuLuma()
 	// uint(size=8)  interSamp[16][16][SCU_SIZE];
 	uint(size=7)  xIdx;
 	uint(size=7)  yIdx;
-
+	uint(size=8)  pictureBuffer[PICT_HEIGHT][PICT_WIDTH];
+	
+	uint(size=8)  lcuSizeMax;
+	uint(size=8)  log2_lcuSizeMax;
+	
+	uint(size=16) picSize[2];
+	uint(size=16) XIdx;
+	uint(size=16) YIdx;
+	uint(size=16) xAddrVert;
+	uint(size=16) yAddrVert;
+	uint(size=16) numTokenPerLcu[2];
+	uint(size=16) numPartition;
+	uint(size=16) numPartitionRemainingVer;
+	uint(size=16) numPartitionRemainingHor;
+	uint(size=16) numPartitionRemainingHorVer;
+	uint(size=9)  blkIdx := 0;
+	
+	
+	
+	procedure saveRasterScanCu(uint(size=8) sample[4*4])
+	var
+		uint(size=16) pixAddr[2]
+	begin
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+		println("pixAddr[0] = " + pixAddr[0] );
+		println("pixAddr[1] = " + pixAddr[1] );
+		foreach int y in 0 .. 3
+		do
+			foreach int x in 0 .. 3
+			do
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] :=
+					sample[4*y+x];
+			end
+		end
+	end
+	
+	procedure computeNextLcuAddr()
+	begin
+		XIdx := XIdx + lcuSizeMax;
+		println("xidx = " + XIdx);
+		if(XIdx >= 416) then
+			println("#######################################################");
+			XIdx := 0;
+			YIdx := YIdx + lcuSizeMax;
+			if(yIdx >= 240) then
+				XIdx := 0;
+				YIdx := 0;
+			end
+		end
+	end
+	
 	initialize ==>
 	do
 		sampGot := [false: for int i in 0 .. 511];
 	end
+	
+	
 	isNewSlice: action PartMode:[partModeVal] ==>
 	guard
 		partModeVal = PART_MODE_SLICE_DEP || partModeVal = PART_MODE_SLICE_INDEP ||
 		partModeVal = PART_MODE_PICT
+	do
+		lcuSizeMax := 64;
+		log2_lcuSizeMax := 6;
+		numPartition := (lcuSizeMax * lcuSizeMax) / 16;
+		
+		numTokenPerLcu[0] := lcuSizeMax * lcuSizeMax;
+		numTokenPerLcu[1] := numTokenPerLcu[0] >> 2;
+		picSize[0] := 416;
+		picSize[1] := 240;
+		numPartitionRemainingVer := ((picSize[0] & 63) << 6) >> 4;
+		numPartitionRemainingHor := ((picSize[1] & 63) << 6) >> 4;
+		numPartitionRemainingHorVer := ((picSize[0] & 63) * (picSize[1] & 63)) >> 4;
+		XIdx := 0;
+		YIdx := 0;
+		blkIdx := 0;
 	end
 
 	getPartMode: action PartMode:[partModeVal] ==>
@@ -119,7 +188,7 @@ actor SelectCuLuma()
 		// nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
 		cuSize := [[cuInfo[i]/4:for int i in 3 .. 4]:for int j in 0 .. 3];
-		cuOff[0] := [0:for int i in 0 .. 1];
+		cuOff[0] := [0:for int i in 0 .. 1];	
 	end
 
 	/* Getting informations of the next CU when there are two part.
@@ -184,7 +253,8 @@ actor SelectCuLuma()
 	// guard
 		// idxBlk < nbBlk
 	var
-		uint(size=8) sample[SCU_SIZE]
+		uint(size=8) sample[SCU_SIZE],
+		uint(size=16) coord[2] 	
 	do
 
 		/* Reordering the sample is not needed because both (Residual and
@@ -196,6 +266,29 @@ actor SelectCuLuma()
           sample,
           0);
         idxBlk := idxBlk + 1;
+        //if (XIdx >= picSize[0]-lcuSizeMax && YIdx >= picSize[1]-lcuSizeMax) then 
+        //	HorVert
+        //elsif
+        if (XIdx >= picSize[0]-lcuSizeMax)then
+        	//Vert
+        	
+        elsif (YIdx >= picSize[1]-lcuSizeMax)then
+        	// Hor
+        else
+	 		saveRasterScanCu(sample);	
+	 	end
+//		zScanToAbsCoord(blkIdx, coord);
+//		coord[0] := XIdx + coord[0];
+//		coord[1] := YIdx + coord[1];
+
+		blkIdx := blkIdx + 1;
+        
+        if blkIdx = numPartition then
+        	computeNextLcuAddr();
+        	blkIdx := 0;
+        	xAddrVert := XIdx;
+			yAddrVert := YIdx;
+        end
 	end
 
 	/* Getting prediction samples from interPrediction */
