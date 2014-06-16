@@ -119,26 +119,45 @@ actor GenerateBs()
 		uint(size=16) yMax = treeAddrInBlk[1]+treeSizeInBlk,
 		uint(size=8) partIdx
 	begin
+	    if (numMvInfo != 2) then
 		foreach uint x in xMin .. xMax-1
 		do
-			partIdx := castBoolToInt(numMvInfo = 2 && (x >= xAddr2ndPu || yMin >= yAddr2ndPu));
+			predModeTab[x][yMin] := cuMode;
+			isBiPredTab[x][yMin] := isBiPred[0];
+			
+			predModeTab[x][yMax - 1] := cuMode;
+			isBiPredTab[x][yMax - 1] := isBiPred[0];
+		  end
+		  foreach uint y in yMin .. yMax-1
+		  do
+			predModeTab[xMin][y] := cuMode;
+			isBiPredTab[xMin][y] := isBiPred[0];
+
+			predModeTab[xMax - 1][y] := cuMode;
+			isBiPredTab[xMax - 1][y] := isBiPred[0];
+		  end
+		else
+		  foreach uint x in xMin .. xMax-1
+		  do
+			partIdx := castBoolToInt((x >= xAddr2ndPu || yMin >= yAddr2ndPu));
 			predModeTab[x][yMin] := cuMode;
 			isBiPredTab[x][yMin] := isBiPred[partIdx];
 
-			partIdx := castBoolToInt(numMvInfo = 2 && (x >= xAddr2ndPu || (yMax - 1) >= yAddr2ndPu));
+			partIdx := castBoolToInt((x >= xAddr2ndPu || (yMax - 1) >= yAddr2ndPu));
 			predModeTab[x][yMax - 1] := cuMode;
 			isBiPredTab[x][yMax - 1] := isBiPred[partIdx];
 		end
 		foreach uint y in yMin .. yMax-1
 		do
-			partIdx := castBoolToInt(numMvInfo = 2 && (xMin >= xAddr2ndPu || y >= yAddr2ndPu));
+			partIdx := castBoolToInt((xMin >= xAddr2ndPu || y >= yAddr2ndPu));
 			predModeTab[xMin][y] := cuMode;
 			isBiPredTab[xMin][y] := isBiPred[partIdx];
 
-			partIdx := castBoolToInt(numMvInfo = 2 && ((xMax - 1) >= xAddr2ndPu || y >= yAddr2ndPu));
+			partIdx := castBoolToInt(((xMax - 1) >= xAddr2ndPu || y >= yAddr2ndPu));
 			predModeTab[xMax - 1][y] := cuMode;
 			isBiPredTab[xMax - 1][y] := isBiPred[partIdx];
 		end
+	end
 	end
 
 	procedure savePredPuEdge(uint(size=16) addr[2], uint(size=8) puSize[2], bool edgeIsHoriz)
@@ -291,80 +310,116 @@ actor GenerateBs()
 		end
 	end
 
+    @optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength0_mv32_orcc")
+	procedure boundaryStrength0(
+		uint(size=2) bS[1],
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	begin
+      if ((abs(mvP0[0][0] - mvQ0[0][0]) >= 4 || abs(mvP0[0][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[1][0] - mvQ0[1][0]) >= 4 || abs(mvP0[1][1] - mvQ0[1][1]) >= 4) &&
+        (abs(mvP0[1][0] - mvQ0[0][0]) >= 4 || abs(mvP0[1][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[0][0] - mvQ0[1][0]) >= 4 || abs(mvP0[0][1] - mvQ0[1][1]) >= 4)) then
+       	bS[0] := 1;
+      else
+        bS[0] := 0;
+      end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength1_mv32_orcc")
+	procedure boundaryStrength1(
+		uint(size=2) bS[1],
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	begin
+	  if (abs(mvP0[0][0] - mvQ0[0][0]) >= 4 || abs(mvP0[0][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[1][0] - mvQ0[1][0]) >= 4 || abs(mvP0[1][1] - mvQ0[1][1]) >= 4) then
+       	bS[0] := 1;
+      else
+        bS[0] := 0;
+      end
+     end
+    
+    @optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength2_mv32_orcc")
+	procedure boundaryStrength2(
+		uint(size=2) bS[1],
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	begin
+      if (abs(mvP0[1][0] - mvQ0[0][0]) >= 4 || abs(mvP0[1][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[0][0] - mvQ0[1][0]) >= 4 || abs(mvP0[0][1] - mvQ0[1][1]) >= 4) then
+       	bS[0] := 1;
+      else
+        bS[0] := 0;
+      end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength3_mv32_orcc")
+	procedure boundaryStrength3(
+		uint(size=2) bS[1],
+		uint(size=5) predModeP0,
+		uint(size=5) predModeQ0,
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	var
+	  int(size=32) vA[2], 
+      int(size=32) vB[2]
+	begin
+       vA[0]     := mvQ0[predModeQ0][0];
+       vA[1]     := mvQ0[predModeQ0][1];
+       vB[0]     := mvP0[predModeP0][0];
+       vB[1]     := mvP0[predModeP0][1];
+       if ((abs(vA[0] - vB[0]) >= 4 || abs(vA[1] - vB[1]) >= 4)) then
+        bS[0] := 1;
+       else
+        bS[0] := 0;
+       end
+    end
+     
 	procedure genBoundFilterStrengthTUVert(uint(size=2) bS[1], uint(size=16) addrInBlk[2],
 		bool cbfQ0, uint(size=8) partIdx)
 	var
 		uint(size=16) q0[2] = [addrInBlk[0] & (PICT_WIDTH_POW_2/4-1), addrInBlk[1]],
 		uint(size=16) p0[2] := [q0[0]-1, q0[1]],
-		int(size=32) mvP0 [2][2] :=
+		int(size=32) mvP0[2][2] :=
 			[[mvLeftNeighb[q0[1]][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
-		int(size=16) refPocP0 [2] := [refPocLeftNeighb[q0[1]][i]: for int i in 0 .. 1],
+		int(size=32) mvQ0[2][2] :=
+			[[mv[partIdx][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=16) refPocP0[2] := [refPocLeftNeighb[q0[1]][i]: for int i in 0 .. 1],
+		int(size=16) refPocQ0[2] := [refPoc[partIdx][i]: for int i in 0 .. 1],
 		bool cbfP0 = cbfLeftNeighb[q0[1]],
-		int(size=16) tmpRefPoc,
-		int(size=32) tmpMv,
-		int(size=32) absMv[2][2],
-		int(size=16) absMvQP[2][2]
+		uint(size=5) predModeQ0,
+		uint(size=5) predModeP0
 	begin
-		if((addrInBlk[0] & 1)=1) then
+		if((addrInBlk[0] & 1) = 1) then
 			bS[0] := 0;
-		else if(predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
+		else if (predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
 			bS[0] := 2;
 		else if(cbfP0 || cbfQ0) then
 			bS[0] := 1;
 		else
-			if(isBiPredTab[p0[0]][p0[1]] && isBiPredTab[q0[0]][q0[1]] && refPocP0[0] = refPoc[partIdx][1] && 
-				not(refPocP0[0] = refPoc[partIdx][0] && mvP0[0][0] = mv[partIdx][0][0] &&
-					mvP0[0][1] = mv[partIdx][0][1])) then
-				tmpRefPoc := refPocP0[1];
-				refPocP0[1] := refPocP0[0];
-				refPocP0[0] := tmpRefPoc;
-
-				tmpMv := mvP0[0][0];
-				mvP0[0][0] := mvP0[1][0];
-				mvP0[1][0] := tmpMv;
-
-				tmpMv := mvP0[0][1];
-				mvP0[0][1] := mvP0[1][1];
-				mvP0[1][1] := tmpMv;
-
+		  bS[0] := 1;
+          if (isBiPredTab[p0[0]][p0[1]] and isBiPredTab[q0[0]][q0[1]]) then
+		    if (refPocQ0[0] = refPocP0[0]) then
+              if (refPocQ0[0] = refPocQ0[1] &&
+			    refPocP0[0] = refPocP0[1]) then
+                boundaryStrength0(bS, mvP0, mvQ0);
+              else if (refPocP0[1] = refPocQ0[1]) then
+                boundaryStrength1(bS, mvP0, mvQ0);
+			  end
 			end
-			if(isBiPredTab[p0[0]][p0[1]] != isBiPredTab[q0[0]][q0[1]] ||
-			   refPocP0[0] != refPoc[partIdx][0] ||
-			   isBiPredTab[p0[0]][p0[1]] && //L1
-			   (refPocP0[1] != refPoc[partIdx][1])) then
-				bS[0] := 1;
-			else
-				absMv[0][0] := abs(mvP0[0][0]- mv[partIdx][0][0]);
-				absMv[0][1] := abs(mvP0[0][1]- mv[partIdx][0][1]);
-				if(not isBiPredTab[p0[0]][p0[1]] && (absMv[0][0]>=4 || absMv[0][1]>=4))then
-					bS[0] := 1;
-				else
-					absMv[1][0] := abs(mvP0[1][0]- mv[partIdx][1][0]);
-					absMv[1][1] := abs(mvP0[1][1]- mv[partIdx][1][1]);
-					if(isBiPredTab[p0[0]][p0[1]] &&
-					   refPocP0[0] != refPocP0[1] &&
-					   (absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4)) then
-						bS[0] := 1;
-					else
-						if(isBiPredTab[p0[0]][p0[1]] &&
-						   refPocP0[0] = refPocP0[1]) then
-							absMvQP[0][0] := abs(mvP0[0][0]- mv[partIdx][1][0]);
-							absMvQP[0][1] := abs(mvP0[0][1]- mv[partIdx][1][1]);
-							absMvQP[1][0] := abs(mvP0[1][0]- mv[partIdx][0][0]);
-							absMvQP[1][1] := abs(mvP0[1][1]- mv[partIdx][0][1]);
-							if((absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4) &&
-							   (absMvQP[0][0]>=4 || absMvQP[0][1]>=4 || absMvQP[1][0]>=4
-							   || absMvQP[1][1]>=4)) then
-								bS[0] := 1;
-							else
-								bS[0] := 0;
-							end
-						else
-							bS[0] := 0;
-						end
-					end
-				end
+            else if (refPocP0[1] = refPocQ0[0] and
+              refPocP0[0] = refPocQ0[1]) then
+                boundaryStrength2(bS, mvP0, mvQ0);
+            end end
+          else if (not (isBiPredTab[p0[0]][p0[1]]) and not (isBiPredTab[q0[0]][q0[1]])) then // 1 MV
+            predModeQ0 := predModeTab[q0[0]][q0[1]] & 1;
+		    predModeP0 := predModeTab[p0[0]][p0[1]] & 1;
+            if (refPocQ0[predModeQ0] = refPocP0[predModeP0]) then
+              boundaryStrength3(bS, predModeP0, predModeQ0, mvP0, mvQ0);
 			end
+		  end
+		end
 		end end end
 	end
 
@@ -374,74 +429,44 @@ actor GenerateBs()
 		uint(size=16) q0[2] = [addrInBlk[0] & (PICT_WIDTH_POW_2/4-1), addrInBlk[1]],
 		int(size=32) mvP0 [2][2] :=
 			[[mvUpNeighb[q0[0]][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=32) mvQ0 [2][2] :=
+			[[mv[partIdx][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
 		int(size=16) refPocP0 [2] := [refPocUpNeighb[q0[0]][i]: for int i in 0 .. 1],
+		int(size=16) refPocQ0[2] := [refPoc[partIdx][i]: for int i in 0 .. 1],
 		uint(size=16) p0[2] := [q0[0], q0[1]-1],
 		bool cbfP0 = cbfUpNeighb[q0[0]],
-		int(size=16) tmpRefPoc,
-		int(size=32) tmpMv,
-		int(size=32) absMv[2][2],
-		int(size=16) absMvQP[2][2]
+		uint(size=5) predModeQ0,
+		uint(size=5) predModeP0
 	begin
-		if((addrInBlk[1] & 1)=1) then
-			bS[0] := 0;
-		else if(predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
-			bS[0] := 2;
-		else if(cbfP0 || cbfQ0) then
-			bS[0] := 1;
+		if ((addrInBlk[1] & 1) = 1) then
+		  bS[0] := 0;
+		else if (predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
+		  bS[0] := 2;
+		else if (cbfP0 || cbfQ0) then
+		  bS[0] := 1;
 		else
-			if(isBiPredTab[p0[0]][p0[1]] && isBiPredTab[q0[0]][q0[1]] && refPocP0[0] = refPoc[partIdx][1] && 
-				not(refPocP0[0] = refPoc[partIdx][0] && mvP0[0][0] = mv[partIdx][0][0] &&
-					mvP0[0][1] = mv[partIdx][0][1])) then
-				tmpRefPoc := refPocP0[1];
-				refPocP0[1] := refPocP0[0];
-				refPocP0[0] := tmpRefPoc;
-
-				tmpMv := mvP0[0][0];
-				mvP0[0][0] := mvP0[1][0];
-				mvP0[1][0] := tmpMv;
-
-				tmpMv := mvP0[0][1];
-				mvP0[0][1] := mvP0[1][1];
-				mvP0[1][1] := tmpMv;
-
+		  bS[0] := 1;
+          if (isBiPredTab[p0[0]][p0[1]] and isBiPredTab[q0[0]][q0[1]]) then
+		    if (refPocQ0[0] = refPocP0[0]) then
+              if (refPocQ0[0] = refPocQ0[1] &&
+			    refPocP0[0] = refPocP0[1]) then
+                boundaryStrength0(bS, mvP0, mvQ0);
+              else if (refPocP0[1] = refPocQ0[1]) then
+                boundaryStrength1(bS, mvP0, mvQ0);
+			  end
 			end
-			if(isBiPredTab[p0[0]][p0[1]] != isBiPredTab[q0[0]][q0[1]] ||
-			   refPocP0[0] != refPoc[partIdx][0] ||
-			   isBiPredTab[p0[0]][p0[1]] && //L1
-			   (refPocP0[1] != refPoc[partIdx][1])) then
-				bS[0] := 1;
-			else
-				absMv[0][0] := abs(mvP0[0][0]- mv[partIdx][0][0]);
-				absMv[0][1] := abs(mvP0[0][1]- mv[partIdx][0][1]);
-				if(not isBiPredTab[p0[0]][p0[1]] && (absMv[0][0]>=4 || absMv[0][1]>=4))then
-					bS[0] := 1;
-				else
-					absMv[1][0] := abs(mvP0[1][0]- mv[partIdx][1][0]);
-					absMv[1][1] := abs(mvP0[1][1]- mv[partIdx][1][1]);
-					if(isBiPredTab[p0[0]][p0[1]] &&
-					   refPocP0[0] != refPocP0[1] &&
-					   (absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4)) then
-						bS[0] := 1;
-					else
-						if(isBiPredTab[p0[0]][p0[1]] &&
-						   refPocP0[0] = refPocP0[1]) then
-							absMvQP[0][0] := abs(mvP0[0][0]- mv[partIdx][1][0]);
-							absMvQP[0][1] := abs(mvP0[0][1]- mv[partIdx][1][1]);
-							absMvQP[1][0] := abs(mvP0[1][0]- mv[partIdx][0][0]);
-							absMvQP[1][1] := abs(mvP0[1][1]- mv[partIdx][0][1]);
-							if((absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4) &&
-							   (absMvQP[0][0]>=4 || absMvQP[0][1]>=4 || absMvQP[1][0]>=4
-							   || absMvQP[1][1]>=4)) then
-								bS[0] := 1;
-							else
-								bS[0] := 0;
-							end
-						else
-							bS[0] := 0;
-						end
-					end
-				end
+            else if (refPocP0[1] = refPocQ0[0] and
+              refPocP0[0] = refPocQ0[1]) then
+              boundaryStrength2(bS, mvP0, mvQ0);
+            end end
+          else if (not (isBiPredTab[p0[0]][p0[1]]) and not (isBiPredTab[q0[0]][q0[1]])) then // 1 MV
+            predModeQ0 := predModeTab[q0[0]][q0[1]] & 1;
+		    predModeP0 := predModeTab[p0[0]][p0[1]] & 1;
+            if (refPocQ0[predModeQ0] = refPocP0[predModeP0]) then
+              boundaryStrength3(bS, predModeP0, predModeQ0, mvP0, mvQ0);
 			end
+		  end
+		end
 		end end end
 	end
 
@@ -452,69 +477,36 @@ actor GenerateBs()
 		uint(size=16) q0[2] = [addrInBlk[0] & (PICT_WIDTH_POW_2 / 4 - 1), addrInBlk[1]],
 		uint(size=16) p0[2] := if(isVerticalEdge) then [q0[0]-1, q0[1]]
 			else [q0[0], q0[1]-1] end,
-		int(size=16) tmpRefPoc,
-		int(size=32) tmpMv,
-		int(size=32) absMv[2][2],
-		int(size=16) absMvQP[2][2]
+		uint(size=5) predModeQ0,
+		uint(size=5) predModeP0
 	begin
-		if(isVerticalEdge && (addrInBlk[0] & 1) = 1 || not isVerticalEdge && (addrInBlk[1] & 1) = 1) then
+		if (isVerticalEdge && (addrInBlk[0] & 1) = 1 || not isVerticalEdge && (addrInBlk[1] & 1) = 1) then
 			bS[0] := 0;
-		else if(predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
+		else if (predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
 			bS[0] := 2;
 		else
-			if(isBiPredTab[p0[0]][p0[1]] && isBiPredTab[q0[0]][q0[1]] && refPocP0[0] = refPocQ0[1] && 
-				not(refPocP0[0] = refPocQ0[0] && mvP0[0][0] = mvQ0[0][0] &&
-					mvP0[0][1] = mvQ0[0][1])) then
-				tmpRefPoc := refPocP0[1];
-				refPocP0[1] := refPocP0[0];
-				refPocP0[0] := tmpRefPoc;
-
-				tmpMv := mvP0[0][0];
-				mvP0[0][0] := mvP0[1][0];
-				mvP0[1][0] := tmpMv;
-
-				tmpMv := mvP0[0][1];
-				mvP0[0][1] := mvP0[1][1];
-				mvP0[1][1] := tmpMv;
-
+		  bS[0] := 1;
+          if (isBiPredTab[p0[0]][p0[1]] and isBiPredTab[q0[0]][q0[1]]) then
+		    if (refPocQ0[0] = refPocP0[0]) then
+              if (refPocQ0[0] = refPocQ0[1] &&
+			    refPocP0[0] = refPocP0[1]) then
+                boundaryStrength0(bS, mvP0, mvQ0);
+              else if (refPocP0[1] = refPocQ0[1]) then
+                boundaryStrength1(bS, mvP0, mvQ0);
+			  end
 			end
-			if(isBiPredTab[p0[0]][p0[1]] != isBiPredTab[q0[0]][q0[1]] ||
-			   refPocP0[0] != refPocQ0[0] ||
-			   isBiPredTab[p0[0]][p0[1]] && //L1
-			   (refPocP0[1] != refPocQ0[1])) then
-				bS[0] := 1;
-			else
-				absMv[0][0] := abs(mvP0[0][0]- mvQ0[0][0]);
-				absMv[0][1] := abs(mvP0[0][1]- mvQ0[0][1]);
-				if(not isBiPredTab[p0[0]][p0[1]] && (absMv[0][0]>=4 || absMv[0][1]>=4))then
-					bS[0] := 1;
-				else
-					absMv[1][0] := abs(mvP0[1][0]- mvQ0[1][0]);
-					absMv[1][1] := abs(mvP0[1][1]- mvQ0[1][1]);
-					if(isBiPredTab[p0[0]][p0[1]] &&
-					   refPocP0[0] != refPocP0[1] &&
-					   (absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4)) then
-						bS[0] := 1;
-					else
-						if(isBiPredTab[p0[0]][p0[1]] &&
-						   refPocP0[0] = refPocP0[1]) then
-							absMvQP[0][0] := abs(mvP0[0][0]- mvQ0[1][0]);
-							absMvQP[0][1] := abs(mvP0[0][1]- mvQ0[1][1]);
-							absMvQP[1][0] := abs(mvP0[1][0]- mvQ0[0][0]);
-							absMvQP[1][1] := abs(mvP0[1][1]- mvQ0[0][1]);
-							if((absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4) &&
-							   (absMvQP[0][0]>=4 || absMvQP[0][1]>=4 || absMvQP[1][0]>=4
-							   || absMvQP[1][1]>=4)) then
-								bS[0] := 1;
-							else
-								bS[0] := 0;
-							end
-						else
-							bS[0] := 0;
-						end
-					end
-				end
+            else if (refPocP0[1] = refPocQ0[0] and
+              refPocP0[0] = refPocQ0[1]) then
+                boundaryStrength2(bS, mvP0, mvQ0);
+            end end
+          else if (not (isBiPredTab[p0[0]][p0[1]]) and not (isBiPredTab[q0[0]][q0[1]])) then // 1 MV
+            predModeQ0 := predModeTab[q0[0]][q0[1]] & 1;
+		    predModeP0 := predModeTab[p0[0]][p0[1]] & 1;
+            if (refPocQ0[predModeQ0] = refPocP0[predModeP0]) then
+              boundaryStrength3(bS, predModeP0, predModeQ0, mvP0, mvQ0);
 			end
+		  end
+		end
 		end end
 	end
 
