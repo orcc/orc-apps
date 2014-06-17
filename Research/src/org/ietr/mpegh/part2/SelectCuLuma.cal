@@ -64,6 +64,7 @@ actor SelectCuLuma()
 	int (size=9)  ResidualSample
 		==>
 	uint(size=8) Sample
+	//,uint(size=8) VidSample
 		:
 
 	uint(size=16) PU_SIZE_TO_NB_BLK_TO_CLIP[17] =
@@ -102,7 +103,8 @@ actor SelectCuLuma()
 	uint(size=16) numPartitionRemainingHor;
 	uint(size=16) numPartitionRemainingHorVer;
 	uint(size=9)  blkIdx := 0;
-	
+	uint(size=16) pixAddr[2] := [0,0];
+	int lineNbLCU := 0;
 	
 	
 	procedure saveRasterScanCu(uint(size=8) sample[4*4])
@@ -137,6 +139,7 @@ actor SelectCuLuma()
 				YIdx := 0;
 			end
 		end
+		lineNbLCU := lineNbLCU + 1;
 	end
 	
 	initialize ==>
@@ -245,18 +248,18 @@ actor SelectCuLuma()
 	do
 		numPartDecoded := numPartDecoded + 1;
 	end
-
+	bool initFlag := true;
 	/* Getting samples from intraPrediction */
 	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
 		ResidualSample:[resSample] repeat SCU_SIZE
 		==> Sample:[sample] repeat SCU_SIZE
-	// guard
-		// idxBlk < nbBlk
+	guard
+		blkIdx < numPartition
 	var
 		uint(size=8) sample[SCU_SIZE],
 		uint(size=16) coord[2] 	
 	do
-
+		println("read Intra token");
 		/* Reordering the sample is not needed because both (Residual and
 		 * prediction parts) sample are in the rasterScan order
 		 */
@@ -270,25 +273,110 @@ actor SelectCuLuma()
         //	HorVert
         //elsif
         if (XIdx >= picSize[0]-lcuSizeMax)then
-        	//Vert
-        	
+        	// init 
+        	if initFlag then
+				blkIdx := 0;
+				zScanToAbsCoord(0, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+				initFlag := false;
+			end
+			
+			// store
+			if pixAddr[0] < picSize[0] then
+				println("pixAddr[0] = " + pixAddr[0] + "  pixAddr[1] = " + pixAddr[1]);
+	        	foreach int y in 0 .. 3
+				do
+					foreach int x in 0 .. 3
+					do
+						pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[4*y+x];
+					end
+				end
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+			end
+			
+			// bypass 
+			while (pixAddr[0] >= picSize[0]) && (blkIdx < numPartition) do
+				println("pixAddr[0]bypass = " + pixAddr[0] + "  pixAddr[1]bypass = " + pixAddr[1]);
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+				println("blkIdx = " + blkIdx);
+				// exit
+			end
+			        	
         elsif (YIdx >= picSize[1]-lcuSizeMax)then
         	// Hor
         else
-	 		saveRasterScanCu(sample);	
-	 	end
-//		zScanToAbsCoord(blkIdx, coord);
-//		coord[0] := XIdx + coord[0];
-//		coord[1] := YIdx + coord[1];
+		 	saveRasterScanCu(sample);	
+//		 	println("coord[0] = " + coord[0] + "  coord[1] = " + coord[1]);		 	
+//			zScanToAbsCoord(blkIdx, coord);
+//			coord[0] := XIdx + coord[0];
+//			coord[1] := YIdx + coord[1];
 
-		blkIdx := blkIdx + 1;
-        
-        if blkIdx = numPartition then
-        	computeNextLcuAddr();
-        	blkIdx := 0;
-        	xAddrVert := XIdx;
-			yAddrVert := YIdx;
+			blkIdx := blkIdx + 1;
+	        
+	        if blkIdx = numPartition then
+	        	if xAddrVert = picSize[0] then // lineExit 
+				else // next LCU
+		        	computeNextLcuAddr();
+		        	blkIdx := 0;
+		        	xAddrVert := XIdx;
+					yAddrVert := YIdx;
+				end
+	        end
+	        
         end
+	end
+	
+	getCuSample.endLine : action ==>
+	guard
+		blkIdx = numPartition
+	do
+		println("line Done");
+		println("lineNbLCU = " + lineNbLCU);
+		lineNbLCU := lineNbLCU + 1;
+		blkIdx := 0;
+    	xAddrVert := 0;
+		yAddrVert := 0;
+		YIdx := 0;
+		XIdx := 0;
+		pixAddr[0] := 0;
+		pixAddr[1] := 0;
+		initFlag := true;
+	end
+	
+	int sendCount := 0;
+	
+	sendData : action ==> //VidSample:[vidSamp] repeat 4096
+	guard
+		sendCount < lineNbLCU
+	var
+		uint(size=8) vidSamp[64 * 64],
+		int xOff := 0
+	do
+		//println("sendData");
+		foreach int y in 0 .. 63
+		do			
+			foreach int x in 0 .. 63
+			do
+				vidSamp[y * 64 + x] := pictureBuffer[y][xOff + x];
+			end
+		end
+		xOff := xOff + 64;
+		sendCount := sendCount + 1;
+	end
+	
+	sendDataDone : action ==> 
+	guard
+		sendCount = lineNbLCU
+	do
+		sendCount := 0;
+		lineNbLCU := 0;
 	end
 
 	/* Getting prediction samples from interPrediction */
@@ -445,7 +533,10 @@ actor SelectCuLuma()
 
 		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
-
+		GetCuSampleIntra (getCuSample.endLine )--> sendData;
+		
+		sendData		 (sendData			  )--> sendData;
+		sendData		 (sendDataDone		  )--> GetCuInfo; 
 
 		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
 		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;
