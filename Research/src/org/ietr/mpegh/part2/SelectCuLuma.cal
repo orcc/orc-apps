@@ -75,7 +75,7 @@ actor SelectCuLuma()
 	uint(size=3)  numPartDecoded;
     uint(size=8)  predSamp[64 * 64]; // + 2 * 32 * 32];
 	bool          sampGot[512];
-    uint(size=16)  nbBlkToClip;
+    uint(size=16) nbBlkToClip;
 	uint(size=7)  cuSize[4][2];
 	uint(size=5)  cuMode;
 	uint(size=4)  partMode;
@@ -99,13 +99,12 @@ actor SelectCuLuma()
 	uint(size=16) yAddrVert;
 	uint(size=16) numTokenPerLcu[2];
 	uint(size=16) numPartition;
-	uint(size=16) numPartitionRemainingVer;
 	uint(size=16) numPartitionRemainingHor;
-	uint(size=16) numPartitionRemainingHorVer;
 	uint(size=9)  blkIdx := 0;
 	uint(size=16) pixAddr[2] := [0,0];
 	int lineNbLCU := 0;
-	
+	int lineCounter := 0;
+	int colomnCounter := 0;
 	
 	procedure saveRasterScanCu(uint(size=8) sample[4*4])
 	var
@@ -130,11 +129,11 @@ actor SelectCuLuma()
 	begin
 		XIdx := XIdx + lcuSizeMax;
 		println("xidx = " + XIdx);
-		if(XIdx >= 416) then
+		if(XIdx >= picSize[0]) then
 			println("#######################################################");
 			XIdx := 0;
 			YIdx := YIdx + lcuSizeMax;
-			if(yIdx >= 240) then
+			if(yIdx >= picSize[1]) then
 				XIdx := 0;
 				YIdx := 0;
 			end
@@ -161,9 +160,7 @@ actor SelectCuLuma()
 		numTokenPerLcu[1] := numTokenPerLcu[0] >> 2;
 		picSize[0] := 416;
 		picSize[1] := 240;
-		numPartitionRemainingVer := ((picSize[0] & 63) << 6) >> 4;
-		numPartitionRemainingHor := ((picSize[1] & 63) << 6) >> 4;
-		numPartitionRemainingHorVer := ((picSize[0] & 63) * (picSize[1] & 63)) >> 4;
+		numPartitionRemainingHor := ((picSize[1] & 63) * picSize[0]) >> 4;
 		XIdx := 0;
 		YIdx := 0;
 		blkIdx := 0;
@@ -269,21 +266,14 @@ actor SelectCuLuma()
           sample,
           0);
         idxBlk := idxBlk + 1;
-        //if (XIdx >= picSize[0]-lcuSizeMax && YIdx >= picSize[1]-lcuSizeMax) then 
-        //	HorVert
-        //elsif
-        if (XIdx >= picSize[0]-lcuSizeMax)then
-        	// init 
-        	if initFlag then
-				blkIdx := 0;
-				zScanToAbsCoord(0, pixAddr);
-				pixAddr[0] := pixAddr[0] + xAddrVert;
-				pixAddr[1] := pixAddr[1] + yAddrVert;
-				initFlag := false;
-			end
+        if (XIdx >= picSize[0]-lcuSizeMax && YIdx >= picSize[1]-lcuSizeMax) then 
+        	//HorVert
+        	
+        	
+        elsif (XIdx >= picSize[0]-lcuSizeMax)then
 			
 			// store
-			if pixAddr[0] < picSize[0] then
+			if (XIdx + pixAddr[0]) < picSize[0] then
 				println("pixAddr[0] = " + pixAddr[0] + "  pixAddr[1] = " + pixAddr[1]);
 	        	foreach int y in 0 .. 3
 				do
@@ -299,7 +289,36 @@ actor SelectCuLuma()
 			end
 			
 			// bypass 
-			while (pixAddr[0] >= picSize[0]) && (blkIdx < numPartition) do
+			while ((XIdx + pixAddr[0]) >= picSize[0]) && (blkIdx < numPartition) do
+				println("pixAddr[0]bypass = " + pixAddr[0] + "  pixAddr[1]bypass = " + pixAddr[1]);
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+				println("blkIdx = " + blkIdx);
+			end
+			        	
+        elsif (YIdx >= (picSize[1]-lcuSizeMax))then
+        	// Hor
+			
+			// store
+			if YIdx < (picSize[1] & 63) then
+				println("pixAddr[0] = " + pixAddr[0] + "  pixAddr[1] = " + pixAddr[1]);
+	        	foreach int y in 0 .. 3
+				do
+					foreach int x in 0 .. 3
+					do
+						pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[4*y+x];
+					end
+				end
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+			end
+			
+			// bypass 
+			while (YIdx >= (picSize[1] & 63)) && (blkIdx < numPartition) do
 				println("pixAddr[0]bypass = " + pixAddr[0] + "  pixAddr[1]bypass = " + pixAddr[1]);
 				blkIdx := blkIdx + 1;
 				zScanToAbsCoord(blkIdx, pixAddr);
@@ -308,9 +327,7 @@ actor SelectCuLuma()
 				println("blkIdx = " + blkIdx);
 				// exit
 			end
-			        	
-        elsif (YIdx >= picSize[1]-lcuSizeMax)then
-        	// Hor
+        	
         else
 		 	saveRasterScanCu(sample);	
 //		 	println("coord[0] = " + coord[0] + "  coord[1] = " + coord[1]);		 	
@@ -320,20 +337,20 @@ actor SelectCuLuma()
 
 			blkIdx := blkIdx + 1;
 	        
-	        if blkIdx = numPartition then
-	        	if xAddrVert = picSize[0] then // lineExit 
-				else // next LCU
-		        	computeNextLcuAddr();
-		        	blkIdx := 0;
-		        	xAddrVert := XIdx;
-					yAddrVert := YIdx;
-				end
-	        end
+//	        if blkIdx = numPartition then
+//	        	if xAddrVert = picSize[0] then // lineExit 
+//				else // next LCU
+//		        	computeNextLcuAddr();
+//		        	blkIdx := 0;
+//		        	xAddrVert := XIdx;
+//					yAddrVert := YIdx;
+//				end
+//	        end
 	        
         end
 	end
 	
-	getCuSample.endLine : action ==>
+	getCuSample.endLCU : action ==>
 	guard
 		blkIdx = numPartition
 	do
@@ -343,11 +360,11 @@ actor SelectCuLuma()
 		blkIdx := 0;
     	xAddrVert := 0;
 		yAddrVert := 0;
-		YIdx := 0;
-		XIdx := 0;
 		pixAddr[0] := 0;
 		pixAddr[1] := 0;
 		initFlag := true;
+		
+		computeNextLcuAddr();
 	end
 	
 	int sendCount := 0;
@@ -533,7 +550,7 @@ actor SelectCuLuma()
 
 		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
-		GetCuSampleIntra (getCuSample.endLine )--> sendData;
+		GetCuSampleIntra (getCuSample.endLCU )--> sendData;
 		
 		sendData		 (sendData			  )--> sendData;
 		sendData		 (sendDataDone		  )--> GetCuInfo; 
