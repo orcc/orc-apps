@@ -351,7 +351,7 @@ actor SelectCuLuma()
         storeLCU_4x4(sample);
 	end
 	
-	getCuSample.endLCU : action ==> VidSample:[vidSamp] repeat 4096
+	endLCU : action ==> VidSample:[vidSamp] repeat 4096
 	guard
 		blkIdx = numPartition
 	var
@@ -439,7 +439,8 @@ actor SelectCuLuma()
 		==> Sample:[sample] repeat SCU_SIZE
 	guard
 		// idxBlk < nbBlk
-        sampGot[idxBlk]
+        sampGot[idxBlk],
+        blkIdx < numPartition
 	var
 		uint(size=8) sample[SCU_SIZE]
 	do
@@ -449,6 +450,8 @@ actor SelectCuLuma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 1;
+		
+		storeLCU_4x4(sample);
 	end
 
     /* Getting the residual part for interPrediction then computing the
@@ -457,9 +460,12 @@ actor SelectCuLuma()
     getInterRes.get4Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 4
 		==> Sample:[sample] repeat SCU_SIZE * 4
 	guard
-        sampGot[idxBlk + 3]
+        sampGot[idxBlk + 3],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE * 4]
+		uint(size=8) sample[SCU_SIZE * 4],
+        uint(size=8) storeSample[4*4],
+        int offset := 0
 	do
 		add_8_16_clip_64_64x64_cal (
           predSamp,
@@ -467,6 +473,14 @@ actor SelectCuLuma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 4;
+		
+		foreach int j in 0 .. 3 do
+			foreach int i in 0 .. 15 do
+				storeSample[i] := sample[i + offset];
+			end
+			storeLCU_4x4(storeSample);
+			offset := offset + 16;
+		end
 	end
 
     /* Getting the residual part for interPrediction then computing the
@@ -475,9 +489,12 @@ actor SelectCuLuma()
     getInterRes.get16Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 16
 		==> Sample:[sample] repeat SCU_SIZE * 16
 	guard
-        sampGot[idxBlk + 15]
+        sampGot[idxBlk + 15],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE * 16]
+		uint(size=8) sample[SCU_SIZE * 16],
+        uint(size=8) storeSample[4*4],
+        int offset := 0
 	do
 		add_8_16_clip_256_64x64_cal (
           predSamp,
@@ -485,6 +502,14 @@ actor SelectCuLuma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 16;
+		
+		foreach int j in 0 .. 15 do
+			foreach int i in 0 .. 15 do
+				storeSample[i] := sample[i + offset];
+			end
+			storeLCU_4x4(storeSample);
+			offset := offset + 16;
+		end
 	end
 
     /* Getting the residual part for interPrediction then computing the
@@ -493,9 +518,12 @@ actor SelectCuLuma()
     getInterRes.get64Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 64
 		==> Sample:[sample] repeat SCU_SIZE * 64
 	guard
-        sampGot[idxBlk + 63]
+        sampGot[idxBlk + 63],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE * 64]
+		uint(size=8) sample[SCU_SIZE * 64],
+        uint(size=8) storeSample[4*4],
+        int offset := 0
 	do
 		add_8_16_clip_1024_64x64_cal (
           predSamp,
@@ -503,6 +531,14 @@ actor SelectCuLuma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 64;
+		
+		foreach int j in 0 .. 63 do
+			foreach int i in 0 .. 15 do
+				storeSample[i] := sample[i + offset];
+			end
+			storeLCU_4x4(storeSample);
+			offset := offset + 16;
+		end
 	end
 
 	getCuSample.done: action ==>
@@ -529,7 +565,7 @@ actor SelectCuLuma()
 
 		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
-		GetCuSampleIntra (getCuSample.endLCU  )--> GetCuInfo;
+		GetCuSampleIntra (endLCU  )--> GetCuInfo;
 		
 		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
 		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;
@@ -540,22 +576,27 @@ actor SelectCuLuma()
 		GetCuSampleInter1Blk (getCuSample.isInter )--> GetCuSampleInter1Blk;
 		GetCuSampleInter1Blk (getInterRes.get1Blk )--> GetCuSampleInter1Blk;
 		GetCuSampleInter1Blk (getCuSample.done    )--> GetCuInfo;
+		GetCuSampleInter1Blk (endLCU  )--> GetCuSampleInter1Blk;
 
 		GetCuSampleInter4Blk (getCuSample.isInter    )--> GetCuSampleInter4Blk;
 		GetCuSampleInter4Blk (getInterRes.get4Blk )--> GetCuSampleInter4Blk;
 		GetCuSampleInter4Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter4Blk (endLCU  )--> GetCuSampleInter4Blk;
 
 		GetCuSampleInter16Blk (getCuSample.isInter    )--> GetCuSampleInter16Blk;
 		GetCuSampleInter16Blk (getInterRes.get16Blk )--> GetCuSampleInter16Blk;
 		GetCuSampleInter16Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter16Blk (endLCU  )--> GetCuSampleInter16Blk;
 
 		GetCuSampleInter64Blk (getCuSample.isInter    )--> GetCuSampleInter64Blk;
 		GetCuSampleInter64Blk (getInterRes.get64Blk )--> GetCuSampleInter64Blk;
 		GetCuSampleInter64Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter64Blk (endLCU  )--> GetCuSampleInter64Blk;
 
 		GetCuSampleInter256Blk (getCuSample.isInter    )--> GetCuSampleInter256Blk;
 		GetCuSampleInter256Blk (getInterRes.get64Blk )--> GetCuSampleInter256Blk;
 		GetCuSampleInter256Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter256Blk (endLCU  )--> GetCuSampleInter256Blk;
 	end
 	priority
 		getCuSample.done > getCuSample.isIntra;
