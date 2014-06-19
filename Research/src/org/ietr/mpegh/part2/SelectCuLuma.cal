@@ -57,6 +57,9 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.ietr.mpegh.part2.SelectCuFunctions.*;
 
 actor SelectCuLuma()
+	uint(size=8)  LcuSizeMax,
+	uint(size=16) PicSize,
+	uint(size=16) TilesCoord,
 	uint(size=16) CUInfo,
 	uint(size=8)  InterSample,
 	uint(size=8)  IntraSample,
@@ -89,9 +92,7 @@ actor SelectCuLuma()
 	uint(size=7)  yIdx;
 	uint(size=8)  LcuBuffer[64][64];
 	
-	uint(size=8)  lcuSizeMax;
-	uint(size=8)  log2_lcuSizeMax;
-	
+	uint(size=8)  lcuSizeMax;	
 	uint(size=16) picSize[2];
 	uint(size=16) XIdx;
 	uint(size=16) YIdx;
@@ -100,6 +101,13 @@ actor SelectCuLuma()
 	uint(size=16) numPartition;
 	uint(size=9)  blkIdx := 0;
 	uint(size=16) pixAddr[2] := [0,0];
+	
+	uint(size=16) numTiles;
+	uint(size=16) tileIdx;
+	uint(size=16) tilesBegSamp[MAX_NUM_TILES][2];
+	uint(size=16) tilesEndSamp[MAX_NUM_TILES][2];
+	int(size=16) iLoop;
+	uint LcuType := 0 ; // 0: LCU not in the Edge, 1: LCU vert edge, 2: LCU hor edge, 3: LCU hor&vert edge 
 	
 	procedure saveRasterScanCu(uint(size=8) sample[4*4])
 	var
@@ -122,35 +130,12 @@ actor SelectCuLuma()
 	
 	procedure storeLCU_4x4(uint(size=8) sample[4*4])
 	begin
-		if (XIdx >= picSize[0]-lcuSizeMax) && (YIdx >= (picSize[1]-lcuSizeMax)) then
-			// vertHor
-			
-			// store
-			if ((XIdx + pixAddr[0]) < picSize[0]) && ((YIdx + pixAddr[1]) < picSize[1]) then
-//				println("pixAddrHORVERT[0] = " + pixAddr[0] + "  pixAddrHORVERT[1] = " + pixAddr[1]);
-	        	foreach int y in 0 .. 3
-				do
-					foreach int x in 0 .. 3
-					do
-						LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[4*y+x];
-					end
-				end
-				blkIdx := blkIdx + 1;
-				zScanToAbsCoord(blkIdx, pixAddr);
-				pixAddr[0] := pixAddr[0] + xAddrVert;
-				pixAddr[1] := pixAddr[1] + yAddrVert;
-			end
-			
-			// bypass 
-			while (((XIdx + pixAddr[0]) >= picSize[0]) || ((YIdx + pixAddr[1]) >= picSize[1])) && (blkIdx < numPartition) do
-//				println("pixAddr[0]bypassHORVERT = " + pixAddr[0] + "  pixAddr[1]bypassHORVERT = " + pixAddr[1]);
-				blkIdx := blkIdx + 1;
-				zScanToAbsCoord(blkIdx, pixAddr);
-				pixAddr[0] := pixAddr[0] + xAddrVert;
-				pixAddr[1] := pixAddr[1] + yAddrVert;
-//				println("blkIdxHORVERT = " + blkIdx);
-			end
-		elsif (XIdx >= picSize[0]-lcuSizeMax) && (not (YIdx >= (picSize[1]-lcuSizeMax))) then
+		if LcuType = 0 then
+        	// no Hor no Vert
+		 	saveRasterScanCu(sample);	
+			blkIdx := blkIdx + 1;   
+		
+		elsif LcuType = 1 then
 			// vert
 			
 			// store
@@ -178,7 +163,7 @@ actor SelectCuLuma()
 				pixAddr[1] := pixAddr[1] + yAddrVert;
 //				println("blkIdxVERT = " + blkIdx);
 			end
-		elsif (YIdx >= (picSize[1]-lcuSizeMax)) && (not (XIdx >= picSize[0]-lcuSizeMax)) then
+		elsif LcuType = 2 then
         	// Hor
 			
 			// store
@@ -206,25 +191,58 @@ actor SelectCuLuma()
 				pixAddr[1] := pixAddr[1] + yAddrVert;
 //				println("blkIdxHOR = " + blkIdx);
 			end
-        else //(XIdx < picSize[0]-lcuSizeMax) && (YIdx < (picSize[1]-lcuSizeMax)) then
-        	// no Hor no Vert
-		 	saveRasterScanCu(sample);	
-			blkIdx := blkIdx + 1;     
+        else //if (XIdx >= picSize[0]-lcuSizeMax) && (YIdx >= (picSize[1]-lcuSizeMax)) then
+			// vertHor
+			
+			// store
+			if ((XIdx + pixAddr[0]) < picSize[0]) && ((YIdx + pixAddr[1]) < picSize[1]) then
+//				println("pixAddrHORVERT[0] = " + pixAddr[0] + "  pixAddrHORVERT[1] = " + pixAddr[1]);
+	        	foreach int y in 0 .. 3
+				do
+					foreach int x in 0 .. 3
+					do
+						LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[4*y+x];
+					end
+				end
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+			end
+			
+			// bypass 
+			while (((XIdx + pixAddr[0]) >= picSize[0]) || ((YIdx + pixAddr[1]) >= picSize[1])) && (blkIdx < numPartition) do
+//				println("pixAddr[0]bypassHORVERT = " + pixAddr[0] + "  pixAddr[1]bypassHORVERT = " + pixAddr[1]);
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+//				println("blkIdxHORVERT = " + blkIdx);
+			end  	
         end
 	end
 	
 	procedure computeNextLcuAddr()
 	begin
 		XIdx := XIdx + lcuSizeMax;
-//		println("xidx = " + XIdx);
-		if(XIdx >= picSize[0]) then
-//			println("#######################################################");
-			XIdx := 0;
+		if(XIdx >= tilesEndSamp[tileIdx][0]) then
+			XIdx := tilesBegSamp[tileIdx][0];
 			YIdx := YIdx + lcuSizeMax;
-			if(yIdx >= picSize[1]) then
-				XIdx := 0;
-				YIdx := 0;
+			if(yIdx >= tilesEndSamp[tileIdx][1]) then
+				tileIdx := tileIdx + 1;
+				XIdx := tilesBegSamp[tileIdx][0];
+				YIdx := tilesBegSamp[tileIdx][1];
 			end
+		end
+		
+		if (XIdx < picSize[0]-lcuSizeMax) && (YIdx < (picSize[1]-lcuSizeMax)) then
+		 	LcuType := 0;
+		elsif (XIdx >= picSize[0]-lcuSizeMax) && (not (YIdx >= (picSize[1]-lcuSizeMax))) then
+			LcuType := 1;
+		elsif (YIdx >= (picSize[1]-lcuSizeMax)) && (not (XIdx >= picSize[0]-lcuSizeMax)) then
+			LcuType := 2;
+		else
+			LcuType := 3;
 		end
 	end
 	
@@ -234,17 +252,17 @@ actor SelectCuLuma()
 	end
 	
 	
-	isNewSlice: action PartMode:[partModeVal] ==>
+	isNewSlice: action PartMode:[partModeVal], LcuSizeMax:[log2_lcuSz], 
+					   PicSize:[picWidthInPix, picHeightInPix] ==>
 	guard
 		partModeVal = PART_MODE_SLICE_DEP || partModeVal = PART_MODE_SLICE_INDEP ||
 		partModeVal = PART_MODE_PICT
 	do
-		lcuSizeMax := 64;
-		log2_lcuSizeMax := 6;
+		lcuSizeMax := 1 << log2_lcuSz;
 		numPartition := (lcuSizeMax * lcuSizeMax) / 16;
 		
-		picSize[0] := 416;
-		picSize[1] := 240;
+		picSize[0] := picWidthInPix;
+		picSize[1] := picHeightInPix;
 		XIdx := 0;
 		YIdx := 0;
 		blkIdx := 0;
@@ -570,10 +588,35 @@ actor SelectCuLuma()
 			sampGot[i] := false;
 		end
 	end
+	
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBegSamp[iLoop] := [tilesCoord[0], tilesCoord[1]];
+		tilesEndSamp[iLoop] := [tilesCoord[2], tilesCoord[3]];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
 
 	schedule fsm GetPartMode:
-		GetPartMode (isNewSlice       )--> GetPartMode;
+		GetPartMode (isNewSlice       )--> GetNumTiles;
 		GetPartMode (getPartMode      )--> GetCuInfo;
+		
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetPartMode;
+		
 
 		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
