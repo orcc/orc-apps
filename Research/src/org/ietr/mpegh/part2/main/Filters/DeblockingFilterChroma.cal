@@ -30,7 +30,6 @@ package org.ietr.mpegh.part2.main.Filters;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-
 //Pipelined version broken
 actor DeblockingFilterChroma(int comp)
 	uint(size=2)  Bs,
@@ -346,26 +345,6 @@ actor DeblockingFilterChroma(int comp)
 		end
 	end
 
-	procedure saveRasterScanCu(uint(size=8) sample[2*2])
-	var
-		uint(size=16) pixAddr[2]
-	begin
-		zScanToAbsCoord(blkIdx, pixAddr);
-		pixAddr[0] := pixAddr[0] + xAddrVert;
-		pixAddr[1] := pixAddr[1] + yAddrVert;
-	
-		pixAddr[0]  := pixAddr[0]>>1;
-		pixAddr[1]  := pixAddr[1]>>1;
-		
-		foreach uint y in 0 .. 1
-		do
-			foreach uint x in 0 .. 1
-			do
-				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[ 2*y+x];
-			end
-		end
-	end
-
 	isNewSlc: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix,
 		picHeightInPix], LcuSizeMax:[log2_lcuSz], DBFDisable:[disableFlag],
 		SyntaxElem:[betaOff, tcOff, qpUOff, qpVOff] ==>
@@ -428,23 +407,33 @@ actor DeblockingFilterChroma(int comp)
 		iLoop = numTiles
 	end
 
-	getCuPix.launch.pict: action  IsPicSlcLcu:[isLcu] ==>
+	getCuPix.launch.pict: action  IsPicSlcLcu:[isLcu] , SampleIn:[samp] repeat 32*32 ==>
 	guard
 		tileIdx < numTiles && yIdx < picSize[1]-lcuSizeMax && xIdx < picSize[0]-lcuSizeMax && isLcu = NEW_LCU
 	do
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				pictureBuffer[yIdx + y][xIdx + x] := samp[32*y+x];
+			end
+		end
 		xAddrVert := xIdx;
 		yAddrVert := yIdx;
 		blkIdx := 0;
 	end
 
-	getCuPix.launch.getPart: action Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 2*2 ==>
+	getCuPix.launch.getPart: action Bs:[bs] repeat 2, Qp:[qp] ==>
 	guard
 		blkIdx < numPartition
 	var
 		uint(size=16) coord[2] 	
 	do
-		saveRasterScanCu(samp);
-
+		//saveRasterScanCu(samp);
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+		
 		zScanToAbsCoord(blkIdx, coord);
 		coord[0] := xIdx + coord[0];
 		coord[1] := yIdx + coord[1];
@@ -463,10 +452,18 @@ actor DeblockingFilterChroma(int comp)
 		computeNextLcuAddr();
 	end
 
-	getCuPix.launch.lastColOrRow.vert: action IsPicSlcLcu:[isLcu] ==>
+	getCuPix.launch.lastColOrRow.vert: action IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 32*32 ==>
 	guard
 		(xIdx >= picSize[0]-lcuSizeMax || yIdx >= picSize[1]-lcuSizeMax) && isLcu = NEW_LCU
 	do
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				pictureBuffer[yIdx + y][xIdx + x] := samp[32*y+x];
+			end
+		end
+		
 		xAddrVert := xIdx;
 		yAddrVert := yIdx;
 
@@ -476,7 +473,7 @@ actor DeblockingFilterChroma(int comp)
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
 
-	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp], SampleIn:[samp] repeat 2*2 ==>
+	getBlk.launch: action  Bs:[bs] repeat 2, Qp:[qp] ==>
 	guard
 		blkIdx < numPartition && pixAddr[0] < picSize[0] && pixAddr[1] < picSize[1]
 	do
@@ -486,14 +483,6 @@ actor DeblockingFilterChroma(int comp)
 
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
-		
-		foreach uint y in 0 .. 1
-		do
-			foreach uint x in 0 .. 1
-			do
-				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[2*y+x];
-			end
-		end
 
 		blkIdx := blkIdx + 1;
 		zScanToAbsCoord(blkIdx, pixAddr);
@@ -556,33 +545,19 @@ actor DeblockingFilterChroma(int comp)
 		yAddrHor := yAddrVert;
 	end
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 8 * 8
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 32 * 32
 	guard
 		tileIdx < numTiles && tokenSent < numTokenPerLcu
 	var
-		uint(size=8) filtSamp[8 * 8],
-		uint(size=16) xOff, uint(size=16) yOff
+		uint(size=8) filtSamp[32 * 32]
 	do
-		foreach int y in 0 .. 7
+		foreach int y in 0 .. 31
 		do
-			xOff := tokenSent & ((lcuSizeMax - 1) >> 1);
-			yOff := tokenSent >> (log2_lcuSizeMax - 1);
-			xOff := xOff + xIdx / 2;
-			yOff := yOff + yIdx / 2;
-			foreach int x in 0 .. 7
+			foreach int x in 0 .. 31
 			do
-				filtSamp[y * 8 + x] := pictureBuffer[yOff][xOff + x];
+				filtSamp[y * 32 + x] := pictureBuffer[yIdx + y][xIdx + x];
 			end
-	
-			tokenSent := tokenSent + 8;
 		end
-	end
-
-	sendSamples.next: action ==>
-	guard
-		tokenSent = numTokenPerLcu
-	do
-		tokenSent := 0;
 		computeNextLcuAddr();
 	end
 
@@ -613,7 +588,6 @@ actor DeblockingFilterChroma(int comp)
 		FilterEdges (filterEdges  )--> GetCuPix;
 
 		SendSamples (sendSamples.launch )--> SendSamples;
-		SendSamples (sendSamples.next   )--> SendSamples;
 		SendSamples (sendSamples.done   )--> IsNewPict;
 	end
 end
