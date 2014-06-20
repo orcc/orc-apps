@@ -411,7 +411,7 @@ uint numPict;
 		log2_lcuSizeMax := log2_lcuSz;
 		lcuSizeMax := 1 << log2_lcuSz;
 		picSizeInCu := [(picWidthInPix+(lcuSizeMax - 1)) >> log2_lcuSizeMax, (picHeightInPix+(lcuSizeMax - 1)) >> log2_lcuSizeMax];
-		picSizeInMb := [(picWidthInPix+15)/16, (picHeightInPix+15)/16];
+		picSizeInMb := [(picWidthInPix+63)/64, (picHeightInPix+63)/64];
 		picSize[0]  := [picWidthInPix   , picHeightInPix];
 		picSize[1]  := [picSize[0][0] >> 1, picSize[0][1] >> 1];
 		picSize[2]  := [picSize[1][0], picSize[1][1]];
@@ -460,39 +460,23 @@ uint numPict;
 		iLoop = numTiles
 	end
 
-	getCuPix.launch.init: action IsPicSlcLcu:[isNewLcu] ==>
+	getCuPix.launch.init: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 64*64 ==>
 	guard
 		lcuTileIdx < numTiles
 	do
+		foreach int y in 0 .. 63
+		do
+			foreach int x in 0 .. 63
+			do
+				OrigPict[y][x] := samp[64*y + x];
+			end
+		end
+		
 		tokenGot := 0;
 		numSlc[xCu][yCu]  := numCurrSlc;
 		numTile[xCu][yCu] := lcuTileIdx;
 		filtAcrSlc[xCu][yCu]  := filtAcrCurrSlc;
 		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
-	end
-
-	getCuPix.launch.luma: action SampleIn:[samp] repeat 16 ==>
-	guard
-		tokenGot < numTokenPerLcu[0]
-	var
-		uint(size=16) xPic,
-		uint(size=16) yPic
-	do
-		xPic := (xCu * lcuSizeMax) + (tokenGot & (lcuSizeMax - 1));
-		yPic := (yCu * lcuSizeMax) + (tokenGot >> log2_lcuSizeMax);
-		foreach uint x in 0 .. 15
-		do
-			OrigPict[yPic][x+xPic] := samp[x]; 
-		end
-
-		tokenGot := tokenGot + 16;
-	end
-
-	getCuPix.launch.lumaDone: action ==>
-	guard
-		tokenGot = numTokenPerLcu[0]
-	do
-		tokenGot := 0;
 	end
 
 	getCuPix.done: action ==>
@@ -642,20 +626,20 @@ uint numPict;
 
 	
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 16*16
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 64*64
 	guard
 		yCu < picSizeInMb[1]
 	var
-		uint(size=8) filtSamp[16*16],
+		uint(size=8) filtSamp[64*64],
 		uint(size=16) blkAddrX, uint(size=16) blkAddrY
 	do
-		blkAddrX := xCu*16;
-		blkAddrY := yCu*16;
-		foreach uint y in 0 .. 15
+		blkAddrX := xCu*64;
+		blkAddrY := yCu*64;
+		foreach uint y in 0 .. 63
 		do
-			foreach uint x in 0 .. 15
+			foreach uint x in 0 .. 63
 			do
-				filtSamp[x+y*16] := FiltPict[blkAddrY+y][blkAddrX+x];
+				filtSamp[x+y*64] := FiltPict[blkAddrY+y][blkAddrX+x];
 			end
 		end
 
@@ -676,11 +660,8 @@ uint numPict;
 		IsNewPict (isNewPict )--> GetNumTiles;
 
 		GetCuPix (isNewSlice           )--> GetNumTiles;
-		GetCuPix (getCuPix.launch.init )--> GetCuPixLuma;
+		GetCuPix (getCuPix.launch.init )--> GetSaoMerge;
 		GetCuPix (getCuPix.done        )--> SendSamples;
-
-		GetCuPixLuma (getCuPix.launch.luma     )--> GetCuPixLuma;
-		GetCuPixLuma (getCuPix.launch.lumaDone )--> GetSaoMerge;
 
 		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
