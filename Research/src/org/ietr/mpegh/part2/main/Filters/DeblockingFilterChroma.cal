@@ -75,14 +75,14 @@ actor DeblockingFilterChroma(int comp)
 	uint(size=8)  lcuSizeMax;
 	uint(size=8)  log2_lcuSizeMax;
 	uint(size=16) picSize[2];
+	uint(size=16) picSizeInMb[2];
 	uint(size=16) xIdx;
 	uint(size=16) yIdx;
 	uint(size=16) xAddrVert;
 	uint(size=16) yAddrVert;
 	int (size=16) xAddrHor;
 	int (size=16) yAddrHor;
-	uint(size=16) numTokenPerLcu;
-	uint(size=16) tokenSent;
+	uint(size=16) blockSent;
 	uint(size=16) pixAddr[2];
 	uint(size=9)  blkIdx := 0;
 	bool          disDbf := false;
@@ -369,10 +369,11 @@ actor DeblockingFilterChroma(int comp)
 		log2_lcuSizeMax := log2_lcuSz;
 		lcuSizeMax := 1 << log2_lcuSizeMax;
 		numPartition := (lcuSizeMax * lcuSizeMax) / 16;
-		numTokenPerLcu := (lcuSizeMax * lcuSizeMax) >> 2;
 		disDbf := disableFlag;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
+		picSizeInMb[0] := (picSize[0] + 63)/64;
+		picSizeInMb[1] := (picSize[1] + 63)/64;
 		/*lastXIdx := 0;
 		lastYIdx := 0;*/
 		xIdx := 0;
@@ -486,6 +487,7 @@ actor DeblockingFilterChroma(int comp)
 
 		blkIdx := blkIdx + 1;
 		zScanToAbsCoord(blkIdx, pixAddr);
+
 		pixAddr[0] := pixAddr[0] + xAddrVert;
 		pixAddr[1] := pixAddr[1] + yAddrVert;
 	end
@@ -514,7 +516,7 @@ actor DeblockingFilterChroma(int comp)
 	guard
 		tileIdx = numTiles
 	do
-		tokenSent := 0;
+		blockSent := 0;
 		xIdx := 0;
 		yIdx := 0;
 		tileIdx := 0;
@@ -547,7 +549,7 @@ actor DeblockingFilterChroma(int comp)
 
 	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 32 * 32
 	guard
-		tileIdx < numTiles && tokenSent < numTokenPerLcu
+		tileIdx < numTiles && blockSent < picSizeInMb[0] * picSizeInMb[1]
 	var
 		uint(size=8) filtSamp[32 * 32]
 	do
@@ -558,12 +560,13 @@ actor DeblockingFilterChroma(int comp)
 				filtSamp[y * 32 + x] := pictureBuffer[yIdx + y][xIdx + x];
 			end
 		end
+		blockSent := blockSent + 1;
 		computeNextLcuAddr();
 	end
 
 	sendSamples.done: action ==>
 	guard
-		tileIdx = numTiles
+		tileIdx = numTiles && blockSent = picSizeInMb[0] * picSizeInMb[1]
 	end
 
 	schedule fsm IsNewPict:
