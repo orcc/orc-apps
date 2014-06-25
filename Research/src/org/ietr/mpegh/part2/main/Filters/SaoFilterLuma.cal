@@ -70,7 +70,6 @@ actor SaoFilterLuma()
 	uint(size=8)  lcuSizeMax;
 	uint(size=8)  log2_lcuSizeMax;
 	uint(size=6)  picSizeInCu[2];
-	uint(size=6)  picSizeInMb[2];
 	uint(size=16) picSize[3][2];
 	uint(size=8)  xCu := 0;
 	uint(size=8)  yCu := 0;
@@ -110,7 +109,7 @@ actor SaoFilterLuma()
 	procedure nextMbAddr()
 	begin
 		xCu := xCu + 1;
-		if(xCu = picSizeInMb[0]) then
+		if(xCu = picSizeInCu[0]) then
 			xCu := 0;
 			yCu := yCu + 1;
 		end
@@ -411,7 +410,6 @@ uint numPict;
 		log2_lcuSizeMax := log2_lcuSz;
 		lcuSizeMax := 1 << log2_lcuSz;
 		picSizeInCu := [(picWidthInPix+(lcuSizeMax - 1)) >> log2_lcuSizeMax, (picHeightInPix+(lcuSizeMax - 1)) >> log2_lcuSizeMax];
-		picSizeInMb := [(picWidthInPix+63)/64, (picHeightInPix+63)/64];
 		picSize[0]  := [picWidthInPix   , picHeightInPix];
 		picSize[1]  := [picSize[0][0] >> 1, picSize[0][1] >> 1];
 		picSize[2]  := [picSize[1][0], picSize[1][1]];
@@ -460,9 +458,9 @@ uint numPict;
 		iLoop = numTiles
 	end
 
-	getCuPix.launch.init: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 64*64 ==>
+	getCuPix.launch.init.x64: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 64*64 ==>
 	guard
-		lcuTileIdx < numTiles
+		lcuTileIdx < numTiles, lcuSizeMax = 64
 	do
 		
 //		xPic := (xCu * lcuSizeMax) 
@@ -488,6 +486,36 @@ uint numPict;
 		filtAcrSlc[xCu][yCu]  := filtAcrCurrSlc;
 		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
 	end
+	
+	getCuPix.launch.init.x32: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 32*32 ==>
+	guard
+		lcuTileIdx < numTiles, lcuSizeMax = 32
+	do
+		
+//		xPic := (xCu * lcuSizeMax) 
+//		yPic := (yCu * lcuSizeMax) 
+//		foreach uint x in 0 .. 15
+//		do
+//			OrigPict[yPic][x+xPic] := samp[x]; 
+//		end
+
+		tokenGot := tokenGot + 16;
+		
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				OrigPict[(yCu * lcuSizeMax) + y][(xCu * lcuSizeMax) + x] := samp[32*y + x];
+			end
+		end
+		
+		tokenGot := 0;
+		numSlc[xCu][yCu]  := numCurrSlc;
+		numTile[xCu][yCu] := lcuTileIdx;
+		filtAcrSlc[xCu][yCu]  := filtAcrCurrSlc;
+		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
+	end
+	
 
 	getCuPix.done: action ==>
 	guard
@@ -636,9 +664,9 @@ uint numPict;
 
 	
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 64*64
+	sendSamples.launch.x64: action ==> FiltSample:[filtSamp] repeat 64*64
 	guard
-		yCu < picSizeInMb[1]
+		yCu < picSizeInCu[1], lcuSizeMax = 64
 	var
 		uint(size=8) filtSamp[64*64],
 		uint(size=16) blkAddrX, uint(size=16) blkAddrY
@@ -655,10 +683,30 @@ uint numPict;
 
 		nextMbAddr();
 	end
+	
+	sendSamples.launch.x32: action ==> FiltSample:[filtSamp] repeat 32*32
+	guard
+		yCu < picSizeInCu[1], lcuSizeMax = 32
+	var
+		uint(size=8) filtSamp[32*32],
+		uint(size=16) blkAddrX, uint(size=16) blkAddrY
+	do
+		blkAddrX := xCu*32;
+		blkAddrY := yCu*32;
+		foreach uint y in 0 .. 31
+		do
+			foreach uint x in 0 .. 31
+			do
+				filtSamp[x+y*32] := FiltPict[blkAddrY+y][blkAddrX+x];
+			end
+		end
+
+		nextMbAddr();
+	end
 
 	sendSamples.done: action ==>
 	guard
-		yCu = picSizeInMb[1]
+		yCu = picSizeInCu[1]
 	do
 		xCuFilt := 0;
 		yCuFilt := 0;
