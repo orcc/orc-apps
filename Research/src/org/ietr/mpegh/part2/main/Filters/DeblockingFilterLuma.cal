@@ -508,8 +508,8 @@ actor DeblockingFilterLuma()
 		disDbf := disableFlag;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
-		picSizeInMb[0] := (picSize[0] + 63)/64;
-		picSizeInMb[1] := (picSize[1] + 63)/64;
+		picSizeInMb[0] := (picSize[0] + lcuSizeMax-1)/lcuSizeMax;
+		picSizeInMb[1] := (picSize[1] + lcuSizeMax-1)/lcuSizeMax;
 		/*lastXIdx := 0;
 		lastYIdx := 0;*/
 		xIdx := 0;
@@ -540,15 +540,33 @@ actor DeblockingFilterLuma()
 		iLoop = numTiles
 	end
 
-	getCuPix.launch.pict: action  IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 64*64 ==>
+	getCuPix.launch.pict.x64: action  IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 64*64 ==>
 	guard
-		tileIdx < numTiles && yIdx < picSize[1]-lcuSizeMax && xIdx < picSize[0]-lcuSizeMax && isLcu = NEW_LCU
+		tileIdx < numTiles && yIdx < picSize[1]-lcuSizeMax && xIdx < picSize[0]-lcuSizeMax && isLcu = NEW_LCU,
+		lcuSizeMax = 64
 	do
 		foreach int y in 0 .. 63
 		do
 			foreach int x in 0 .. 63
 			do
 				pictureBuffer[yIdx + y][xIdx + x] := samp[64*y+x];
+			end
+		end
+		xAddrVert := xIdx;
+		yAddrVert := yIdx;
+		blkIdx := 0;
+	end
+	
+	getCuPix.launch.pict.x32: action  IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 32*32 ==>
+	guard
+		tileIdx < numTiles && yIdx < picSize[1]-lcuSizeMax && xIdx < picSize[0]-lcuSizeMax && isLcu = NEW_LCU,
+		lcuSizeMax = 32
+	do
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				pictureBuffer[yIdx + y][xIdx + x] := samp[32*y+x];
 			end
 		end
 		xAddrVert := xIdx;
@@ -585,15 +603,38 @@ actor DeblockingFilterLuma()
 		computeNextLcuAddr();
 	end
 
-	getCuPix.launch.lastColOrRow.vert: action IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 64*64 ==>
+	getCuPix.launch.lastColOrRow.vert.x64: action IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 64*64 ==>
 	guard
-		(xIdx >= picSize[0]-lcuSizeMax || yIdx >= picSize[1]-lcuSizeMax) && isLcu = NEW_LCU
+		(xIdx >= picSize[0]-lcuSizeMax || yIdx >= picSize[1]-lcuSizeMax) && isLcu = NEW_LCU,
+		lcuSizeMax = 64
 	do
 		foreach int y in 0 .. 63
 		do
 			foreach int x in 0 .. 63
 			do
 				pictureBuffer[yIdx + y][xIdx + x] := samp[64*y+x];
+			end
+		end
+		
+		xAddrVert := xIdx;
+		yAddrVert := yIdx;
+
+		blkIdx := 0;
+		zScanToAbsCoord(0, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+	end
+	
+	getCuPix.launch.lastColOrRow.vert.x32: action IsPicSlcLcu:[isLcu], SampleIn:[samp] repeat 32*32 ==>
+	guard
+		(xIdx >= picSize[0]-lcuSizeMax || yIdx >= picSize[1]-lcuSizeMax) && isLcu = NEW_LCU,
+		lcuSizeMax = 32
+	do
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				pictureBuffer[yIdx + y][xIdx + x] := samp[32*y+x];
 			end
 		end
 		
@@ -675,9 +716,10 @@ actor DeblockingFilterLuma()
 		yAddrHor := yAddrVert;
 	end
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 64 * 64
+	sendSamples.launch.x64: action ==> FiltSample:[filtSamp] repeat 64 * 64
 	guard
-		tileIdx < numTiles && blockSent < picSizeInMb[0] * picSizeInMb[1]
+		tileIdx < numTiles && blockSent < picSizeInMb[0] * picSizeInMb[1],
+		lcuSizeMax = 64
 	var
 		uint(size=8) filtSamp[64 * 64]
 	do
@@ -686,6 +728,24 @@ actor DeblockingFilterLuma()
 			foreach int x in 0 .. 63
 			do
 				filtSamp[y * 64 + x] := pictureBuffer[yIdx + y][xIdx + x];
+			end
+		end
+		blockSent := blockSent + 1;
+		computeNextLcuAddr();
+	end
+	
+	sendSamples.launch.x32: action ==> FiltSample:[filtSamp] repeat 32 * 32
+	guard
+		tileIdx < numTiles && blockSent < picSizeInMb[0] * picSizeInMb[1],
+		lcuSizeMax = 32
+	var
+		uint(size=8) filtSamp[32 * 32]
+	do
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				filtSamp[y * 32 + x] := pictureBuffer[yIdx + y][xIdx + x];
 			end
 		end
 		blockSent := blockSent + 1;
