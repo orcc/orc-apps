@@ -41,7 +41,8 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	uint(size=8)  U, 
 	uint(size=8)  V, 
 	uint(size=14) DispCoord,
-	uint(size=9)  PicSizeInMb
+	uint(size=9)  PicSizeInMb,
+	uint(size=8)  LcuSizeMax
 		==>
 		:
 
@@ -67,6 +68,7 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	// Necessary with backends that do not kill the entire application
 	// when calling source_exit()
 	bool isTerminated := false;
+	uint(size=8) lcuSizeMax;
 
 	initialize ==>
 	do
@@ -88,10 +90,10 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	end
 
 	getPictureSize: action DispCoord:[dispCoord] repeat 4, PicSizeInMb:[picWidth,
-		picHeight] ==>
+		picHeight] , LcuSizeMax:[log2LcuSize]==>
 	do
-
-		pictureWidthLuma  := picWidth * BLK_SIDE;
+		lcuSizeMax := 1 << log2LcuSize;
+		pictureWidthLuma  := picWidth * lcuSizeMax;
 		pictureSizeInMb   := picWidth * picHeight;
 		xMin := dispCoord[0];
 		xMax := dispCoord[1];
@@ -109,18 +111,29 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	getPixValue.launch.Y.blk16x16: action Y :[Bytes] repeat 256 ==>
 	guard
 		nbBlockGot < pictureSizeInMb,
-		BLK_SIDE = 16
+		lcuSizeMax = 16
 	do
 		nbBlockGot := nbBlockGot + 1;
 		displayYUV_crop_16_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
 		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
 		chromaComponent := 0;
 	end
+	
+	getPixValue.launch.Y.blk32x32: action Y :[Bytes] repeat 1024 ==>
+	guard
+		nbBlockGot < pictureSizeInMb,
+		lcuSizeMax = 32
+	do
+		nbBlockGot := nbBlockGot + 1;
+		displayYUV_crop_32_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
+		xIdxLuma := xIdxLuma + 32;
+		chromaComponent := 0;
+	end
 
 	getPixValue.launch.Y.blk64x64: action Y :[Bytes] repeat 4096 ==>
 	guard
 		nbBlockGot < pictureSizeInMb,
-		BLK_SIDE = 64
+		lcuSizeMax = 64
 	do
 		nbBlockGot := nbBlockGot + 1;
 		displayYUV_crop_64_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
@@ -130,21 +143,28 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 
 	getPixValue.launch.U.blk16x16: action U :[Bytes] repeat 64 ==>
 	guard
-		BLK_SIDE = 16
+		lcuSizeMax = 16
 	do
 		displayYUV_crop_8_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+	end
+	
+	getPixValue.launch.U.blk32x32: action U :[Bytes] repeat 256 ==>
+	guard
+		lcuSizeMax = 32
+	do
+		displayYUV_crop_16_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
 	end
 
 	getPixValue.launch.U.blk64x64: action U :[Bytes] repeat 1024 ==>
 	guard
-		BLK_SIDE = 64
+		lcuSizeMax = 64
 	do
 		displayYUV_crop_32_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
 	end
 	
 	getPixValue.launch.V.blk16x16: action V :[Bytes] repeat 64 ==>
 	guard
-		BLK_SIDE = 16
+		lcuSizeMax = 16
 	do
 		displayYUV_crop_8_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
 		
@@ -157,10 +177,25 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 		end
 		
 	end
+	
+	getPixValue.launch.V.blk32x32: action V :[Bytes] repeat 256 ==>
+	guard
+		lcuSizeMax = 32
+	do
+		displayYUV_crop_16_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+		
+		xIdxChroma := xIdxChroma + 16;
+		if xIdxLuma = pictureWidthLuma then
+			xIdxLuma   := 0;
+			xIdxChroma := 0;
+			yIdxLuma   := yIdxLuma + 32;
+			yIdxChroma := yIdxChroma + 16;
+		end
+	end
 
 	getPixValue.launch.V.blk64x64: action V :[Bytes] repeat 1024 ==>
 	guard
-		BLK_SIDE = 64
+		lcuSizeMax = 64
 	do
 		displayYUV_crop_32_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
 		

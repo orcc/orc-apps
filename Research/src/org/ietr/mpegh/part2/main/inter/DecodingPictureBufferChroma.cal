@@ -65,10 +65,11 @@ import org.ietr.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
 actor DecodingPictureBufferChroma ()
 	uint(size=2)  IsBiPredOrLx,
+	uint(size=8)  LcuSizeMax,
 	uint(size=1)  IsReadOrNewSlc,
 	int (size=32) Mv,
 	uint(size=16) PicSize,
-	int(size=16) Poc,
+	int (size=16) Poc,
 	int (size=16) PocRef,
 	uint(size=7)  PredCuSize,
 	int (size=16) RpsPoc,
@@ -99,6 +100,7 @@ actor DecodingPictureBufferChroma ()
 	uint(size=3)  nbList;
 	uint(size=3)  sizeOfList;
 	bool          isNewPicture;
+	uint(size=8)  lcuSizeMax;
 	
 	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_chroma_orcc")
     procedure getmvinfo_dpb_64_chroma_cal(
@@ -156,25 +158,27 @@ actor DecodingPictureBufferChroma ()
 
 	/** Getting informations from new slice/picture. Updating these informations **/
 	isNewSlice: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc] ==>
+		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize] ==>
 	guard
 		/* Fix me : We should know when there is a new picture */
 		isRead = 0 and if(currIdx = -1) then false else poc = pocRef[currIdx]end
 	do
+		lcuSizeMax := 1 << log2LcuSize;
 		isNewPicture := false;
 		nbList := 0;
 		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
 	end
 uint pictNum;
 	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc] ==>
+		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize] ==>
 	guard
 		isRead = 0 and not(if(currIdx = -1) then false else poc = pocRef[currIdx]end)
 	do
+		lcuSizeMax := 1 << log2LcuSize;
 //		println("Dpb ; Pict num "+pictNum);
 		pictNum := pictNum + 1;
-		picSizeInCu[0] := (picWidthInPix+15)/16;
-		picSizeInCu[1] := (picHeightInPix+15)/16;
+		picSizeInCu[0] := (picWidthInPix+lcuSizeMax-1)/lcuSizeMax;
+		picSizeInCu[1] := (picHeightInPix+lcuSizeMax-1)/lcuSizeMax;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
 		xIdx := 0;
@@ -243,9 +247,57 @@ uint pictNum;
 	/* We get the whole Cu decoded (luma and chroma components) and we save
 	 * it in the Dpb (pictureBuffer).
 	 */
-	getCuPix.launch: action Sample:[samp] repeat 8*8==>
+	getCuPix.launch.x64: action Sample:[samp] repeat 32*32==>
 	guard
-		yIdx < picSizeInCu[1]
+		yIdx < picSizeInCu[1], lcuSizeMax = 64
+	var
+		uint(size=16) xPixIdx,
+		uint(size=16) yPixIdx
+	do
+		xPixIdx := (BORDER_SIZE + xIdx*64)>>1;
+		yPixIdx := (BORDER_SIZE + yIdx*64)>>1;
+		
+		copy_cu_dpb_chroma_cal(
+          samp,
+  	      pictureBuffer,
+  	      xPixIdx,
+  	      yPixIdx,
+  	      lastIdx);
+
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+	
+	getCuPix.launch.x32: action Sample:[samp] repeat 16*16==>
+	guard
+		yIdx < picSizeInCu[1], lcuSizeMax = 32
+	var
+		uint(size=16) xPixIdx,
+		uint(size=16) yPixIdx
+	do
+		xPixIdx := (BORDER_SIZE + xIdx*32)>>1;
+		yPixIdx := (BORDER_SIZE + yIdx*32)>>1;
+		
+		copy_cu_dpb_chroma_x32_cal(
+          samp,
+  	      pictureBuffer,
+  	      xPixIdx,
+  	      yPixIdx,
+  	      lastIdx);
+
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+	
+	getCuPix.launch.x16: action Sample:[samp] repeat 8*8==>
+	guard
+		yIdx < picSizeInCu[1], lcuSizeMax = 16
 	var
 		uint(size=16) xPixIdx,
 		uint(size=16) yPixIdx
@@ -253,7 +305,7 @@ uint pictNum;
 		xPixIdx := (BORDER_SIZE + xIdx*16)>>1;
 		yPixIdx := (BORDER_SIZE + yIdx*16)>>1;
 		
-		copy_cu_dpb_chroma_cal(
+		copy_cu_dpb_chroma_x16_cal(
           samp,
   	      pictureBuffer,
   	      xPixIdx,

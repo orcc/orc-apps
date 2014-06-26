@@ -71,7 +71,6 @@ actor SaoFilterChroma()
 	uint(size=8)  lcuSizeMax;
 	uint(size=8)  log2_lcuSizeMax;
 	uint(size=6)  picSizeInCu[2];
-	uint(size=6)  picSizeInMb[2];
 	uint(size=16) picSize[3][2];
 	uint(size=8)  xCu := 0;
 	uint(size=8)  yCu := 0;
@@ -111,7 +110,7 @@ actor SaoFilterChroma()
 	procedure nextMbAddr()
 	begin
 		xCu := xCu + 1;
-		if(xCu = picSizeInMb[0]) then
+		if(xCu = picSizeInCu[0]) then
 			xCu := 0;
 			yCu := yCu + 1;
 		end
@@ -403,7 +402,6 @@ uint numPict;
 		log2_lcuSizeMax := log2_lcuSz;
 		lcuSizeMax := 1 << log2_lcuSz;
 		picSizeInCu := [(picWidthInPix+(lcuSizeMax - 1)) >> log2_lcuSizeMax, (picHeightInPix+(lcuSizeMax - 1)) >> log2_lcuSizeMax];
-		picSizeInMb := [(picWidthInPix+15)/16, (picHeightInPix+15)/16];
 		picSize[0]  := [picWidthInPix   , picHeightInPix];
 		picSize[1]  := [picSize[0][0] >> 1, picSize[0][1] >> 1];
 		picSize[2]  := [picSize[1][0], picSize[1][1]];
@@ -452,10 +450,18 @@ uint numPict;
 		iLoop = numTiles
 	end
 
-	getCuPix.launch.init: action IsPicSlcLcu:[isNewLcu] ==>
+	getCuPix.launch.init.x64: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 32*32 ==>
 	guard
-		lcuTileIdx < numTiles
+		lcuTileIdx < numTiles, lcuSizeMax = 64
 	do
+		foreach int y in 0 .. 31
+		do
+			foreach int x in 0 .. 31
+			do
+				OrigPict[(yCu * lcuSizeMax/2) + y][(xCu * lcuSizeMax/2) + x] := samp[32*y + x];
+			end
+		end
+		
 		tokenGot := 0;
 		numSlc[xCu][yCu]  := numCurrSlc;
 		numTile[xCu][yCu] := lcuTileIdx;
@@ -463,33 +469,44 @@ uint numPict;
 		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
 		cIdx := 1;
 	end
-
-	getCuPix.launch.chroma.u: action SampleIn:[samp] repeat 8 ==>
+	
+	getCuPix.launch.init.x32: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 16*16 ==>
 	guard
-		cIdx = 1
-	var
-		uint(size=16) xPic,
-		uint(size=16) yPic
+		lcuTileIdx < numTiles, lcuSizeMax = 32
 	do
-		xPic := (xCu * (lcuSizeMax >> 1)) + (tokenGot & ((lcuSizeMax - 1) >> 1));
-		yPic := (yCu * (lcuSizeMax >> 1)) + (tokenGot >> (log2_lcuSizeMax - 1));
-
-		foreach uint x in 0 .. 7
+		foreach int y in 0 .. 15
 		do
-			OrigPict[yPic][x+xPic] := samp[x]; 
+			foreach int x in 0 .. 15
+			do
+				OrigPict[(yCu * lcuSizeMax/2) + y][(xCu * lcuSizeMax/2) + x] := samp[16*y + x];
+			end
 		end
-
-		tokenGot := tokenGot + 8;
-		if(tokenGot = numTokenPerLcu[1]) then
-			tokenGot := 0;
-			cIdx := 3;
-		end
+		
+		tokenGot := 0;
+		numSlc[xCu][yCu]  := numCurrSlc;
+		numTile[xCu][yCu] := lcuTileIdx;
+		filtAcrSlc[xCu][yCu]  := filtAcrCurrSlc;
+		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
+		cIdx := 1;
 	end
 	
-	getCuPix.launch.chromaDone: action ==>
+	getCuPix.launch.init.x16: action IsPicSlcLcu:[isNewLcu], SampleIn:[samp] repeat 8*8 ==>
 	guard
-		cIdx = 3
+		lcuTileIdx < numTiles, lcuSizeMax = 16
 	do
+		foreach int y in 0 .. 7
+		do
+			foreach int x in 0 .. 7
+			do
+				OrigPict[(yCu * lcuSizeMax/2) + y][(xCu * lcuSizeMax/2) + x] := samp[8*y + x];
+			end
+		end
+		
+		tokenGot := 0;
+		numSlc[xCu][yCu]  := numCurrSlc;
+		numTile[xCu][yCu] := lcuTileIdx;
+		filtAcrSlc[xCu][yCu]  := filtAcrCurrSlc;
+		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
 		cIdx := 1;
 	end
 
@@ -641,9 +658,55 @@ uint numPict;
 
 	
 
-	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 8*8
+	sendSamples.launch.x64: action ==> FiltSample:[filtSamp] repeat 32*32
 	guard
-		yCu < picSizeInMb[1]
+		yCu < picSizeInCu[1], lcuSizeMax = 64
+	var
+		uint(size=8) filtSamp[32*32],
+		uint(size=16) blkAddrX, uint(size=16) blkAddrY
+	do
+		blkAddrX := xCu*64;
+		blkAddrY := yCu*64;
+
+		blkAddrX := blkAddrX>>1;
+		blkAddrY := blkAddrY>>1;
+		foreach uint y in 0 .. 31
+		do
+			foreach uint x in 0 .. 31
+			do
+				filtSamp[x+y*32] := FiltPict[blkAddrY+y][blkAddrX+x];
+			end
+		end
+
+		nextMbAddr();
+	end
+	
+	sendSamples.launch.x32: action ==> FiltSample:[filtSamp] repeat 16*16
+	guard
+		yCu < picSizeInCu[1], lcuSizeMax = 32
+	var
+		uint(size=8) filtSamp[16*16],
+		uint(size=16) blkAddrX, uint(size=16) blkAddrY
+	do
+		blkAddrX := xCu*32;
+		blkAddrY := yCu*32;
+
+		blkAddrX := blkAddrX>>1;
+		blkAddrY := blkAddrY>>1;
+		foreach uint y in 0 .. 15
+		do
+			foreach uint x in 0 .. 15
+			do
+				filtSamp[x+y*16] := FiltPict[blkAddrY+y][blkAddrX+x];
+			end
+		end
+
+		nextMbAddr();
+	end
+	
+	sendSamples.launch.x16: action ==> FiltSample:[filtSamp] repeat 8*8
+	guard
+		yCu < picSizeInCu[1], lcuSizeMax = 16
 	var
 		uint(size=8) filtSamp[8*8],
 		uint(size=16) blkAddrX, uint(size=16) blkAddrY
@@ -666,7 +729,7 @@ uint numPict;
 
 	sendSamples.done: action ==>
 	guard
-		yCu = picSizeInMb[1]
+		yCu = picSizeInCu[1]
 	do
 		xCuFilt := 0;
 		yCuFilt := 0;
@@ -678,11 +741,8 @@ uint numPict;
 		IsNewPict (isNewPict )--> GetNumTiles;
 
 		GetCuPix (isNewSlice           )--> GetNumTiles;
-		GetCuPix (getCuPix.launch.init )--> GetCuPixChr;
+		GetCuPix (getCuPix.launch.init )--> GetSaoMerge;
 		GetCuPix (getCuPix.done        )--> SendSamples;
-
-		GetCuPixChr (getCuPix.launch.chroma     )--> GetCuPixChr;
-		GetCuPixChr (getCuPix.launch.chromaDone )--> GetSaoMerge;
 
 		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;

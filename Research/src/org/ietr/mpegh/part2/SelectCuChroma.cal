@@ -57,6 +57,9 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.ietr.mpegh.part2.SelectCuFunctions.*;
 
 actor SelectCuChroma()
+	uint(size=8)  LcuSizeMax,
+	uint(size=16) PicSize,
+	uint(size=16) TilesCoord,
 	uint(size=16) CUInfo,
 	uint(size=8)  InterSample,
 	uint(size=8)  IntraSample,
@@ -64,6 +67,7 @@ actor SelectCuChroma()
 	int (size=9)  ResidualSample
 		==>
 	uint(size=8) Sample
+	,uint(size=8) VidSample
 		:
 
     uint(size=16) PU_SIZE_TO_NB_BLK_TO_CLIP[17] =
@@ -86,15 +90,199 @@ actor SelectCuChroma()
 	// uint(size=8)  interSamp[16][16][SCU_SIZE];
 	uint(size=7)  xIdx;
 	uint(size=7)  yIdx;
-
+	
+	uint(size=8)  LcuBuffer[32][32];
+	uint(size=8)  lcuSizeMax;	
+	uint(size=16) picSize[2];
+	uint(size=16) XIdx;
+	uint(size=16) YIdx;
+	uint(size=16) xAddrVert;
+	uint(size=16) yAddrVert;
+	uint(size=16) numPartition;
+	uint(size=9)  blkIdx := 0;
+	uint(size=16) pixAddr[2] := [0,0];
+	
+	uint(size=16) numTiles;
+	uint(size=16) tileIdx;
+	uint(size=16) tilesBegSamp[MAX_NUM_TILES][2];
+	uint(size=16) tilesEndSamp[MAX_NUM_TILES][2];
+	int(size=16) iLoop;
+	uint LcuType := 0;
+	
+	procedure saveRasterScanCu(uint(size=8) sample[2*2])
+	var
+		uint(size=16) pixAddr[2]
+	begin
+		zScanToAbsCoord(blkIdx, pixAddr);
+		pixAddr[0] := pixAddr[0] + xAddrVert;
+		pixAddr[1] := pixAddr[1] + yAddrVert;
+		pixAddr[0]  := pixAddr[0]>>1;
+		pixAddr[1]  := pixAddr[1]>>1;
+//		println("pixAddr[0] = " + pixAddr[0] );
+//		println("pixAddr[1] = " + pixAddr[1] );
+		foreach int y in 0 .. 1
+		do
+			foreach int x in 0 .. 1
+			do
+				LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] :=
+					sample[2*y+x];
+			end
+		end
+	end
+	
+	procedure storeLCU_2x2(uint(size=8) sample[4])
+	begin
+		if LcuType = 0 then
+        	// no Hor no Vert
+		 	saveRasterScanCu(sample);	
+			blkIdx := blkIdx + 1;     
+		elsif LcuType = 1 then
+			// vert
+			
+			// store
+			if (XIdx + pixAddr[0]) < picSize[0] then
+				pixAddr[0]  := pixAddr[0]>>1;
+				pixAddr[1]  := pixAddr[1]>>1;
+//				println("pixAddrVERT[0] = " + pixAddr[0] + "  pixAddrVERT[1] = " + pixAddr[1]);
+	        	foreach int y in 0 .. 1
+				do
+					foreach int x in 0 .. 1
+					do
+						LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[2*y+x];
+					end
+				end
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+			end
+			
+			// bypass 
+			while ((XIdx + pixAddr[0]) >= picSize[0]) && (blkIdx < numPartition) do
+//				println("pixAddr[0]bypassVERT = " + pixAddr[0] + "  pixAddr[1]bypassVERT = " + pixAddr[1]);
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+//				println("blkIdxVERT = " + blkIdx);
+			end
+		elsif LcuType = 2 then
+        	// Hor
+			
+			// store
+			if (YIdx + pixAddr[1]) < picSize[1]   then
+				pixAddr[0]  := pixAddr[0]>>1;
+				pixAddr[1]  := pixAddr[1]>>1;
+//				println("pixAddrHOR[0] = " + pixAddr[0] + "  pixAddrHOR[1] = " + pixAddr[1]);
+	        	foreach int y in 0 .. 1
+				do
+					foreach int x in 0 .. 1
+					do
+						LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[2*y+x];
+					end
+				end
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+			end
+			
+			// bypass 
+			while ((YIdx + pixAddr[1]) >= picSize[1]) && (blkIdx < numPartition) do
+//				println("pixAddr[0]bypassHOR = " + pixAddr[0] + "  pixAddr[1]bypassHOR = " + pixAddr[1]);
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+//				println("blkIdxHOR = " + blkIdx);
+			end
+       else //if (XIdx >= picSize[0]-lcuSizeMax) && (YIdx >= (picSize[1]-lcuSizeMax)) then
+			// vertHor
+			
+			// store
+			if ((XIdx + pixAddr[0]) < picSize[0]) && ((YIdx + pixAddr[1]) < picSize[1]) then
+				pixAddr[0]  := pixAddr[0]>>1;
+				pixAddr[1]  := pixAddr[1]>>1;
+//	        	println("pixAddrHORVERT[0] = " + pixAddr[0] + "  pixAddrHORVERT[1] = " + pixAddr[1]);
+	        	foreach int y in 0 .. 1
+				do
+					foreach int x in 0 .. 1
+					do
+						LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[2*y+x];
+					end
+				end
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+			end
+			
+			// bypass 
+			while (((XIdx + pixAddr[0]) >= picSize[0]) || ((YIdx + pixAddr[1]) >= picSize[1])) && (blkIdx < numPartition) do
+//				println("pixAddr[0]bypassHORVERT = " + pixAddr[0] + "  pixAddr[1]bypassHORVERT = " + pixAddr[1]);
+				blkIdx := blkIdx + 1;
+				zScanToAbsCoord(blkIdx, pixAddr);
+				pixAddr[0] := pixAddr[0] + xAddrVert;
+				pixAddr[1] := pixAddr[1] + yAddrVert;
+//				println("blkIdxHORVERT = " + blkIdx);
+			end
+        end
+	end
+	
+	procedure computeNextLcuAddr()
+	begin
+		XIdx := XIdx + lcuSizeMax;
+		if(XIdx >= tilesEndSamp[tileIdx][0]) then
+			XIdx := tilesBegSamp[tileIdx][0];
+			YIdx := YIdx + lcuSizeMax;
+			if(YIdx >= tilesEndSamp[tileIdx][1]) then
+				tileIdx := tileIdx + 1;
+				XIdx := tilesBegSamp[tileIdx][0];
+				YIdx := tilesBegSamp[tileIdx][1];
+			end
+		end
+		
+		if (XIdx < picSize[0]-lcuSizeMax) && (YIdx < (picSize[1]-lcuSizeMax)) then
+		 	LcuType := 0;
+		elsif (XIdx >= picSize[0]-lcuSizeMax) && (not (YIdx >= (picSize[1]-lcuSizeMax))) then
+			LcuType := 1;
+		elsif (YIdx >= (picSize[1]-lcuSizeMax)) && (not (XIdx >= picSize[0]-lcuSizeMax)) then
+			LcuType := 2;
+		else
+			LcuType := 3;
+		end
+	end
+	
 	initialize ==>
 	do
 		sampGot := [false: for int i in 0 .. 511];
 	end
-	isNewSlice: action PartMode:[partModeVal] ==>
+	
+	isNewSlc_dep: action PartMode:[partModeVal] ==>
 	guard
-		partModeVal = PART_MODE_SLICE_DEP || partModeVal = PART_MODE_SLICE_INDEP ||
+		partModeVal = PART_MODE_SLICE_DEP
+	end
+	
+	isNewSlc_indep: action PartMode:[partModeVal], PicSize:[picWidthInPix,
+	picHeightInPix], LcuSizeMax:[log2_lcuSz] ==>
+	guard
+		partModeVal = PART_MODE_SLICE_INDEP
+	end
+	
+	isNewPict: action PartMode:[partModeVal], LcuSizeMax:[log2_lcuSz], 
+					   PicSize:[picWidthInPix, picHeightInPix] ==>
+	guard
 		partModeVal = PART_MODE_PICT
+	do
+		lcuSizeMax := 1 << log2_lcuSz;
+		numPartition := (lcuSizeMax * lcuSizeMax) / 16;
+		
+		picSize[0] := picWidthInPix;
+		picSize[1] := picHeightInPix;
+		tileIdx := 0;
+		XIdx := 0;
+		YIdx := 0;
+		blkIdx := 0;
 	end
 
 	getPartMode: action PartMode:[partModeVal] ==>
@@ -181,10 +369,11 @@ actor SelectCuChroma()
 	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
 		ResidualSample:[resSample] repeat SCU_SIZE
 		==> Sample:[sample] repeat SCU_SIZE
-	// guard
-		// idxBlk < nbBlk
+	guard
+		blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE]
+		uint(size=8) sample[SCU_SIZE],
+		uint(size=8) storeSample[SCU_SIZE]
 	do
 		/* Reordering the sample is not needed because both (Residual and
 		 * prediction parts) sample are in the rasterScan order
@@ -192,6 +381,7 @@ actor SelectCuChroma()
 		foreach int i in 0 .. 4-1
 		do
 			sample[i] := clip_i32(intraSample[i]+resSample[i], 0, 255);
+			storeSample[i] := clip_i32(intraSample[i]+resSample[i], 0, 255);
 		end
 		/*
 		add_8_16_clip_16_32x32_intra_cal (
@@ -200,6 +390,79 @@ actor SelectCuChroma()
           sample);
           */
         idxBlk := idxBlk + 1;
+        storeLCU_2x2(storeSample);
+	end
+	
+	endLCU.x64 : action ==> VidSample:[vidSamp] repeat 1024
+	guard
+		blkIdx = numPartition, lcuSizeMax = 64
+	var
+		uint(size=8) vidSamp[32 * 32]
+	do
+//		println("line Done");
+		blkIdx := 0;
+    	xAddrVert := 0;
+		yAddrVert := 0;
+		pixAddr[0] := 0;
+		pixAddr[1] := 0;
+				
+		computeNextLcuAddr();
+		
+		foreach int y in 0 .. 31
+		do			
+			foreach int x in 0 .. 31
+			do
+				vidSamp[y * 32 + x] := LcuBuffer[y][x];
+			end
+		end
+	end
+	
+	endLCU.x32 : action ==> VidSample:[vidSamp] repeat 256
+	guard
+		blkIdx = numPartition, lcuSizeMax = 32
+	var
+		uint(size=8) vidSamp[16 * 16]
+	do
+//		println("line Done");
+		blkIdx := 0;
+    	xAddrVert := 0;
+		yAddrVert := 0;
+		pixAddr[0] := 0;
+		pixAddr[1] := 0;
+				
+		computeNextLcuAddr();
+		
+		foreach int y in 0 .. 15
+		do			
+			foreach int x in 0 .. 15
+			do
+				vidSamp[y * 16 + x] := LcuBuffer[y][x];
+			end
+		end
+	end
+	
+	endLCU.x16 : action ==> VidSample:[vidSamp] repeat 64
+	guard
+		blkIdx = numPartition, lcuSizeMax = 16
+	var
+		uint(size=8) vidSamp[8 * 8]
+	do
+//		println("line Done");
+		blkIdx := 0;
+    	xAddrVert := 0;
+		yAddrVert := 0;
+		pixAddr[0] := 0;
+		pixAddr[1] := 0;
+				
+		computeNextLcuAddr();
+		
+		foreach int y in 0 .. 7
+		do			
+			foreach int x in 0 .. 7
+			do
+				vidSamp[y * 8 + x] := LcuBuffer[y][x];
+			end
+		end
 	end
 
 	/* Getting prediction samples from interPrediction */
@@ -265,11 +528,13 @@ actor SelectCuChroma()
 	 * result.
 	 */
 	getInterRes.get1Blk: action ResidualSample:[resSample] repeat SCU_SIZE
-		==> Sample:[sample] repeat SCU_SIZE
+		==> Sample:[sendSample] repeat SCU_SIZE
 	guard
-		sampGot[idxBlk]
+		sampGot[idxBlk],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE]
+		uint(size=8) sample[SCU_SIZE],
+		uint(size=8) sendSample[SCU_SIZE]
 	do
 		foreach int i in 0 .. SCU_SIZE-1
 		do
@@ -277,17 +542,27 @@ actor SelectCuChroma()
 						resSample[i], 0, 255);
 		end
 		idxBlk := idxBlk + 1;
+		
+		foreach int k in 0 .. SCU_SIZE - 1 do
+			sendSample[k] := sample[k];
+		end
+		
+		storeLCU_2x2(sample);
      end
 
     /* Getting the residual part for interPrediction then computing the
 	 * result.
 	 */
 	getInterRes.get4Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 4
-		==> Sample:[sample] repeat SCU_SIZE * 4
+		==> Sample:[sendSample] repeat SCU_SIZE * 4
 	guard
-		sampGot[idxBlk + 3]
+		sampGot[idxBlk + 3],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE * 4]
+		uint(size=8) sample[SCU_SIZE * 4],
+		uint(size=8) sendSample[SCU_SIZE * 4],
+        uint(size=8) storeSample[2*2],
+        int offset := 0
 	do
 		add_8_16_clip_16_32x32_cal (
           predSamp,
@@ -295,17 +570,33 @@ actor SelectCuChroma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 4;
+		
+		foreach int k in 0 .. (SCU_SIZE * 4) - 1 do
+			sendSample[k] := sample[k];
+		end
+		
+		foreach int j in 0 .. 3 do
+			foreach int i in 0 .. 3 do
+				storeSample[i] := sample[i + offset];
+			end
+			storeLCU_2x2(storeSample);
+			offset := offset + 4;
+		end
      end
 
     /* Getting the residual part for interPrediction then computing the
 	 * result.
 	 */
 	getInterRes.get16Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 16
-		==> Sample:[sample] repeat SCU_SIZE * 16
+		==> Sample:[sendSample] repeat SCU_SIZE * 16
 	guard
-		sampGot[idxBlk + 15]
+		sampGot[idxBlk + 15],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE * 16]
+		uint(size=8) sample[SCU_SIZE * 16],
+		uint(size=8) sendSample[SCU_SIZE * 16],
+        uint(size=8) storeSample[2*2],
+        int offset := 0
 	do
 		add_8_16_clip_64_32x32_cal (
           predSamp,
@@ -313,17 +604,33 @@ actor SelectCuChroma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 16;
+		
+		foreach int k in 0 .. (SCU_SIZE * 16) - 1 do
+			sendSample[k] := sample[k];
+		end
+		
+		foreach int j in 0 .. 15 do
+			foreach int i in 0 .. 3 do
+				storeSample[i] := sample[i + offset];
+			end
+			storeLCU_2x2(storeSample);
+			offset := offset + 4;
+		end
      end
 
     /* Getting the residual part for interPrediction then computing the
 	 * result.
 	 */
 	getInterRes.get64Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 64
-		==> Sample:[sample] repeat SCU_SIZE * 64
+		==> Sample:[sendSample] repeat SCU_SIZE * 64
 	guard
-		sampGot[idxBlk + 63]
+		sampGot[idxBlk + 63],
+        blkIdx < numPartition
 	var
-		uint(size=8) sample[SCU_SIZE * 64]
+		uint(size=8) sample[SCU_SIZE * 64],
+		uint(size=8) sendSample[SCU_SIZE * 64],
+        uint(size=8) storeSample[2*2],
+        int offset := 0
 	do
 		add_8_16_clip_256_32x32_cal (
           predSamp,
@@ -331,6 +638,18 @@ actor SelectCuChroma()
           sample,
           SCU_SIZE*idxBlk);
 		idxBlk := idxBlk + 64;
+		
+		foreach int k in 0 .. (SCU_SIZE * 64) - 1 do
+			sendSample[k] := sample[k];
+		end
+		
+		foreach int j in 0 .. 63 do
+			foreach int i in 0 .. 3 do
+				storeSample[i] := sample[i + offset];
+			end
+			storeLCU_2x2(storeSample);
+			offset := offset + 4;
+		end
      end
 
 	getCuSample.done: action ==>
@@ -343,10 +662,36 @@ actor SelectCuChroma()
 			sampGot[i] := false;
 		end
 	end
+	
+	getNumTiles: action TilesCoord:[valNumTiles] ==>
+	do
+		numTiles := valNumTiles;
+		iLoop := 0;
+	end
+
+	getTilesCoord.launch: action TilesCoord:[tilesCoord] repeat 4 ==>
+	guard
+		iLoop < numTiles
+	do
+		tilesBegSamp[iLoop] := [tilesCoord[0], tilesCoord[1]];
+		tilesEndSamp[iLoop] := [tilesCoord[2], tilesCoord[3]];
+		iLoop := iLoop + 1;
+	end
+
+	getTilesCoord.done: action ==>
+	guard
+		iLoop = numTiles
+	end
 
 	schedule fsm GetPartMode:
-		GetPartMode (isNewSlice       )--> GetPartMode;
+		GetPartMode (isNewPict        )--> GetNumTiles;
+		GetPartMode (isNewSlc_dep     )--> GetCuInfo;
+		GetPartMode (isNewSlc_indep   )--> GetNumTiles;
 		GetPartMode (getPartMode      )--> GetCuInfo;
+		
+		GetNumTiles   (getNumTiles          )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
+		GetTilesCoord (getTilesCoord.done   )--> GetPartMode;
 
 		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
@@ -357,7 +702,7 @@ actor SelectCuChroma()
 
 		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
 		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
-
+		GetCuSampleIntra (endLCU  )--> GetCuSampleIntra;
 
 		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
 		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;
@@ -368,22 +713,27 @@ actor SelectCuChroma()
 		GetCuSampleInter1Blk (getCuSample.isInter )--> GetCuSampleInter1Blk;
 		GetCuSampleInter1Blk (getInterRes.get1Blk )--> GetCuSampleInter1Blk;
 		GetCuSampleInter1Blk (getCuSample.done    )--> GetCuInfo;
+		GetCuSampleInter1Blk (endLCU  )--> GetCuSampleInter1Blk;
 
 		GetCuSampleInter4Blk (getCuSample.isInter    )--> GetCuSampleInter4Blk;
-		GetCuSampleInter4Blk (getInterRes.get4Blk )--> GetCuSampleInter4Blk;
+		GetCuSampleInter4Blk (getInterRes.get4Blk 	 )--> GetCuSampleInter4Blk;
 		GetCuSampleInter4Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter4Blk (endLCU  )--> GetCuSampleInter4Blk;
 
 		GetCuSampleInter16Blk (getCuSample.isInter    )--> GetCuSampleInter16Blk;
 		GetCuSampleInter16Blk (getInterRes.get16Blk )--> GetCuSampleInter16Blk;
 		GetCuSampleInter16Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter16Blk (endLCU  )--> GetCuSampleInter16Blk;
 
 		GetCuSampleInter64Blk (getCuSample.isInter    )--> GetCuSampleInter64Blk;
 		GetCuSampleInter64Blk (getInterRes.get64Blk )--> GetCuSampleInter64Blk;
 		GetCuSampleInter64Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter64Blk (endLCU  )--> GetCuSampleInter64Blk;
 
 		GetCuSampleInter256Blk (getCuSample.isInter    )--> GetCuSampleInter256Blk;
 		GetCuSampleInter256Blk (getInterRes.get64Blk )--> GetCuSampleInter256Blk;
 		GetCuSampleInter256Blk (getCuSample.done       )--> GetCuInfo;
+		GetCuSampleInter256Blk (endLCU  )--> GetCuSampleInter256Blk;
 	end
 	priority
 		getCuSample.done > getCuSample.isIntra;
