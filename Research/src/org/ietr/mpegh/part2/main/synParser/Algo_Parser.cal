@@ -51,6 +51,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				 int(size=16) WeightedPredChroma,
 				uint(size=16) TileSize,
 				uint(size=16) TileCUInfo,
+				uint          ReorderPics,
 				 int(size= 8) Qp
 
 :
@@ -939,6 +940,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_3
 	 *************************************************************************/
+	uint sps_num_reorder_pics[NB_MAX_SPS];
+	
 	read_SPS_Header.se_idx_3.loop : action ==>
 	guard
 		se_idx = 3 and isFifoFull(fifo),
@@ -948,6 +951,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	do
 		vld_ue_name(    fifo, res, "sps_max_dec_pic_buffering               ");
 		vld_ue_name(    fifo, res, "sps_num_reorder_pics                    ");
+		sps_num_reorder_pics[sps_id] := res[0];
 		vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
 		cnt_i := cnt_i + 1;
 	end
@@ -1806,6 +1810,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint slice_addr := 0;
 	int slice_idx :=0;
 	int idx := 0;
+	uint no_output_of_prior_pics_flag;
+	uint pic_output_flag;
 
 	read_SliceHeader.se_idx_1 : action ==> PartMode:[part_mode]
 
@@ -1827,9 +1833,14 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
 		first_slice_segment_in_pic_flag := res[0];
 
+		no_output_of_prior_pics_flag := 0;
 		if nal_unit_type >= 16 and nal_unit_type <= 23 then
 			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
+			no_output_of_prior_pics_flag := res[0];
 		end
+//		if nal_unit_type = NAL_CRA_NUT and last_eos = 1 then
+//			no_output_of_prior_pics_flag := 1;
+//		end
 		vld_ue_name(    fifo, res, "slice_pic_parameter_set_id              ");
 		pps_id := res[0];
 		sps_id := pps_sps_id[pps_id];
@@ -1883,8 +1894,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
 			slice_temporal_mvp_enable_flag := 0;
 			idx := 0;
+			pic_output_flag := 1;
 			if(pps_output_flag_present_flag[pps_id] = 1) then
 				vld_u_name(  1, fifo, res, "pic_output_flag                         ");
+				pic_output_flag := res[0];
 			end
 			if sps_separate_colour_plane_flag[sps_id] = 1 then
 				vld_u_name(  2, fifo, res, "colour_plane_id                         ");
@@ -3036,7 +3049,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 										SaoSeChromaV:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
 										LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
 										PictSize:[pictSize] repeat 2 , TileSize:[pictOrTileSize] repeat 2, PicSizeInMb:[(pictSize[0] + (1<<Log2CtbSize) - 1)/(1<<Log2CtbSize), (pictSize[1] + (1<<Log2CtbSize) - 1)/(1<<Log2CtbSize)],
-										DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
+										DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets],
+										ReorderPics:[no_output_of_prior_pics_flag, sps_num_reorder_pics[sps_id], pic_output_flag]
 	guard
 		sliceData_idx = 1 and isFifoFull(fifo),
 		first_slice_segment_in_pic_flag = 1 or prev_pps_id != pps_id
