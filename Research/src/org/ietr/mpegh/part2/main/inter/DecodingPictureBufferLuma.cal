@@ -107,7 +107,10 @@ actor DecodingPictureBufferLuma ()
 	int readingPoc := -1;
 	uint sendx := 0;
 	uint sendy := 0;
-	uint(size=8)  lcuSizeMax;
+	uint(size=8) lcuSizeMax;
+	
+	uint(size=8) seqIdOutput := 1;
+	uint(size=8) seqIdDecode := 1;
 	
 	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_luma_orcc")
     procedure getmvinfo_dpb_64_luma_cal(
@@ -195,7 +198,8 @@ actor DecodingPictureBufferLuma ()
 	end
 	
 	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, spsNumReorderPics, picOutputFlag] 
+					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
+					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
 					  ,LcuSizeMax:[log2LcuSize] ==>
 	guard
 		isRead = 0,
@@ -237,9 +241,13 @@ actor DecodingPictureBufferLuma ()
 		// Number of frames needed to display 
 		numReorderPic := spsNumReorderPics;
 		
-		// Always display the frame with the smallest poc
-		if readingPoc < sendingPoc then 
-			sendingPoc := readingPoc;
+		seqIdDecode := videoSequenceId;
+		
+		if seqIdDecode = seqIdOutput then 
+			// Always display the frame with the smallest poc
+			if readingPoc < sendingPoc then 
+				sendingPoc := readingPoc;
+			end
 		end
 		
 		if DEBUG_DPB then 
@@ -247,6 +255,7 @@ actor DecodingPictureBufferLuma ()
 			println("Dpb ; noOutputOfPriorPicsFlag "+noOutputOfPriorPicsFlag);
 			println("Dpb ; numReorderPic "+numReorderPic);
 			println("Dpb ; picOutputFlag "+picOutputFlag);
+			println("Dpb ; videoSequenceId "+videoSequenceId);
 		end
 	end
 	
@@ -412,7 +421,7 @@ actor DecodingPictureBufferLuma ()
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic,
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 64
 	var
 		uint (size=8) CU[64*64]
@@ -434,7 +443,7 @@ actor DecodingPictureBufferLuma ()
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic,
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 32
 	var
 		uint (size=8) CU[32*32]
@@ -456,7 +465,7 @@ actor DecodingPictureBufferLuma ()
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic,
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 16
 	var
 		uint (size=8) CU[16*16]
@@ -489,6 +498,14 @@ actor DecodingPictureBufferLuma ()
 		isSent[pocIndex[sendingPoc & 31]] := true;
 		sendingPoc := sendingPoc + 1;
 		numAvailablePic := numAvailablePic - 1;
+		
+		if seqIdDecode != seqIdOutput then
+			// Reset the DPB
+			if numAvailablePic = 0 then
+				seqIdOutput := seqIdDecode;
+				sendingPoc := 0;
+			end
+		end
 	end
 	
 	sendCuPix.skip: action ==>

@@ -105,7 +105,10 @@ actor DecodingPictureBufferChroma ()
 	int readingPoc := -1;
 	uint sendx := 0;
 	uint sendy := 0;
-	uint(size=8)  lcuSizeMax;
+	uint(size=8) lcuSizeMax;
+	
+	uint(size=8) seqIdOutput := 1;
+	uint(size=8) seqIdDecode := 1;
 	
 	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_chroma_orcc")
     procedure getmvinfo_dpb_64_chroma_cal(
@@ -175,7 +178,8 @@ actor DecodingPictureBufferChroma ()
 	end
 	
 	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, spsNumReorderPics, picOutputFlag] 
+					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
+					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
 					  ,LcuSizeMax:[log2LcuSize] ==>
 	guard
 		isRead = 0,
@@ -217,10 +221,15 @@ actor DecodingPictureBufferChroma ()
 		// Number of frames needed to display 
 		numReorderPic := spsNumReorderPics;
 		
-		// Always display the frame with the smallest poc
-		if readingPoc < sendingPoc then 
-			sendingPoc := readingPoc;
+		seqIdDecode := videoSequenceId;
+		
+		if seqIdDecode = seqIdOutput then 
+			// Always display the frame with the smallest poc
+			if readingPoc < sendingPoc then 
+				sendingPoc := readingPoc;
+			end
 		end
+		
 	end
 	
 	/** We get all the references from the 5 lists of the Rps
@@ -369,7 +378,7 @@ actor DecodingPictureBufferChroma ()
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic,
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 64
 	var
 		uint (size=8) CU[32*32]
@@ -391,7 +400,7 @@ actor DecodingPictureBufferChroma ()
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic,
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 32
 	var
 		uint (size=8) CU[16*16]
@@ -413,7 +422,7 @@ actor DecodingPictureBufferChroma ()
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic,
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 16
 	var
 		uint (size=8) CU[8*8]
@@ -442,6 +451,14 @@ actor DecodingPictureBufferChroma ()
 		isSent[pocIndex[sendingPoc & 31]] := true;
 		sendingPoc := sendingPoc + 1;
 		numAvailablePic := numAvailablePic - 1;
+		
+		if seqIdDecode != seqIdOutput then
+			// Reset the DPB
+			if numAvailablePic = 0 then
+				seqIdOutput := seqIdDecode;
+				sendingPoc := 0;
+			end
+		end
 	end
 	
 	sendCuPix.skip: action ==>
