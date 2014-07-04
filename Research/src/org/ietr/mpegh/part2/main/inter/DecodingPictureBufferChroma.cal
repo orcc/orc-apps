@@ -61,7 +61,7 @@ package org.ietr.mpegh.part2.main.inter;
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
-import org.ietr.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+import devel.org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
 actor DecodingPictureBufferChroma ()
 	uint(size=2)  IsBiPredOrLx,
@@ -80,7 +80,7 @@ actor DecodingPictureBufferChroma ()
 	uint(size=8)  VID
 		:
 
-	uint(size=8)  pictureBuffer[DPB_SIZE][PICT_HEIGHT/2+2*BORDER_SIZE][PICT_WIDTH/2+2*BORDER_SIZE];
+	uint(size=8)  pictureBuffer[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH];
 	int (size=16) pocIndex[32];
 	int (size=16) pocRef[DPB_SIZE] := [-1 : for int i in 0 .. DPB_SIZE-1];
 
@@ -112,7 +112,7 @@ actor DecodingPictureBufferChroma ()
 	
 	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_chroma_orcc")
     procedure getmvinfo_dpb_64_chroma_cal(
-  	      uint(size= 8) pictureBuffer[DPB_SIZE][PICT_HEIGHT / 2 + 2 * BORDER_SIZE][PICT_WIDTH / 2 + 2 * BORDER_SIZE],
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
   	      uint(size= 8) RefCu[(32 + 3) * (32 + 3)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
@@ -130,7 +130,7 @@ actor DecodingPictureBufferChroma ()
   
     @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_32_chroma_orcc")
     procedure getmvinfo_dpb_32_chroma_cal(
-  	      uint(size= 8) pictureBuffer[DPB_SIZE][PICT_HEIGHT / 2 + 2 * BORDER_SIZE][PICT_WIDTH / 2 + 2 * BORDER_SIZE],
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
   	      uint(size= 8) RefCu[(16 + 3) * (16 + 3)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
@@ -148,7 +148,7 @@ actor DecodingPictureBufferChroma ()
   
     @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_16_chroma_orcc")
     procedure getmvinfo_dpb_16_chroma_cal(
-  	      uint(size= 8) pictureBuffer[DPB_SIZE][PICT_HEIGHT / 2 + 2 * BORDER_SIZE][PICT_WIDTH / 2 + 2 * BORDER_SIZE],
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
   	      uint(size= 8) RefCu[(8 + 3) * (8 + 3)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
@@ -287,18 +287,12 @@ actor DecodingPictureBufferChroma ()
 	getCuPix.launch.x64: action Sample:[samp] repeat 32*32 ==>
 	guard
 		yIdx < picSizeInCu[1], lcuSizeMax = 64
-	var
-		int xPixIdx,
-		int yPixIdx
 	do
-		xPixIdx := (BORDER_SIZE + xIdx*64)>>1;
-		yPixIdx := (BORDER_SIZE + yIdx*64)>>1;
-		
 		copy_cu_dpb_chroma_x64_cal(
           samp,
   	      pictureBuffer,
-  	      xPixIdx,
-  	      yPixIdx,
+  	      BORDER_SIZE_CHR + xIdx*32,
+  	      BORDER_SIZE_CHR + yIdx*32,
   	      pocIndex[readingPoc & 31]);
 		
 		xIdx := xIdx + 1;
@@ -311,18 +305,12 @@ actor DecodingPictureBufferChroma ()
 	getCuPix.launch.x32: action Sample:[samp] repeat 16*16 ==>
 	guard
 		yIdx < picSizeInCu[1], lcuSizeMax = 32
-	var
-		int xPixIdx,
-		int yPixIdx
-	do
-		xPixIdx := (BORDER_SIZE + xIdx*32)>>1;
-		yPixIdx := (BORDER_SIZE + yIdx*32)>>1;
-		
+	do		
 		copy_cu_dpb_chroma_x32_cal(
           samp,
   	      pictureBuffer,
-  	      xPixIdx,
-  	      yPixIdx,
+  	      BORDER_SIZE_CHR + xIdx*16,
+  	      BORDER_SIZE_CHR + yIdx*16,
   	      pocIndex[readingPoc & 31]);
 		
 		xIdx := xIdx + 1;
@@ -335,18 +323,12 @@ actor DecodingPictureBufferChroma ()
 	getCuPix.launch.x16: action Sample:[samp] repeat 8*8 ==>
 	guard
 		yIdx < picSizeInCu[1], lcuSizeMax = 16
-	var
-		int xPixIdx,
-		int yPixIdx
-	do
-		xPixIdx := (BORDER_SIZE + xIdx*16)>>1;
-		yPixIdx := (BORDER_SIZE + yIdx*16)>>1;
-		
+	do		
 		copy_cu_dpb_chroma_x16_cal(
           samp,
   	      pictureBuffer,
-  	      xPixIdx,
-  	      yPixIdx,
+  	      BORDER_SIZE_CHR + xIdx*8,
+  	      BORDER_SIZE_CHR + yIdx*8,
   	      pocIndex[readingPoc & 31]);
 		
 		xIdx := xIdx + 1;
@@ -359,34 +341,31 @@ actor DecodingPictureBufferChroma ()
 	getCuPix.done: action ==>
 	guard
 		yIdx = picSizeInCu[1]
-	var
-		int xSize := picSize[0],
-		int ySize := picSize[1]
 	do
 		/* Fill in chroma border */
 		fillBorder_chroma_cal(
 			pictureBuffer,
 			pocIndex[readingPoc & 31],
-			xSize / 2,
-			ySize / 2,
-			BORDER_SIZE / 2);
+			picSize[0] / 2,
+			picSize[1] / 2,
+			BORDER_SIZE_CHR);
 		
 		pocDone[readingPoc & 31] := true;
 		numAvailablePic := numAvailablePic + 1;
 	end
 	
-	sendCuPix.launch.x64: action ==> VID:[CU] repeat 32*32
+	sendCuPix.launch.x64: action ==> VID:[cu] repeat 32*32
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 64
 	var
-		uint (size=8) CU[32*32]
+		uint (size=8) cu[32*32]
 	do
 		foreach int i in 0 .. 31 do	
 			foreach int j in 0 .. 31 do
-				CU[i*32 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][((BORDER_SIZE + sendy * 64) >> 1 )+ i][((BORDER_SIZE + sendx * 64) >> 1 ) + j];
+				cu[i*32 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][BORDER_SIZE_CHR + sendy * 32+ i][BORDER_SIZE_CHR + sendx * 32 + j];
 			end
 		end
 			
@@ -397,18 +376,18 @@ actor DecodingPictureBufferChroma ()
 		end
 	end
 	
-	sendCuPix.launch.x32: action ==> VID:[CU] repeat 16*16
+	sendCuPix.launch.x32: action ==> VID:[cu] repeat 16*16
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 32
 	var
-		uint (size=8) CU[16*16]
+		uint (size=8) cu[16*16]
 	do
 		foreach int i in 0 .. 15 do	
 			foreach int j in 0 .. 15 do
-				CU[i*16 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][((BORDER_SIZE + sendy * 32) >> 1 )+ i][((BORDER_SIZE + sendx * 32) >> 1 ) + j];
+				cu[i*16 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][BORDER_SIZE_CHR + sendy * 16 + i][BORDER_SIZE_CHR + sendx * 16 + j];
 			end
 		end
 			
@@ -419,18 +398,18 @@ actor DecodingPictureBufferChroma ()
 		end
 	end
 	
-	sendCuPix.launch.x16: action ==> VID:[CU] repeat 8*8
+	sendCuPix.launch.x16: action ==> VID:[cu] repeat 8*8
 	guard
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 16
 	var
-		uint (size=8) CU[8*8]
+		uint (size=8) cu[8*8]
 	do
 		foreach int i in 0 .. 7 do	
 			foreach int j in 0 .. 7 do
-				CU[i*8 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][((BORDER_SIZE + sendy * 16) >> 1 )+ i][((BORDER_SIZE + sendx * 16) >> 1 ) + j];
+				cu[i*8 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][BORDER_SIZE_CHR + sendy * 8 + i][BORDER_SIZE_CHR + sendx * 8 + j];
 			end
 		end
 			
@@ -489,193 +468,118 @@ actor DecodingPictureBufferChroma ()
 	 * these samples in refCu, it will be sent with the actions sendCu.isYxY
 	 */
 	getMvInfo.launch.is64: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (32+3)*(32+3)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (32+3)*(32+3)
 	guard
 		numPocRef != 0 && predCuSize = 64,
 		pocDone[poc & 31]
 	var
-		int idx := pocIndex[poc & 31],
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 64,
+		int (size=32) mvOffChr[2],
+		uint(size=7)  sideMax = 32,
 		uint(size=8)  refCu[(32+3)*(32+3)]
 	do
-
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
+		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax);
 		
 		getmvinfo_dpb_64_chroma_cal(
   	      pictureBuffer,
   	      refCu,
-  	      idx, 
-  	      sideMax / 2 + 3, 
-  	      xOffset,
-  	      yOffset);
+  	      pocIndex[poc & 31], 
+  	      sideMax + 3, 
+  	      mvOffChr[0],
+  	      mvOffChr[1]);
+  	      
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is32: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (16+3)*(16+3)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (16+3)*(16+3)
 	guard
 		numPocRef != 0 && predCuSize = 32,
 		pocDone[poc & 31]
 	var
-		int idx := pocIndex[poc & 31],
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 32,
+		int (size=32) mvOffChr[2],
+		uint(size=7)  sideMax = 16,
 		uint(size=8)  refCu[(16+3)*(16+3)]
 	do
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
+		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax);
 		
 		getmvinfo_dpb_32_chroma_cal(
   	      pictureBuffer,
   	      refCu,
-  	      idx, 
-  	      sideMax / 2 + 3, 
-  	      xOffset,
-  	      yOffset);
+  	      pocIndex[poc & 31], 
+  	      sideMax + 3, 
+  	      mvOffChr[0],
+  	      mvOffChr[1]);
+  	      
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is16: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (8+3)*(8+3)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (8+3)*(8+3)
 	guard
 		numPocRef != 0 && predCuSize = 16,
 		pocDone[poc & 31]
 	var
-		int idx := pocIndex[poc & 31],
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 16,
+		int (size=32) mvOffChr[2],
+		uint(size=7)  sideMax = 8,
 		uint(size=8)  refCu[(8+3)*(8+3)]
 	do
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
+		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax);
 		
 		getmvinfo_dpb_16_chroma_cal(
   	      pictureBuffer,
   	      refCu,
-  	      idx, 
-  	      sideMax / 2 + 3, 
-  	      xOffset,
-  	      yOffset);
+  	      pocIndex[poc & 31], 
+  	      sideMax + 3, 
+  	      mvOffChr[0],
+  	      mvOffChr[1]);
+  	      
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is8: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat(4+3)*(4+3)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (4+3)*(4+3)
 	guard
 		numPocRef != 0 && predCuSize = 8,
 		pocDone[poc & 31]
 	var
-		int idx := pocIndex[poc & 31],
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 8,
+		int (size=32) mvOffChr[2],
+		uint(size=7)  sideMax = 4,
 		uint(size=8)  refCu[(4+3)*(4+3)]
 	do
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
+		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax);
 		
-		foreach int y in 0 .. sideMax/2+3 -1
+		foreach int y in 0 .. sideMax+3 -1
 		do
-			foreach int x in 0 .. sideMax/2+3 -1
+			foreach int x in 0 .. sideMax+3 -1
 			do
-				refCu[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+				refCu[x+y*(sideMax+3)] := 
+					pictureBuffer[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
 			end
 		end
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is4: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (2+3)*(2+3)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (2+3)*(2+3)
 	guard
 		numPocRef != 0 && predCuSize = 4,
 		pocDone[poc & 31]
 	var
-		int idx := pocIndex[poc & 31],
-		int (size=32) xOffset,
-		int (size=32) yOffset,
-		uint(size=7)  sideMax = 4,
+		int (size=32) mvOffChr[2],
+		uint(size=7)  sideMax = 2,
 		uint(size=8)  refCu[(2+3)*(2+3)]
 	do
-
-		/* We remove 1 for each coordinate component, because for the chroma
-		 * prediction we need the previous pixel
-		 */
-		xOffset := (mvX >> 3);
-		xOffset := min(xOffset, picSize[0]/2+1);
-		xOffset := max(xOffset, -(4 +1 -1) -(sideMax/2-1));
-		xOffset := xOffset +BORDER_SIZE/2-1;
-		yOffset := (mvY >> 3);
-		yOffset := min(yOffset, picSize[1]/2+1);
-		yOffset := max(yOffset, -(4 +1 -1) -(sideMax/2-1));
-		yOffset := yOffset +BORDER_SIZE/2-1;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 3 to sideMax
-		 */
+		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax);
 		
-		foreach int y in 0 .. sideMax/2+3 -1
+		foreach int y in 0 .. sideMax+3 -1
 		do
-			foreach int x in 0 .. sideMax/2+3 -1
+			foreach int x in 0 .. sideMax+3 -1
 			do
-				refCu[x+y*(sideMax/2+3)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+				refCu[x+y*(sideMax+3)] := 
+					pictureBuffer[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
 			end
 		end
+		
 		numPocRef := numPocRef - 1;
 	end
 	
