@@ -30,7 +30,6 @@ package org.ietr.mpegh.part2.main.Filters;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 actor FrameDelayChroma()
 	uint(size=2)  IsPicSlcLcu,
@@ -41,12 +40,14 @@ actor FrameDelayChroma()
 		==>
 	uint(size=8)  FiltSample
 		:
+		
 	uint(size=16) numTiles;
 	uint(size=16) tileIdx;
 	uint(size=16) numPartition;
 	uint(size=16) tilesBegSamp[MAX_NUM_TILES][2];
 	uint(size=16) tilesEndSamp[MAX_NUM_TILES][2];
 	uint(size=8)  lcuSizeMax;
+	uint(size=8)  log2_lcuSizeMax;
 	uint(size=16) picSize[2];
 	uint(size=16) xIdx;
 	uint(size=16) yIdx;
@@ -58,7 +59,7 @@ actor FrameDelayChroma()
 	uint(size=9)  blkIdx := 0;
 	int(size=16) iLoop;
 	
-	uint(size=8)  pictureBuffer[PICT_WIDTH][PICT_HEIGHT];
+	uint(size=8)  pictureBuffer[PICT_HEIGHT/2][PICT_WIDTH/2];
 
 	procedure computeNextLcuAddr()
 	begin
@@ -85,28 +86,29 @@ actor FrameDelayChroma()
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
 		
-		foreach uint y in 0 .. 1
+		foreach int y in 0 .. 1
 		do
-			foreach uint x in 0 .. 1
+			foreach int x in 0 .. 1
 			do
-				pictureBuffer[pixAddr[0]+x][pixAddr[1]+y] := sample[2*y+x];
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[2*y+x];
 			end
 		end
 	end
 	
 	isNewSlc: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix,
-		picHeightInPix], LcuSizeMax:[lcuSz] ==>
+		picHeightInPix], LcuSizeMax:[log2_lcuSz] ==>
 	guard
 		isNewPicSlcLcu = NEW_SLC
 	end
 
 	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu], PicSize:[picWidthInPix,
-		picHeightInPix], LcuSizeMax:[lcuSz] ==>
+		picHeightInPix], LcuSizeMax:[log2_lcuSz] ==>
 	guard
 		isNewPicSlcLcu = NEW_PIC
 	do
-		lcuSizeMax := lcuSz;
-		numPartition := (lcuSz * lcuSz) / 16;
+		lcuSizeMax := 1 << log2_lcuSz;
+		log2_lcuSizeMax := log2_lcuSz;
+		numPartition := (lcuSizeMax * lcuSizeMax) / 16;
 		numTokenPerLcu := lcuSizeMax * lcuSizeMax / 4;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
@@ -187,11 +189,11 @@ actor FrameDelayChroma()
 		pixAddr[0]  := pixAddr[0]>>1;
 		pixAddr[1]  := pixAddr[1]>>1;
 		
-		foreach uint y in 0 .. 1
+		foreach int y in 0 .. 1
 		do
-			foreach uint x in 0 .. 1
+			foreach int x in 0 .. 1
 			do
-				pictureBuffer[pixAddr[0]+x][pixAddr[1]+y] := samp[2*y+x];
+				pictureBuffer[pixAddr[1]+y][pixAddr[0]+x] := samp[2*y+x];
 			end
 		end
 
@@ -215,7 +217,7 @@ actor FrameDelayChroma()
 
 	getBlk.skip.horEdge: action SampleIn:[samp] repeat 2*2 ==>
 	guard
-		blkIdx < numPartition ,// && not FILT_VERT_EDGES,
+		blkIdx < numPartition ,
 		pixAddr[0] >= picSize[0] || pixAddr[1] >= picSize[1]
 	do
 		//println("getBlk.skip.horEdge");
@@ -242,24 +244,29 @@ actor FrameDelayChroma()
 		tileIdx := 0;
 	end
 
-	sendSamples.launch.chroma: action ==> FiltSample:[filtSamp] repeat 8
+	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 8 * 8
 	guard
 		tileIdx < numTiles && tokenSent < numTokenPerLcu
 	var
-		uint(size=8) filtSamp[8],
+		uint(size=8) filtSamp[8 * 8],
 		uint(size=16) xOff, uint(size=16) yOff
 	do
-		xOff := tokenSent & ((lcuSizeMax - 1) >> 1);
-		yOff := tokenSent / (lcuSizeMax >> 1);
-		foreach uint x in 0 .. 7
+		foreach int y in 0 .. 7
 		do
-			filtSamp[x] := pictureBuffer[xIdx/2 + xOff + x][yIdx/2 + yOff];
+			xOff := tokenSent & ((lcuSizeMax - 1) >> 1);
+			yOff := tokenSent >> (log2_lcuSizeMax - 1);
+			xOff := xOff + xIdx / 2;
+			yOff := yOff + yIdx / 2;
+			foreach int x in 0 .. 7
+			do
+				filtSamp[y * 8 + x] := pictureBuffer[yOff][xOff + x];
+			end
+	
+			tokenSent := tokenSent + 8;
 		end
-
-		tokenSent := tokenSent + 8;
 	end
 
-	sendSamples.launch.chromaDone: action ==>
+	sendSamples.next: action ==>
 	guard
 		tokenSent = numTokenPerLcu
 	do
@@ -278,7 +285,6 @@ actor FrameDelayChroma()
 		GetCuPix  (isNewSlc                          )--> GetNumTiles;
 		GetCuPix  (getCuPix.launch.pict              )--> GetPartition;
 		GetCuPix  (getCuPix.launch.lastColOrRow.vert )--> GetBlk;
-//		GetCuPix  (getCuPix.launch.lastColOrRow.hor  )--> GetBs4Blk;
 		GetCuPix  (getCuPix.done                     )--> SendSamples;
 
 		GetPartition (getCuPix.launch.getPart     )--> GetPartition;
@@ -292,13 +298,8 @@ actor FrameDelayChroma()
 		GetBlk (getBlk.skip   )--> GetBlk;
 		GetBlk (getBlk.done   )--> GetCuPix;
 
-		/*SendSamplesVert (sendSamples.launch )--> GetCuPix;
-		SendSamplesVert (sendSamples.skip   )--> GetCuPix;*/
-
-		SendSamples (sendSamples.launch.chroma )--> SendSamplesChroma;
-		SendSamples (sendSamples.done        )--> IsNewPict;
-
-		SendSamplesChroma (sendSamples.launch.chroma     )--> SendSamplesChroma;
-		SendSamplesChroma (sendSamples.launch.chromaDone )--> SendSamples;
+		SendSamples (sendSamples.launch )--> SendSamples;
+		SendSamples (sendSamples.next   )--> SendSamples;
+		SendSamples (sendSamples.done   )--> IsNewPict;
 	end
 end

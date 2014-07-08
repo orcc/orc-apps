@@ -37,27 +37,23 @@
 // - cleanup for release 08/10/2012
 // - merged source and headerAdd 26/03/2013
 // - modified to support repetitive packets 03/04/2013
+// - cleanup 24/04/2014
 
 package embedded_tx;
-import embedded_tx.constants.*;
-import std.stdio.Source.*;
+import common_tx.constants.*;
 
 actor headerAdd()
 // Inputs: 
- 
 // Outputs:
 ==> 
 uint(size=DATA_SZ) data,             // header + payload data
 uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 :
-	@native procedure source_init()
-	end
+	@native procedure source_init() end
 
-	@native function source_readByte() --> uint(size=8)
-	end
+	@native function source_readByte() --> uint(size=8) end
 
-	@native function source_sizeOfFile() --> int(size=32)
-	end
+	@native function source_sizeOfFile() --> int(size=32) end
 
     // variable to hold payload length
 	uint(size=PAYLOAD_LEN_SZ) octet_count;
@@ -74,7 +70,7 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 
 	// init action
 	// initializes the data source
-	init: action ==>
+	initialize ==>
 	do
 		source_init();
 		octet_count := 0;
@@ -82,7 +78,8 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 	
 	// get_data_len action
 	// wait for packet to be available
-	get_data_len: action ==>
+	// send payload length information to pulse shaper
+	get_data_len: action ==> len: [ octet_count ]
 	guard
 		octet_count = 0
 	do
@@ -114,26 +111,17 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 
 	// send_length action
 	// transmit payload length in data as part of data frame
-	// send payload length information to pulse shaper
-	send_length: action ==> data:[ data_out ], len: [len_out]
-	var
-		uint(size=DATA_SZ) data_out,
-		uint(size=PAYLOAD_LEN_SZ) len_out
+	send_length: action ==> data:[ octet_count - HEADER_LEN - 1 ]
 	do
-		data_out := octet_count - HEADER_LEN - 1;
-		len_out := octet_count;
 		octet_index := octet_index + 1;
 	end
 
 	// send_payload_octet
 	// transmit one octet of the data coming from higher layer
-	send_payload_octet: action ==> data:[ data_out ]
+	send_payload_octet: action ==> data:[ source_readByte() ]
 	guard
 		octet_index < octet_count
-	var
-		uint(size=DATA_SZ) data_out
 	do
-		data_out := source_readByte();
 		octet_index := octet_index + 1;
 	end
 
@@ -141,13 +129,12 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 	// transition back to waiting for a new data frame
 	done: action ==>
 	guard
-		octet_index = octet_count 
+		octet_index = octet_count
 	do
 		octet_count := 0; 
 	end
 
-	schedule fsm s_start :
-		s_start ( init ) --> s_idle;
+	schedule fsm s_idle :
 		s_idle ( get_data_len ) --> s_idle;
 		s_idle ( init_transmission ) --> s_header;
 		s_header ( send_header ) --> s_header;

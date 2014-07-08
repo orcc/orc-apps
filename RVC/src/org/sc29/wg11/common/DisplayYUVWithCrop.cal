@@ -33,6 +33,8 @@ import  std.video.Display.*;
 import  std.util.Math.*;
 import  std.stdio.Source.*;
 
+import  org.sc29.wg11.common.DisplayYUVFunctions.*;
+
 
 actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	uint(size=8)  Byte,
@@ -83,10 +85,14 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 		source_exit(0);
 	end
 
-	getPictureSize: action DispCoord:[dispCoord] repeat 4, PicSizeInMb:[picWidth,
-		picHeight] ==>
+	getPictureSize: action DispCoord:[dispCoord] repeat 4, PicSizeInMb:[picWidthInPix,
+		picHeightInPix] ==>
+	var
+		uint(size=9) picWidth,
+		uint(size=9) picHeight
 	do
-
+		picWidth := (picWidthInPix + 15)/16;
+		picHeight := (picHeightInPix + 15)/16;
 		pictureWidthLuma  := picWidth * BLK_SIDE;
 		pictureSizeInMb   := picWidth * picHeight;
 		xMin := dispCoord[0];
@@ -106,21 +112,9 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	guard
 		nbBlockGot < pictureSizeInMb,
 		BLK_SIDE = 16
-	var
-		uint(size=14) xIdxMin = max(xIdxLuma, xMin),
-		uint(size=14) xIdxMax = min(xIdxLuma + 15, xMax),
-		uint(size=14) yIdxMin = max(yIdxLuma, yMin),
-		uint(size=14) yIdxMax = min(yIdxLuma + 15, yMax)
 	do
 		nbBlockGot := nbBlockGot + 1;
-		foreach int y in yIdxMin .. yIdxMax
-		do
-			foreach int x in xIdxMin .. xIdxMax
-			do
-				pictureBufferY[(y-yMin)*cropPicWthLuma+x-xMin]
-					:= Bytes[(y-yIdxLuma)*16 + x-xIdxLuma];
-			end
-		end
+		displayYUV_crop_16_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
 		xIdxLuma := xIdxLuma + MB_SIZE_LUMA;
 		chromaComponent := 0;
 	end
@@ -129,21 +123,9 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	guard
 		nbBlockGot < pictureSizeInMb,
 		BLK_SIDE = 64
-	var
-		uint(size=14) xIdxMin = max(xIdxLuma, xMin),
-		uint(size=14) xIdxMax = min(xIdxLuma + 63, xMax),
-		uint(size=14) yIdxMin = max(yIdxLuma, yMin),
-		uint(size=14) yIdxMax = min(yIdxLuma + 63, yMax)
 	do
 		nbBlockGot := nbBlockGot + 1;
-		foreach int y in yIdxMin .. yIdxMax
-		do
-			foreach int x in xIdxMin .. xIdxMax
-			do
-				pictureBufferY[(y-yMin)*cropPicWthLuma+x-xMin]
-					:= Bytes[(y-yIdxLuma)*64 + x-xIdxLuma];
-			end
-		end
+		displayYUV_crop_64_cal(Bytes, pictureBufferY, xMin, xMax, yMin, yMax, xIdxLuma, yIdxLuma, cropPicWthLuma);
 		xIdxLuma := xIdxLuma + 64;
 		chromaComponent := 0;
 	end
@@ -151,24 +133,11 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	getPixValue.launch.Chroma.blk16x16: action Byte :[Bytes] repeat 64 ==>
 	guard
 		BLK_SIDE = 16
-	var
-		uint(size=14) xIdxMin = max(xIdxChroma, xMin/2),
-		uint(size=14) xIdxMax = min(xIdxChroma + 7, xMax/2),
-		uint(size=14) yIdxMin = max(yIdxChroma, yMin/2),
-		uint(size=14) yIdxMax = min(yIdxChroma + 7, yMax/2)
 	do
-		foreach int y in yIdxMin .. yIdxMax
-		do
-			foreach int x in xIdxMin .. xIdxMax
-			do
-				if(chromaComponent=0)then
-					pictureBufferU[(y-yMin/2)*cropPicWthLuma/2 + x-xMin/2] :=
-						Bytes[(y-yIdxChroma)*8 + x-xIdxChroma];
-				else
-					pictureBufferV[(y-yMin/2)*cropPicWthLuma/2 + x-xMin/2] :=
-						Bytes[(y-yIdxChroma)*8 + x-xIdxChroma];
-				end
-			end
+		if(chromaComponent=0)then
+		displayYUV_crop_8_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+		else
+		displayYUV_crop_8_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
 		end
 		if chromaComponent != 0 then
 			xIdxChroma := xIdxChroma + MB_SIZE_CHROMA;
@@ -185,24 +154,11 @@ actor DisplayYUVWithCrop(uint(size=8) BLK_SIDE)
 	getPixValue.launch.Chroma.blk64x64: action Byte :[Bytes] repeat 1024 ==>
 	guard
 		BLK_SIDE = 64
-	var
-		uint(size=14) xIdxMin = max(xIdxChroma, xMin/2),
-		uint(size=14) xIdxMax = min(xIdxChroma + 31, xMax/2),
-		uint(size=14) yIdxMin = max(yIdxChroma, yMin/2),
-		uint(size=14) yIdxMax = min(yIdxChroma + 31, yMax/2)
 	do
-		foreach int y in yIdxMin .. yIdxMax
-		do
-			foreach int x in xIdxMin .. xIdxMax
-			do
-				if(chromaComponent=0)then
-					pictureBufferU[(y-yMin/2)*cropPicWthLuma/2 + x-xMin/2] :=
-						Bytes[(y-yIdxChroma)*32 + x-xIdxChroma];
-				else
-					pictureBufferV[(y-yMin/2)*cropPicWthLuma/2 + x-xMin/2] :=
-						Bytes[(y-yIdxChroma)*32 + x-xIdxChroma];
-				end
-			end
+		if(chromaComponent=0)then
+		displayYUV_crop_32_cal(Bytes, pictureBufferU, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
+		else
+		displayYUV_crop_32_cal(Bytes, pictureBufferV, xMin / 2, xMax / 2, yMin / 2, yMax / 2, xIdxChroma, yIdxChroma, cropPicWthLuma / 2);
 		end
 		if chromaComponent != 0 then
 			xIdxChroma := xIdxChroma + 32;

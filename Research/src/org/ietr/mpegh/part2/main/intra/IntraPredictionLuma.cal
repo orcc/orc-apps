@@ -58,7 +58,6 @@ package org.ietr.mpegh.part2.main.intra;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 import devel.org.sc29.wg11.mpegh.part2.main.intra.IntraFunctions.*;
 
 actor IntraPredictionLuma(bool EnabSkipInPix)
@@ -522,7 +521,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	end
 
 	/* Updating the picture size. */
-	isNewSliceOrPict.notDep: action PartMode:[partMode], LcuSizeMax:[lcuSz],
+	isNewSliceOrPict.notDep: action PartMode:[partMode], LcuSizeMax:[log2_lcuSz],
 		PictSize:[pictSizeVal] repeat 2, SliceAddr:[slcAddr] repeat 2,
 		StrongIntraSmoothing:[smoothing, constrIntra],
 		TilesCoord:[valNumTiles] ==>
@@ -530,6 +529,10 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		partMode = PART_MODE_SLICE_INDEP ||
 		partMode = PART_MODE_PICT
 	do
+//		println("countReadIntra = " + countRead);
+//		println("countWriteIntra = " + countWrite);
+		countRead := 0;
+		countWrite := 0;
 		sliceAddr := [slcAddr[i]:for int i in 0 .. 1];
 		pictSize := [pictSizeVal[i]:for int i in 0 .. 1];
 		strongIntraSmoothing := smoothing;
@@ -537,7 +540,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		isIndepSlc := partMode = PART_MODE_SLICE_INDEP;
 		numTiles := valNumTiles;
 		iLoop := 0;
-		maxLcuSizeLuma := lcuSz;
+		maxLcuSizeLuma := 1 << log2_lcuSz;
 	end
 
 	/* Updating the picture size. */
@@ -718,7 +721,8 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	var
 		uint(size=7)  treeNS,
 		uint(size=3)  treeLog2NS,
-		uint(size=16) locAddr[2]
+		uint(size=16) locAddr[2],
+		int stride = 64
 	do
 		/* Computing the size and the address of the current block. */
 		treeLog2NS := log2NS - trafoTreeDepth;
@@ -750,28 +754,12 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		getNeighbSamples(locAddr,treeNS, treeLog2NS);
 
 		if(predMode = INTRA_PLANAR) then
-			if treeNS = 4 then
-				intraPlanarPred0(lumaComp, pNeighb_above, pNeighb_left, 64, treeLog2NS);
-			elsif treeNS = 8 then
-				intraPlanarPred1(lumaComp, pNeighb_above, pNeighb_left, 64, treeLog2NS);
-			elsif treeNS = 16 then
-				intraPlanarPred2(lumaComp, pNeighb_above, pNeighb_left, 64, treeLog2NS);
-			else
-				intraPlanarPred3(lumaComp, pNeighb_above, pNeighb_left, 64, treeLog2NS);
-			end
+			intraPlanarPred(lumaComp, pNeighb_above, pNeighb_left, stride, treeLog2NS);
 		elsif(predMode = INTRA_DC) then
 			intraDcPred(treeNS, treeLog2NS);
 		else
 			pNeighb_left[0] := pNeighb_above[0];
-			if (treeNS = 4) then
-				intraAngularPred0(lumaComp, pNeighb_above, pNeighb_left, 64, 0, predMode, treeLog2NS);
-			elsif(treeNS = 8) then
-				intraAngularPred1(lumaComp, pNeighb_above, pNeighb_left, 64, 0, predMode, treeLog2NS);
-			elsif(treeNS = 16) then
-				intraAngularPred2(lumaComp, pNeighb_above, pNeighb_left, 64, 0, predMode, treeLog2NS);
-			else  
-				intraAngularPred3(lumaComp, pNeighb_above, pNeighb_left, 64, 0, predMode, treeLog2NS);
-			end
+			intraAngularPred(lumaComp, pNeighb_above, pNeighb_left, stride, 0, predMode, treeLog2NS);
 		end
 			
 		/* going to the next "branch of the tree" */
@@ -813,7 +801,9 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	guard
 		trafoTreeDepth = -1
 	end
-
+	
+	int countWrite := 0;
+	
 	/* Sending One 4x4 luma blocks and the corresponding chroma values. */
 	sendSamples.launch: action ==> PredSample:[sampleVal] repeat 16
 	guard
@@ -823,6 +813,7 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		uint(size=7) idxSample := 0,
 		uint(size=16) blkAddr[2]
 	do
+		countWrite := countWrite + 16;
 		zScanToAbsCoord(idxBlk, blkAddr);
 
 		foreach uint y in blkAddr[1] .. blkAddr[1]+3
@@ -843,7 +834,8 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	do
 		idxBlk := 0;
 	end
-
+	
+	int countRead := 0;
 	/* Getting One 4x4 luma blocks and the corresponding chroma values. */
 	getSamples.launch: action Sample_y:[sample_y] repeat 16 ==>
 	guard
@@ -852,10 +844,14 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		uint(size=16) blkAddr[2],
 		bool bottomBlk := false,
 		bool leftBlk := false,
-		uint(size=16) tabIdx
+		uint(size=16) tabIdx,
+		uint(size=16) tabIdxOffset
 	do
+		countRead := countRead + 16;
 		zScanToAbsCoord(idxBlk, blkAddr);
-
+//		foreach int i in 0 .. 15 do
+//			println("sampleY[i] = " + sample_y[i]);
+//		end	
 		if(blkAddr[0]+4>=neighbBlkSz) then
 			leftBlk := true;
 		end
@@ -866,18 +862,20 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 		blkAddr[1] := blkAddr[1] + treeAddr[1];
 
 		if(bottomBlk) then
+		    tabIdxOffset := pictSize[1] - (blkAddr[1] + 3) + blkAddr[0];
 			foreach uint x in 0 .. 3
 			do
-				tabIdx := pictSize[1] - (blkAddr[1] + 3) + blkAddr[0] + x;
+				tabIdx := tabIdxOffset + x;
 				puNeighb[tabIdx] := sample_y[4*3+x];
 				puIsIntra[tabIdx]   := cuMode = INTRA;
 			end
 		end
 
 		if(leftBlk) then
+		    tabIdxOffset := pictSize[1] - (blkAddr[1]) + blkAddr[0] + 3;
 			foreach uint y in 0 .. 3
 			do
-				tabIdx := pictSize[1] - (blkAddr[1] + y) + blkAddr[0] + 3;
+				tabIdx := tabIdxOffset - y;
 				puNeighb[tabIdx] := sample_y[4*y+3];
 				puIsIntra[tabIdx]   := cuMode = INTRA;
 			end
@@ -889,6 +887,8 @@ actor IntraPredictionLuma(bool EnabSkipInPix)
 	getSamples.done: action ==>
 	guard
 		idxBlk = numBlkToSend || (EnabSkipInPix && not getInSamp)
+	do
+//		println("getSamplesDone = " + countRead);
 	end
 
 	schedule fsm GetPartMode:

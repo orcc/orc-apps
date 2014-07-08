@@ -1,6 +1,6 @@
 // pulseShape.cal
 //
-// Copyright (c) 2012 University of Oulu, Finland
+// Copyright (c) 2013 University of Oulu, Finland
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -35,15 +35,12 @@
 // Changelog:
 // - initial version 01/10/2012
 // - cleanup for release 08/10/2012
+// - multitoken-version 04/03/2013
+// - added "done" port 24/04/2014
+// - new monotoken implementation 06/05/2014
 
 package monotoken_tx;
-
-import monotoken_tx.constants.*;
-
-// The outline of the transmission procedure for pulseShape():
-// header(x1) -> body1(xN) -> body2(xN) -> tail1(x1) -> tail2(x1),
-// where N is ((x * 64) - 2) >> 1,
-// x is the number of payload samples (5 to 127) + header samples (6)
+import common_tx.constants.*;
 
 actor pulseShape() 
 // Inputs:
@@ -51,171 +48,147 @@ int(size=SYMB_SZ) symb,             // I-Q symbols from QPSK modulator
 uint(size=PAYLOAD_LEN_SZ) len       // Payload length
 // Outputs:
 ==> 
+bool done,                          // Flag to terminate
 int(size=HSP_SZ) hsp                // Half-sine pulse samples
 :
+	int(size=SYMB_SZ) symb[4];      // Temporary storage for symbol values during transmission
+ 
+	uint(size=BODY_SZ) body_iterations;   // Number of times the "body" part of the transmission has to be repeated 
+	uint(size=BODY_SZ) body_index;        // Number of times the "body" part of the transmission has been repeated
 
-	bool even_symbol_read;          // A variable to alternate the fetching of even and odd samples
-	int(size=SYMB_SZ) symb_even;    // Temporary storage for even symbol values during transmission
-	int(size=SYMB_SZ) symb_odd;     // Temporary storage for even symbol values during transmission
-	
-	uint(size=4) hsp_count;         // A counter for keeping track of transmitted hsp samples for
-                                    // the current hsp. range: [0...8] 
-	int body_iterations;            // Number of times the "body" part of the transmission has to be repeated 
-	int body_index;                 // Number of times the "body" part of the transmission has been repeated
+	uint(size=HSPCNT_SZ) hsp_count;          // counter for half-sine pulse samples transmitted
 
-	int coeff_ind;                   // Index to the filter coefficient table. Wraps around.
-
-    int FILT_COEFF0 = 0x00;          // Static filter coefficients for half-sine pulse generation
+    int FILT_COEFF0 = 0x00;         // Static filter coefficients for half-sine pulse generation
     int FILT_COEFF1 = 0x31;
     int FILT_COEFF2 = 0x5a;
     int FILT_COEFF3 = 0x76;
     int FILT_COEFF4 = 0x7f;
 
-                                     // Filter coefficient table 16 samples of 8 bits
-	List(type: uint(size=8), size=16) Coeffs = [
-								 FILT_COEFF0, FILT_COEFF4, FILT_COEFF1, FILT_COEFF3,
-								 FILT_COEFF2, FILT_COEFF2, FILT_COEFF3, FILT_COEFF1,
-								 FILT_COEFF4, FILT_COEFF0, FILT_COEFF3, FILT_COEFF1,
-								 FILT_COEFF2, FILT_COEFF2, FILT_COEFF1, FILT_COEFF3];
+	int coeffs[16] := [FILT_COEFF0,FILT_COEFF4,FILT_COEFF1,FILT_COEFF3,FILT_COEFF2,FILT_COEFF2,FILT_COEFF3,
+		FILT_COEFF1,FILT_COEFF4,FILT_COEFF0,FILT_COEFF3,FILT_COEFF1,FILT_COEFF2,FILT_COEFF2,FILT_COEFF1,FILT_COEFF3];
 
 	// fixed-point multiplication with shift
 	function mul8( int x, int y ) --> int :
 		(x * y) >> 7
 	end
 
+	// one-time initialization routine
+	initialize ==>
+	do
+		symb[3] := 0x7F;
+	end
+	
 	// init action
 	// Fired when payload length is known
-	init: action len:[len_in] ==>
+	init: action len:[ len_in ] ==>
 	do
-		body_iterations := ((len_in * 64) - 2) >> 1; 
+		body_iterations := len_in * 32; 
+		body_index := 0;
+		symb[2] := 0x7F;
+	end
+
+	// read1 action
+	// read first symbol
+	read1: action symb:[ symb_in ] ==>
+	guard
+		body_index < body_iterations
+	do
+		symb[0] := symb_in;
+	end
+
+	// read2 action
+	// read second symbol
+	read2: action symb:[ symb_in ] ==>
+	do
+		symb[1] := symb_in;
 		hsp_count := 0;
-		coeff_ind := 0;
-		even_symbol_read := false;
-		symb_odd := 0x7F;            // The first Q-value is a dummy
 	end
-
-	// read_even action
-	// reads a symbol from QPSK modulator
-	read_even: action symb:[symb_in] ==>
-	guard
-		even_symbol_read = false
-	do
-		symb_even := symb_in;
-		even_symbol_read := true;
-	end
-
-	// read_odd action
-	// reads a symbol from QPSK modulator
-	read_odd: action symb:[symb_in] ==>
-	do
-		symb_odd := symb_in;
-	end
-
-	// transmit even
-	// transmits a hsp sample
-	// fired in an alternating fashion with transmit_odd
-	transmit_even: action ==> hsp:[ hsp_out ]
-	guard
-		(hsp_count & 1) = 0,
-		hsp_count < 8
-	var
-		int(size=HSP_SZ) hsp_out
-	do
-		hsp_out := mul8(Coeffs[coeff_ind&15], symb_even);
-		coeff_ind := coeff_ind + 1; 
-		hsp_count := hsp_count + 1;
-	end
-
-	// transmit odd
-	// transmits a hsp sample
-	// fired in an alternating fashion with transmit_even
-	transmit_odd: action ==> hsp:[ hsp_out ]
+	
+	// tx_body1 action
+	// produces a half-sine pulse sample
+	tx_body1: action ==> hsp:[ hsp_out ]
 	guard
 		hsp_count < 8
 	var
 		int(size=HSP_SZ) hsp_out
-	do
-		hsp_out := mul8(Coeffs[coeff_ind&15], symb_odd);
-		coeff_ind := coeff_ind + 1; 
+	do	
+		hsp_out := mul8(coeffs[hsp_count], symb[(hsp_count & 1) << 1]);
 		hsp_count := hsp_count + 1;
 	end
 
-	// body_done action
-	// transition from "body" part of the transmission
-	// to the "tail" part of the transmission
-	body_done: action ==>
+	// tx_body1_done action
+	// transition to tx_body2
+	tx_body1_done: action ==>
+	do
+		hsp_count := 0;
+	end
+		
+	// tx_body2 action
+	// produces a half-sine pulse sample
+	tx_body2: action ==> hsp:[ hsp_out ]
 	guard
-		body_index = body_iterations-1
+		hsp_count < 8
+	var
+		int(size=HSP_SZ) hsp_out
+	do	
+		hsp_out := mul8(coeffs[hsp_count+8], symb[hsp_count & 1]);
+		hsp_count := hsp_count + 1;
+	end
+		
+	// tx_body1_done action
+	// transition to tx_tail
+	tx_body2_done: action ==>
 	do
+		symb[2] := symb[1];
+		body_index := body_index + 1; 
 		hsp_count := 0;
-		even_symbol_read := false;
 	end
 
-	// body_next action
-	// transition from "body" iteration N to N+1
-	body_next: action ==>
-	do
-		body_index := body_index + 1;
-		hsp_count := 0;
-		even_symbol_read := false;
+	// tx_tail_start action
+	// Start transmitting tail
+	tx_tail_start: action ==>
+	guard
+		body_index = body_iterations
 	end
 
-	// next action
-	// transition from "header" to "body1"
-	// or from "body1" to "body2"
-	next: action ==>
+	// tx_tail_body action
+	// produces a half-sine pulse sample
+	tx_tail_body: action ==> hsp:[ hsp_out ]
+	guard
+		hsp_count < 8
+	var
+		int(size=HSP_SZ) hsp_out
 	do
-		hsp_count := 0;
-		even_symbol_read := false;
+		hsp_out := mul8(coeffs[hsp_count], symb[3-(hsp_count & 1)]);
+		hsp_count := hsp_count + 1;
 	end
 
-	// deinit action
-	// transition from "tail1" to "tail2"
-	deinit: action ==>
+	// tx_tail_done action
+	// transition to init
+	tx_tail_done: action ==> done: [ true ]
 	do
 		hsp_count := 0;
-		symb_even := 0x7F;           // The last I-value is a dummy
-		even_symbol_read := false;
 	end
-
 
 	schedule fsm s_start :
-		s_start ( init ) --> s_idle;
-		
-		s_idle ( read_even ) --> s_header;
-		s_header ( transmit_even ) --> s_header;
-		s_header ( transmit_odd ) --> s_header;
-		s_header ( next ) --> s_body1_read;
+		s_start ( init ) --> s_read1;
 
-		s_body1_read ( read_odd ) --> s_body1;
-		s_body1 ( transmit_even ) --> s_body1;
-		s_body1 ( transmit_odd ) --> s_body1;
-		s_body1 ( next ) --> s_body2_read;
+		s_read1 ( tx_tail_start ) --> s_tx_tail;
+		s_tx_tail ( tx_tail_body ) --> s_tx_tail;
+		s_tx_tail ( tx_tail_done ) --> s_start;
 
-		s_body2_read ( read_even ) --> s_body2;
-		s_body2 ( transmit_even ) --> s_body2;
-		s_body2 ( transmit_odd ) --> s_body2;
-		s_body2 ( body_done ) --> s_tail1_read;
-		s_body2 ( body_next ) --> s_body1_read;
-
-		s_tail1_read ( read_odd ) --> s_tail1;
-		s_tail1 ( transmit_even ) --> s_tail1;
-		s_tail1 ( transmit_odd ) --> s_tail1;
-		s_tail1 ( deinit ) --> s_tail2;
-
-		s_tail2 ( transmit_even ) --> s_tail2;
-		s_tail2 ( transmit_odd ) --> s_tail2;
-		s_tail2 ( init ) --> s_idle;
+		s_read1 ( read1 ) --> s_read2;
+		s_read2 ( read2 ) --> s_tx_body1;
+		s_tx_body1 ( tx_body1 ) --> s_tx_body1;
+		s_tx_body1 ( tx_body1_done ) --> s_tx_body2;
+		s_tx_body2 ( tx_body2 ) --> s_tx_body2;
+		s_tx_body2 ( tx_body2_done ) --> s_read1;
 	end
 	
 	priority
-		transmit_even > transmit_odd;
-		transmit_odd > init;
-		transmit_odd > next;
-		transmit_odd > body_next;
-		transmit_odd > deinit;
-		body_done > body_next;
-		next > body_done;
-		read_even > read_odd;
+		tx_tail_body > tx_tail_done;
+		tx_body2 > tx_body2_done;
+		tx_body1 > tx_body1_done;
 	end
+
 end

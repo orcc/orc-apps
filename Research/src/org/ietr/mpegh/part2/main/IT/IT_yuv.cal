@@ -3,9 +3,7 @@
 
 package org.ietr.mpegh.part2.main.IT;
 
-import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.main.IT.CommonConstant.*;
 import org.ietr.mpegh.part2.main.IT.TransformFunctions.*;
 
 actor IT_yuv()
@@ -16,18 +14,9 @@ actor IT_yuv()
 	int(size=16)  Block_u, 
 	int(size=16)  Block_v  
 		:
-
-	int 	MAX_TR_DYNAMIC_RANGE = 15; // Maximum transform dynamic range (excluding sign bit)
-	int 	BIT_DEPTH = 8; // assuming 8bits for samples
 	
  	uint(size=2) cIdx := 0;
  	uint(size=3) blk4x4Idx := 0;
- 	uint(size=9) numPartToSend;
- 	uint(size=9) partIdx := 0;
- 
- 	int(size=16) lumaBlk[32*32];
- 	int(size=16) chrBlk_u[16*16];
- 	int(size=16) chrBlk_v[16*16];
 
 	procedure incIdx(int tuSize)
 	begin
@@ -42,215 +31,319 @@ actor IT_yuv()
 		end
 	end
 
-	procedure reorderTu(int(size=16) block[32*32], uint(size=7) tuSize)
-	var
-		uint(size=10) inBlkIdx,
-		uint(size=10) inPixIdx,
-		uint(size=16) blkCoord[2],
-		uint(size=10) outPixIdx,
-		uint(size=6) offset := 0
-	begin
-		if(cIdx = 0) then
-			if(tuSize = 4) then
-				offset := 16*blk4x4Idx;
-			end
-			foreach int yPartIdx in 0 .. tuSize/4 - 1
-			do
-				inBlkIdx := yPartIdx*4 *tuSize;
-				foreach int xPartIdx in 0 .. tuSize/4 - 1
-				do
-					blkCoord := [xPartIdx, yPartIdx];
-					outPixIdx := absCoordInBlkToZScan(blkCoord);
-					outPixIdx := outPixIdx * 16;
-	
-					inPixIdx := inBlkIdx + 4*xPartIdx;
-					foreach int y in 0 .. 3
-					do
-						foreach int x in 0 .. 3
-						do
-							lumaBlk[outPixIdx + offset] := block[inPixIdx + x];
-							outPixIdx := outPixIdx + 1;
-						end
-						inPixIdx := inPixIdx + tuSize;
-					end
-				end
-			end
-		elsif(cIdx = 1) then
-			foreach int yPartIdx in 0 .. tuSize/2 - 1
-			do
-				inBlkIdx := yPartIdx*2 *tuSize;
-				foreach int xPartIdx in 0 .. tuSize/2 - 1
-				do
-					blkCoord := [xPartIdx, yPartIdx];
-					outPixIdx := absCoordInBlkToZScan(blkCoord);
-					outPixIdx := outPixIdx * 4;
-	
-					inPixIdx := inBlkIdx + 2*xPartIdx;
-					foreach int y in 0 .. 1
-					do
-						foreach int x in 0 .. 1
-						do
-							chrBlk_u[outPixIdx] := block[inPixIdx + x];
-							outPixIdx := outPixIdx + 1;
-						end
-						inPixIdx := inPixIdx + tuSize;
-					end
-				end
-			end
-		else
-			foreach int yPartIdx in 0 .. tuSize/2 - 1
-			do
-				inBlkIdx := yPartIdx*2 *tuSize;
-				foreach int xPartIdx in 0 .. tuSize/2 - 1
-				do
-					blkCoord := [xPartIdx, yPartIdx];
-					outPixIdx := absCoordInBlkToZScan(blkCoord);
-					outPixIdx := outPixIdx * 4;
-	
-					inPixIdx := inBlkIdx + 2*xPartIdx;
-					foreach int y in 0 .. 1
-					do
-						foreach int x in 0 .. 1
-						do
-							chrBlk_v[outPixIdx] := block[inPixIdx + x];
-							outPixIdx := outPixIdx + 1;
-						end
-						inPixIdx := inPixIdx + tuSize;
-					end
-				end
-			end
-		end
-	end
-
-	getCoeff.is4x4: action
+	getCoeff.isLuma.is4x4: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
 		Coeff:[coeff] repeat 4*4
 			==>
+		Block_y:[blockY] repeat 4*4
 	guard
-		sizeOfTU = 4 and RCskip = 0
+		cIdx = 0 and sizeOfTU = 4 and RCskip = 0
 	var
-		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 2,
-		int offset = (1 << (shift -1)),
 		int(size=8) tuSize = 4,
-		int(size=16) block[4*4]
+		int(size=16) blockY[4*4]
 	do
 		if(transfSkipFlag = 1) then
-			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 15];
+		    transform_4x4_skip(blockY, coeff, 4);
 		elsif(isDST = 1) then
-			transform_4x4_luma(block, coeff, 4);
+			transform_4x4_luma(blockY, coeff, 2);
 		else
-			transform_4x4(block, coeff, 4);
+			transform_4x4(blockY, coeff, 2);
 		end
 
-		reorderTu(block, tuSize);
 		incIdx(tuSize);
-		numPartToSend := 4;
+	end
+	
+	getCoeff.isChromaU.is4x4: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 4*4
+			==>
+		Block_u:[blockU] repeat 4*4
+	guard
+		cIdx = 1 and sizeOfTU = 4 and RCskip = 0
+	var
+		int(size=8) tuSize = 4,
+		int(size=16) blockU[4*4]
+	do
+		if(transfSkipFlag = 1) then
+			transform_4x4_2_skip_zscan(blockU, coeff);
+		else
+			transform_4x4_zscan(blockU, coeff, 1, 0);
+		end
+
+		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaV.is4x4: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 4*4
+			==>
+		Block_v:[blockV] repeat 4*4
+	guard
+		cIdx = 2 and sizeOfTU = 4 and RCskip = 0
+	var
+		int(size=16) blockV[4*4]
+	do
+		if(transfSkipFlag = 1) then
+			transform_4x4_2_skip_zscan(blockV, coeff);
+		else
+			transform_4x4_zscan(blockV, coeff, 1, 0);
+		end
+
+        cIdx := 0;
 	end
 
-	getCoeff.is4x4.skip: action
+	getCoeff.isLuma.is4x4.skip: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
 			==>
+		Block_y:[blockY] repeat 4*4
 	guard
-		sizeOfTU = 4 and RCskip != 0
+		cIdx = 0 and sizeOfTU = 4 and RCskip != 0
 	var
-		int(size=8) tuSize = 4
+		int(size=8) tuSize = 4,
+		int(size=16) blockY[4*4]
 	do
-		if(cIdx = 0) then
-			foreach int i in 0 .. 15
-			do
-				lumaBlk[16*blk4x4Idx +i] := 0;
-			end
-		elsif(cIdx = 1) then
-			chrBlk_u := [0: for int i in 0 .. 15];
-		else
-			chrBlk_v := [0: for int i in 0 .. 15];
+		foreach int i in 0 .. 15
+		do
+		  blockY[i] := 0;
 		end
+		
 		incIdx(tuSize);
-		numPartToSend := 4;
+	end
+	
+	getCoeff.isChromaU.is4x4.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+		Block_u:[blockU] repeat 4*4
+	guard
+		cIdx = 1 and sizeOfTU = 4 and RCskip != 0
+	var
+		int(size=8) tuSize = 4,
+		int(size=16) blockU[4*4]
+	do
+		blockU := [0: for int i in 0 .. 15];
+		
+		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaV.is4x4.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+		Block_v:[blockV] repeat 4*4
+	guard
+		cIdx = 2 and sizeOfTU = 4 and RCskip != 0
+	var
+		int(size=16) blockV[4*4]
+	do
+		
+		blockV := [0: for int i in 0 .. 15];
+		
+		cIdx := 0;
 	end
 
-	getCoeff.is8x8: action
+	getCoeff.isLuma.is8x8: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
 		Coeff:[coeff] repeat 8*8
 			==>
+		Block_y:[blockY] repeat 8*8
 	guard
-		sizeOfTU = 8 and RCskip = 0
+		cIdx = 0 and sizeOfTU = 8 and RCskip = 0
 	var
-		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 3,
-		int offset = (1 << (shift -1)),
 		int(size=8) tuSize = 8,
-	 	int(size=16) block[8*8]
+		int(size=16) blockY[8*8]
 	do
 		if(transfSkipFlag = 1) then
-			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 63];
+			transform_8x8_4_skip_zscan(blockY, coeff);
 		else
-			transform_8x8(block, coeff, 4);
+			transform_8x8_zscan(blockY, coeff, 4);
 		end
 
-		reorderTu(block, tuSize);
 		incIdx(tuSize);
 	end
+	
+	getCoeff.isChromaU.is8x8: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 8*8
+			==>
+		Block_u:[blockU] repeat 8*8
+	guard
+		cIdx = 1 and sizeOfTU = 8 and RCskip = 0
+	var
+		int(size=8) tuSize = 8,
+		int(size=16) blockU[8*8]
+	do
+		if(transfSkipFlag = 1) then
+			transform_8x8_2_skip_zscan(blockU, coeff);
+		else
+			transform_8x8_zscan(blockU, coeff, 2);
+		end
 
-	getCoeff.is8x8.skip: action
+		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaV.is8x8: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 8*8
+			==>
+		Block_v:[blockV] repeat 8*8
+	guard
+		cIdx = 2 and sizeOfTU = 8 and RCskip = 0
+	var
+		int(size=16) blockV[8*8]
+	do
+		if(transfSkipFlag = 1) then
+			transform_8x8_2_skip_zscan(blockV, coeff);
+		else
+			transform_8x8_zscan(blockV, coeff, 1);
+		end
+		
+		cIdx := 0;
+	end
+
+	getCoeff.isLuma.is8x8.skip: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
 			==>
+		Block_y:[blockY] repeat 8*8
 	guard
-		sizeOfTU = 8 and RCskip != 0
+		cIdx = 0 and sizeOfTU = 8 and RCskip != 0
 	var
-		int(size=8) tuSize = 8
+		int(size=8) tuSize = 8,
+		int(size=16) blockY[8*8]
 	do
-		if(cIdx = 0) then
-			lumaBlk := [0: for int i in 0 .. 63];
-		elsif(cIdx = 1) then
-			chrBlk_u := [0: for int i in 0 .. 63];
-		else
-			chrBlk_v := [0: for int i in 0 .. 63];
-		end
+		blockY := [0: for int i in 0 .. 63];
+		
 		incIdx(tuSize);
 	end
+	
+	getCoeff.isChromaU.is8x8.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+		Block_u:[blockU] repeat 8*8
+	guard
+		cIdx = 1 and sizeOfTU = 8 and RCskip != 0
+	var
+		int(size=8) tuSize = 8,
+		int(size=16) blockU[8*8]
+	do
+		blockU := [0: for int i in 0 .. 63];
+		
+		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaV.is8x8.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+		Block_v:[blockV] repeat 8*8
+	guard
+		cIdx = 2 and sizeOfTU = 8 and RCskip != 0
+	var
+		int(size=16) blockV[8*8]
+	do
+		blockV := [0: for int i in 0 .. 63];
+		
+		cIdx := 0;
+	end
 
-	getCoeff.is16x16: action
+	getCoeff.isLuma.is16x16: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
 		Coeff:[coeff] repeat 16*16
 			==>
+		Block_y:[blockY] repeat 16*16
 	guard
-		sizeOfTU = 16 and RCskip = 0
+		cIdx = 0 and sizeOfTU = 16 and RCskip = 0
 	var
-		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 4,
-		int offset = (1 << (shift -1)),
 		int(size=8) tuSize = 16,
-	 	int(size=16) block[16*16]
+		int(size=16) blockY[16*16]
 	do
 		if(transfSkipFlag = 1) then
-			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 255];
+			transform_16x16_4_skip_zscan(blockY, coeff);
 		else
-			transform_16x16(block, coeff, 16);
+			transform_16x16_zscan(blockY, coeff, 4);
 		end
 
-		reorderTu(block, tuSize);
-		if(cIdx = 0) then
-			numPartToSend := 16;
-		end
 		incIdx(tuSize);
 	end
+	
+	getCoeff.isChromaU.is16x16: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 16*16
+			==>
+		Block_u:[blockU] repeat 16*16
+	guard
+		cIdx = 1 and sizeOfTU = 16 and RCskip = 0
+	var
+		int(size=8) tuSize = 16,
+		int(size=16) blockU[16*16]
+	do
+		if(transfSkipFlag = 1) then
+			transform_16x16_2_skip_zscan(blockU, coeff);
+		else
+			transform_16x16_zscan(blockU, coeff, 2);
+		end
 
-	getCoeff.is16x16.skip: action
+		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaV.is16x16: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
+		Coeff:[coeff] repeat 16*16
+			==>
+		Block_v:[blockV] repeat 16*16
+	guard
+		cIdx = 2 and sizeOfTU = 16 and RCskip = 0
+	var
+		int(size=16) blockV[16*16]
+	do
+		if(transfSkipFlag = 1) then
+			transform_16x16_2_skip_zscan(blockV, coeff);
+		else
+			transform_16x16_zscan(blockV, coeff, 2);
+		end
+		
+		cIdx := 0;
+	end
+
+	getCoeff.isLuma.is16x16.skip: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
 			==>
+		Block_y:[blockY] repeat 16*16
 	guard
-		sizeOfTU = 16 and RCskip != 0
+		cIdx = 0 and sizeOfTU = 16 and RCskip != 0
 	var
-		int(size=8) tuSize = 16
+		int(size=8) tuSize = 16,
+		int(size=16) blockY[16*16]
 	do
-		if(cIdx = 0) then
-			numPartToSend := 16;
-			lumaBlk := [0: for int i in 0 .. 255];
-		elsif(cIdx = 1) then
-			chrBlk_u := [0: for int i in 0 .. 255];
-		else
-			chrBlk_v := [0: for int i in 0 .. 255];
-		end
+		blockY := [0: for int i in 0 .. 255];
+		
 		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaU.is16x16.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+		Block_u:[blockU] repeat 16*16
+	guard
+		cIdx = 1 and sizeOfTU = 16 and RCskip != 0
+	var
+		int(size=8) tuSize = 16,
+		int(size=16) blockU[16*16]
+	do
+		blockU := [0: for int i in 0 .. 255];
+		
+		incIdx(tuSize);
+	end
+	
+	getCoeff.isChromaV.is16x16.skip: action
+		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
+			==>
+		Block_v:[blockV] repeat 16*16
+	guard
+		cIdx = 2 and sizeOfTU = 16 and RCskip != 0
+	var
+		int(size=16) blockV[16*16]
+	do
+		blockV := [0: for int i in 0 .. 255];
+		
+		cIdx := 0;
 	end
 
 	/* cIdx will be 0 */
@@ -258,107 +351,47 @@ actor IT_yuv()
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff],
 		Coeff:[coeff] repeat 32*32
 			==>
+		Block_y:[blockY] repeat 32*32
 	guard
 		sizeOfTU = 32 and RCskip = 0
 	var
 		int(size=8) tuSize = 32,
-		int shift = MAX_TR_DYNAMIC_RANGE - BIT_DEPTH - 5,
-		int offset = (1 << (shift -1)),
-	 	int(size=16) block[32*32]
+		int(size=16) blockY[32*32]
 	do
 		if(transfSkipFlag = 1) then
-			block := [(coeff[i] + offset) >> shift: for int i in 0 .. 1023];
+			transform_32x32_skip_zscan(blockY, coeff);
 		else
-			transform_32x32(block, coeff, 32);
+			transform_32x32_zscan(blockY, coeff, 4);
 		end
 		
-		reorderTu(block, tuSize);
-		numPartToSend := 64;
 		incIdx(tuSize);
 	end
 
 	getCoeff.is32x32.skip: action
 		Size:[sizeOfTU, RCskip, isDST, transfSkipFlag, slcQp, rcCIdx, qpOff]
 			==>
+		Block_y:[blockY] repeat 32*32
 	guard
 		sizeOfTU = 32 and RCskip != 0
+	var
+	    int(size=16) blockY[32*32]
 	do
-		lumaBlk := [0: for int i in 0 .. 1023];
-		numPartToSend := 64;
+		blockY := [0: for int i in 0 .. 1023];
 		incIdx(32);
 	end
 
-	getCoeff_is64x64.skip: action
+	getCoeff_is64x64: action
 		Size:[param] repeat 7*3
 			==>
+		Block_y:[[0: for int i in 0 .. 4095]] repeat 4096, 
+		Block_u:[[0: for int i in 0 .. 1023]] repeat 1024, 
+		Block_v:[[0: for int i in 0 .. 1023]] repeat 1024
 	guard
-		param[0] = 64 //sizeOfTU = 64
-	do
-		partIdx := 0;
-		numPartToSend := 256;
-	end
-
-	sendToken.launch.launch: action ==>
-	guard
-		cIdx = 3
-	do
-		cIdx    := 0;
-		partIdx := 0;
-	end
-
-	sendToken.skip: action ==>
-	guard
-		cIdx < 3
-	end
-
-	sendEmptyBlock.launch: action 
-			==> 
-		Block_y:[[0: for int i in 0 .. 15]] repeat 16, 
-		Block_u:[[0: for int i in 0 .. 4]] repeat 4, 
-		Block_v:[[0: for int i in 0 .. 4]] repeat 4
-	guard
-		partIdx < numPartToSend
-	do
-		partIdx := partIdx + 1;
-	end
-
-	sendEmptyBlock.done: action ==>
-	guard
-		partIdx = numPartToSend
-	do
-		partIdx := 0;
-	end
-
-	sendBlock.launch: action 
-			==> 
-		Block_y:[[lumaBlk[16*idx + i]: for int i in 0 .. 15]] repeat 16, 
-		Block_u:[[chrBlk_u[4*idx + i]: for int i in 0 .. 3]] repeat 4, 
-		Block_v:[[chrBlk_v[4*idx + i]: for int i in 0 .. 3]] repeat 4
-	guard
-		partIdx < numPartToSend
-	var
-		uint(size=9) idx = partIdx
-	do
-		partIdx := partIdx + 1;
-	end
-
-	sendBlock.done: action ==>
-	guard
-		partIdx = numPartToSend
-	do
-		partIdx := 0;
+		param[0] = 64
 	end
 
 	schedule fsm GetCoeff:
-		GetCoeff  (getCoeff         )--> SendToken;
-		GetCoeff  (getCoeff_is64x64 )--> SendEmptyBlock;
-		SendToken (sendToken.skip   )--> GetCoeff;
-		SendToken (sendToken.launch )--> SendBlock;
-
-		SendBlock (sendBlock.launch )--> SendBlock;
-		SendBlock (sendBlock.done   )--> GetCoeff;
-
-		SendEmptyBlock (sendEmptyBlock.launch )--> SendEmptyBlock;
-		SendEmptyBlock (sendEmptyBlock.done   )--> GetCoeff;
+		GetCoeff  (getCoeff         )--> GetCoeff;
+		GetCoeff  (getCoeff_is64x64 )--> GetCoeff;
 	end
 end

@@ -30,7 +30,6 @@ package devel.org.sc29.wg11.mpegh.part2.main.Filters;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
 actor GenerateBs()
 	bool          Cbf,
@@ -45,11 +44,9 @@ actor GenerateBs()
 	bool          SplitTransf,
 	uint(size=16) TilesCoord
 		==>
-	uint(size=2) BS
+	uint(size=2) BSHor,
+	uint(size=2) BSVer
 		:
-	uint(size=1) HORIZ = 0;
-	uint(size=1) VERT = 1;
-
 
 	uint(size=16) sliceAdr[2];
 	bool loopFilterAcrossSlc;
@@ -59,7 +56,7 @@ actor GenerateBs()
 	uint(size=7)  nS;
 	uint(size=16) cuAddr[2] := [-1,-1];
 	uint(size=16) cuAddrNQT[2] := [-1,-1];
-	uint(size=2)  cuMode;
+	uint(size=5)  cuMode;
 	uint(size=3)  numPart;
 	uint(size=3)  numPartDecoded;
 
@@ -73,9 +70,6 @@ actor GenerateBs()
 		[true, true, true, true, true, true, true, true, true, true, true,
 		 true, true, true, true, true];
 
-	bool edgeFlag[2][16][16];
-	bool isTUEdge[2][16][16];
-
 	int(size=16) iLoop;
 
 	uint(size=16) numTiles;
@@ -83,20 +77,30 @@ actor GenerateBs()
 	uint(size=16) tilesBeg[MAX_NUM_TILES][2];
 	uint(size=16) tilesEnd[MAX_NUM_TILES][2];
 
-	uint(size=2) predModeTab[PICT_WIDTH/4][PICT_HEIGHT/4];//
-	bool cbfTab[PICT_WIDTH/4][PICT_HEIGHT/4];//
-	bool isBiPredTab[PICT_WIDTH/4][PICT_HEIGHT/4];//
-	int(size=16) refPocTab[PICT_WIDTH/4][PICT_HEIGHT/4][2];//
-	int(size=32) mvTab[PICT_WIDTH/4][PICT_HEIGHT/4][2][2];//
+	uint(size=5) predModeTab[PICT_WIDTH_POW_2/4][PICT_HEIGHT_POW_2/4];//
+	bool cbfUpNeighb[PICT_WIDTH_POW_2/4];//
+	bool cbfLeftNeighb[PICT_HEIGHT_POW_2/4];//
+	bool isBiPredTab[PICT_WIDTH_POW_2/4][PICT_HEIGHT_POW_2/4];//
+	int(size=16) refPocUpNeighb[PICT_WIDTH_POW_2/4][2];//
+	int(size=16) refPocLeftNeighb[PICT_HEIGHT_POW_2/4][2];//
+	int(size=32) mvUpNeighb[PICT_WIDTH_POW_2/4][2][2];//
+	int(size=32) mvLeftNeighb[PICT_HEIGHT_POW_2/4][2][2];//
+	int(size=16) coordMax1stPu[2];
+	int(size=16) xAddr2ndPu;
+	int(size=16) yAddr2ndPu;
 	bool isBiPred[2];
 	int(size=16) refPoc[2][2];
 	int(size=32) mv[2][2][2];
 	
 
 	uint(size=9) currIdx;
-	uint(size=9) maxRasterScanIdx;
+	uint(size=9) currIdxHor;
+	uint(size=9) currIdxVer;
+	int(size=9) nbBlkToSend;
 	uint(size=2) numMvInfo;
-	uint(size=2) bsTable[2][256];
+	uint(size=2) bsTable[2][128];
+
+	uint(size=16) treeAddrInBlk[2];
 
 	procedure findCurrTile(uint(size=16) xPixAddr, uint(size=16) yPixAddr)
 	begin
@@ -112,45 +116,85 @@ actor GenerateBs()
 		end
 	end
 
-	procedure savePredInfo(uint(size=16) addr[2], uint(size=8) puSize[2],
-		uint(size=1) tabIdx)
+	procedure savePredInfoTu(uint(size=16) treeAddrInBlk[2], uint(size=8) treeSizeInBlk)
 	var
-		uint(size=16) xMin = (addr[0]>>2)&(PICT_WIDTH/4-1),
-		uint(size=16) xMax = ((addr[0]+puSize[0])/4)&(PICT_WIDTH/4-1),
-		uint(size=16) yMin = addr[1]/4,
-		uint(size=16) yMax = (addr[1]+puSize[1])/4,
-		uint(size=16) y
+		uint(size=16) xMin = treeAddrInBlk[0] & (PICT_WIDTH_POW_2/4-1),
+		uint(size=16) xMax = (treeAddrInBlk[0] + treeSizeInBlk)&(PICT_WIDTH_POW_2/4-1),
+		uint(size=16) yMin = treeAddrInBlk[1],
+		uint(size=16) yMax = treeAddrInBlk[1]+treeSizeInBlk,
+		uint(size=8) partIdx
 	begin
+	    if (numMvInfo != 2) then
 		foreach uint x in xMin .. xMax-1
 		do
-			y := yMin;
-			while(y!=yMax)
+			predModeTab[x][yMin] := cuMode;
+			isBiPredTab[x][yMin] := isBiPred[0];
+			
+			predModeTab[x][yMax - 1] := cuMode;
+			isBiPredTab[x][yMax - 1] := isBiPred[0];
+		  end
+		  foreach uint y in yMin .. yMax-1
+		  do
+			predModeTab[xMin][y] := cuMode;
+			isBiPredTab[xMin][y] := isBiPred[0];
+
+			predModeTab[xMax - 1][y] := cuMode;
+			isBiPredTab[xMax - 1][y] := isBiPred[0];
+		  end
+		else
+		  foreach uint x in xMin .. xMax-1
+		  do
+			partIdx := castBoolToInt((x >= xAddr2ndPu || yMin >= yAddr2ndPu));
+			predModeTab[x][yMin] := cuMode;
+			isBiPredTab[x][yMin] := isBiPred[partIdx];
+
+			partIdx := castBoolToInt((x >= xAddr2ndPu || (yMax - 1) >= yAddr2ndPu));
+			predModeTab[x][yMax - 1] := cuMode;
+			isBiPredTab[x][yMax - 1] := isBiPred[partIdx];
+		end
+		foreach uint y in yMin .. yMax-1
+		do
+			partIdx := castBoolToInt((xMin >= xAddr2ndPu || y >= yAddr2ndPu));
+			predModeTab[xMin][y] := cuMode;
+			isBiPredTab[xMin][y] := isBiPred[partIdx];
+
+			partIdx := castBoolToInt(((xMax - 1) >= xAddr2ndPu || y >= yAddr2ndPu));
+			predModeTab[xMax - 1][y] := cuMode;
+			isBiPredTab[xMax - 1][y] := isBiPred[partIdx];
+		end
+	end
+	end
+
+	procedure savePredPuEdge(uint(size=16) addr[2], uint(size=8) puSize[2], bool edgeIsHoriz)
+	var
+		uint(size=16) xMin = (addr[0]>>2)&(PICT_WIDTH_POW_2/4-1),
+		uint(size=16) xMax = ((addr[0]+puSize[0])/4)&(PICT_WIDTH_POW_2/4-1),
+		uint(size=16) yMin = addr[1]/4,
+		uint(size=16) yMax = (addr[1]+puSize[1])/4
+	begin
+		if(edgeIsHoriz) then
+			foreach uint x in xMin .. xMax-1
 			do
-				predModeTab[x][y] := cuMode;
-				isBiPredTab[x][y] := isBiPred[tabIdx];
-				foreach int i in 0 .. 1
-				do
-					refPocTab[x][y][i] := refPoc[tabIdx][i];
-					mvTab[x][y][i][0] := mv[tabIdx][i][0]-(addr[0]<<2);
-					mvTab[x][y][i][1] := mv[tabIdx][i][1]-(addr[1]<<2);
-				end
-				y := y+1;
+				predModeTab[x][yMax - 1] := cuMode;
+				isBiPredTab[x][yMax - 1] := isBiPred[0];
+
+				predModeTab[x][yMax] := cuMode;
+				isBiPredTab[x][yMax] := isBiPred[1];
+			end
+		else
+			foreach uint y in yMin .. yMax-1
+			do
+				predModeTab[xMax - 1][y] := cuMode;
+				isBiPredTab[xMax - 1][y] := isBiPred[0];
+
+				predModeTab[xMax][y] := cuMode;
+				isBiPredTab[xMax][y] := isBiPred[1];
 			end
 		end
 	end
 
 	procedure rstEdgeTables(uint(size=16) addr[2])
 	begin
-		foreach int i in 0 .. 15
-		do
-			foreach int j in 0 .. 15
-			do
-				edgeFlag[VERT][i][j] := false;
-				edgeFlag[HORIZ][i][j] := false;
-				isTUEdge[VERT][i][j] := false;
-				isTUEdge[HORIZ][i][j] := false;
-			end
-		end
 		vertEdgeFlagVal[0] := (addr[0] != 0);
 		horEdgeFlagVal[0] := (addr[1] != 0);
 	
@@ -175,140 +219,324 @@ actor GenerateBs()
 		end
 	end
 
-	procedure processTUBoundaries()
+	procedure processTUBoundaries(bool cbf, uint(size=16) treeAddr[2], uint(size=7) treeNS)
 	var
-		uint(size=16) treeAddr[2],
-		uint(size=7)  treeNS,
 		uint(size=16) xMin,
 		uint(size=16) xMax,
 		uint(size=16) yMin,
-		uint(size=16) yMax
+		uint(size=16) yMax,
+
+		uint(size=2) bS[1],
+		uint(size=16) addrBlk[2],
+		uint(size=16) addrTUInBlk[2],
+		uint(size=16) rasterIdx,
+		uint(size=8) partIdx
 	begin
-		treeAddr := [cuAddr[i]: for int i in 0 .. 1];
-		treeNS := nS;
-		foreach uint idx in 1 .. trafoTreeDepth
-		do
-			treeNS := treeNS >> 1;
-			if((trafoTreeIdx[idx]&1) != 0) then
-				treeAddr[0] := treeAddr[0] + treeNS;
+		xMin := (treeAddr[0] & (lcuSizeMax - 1))>>2;
+		xMax := xMin+(treeNS>>2);
+		yMin := (treeAddr[1] & (lcuSizeMax - 1))>>2;
+		yMax := yMin + (treeNS>>2);
+
+		if (horEdgeFlagVal[yMin]) then
+			addrBlk := [treeAddr[i] >> 2: for int i in 0 .. 1];
+			// addrTUInBlk := [treeAddr[i] - cuAddr[i] >> 2: for int i in 0 .. 1];
+			addrTUInBlk[0] := treeAddr[0] - cuAddr[0] >> 2;
+			addrTUInBlk[1] := treeAddr[1] - cuAddr[1] >> 3;
+			if ((addrBlk[1] & 1) != 1) then
+			  foreach int x in xMin .. xMax - 1
+			  do
+				rasterIdx := absCoordInBlkToZScan2(addrTUInBlk);
+				partIdx := castBoolToInt(not( x < coordMax1stPu[0] && yMin < coordMax1stPu[1] ));
+
+				genBoundFilterStrengthTUHor(bS, addrBlk, cbf, partIdx);
+				bsTable[1][rasterIdx] := bS[0];
+
+				addrBlk[0] := addrBlk[0] + 1;
+				addrTUInBlk[0] := addrTUInBlk[0] + 1;
+			  end
+		    end
+	    end
+
+		if (vertEdgeFlagVal[xMin]) then
+			addrBlk := [treeAddr[i] >> 2: for int i in 0 .. 1];
+			// addrTUInBlk := [treeAddr[i] - cuAddr[i] >> 2: for int i in 0 .. 1];
+			addrTUInBlk[0] := treeAddr[0] - cuAddr[0] >> 3;
+			addrTUInBlk[1] := treeAddr[1] - cuAddr[1] >> 2;
+			if ((addrBlk[0] & 1) != 1) then
+			foreach int y in yMin .. yMax - 1
+			do
+				rasterIdx := absCoordInBlkToZScan3(addrTUInBlk);
+				partIdx := castBoolToInt(not(xMin < coordMax1stPu[0] && y < coordMax1stPu[1]));
+
+				genBoundFilterStrengthTUVert(bS, addrBlk, cbf, partIdx);
+				bsTable[0][rasterIdx] := bS[0];
+				
+				addrBlk[1] := addrBlk[1] + 1;
+				addrTUInBlk[1] := addrTUInBlk[1] + 1;
 			end
-			if((trafoTreeIdx[idx]&2) != 0) then
-				treeAddr[1] := treeAddr[1] + treeNS;
-			end
-		end
-		treeAddr[0] := (treeAddr[0] & (lcuSizeMax - 1)) >> 2;
-		treeAddr[1] := (treeAddr[1] & (lcuSizeMax - 1)) >> 2;
-		treeNS      := treeNS >> 2;
-		xMin := treeAddr[0];
-		yMin := treeAddr[1];
-		xMax := xMin + treeNS;
-		yMax := yMin + treeNS;
-		foreach int x in xMin .. xMax-1
-		do
-			edgeFlag[HORIZ][x][yMin] := horEdgeFlagVal[yMin];
-			isTUEdge[HORIZ][x][yMin] := horEdgeFlagVal[yMin];
-		end
-		foreach int y in yMin .. yMax-1
-		do
-			edgeFlag[VERT][xMin][y] := vertEdgeFlagVal[xMin];
-			isTUEdge[VERT][xMin][y] := vertEdgeFlagVal[xMin];
 		end
 	end
+	end
 
-	procedure processPUBoundary(uint(size=16) addr[2], uint(size=8) puSize[2])
+	/* Compute Pu boundary only if it's not sure to also have a TU boundary */
+	procedure processPUBoundary(uint(size=16) addr[2], uint(size=8) puSize[2], bool edgeIsHoriz)
 	var
 		int xMin = (addr[0] & (lcuSizeMax - 1)) >> 2,
 		int xMax = xMin + (puSize[0] >> 2),
 		int yMin = (addr[1] & (lcuSizeMax - 1)) >> 2,
-		int yMax = yMin + (puSize[1] >> 2)
-	begin
-		foreach uint x in xMin .. xMax-1
-		do
-			edgeFlag[HORIZ][x][yMin] := horEdgeFlagVal[yMin];
-		end
-		foreach uint y in yMin .. yMax-1
-		do
-			edgeFlag[VERT][xMin][y] := vertEdgeFlagVal[xMin];
-		end
-	end
+		int yMax = yMin + (puSize[1] >> 2),
 
-	procedure genBoundFilterStrength(uint(size=2) bS[1], uint(size=16) addr[2], bool isVerticalEdge, uint(size=2) cIdx, bool isTUEdge)
-	var
-		uint(size=16) q0[2] = [(addr[0]/4)&(PICT_WIDTH/4-1), addr[1]/4],
-		uint(size=16) p0[2] := if(isVerticalEdge) then [q0[0]-1, q0[1]]
-			else [q0[0], q0[1]-1] end,
-		int(size=16) tmpRefPoc,
-		int(size=32) tmpMv,
-		int(size=32) absMv[2][2],
-		int(size=16) absMvQP[2][2]
+
+		uint(size=2) bS[1],
+		uint(size=16) addrBlk[2],
+		uint(size=16) addrTU[2],
+		uint(size=16) rasterIdx,
+		int(size=32) mvQ0Pu1 [2][2] := [[mv[0][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=32) mvQ0Pu2 [2][2] := [[mv[1][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=16) refPocQ0Pu1[2] := [refPoc[0][i]: for int i in 0 .. 1],
+		int(size=16) refPocQ0Pu2[2] := [refPoc[1][i]: for int i in 0 .. 1]
 	begin
-		if(isVerticalEdge && ((addr[0]>>2)&1)=1) then
-			bS[0] := 0;
-		else if(not isVerticalEdge && ((addr[1]>>2)&1)=1) then
-			bS[0] := 0;
-		else if(predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
-			bS[0] := 2;
-		else if(cIdx=0 && isTUEdge && (cbfTab[p0[0]][p0[1]] || cbfTab[q0[0]][q0[1]])) then
-			bS[0] := 1;
-		else
-			if(isBiPredTab[p0[0]][p0[1]] && isBiPredTab[q0[0]][q0[1]] && refPocTab[p0[0]][p0[1]][0] = refPocTab[q0[0]][q0[1]][1]) then
-				tmpRefPoc := refPocTab[q0[0]][q0[1]][1];
-				refPocTab[q0[0]][q0[1]][1] := refPocTab[q0[0]][q0[1]][0];
-				refPocTab[q0[0]][q0[1]][0] := tmpRefPoc;
-				tmpMv := mvTab[q0[0]][q0[1]][0][0];
-				mvTab[q0[0]][q0[1]][0][0] := mvTab[q0[0]][q0[1]][1][0];
-				mvTab[q0[0]][q0[1]][1][0] := tmpMv;
-				tmpMv := mvTab[q0[0]][q0[1]][0][1];
-				mvTab[q0[0]][q0[1]][0][1] := mvTab[q0[0]][q0[1]][1][1];
-				mvTab[q0[0]][q0[1]][1][1] := tmpMv;
-			end
-			if(isBiPredTab[p0[0]][p0[1]] != isBiPredTab[q0[0]][q0[1]] ||
-			   refPocTab[p0[0]][p0[1]][0] != refPocTab[q0[0]][q0[1]][0] ||
-			   isBiPredTab[p0[0]][p0[1]] && //L1
-			   (refPocTab[p0[0]][p0[1]][1] != refPocTab[q0[0]][q0[1]][1])) then
-				bS[0] := 1;
-			else
-				absMv[0][0] := abs(mvTab[p0[0]][p0[1]][0][0]- mvTab[q0[0]][q0[1]][0][0]);
-				absMv[0][1] := abs(mvTab[p0[0]][p0[1]][0][1]- mvTab[q0[0]][q0[1]][0][1]);
-				if(not isBiPredTab[p0[0]][p0[1]] && (absMv[0][0]>=4 || absMv[0][1]>=4))then
-					bS[0] := 1;
-				else
-					absMv[1][0] := abs(mvTab[p0[0]][p0[1]][1][0]- mvTab[q0[0]][q0[1]][1][0]);
-					absMv[1][1] := abs(mvTab[p0[0]][p0[1]][1][1]- mvTab[q0[0]][q0[1]][1][1]);
-					if(isBiPredTab[p0[0]][p0[1]] &&
-					   refPocTab[p0[0]][p0[1]][0] != refPocTab[p0[0]][p0[1]][1] &&
-					   (absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4)) then
-						bS[0] := 1;
-					else
-						if(isBiPredTab[p0[0]][p0[1]] &&
-						   refPocTab[p0[0]][p0[1]][0] = refPocTab[p0[0]][p0[1]][1]) then
-							absMvQP[0][0] := abs(mvTab[p0[0]][p0[1]][0][0]- mvTab[q0[0]][q0[1]][1][0]);
-							absMvQP[0][1] := abs(mvTab[p0[0]][p0[1]][0][1]- mvTab[q0[0]][q0[1]][1][1]);
-							absMvQP[1][0] := abs(mvTab[p0[0]][p0[1]][1][0]- mvTab[q0[0]][q0[1]][0][0]);
-							absMvQP[1][1] := abs(mvTab[p0[0]][p0[1]][1][1]- mvTab[q0[0]][q0[1]][0][1]);
-							if((absMv[0][0]>=4 || absMv[0][1]>=4 || absMv[1][0]>=4 || absMv[1][1]>=4) &&
-							   (absMvQP[0][0]>=4 || absMvQP[0][1]>=4 || absMvQP[1][0]>=4
-							   || absMvQP[1][1]>=4)) then
-								bS[0] := 1;
-							else
-								bS[0] := 0;
-							end
-						else
-							bS[0] := 0;
-						end
-					end
+		addrBlk := [addr[i] >> 2: for int i in 0 .. 1];
+		// addrTU := [addr[i] - cuAddr[i]: for int i in 0 .. 1];
+		if(edgeIsHoriz) then
+			if(horEdgeFlagVal[yMin]) then
+			  if ((addrBlk[1] & 1) != 1) then
+			    addrTU[0] := addr[0] - cuAddr[0];
+			    addrTU[1] := addr[1] - cuAddr[1];
+				foreach int x in xMin .. xMax - 1
+				do
+					rasterIdx := absCoordToZScan2(addrTU);
+					genBoundFilterStrengthCorePU(bS, addrBlk, false, mvQ0Pu1, mvQ0Pu2, refPocQ0Pu1, refPocQ0Pu2);
+					bsTable[1][rasterIdx] := bS[0];
+					addrBlk[0] := addrBlk[0] + 1;
+					addrTU[0] := addrTU[0] + 4;
 				end
 			end
-		end end end end
+			end
+		else
+			if(vertEdgeFlagVal[xMin]) then
+			    if ((addrBlk[0] & 1) != 1) then
+			      addrTU[0] := addr[0] - cuAddr[0];
+			      addrTU[1] := addr[1] - cuAddr[1];
+				foreach int y in yMin .. yMax - 1
+				do
+					rasterIdx := absCoordToZScan3(addrTU);
+					genBoundFilterStrengthCorePU(bS, addrBlk, true, mvQ0Pu1, mvQ0Pu2, refPocQ0Pu1, refPocQ0Pu2);
+					bsTable[0][rasterIdx] := bS[0];
+					addrBlk[1] := addrBlk[1] + 1;
+					addrTU[1] := addrTU[1] + 4;
+				end
+			end
+		end
+	end
 	end
 
-	isNewSliceOrPict.isNotDep: action LcuSizeMax:[lcuSz], PartMode:[partMode],
+    @optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength0_mv32_orcc")
+	procedure boundaryStrength0(
+		uint(size=2) bS[1],
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	begin
+      if ((abs(mvP0[0][0] - mvQ0[0][0]) >= 4 || abs(mvP0[0][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[1][0] - mvQ0[1][0]) >= 4 || abs(mvP0[1][1] - mvQ0[1][1]) >= 4) &&
+        (abs(mvP0[1][0] - mvQ0[0][0]) >= 4 || abs(mvP0[1][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[0][0] - mvQ0[1][0]) >= 4 || abs(mvP0[0][1] - mvQ0[1][1]) >= 4)) then
+       	bS[0] := 1;
+      else
+        bS[0] := 0;
+      end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength1_mv32_orcc")
+	procedure boundaryStrength1(
+		uint(size=2) bS[1],
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	begin
+	  if (abs(mvP0[0][0] - mvQ0[0][0]) >= 4 || abs(mvP0[0][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[1][0] - mvQ0[1][0]) >= 4 || abs(mvP0[1][1] - mvQ0[1][1]) >= 4) then
+       	bS[0] := 1;
+      else
+        bS[0] := 0;
+      end
+     end
+    
+    @optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength2_mv32_orcc")
+	procedure boundaryStrength2(
+		uint(size=2) bS[1],
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	begin
+      if (abs(mvP0[1][0] - mvQ0[0][0]) >= 4 || abs(mvP0[1][1] - mvQ0[0][1]) >= 4 ||
+        abs(mvP0[0][0] - mvQ0[1][0]) >= 4 || abs(mvP0[0][1] - mvQ0[1][1]) >= 4) then
+       	bS[0] := 1;
+      else
+        bS[0] := 0;
+      end
+	end
+	
+	@optimize_c(condition="defined(SSE_ENABLE) && HAVE_SSE4", name="boundaryStrength3_mv32_orcc")
+	procedure boundaryStrength3(
+		uint(size=2) bS[1],
+		uint(size=5) predModeP0,
+		uint(size=5) predModeQ0,
+		int(size=32) mvP0[2][2],
+		int(size=32) mvQ0[2][2])
+	var
+	  int(size=32) vA[2], 
+      int(size=32) vB[2]
+	begin
+       vA[0]     := mvQ0[predModeQ0][0];
+       vA[1]     := mvQ0[predModeQ0][1];
+       vB[0]     := mvP0[predModeP0][0];
+       vB[1]     := mvP0[predModeP0][1];
+       if ((abs(vA[0] - vB[0]) >= 4 || abs(vA[1] - vB[1]) >= 4)) then
+        bS[0] := 1;
+       else
+        bS[0] := 0;
+       end
+    end
+     
+	procedure genBoundFilterStrengthTUVert(uint(size=2) bS[1], uint(size=16) addrInBlk[2],
+		bool cbfQ0, uint(size=8) partIdx)
+	var
+		uint(size=16) q0[2] = [addrInBlk[0] & (PICT_WIDTH_POW_2/4-1), addrInBlk[1]],
+		uint(size=16) p0[2] := [q0[0]-1, q0[1]],
+		int(size=32) mvP0[2][2] :=
+			[[mvLeftNeighb[q0[1]][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=32) mvQ0[2][2] :=
+			[[mv[partIdx][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=16) refPocP0[2] := [refPocLeftNeighb[q0[1]][i]: for int i in 0 .. 1],
+		int(size=16) refPocQ0[2] := [refPoc[partIdx][i]: for int i in 0 .. 1],
+		bool cbfP0 = cbfLeftNeighb[q0[1]],
+		uint(size=5) predModeQ0,
+		uint(size=5) predModeP0
+	begin
+	    if (predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
+			bS[0] := 2;
+		else if(cbfP0 || cbfQ0) then
+			bS[0] := 1;
+		else
+		  bS[0] := 1;
+          if (isBiPredTab[p0[0]][p0[1]] and isBiPredTab[q0[0]][q0[1]]) then
+		    if (refPocQ0[0] = refPocP0[0]) then
+              if (refPocQ0[0] = refPocQ0[1] &&
+			    refPocP0[0] = refPocP0[1]) then
+                boundaryStrength0(bS, mvP0, mvQ0);
+              else if (refPocP0[1] = refPocQ0[1]) then
+                boundaryStrength1(bS, mvP0, mvQ0);
+			  end
+			end
+            else if (refPocP0[1] = refPocQ0[0] and
+              refPocP0[0] = refPocQ0[1]) then
+                boundaryStrength2(bS, mvP0, mvQ0);
+            end end
+          else if (not (isBiPredTab[p0[0]][p0[1]]) and not (isBiPredTab[q0[0]][q0[1]])) then // 1 MV
+            predModeQ0 := predModeTab[q0[0]][q0[1]] & 1;
+		    predModeP0 := predModeTab[p0[0]][p0[1]] & 1;
+            if (refPocQ0[predModeQ0] = refPocP0[predModeP0]) then
+              boundaryStrength3(bS, predModeP0, predModeQ0, mvP0, mvQ0);
+			end
+		  end
+		end
+      end end
+	end
+
+	procedure genBoundFilterStrengthTUHor(uint(size=2) bS[1], uint(size=16) addrInBlk[2],
+		bool cbfQ0, uint(size=8) partIdx)
+	var
+		uint(size=16) q0[2] = [addrInBlk[0] & (PICT_WIDTH_POW_2/4-1), addrInBlk[1]],
+		int(size=32) mvP0 [2][2] :=
+			[[mvUpNeighb[q0[0]][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=32) mvQ0 [2][2] :=
+			[[mv[partIdx][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1],
+		int(size=16) refPocP0 [2] := [refPocUpNeighb[q0[0]][i]: for int i in 0 .. 1],
+		int(size=16) refPocQ0[2] := [refPoc[partIdx][i]: for int i in 0 .. 1],
+		uint(size=16) p0[2] := [q0[0], q0[1]-1],
+		bool cbfP0 = cbfUpNeighb[q0[0]],
+		uint(size=5) predModeQ0,
+		uint(size=5) predModeP0
+	begin
+	    if (predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
+		  bS[0] := 2;
+		else if (cbfP0 || cbfQ0) then
+		  bS[0] := 1;
+		else
+		  bS[0] := 1;
+          if (isBiPredTab[p0[0]][p0[1]] and isBiPredTab[q0[0]][q0[1]]) then
+		    if (refPocQ0[0] = refPocP0[0]) then
+              if (refPocQ0[0] = refPocQ0[1] &&
+			    refPocP0[0] = refPocP0[1]) then
+                boundaryStrength0(bS, mvP0, mvQ0);
+              else if (refPocP0[1] = refPocQ0[1]) then
+                boundaryStrength1(bS, mvP0, mvQ0);
+			  end
+			end
+            else if (refPocP0[1] = refPocQ0[0] and
+              refPocP0[0] = refPocQ0[1]) then
+              boundaryStrength2(bS, mvP0, mvQ0);
+            end end
+          else if (not (isBiPredTab[p0[0]][p0[1]]) and not (isBiPredTab[q0[0]][q0[1]])) then // 1 MV
+            predModeQ0 := predModeTab[q0[0]][q0[1]] & 1;
+		    predModeP0 := predModeTab[p0[0]][p0[1]] & 1;
+            if (refPocQ0[predModeQ0] = refPocP0[predModeP0]) then
+              boundaryStrength3(bS, predModeP0, predModeQ0, mvP0, mvQ0);
+			end
+		  end
+		end
+		end end
+	end
+
+	procedure genBoundFilterStrengthCorePU(uint(size=2) bS[1], uint(size=16) addrInBlk[2],
+		bool isVerticalEdge, int(size=32) mvP0 [2][2], int(size=32) mvQ0 [2][2],
+		int(size=16) refPocP0[2], int(size=16) refPocQ0 [2])
+	var
+		uint(size=16) q0[2] = [addrInBlk[0] & (PICT_WIDTH_POW_2 / 4 - 1), addrInBlk[1]],
+		uint(size=16) p0[2] := if(isVerticalEdge) then [q0[0]-1, q0[1]]
+			else [q0[0], q0[1]-1] end,
+		uint(size=5) predModeQ0,
+		uint(size=5) predModeP0
+	begin
+		if (predModeTab[p0[0]][p0[1]] = INTRA || predModeTab[q0[0]][q0[1]] = INTRA) then
+			bS[0] := 2;
+		else
+		  bS[0] := 1;
+          if (isBiPredTab[p0[0]][p0[1]] and isBiPredTab[q0[0]][q0[1]]) then
+		    if (refPocQ0[0] = refPocP0[0]) then
+              if (refPocQ0[0] = refPocQ0[1] &&
+			    refPocP0[0] = refPocP0[1]) then
+                boundaryStrength0(bS, mvP0, mvQ0);
+              else if (refPocP0[1] = refPocQ0[1]) then
+                boundaryStrength1(bS, mvP0, mvQ0);
+			  end
+			end
+            else if (refPocP0[1] = refPocQ0[0] and
+              refPocP0[0] = refPocQ0[1]) then
+                boundaryStrength2(bS, mvP0, mvQ0);
+            end end
+          else if (not (isBiPredTab[p0[0]][p0[1]]) and not (isBiPredTab[q0[0]][q0[1]])) then // 1 MV
+            predModeQ0 := predModeTab[q0[0]][q0[1]] & 1;
+		    predModeP0 := predModeTab[p0[0]][p0[1]] & 1;
+            if (refPocQ0[predModeQ0] = refPocP0[predModeP0]) then
+              boundaryStrength3(bS, predModeP0, predModeQ0, mvP0, mvQ0);
+			end
+		  end
+		end
+		end
+	end
+
+	initialize ==>
+	do
+		bsTable := [[0: for int i in 0 .. 127]: for int j in 0 .. 1];
+	end
+
+	isNewSliceOrPict.isNotDep: action LcuSizeMax:[log2LcuSz], PartMode:[partMode],
 		SliceAddr:[slcAddr] repeat 2, LFAcrossSlcTile:[lfAcrossSlcTile],
 		TilesCoord:[valNumTiles] ==>
 	guard
 		partMode = PART_MODE_SLICE_INDEP || partMode = PART_MODE_PICT
 	do
-		lcuSizeMax := lcuSz;
+		lcuSizeMax := (1 << log2LcuSz);
 		numTiles := valNumTiles;
 		iLoop := 0;
 		sliceAdr:= [slcAddr[0], slcAddr[1]];
@@ -345,6 +573,8 @@ actor GenerateBs()
 		partMode != PART_2Nx2N && partMode != PART_NxN
 	do
 		currIdx := 0;
+		currIdxHor := 0;
+		currIdxVer := 0;
 		numMvInfo := 2;
 	end
 
@@ -364,11 +594,7 @@ actor GenerateBs()
 	do
 		isBiPred[currIdx] := (isBiPredOrLx=BI_PRED);
 		refPoc[currIdx][0] := refPocVal;
-		if(currIdx=0) then
-			mv[currIdx][0] := [mvVal[i]:for uint i in 0 .. 1];
-		else
-			mv[currIdx][0] := [mvVal[i]:for uint i in 0 .. 1];
-		end
+		mv[currIdx][0] := [mvVal[i]:for uint i in 0 .. 1];
 		currIdx := currIdx + 1;
 	end
 
@@ -379,11 +605,7 @@ actor GenerateBs()
 	do
 		isBiPred[currIdx] := (isBiPredOrLx=BI_PRED);
 		refPoc[currIdx] := [refPocVal[i]:for uint i in 0 .. 1];
-		if(currIdx=0) then
-			mv[currIdx] := [[mvVal[i+2*j]:for uint i in 0 .. 1]: for uint j in 0 .. 1];
-		else
-			mv[currIdx] := [[mvVal[i+2*j]:for uint i in 0 .. 1]: for uint j in 0 .. 1];
-		end
+		mv[currIdx] := [[mvVal[i+2*j]:for uint i in 0 .. 1]: for uint j in 0 .. 1];
 		currIdx := currIdx + 1;
 	end
 
@@ -392,7 +614,14 @@ actor GenerateBs()
 		currIdx = numMvInfo
 	do
 		if(numMvInfo=1 or numMvInfo=0) then
-			savePredInfo(cuAddr, [nS, nS], 0);
+			foreach int i in 0 .. 1
+			do
+				foreach int j in 0 .. 1
+				do
+					mv[0][i][j] := mv[0][i][j] - (cuAddr[j] << 2);
+					mv[1][i][j] := mv[1][i][j] - (cuAddrNQT[j] << 2);
+				end
+			end
 		end
 	end
 
@@ -411,6 +640,8 @@ actor GenerateBs()
 			rstEdgeTables([cuInfo[1], cuInfo[2]]);
 		end
 		cuAddr := [cuInfo[1], cuInfo[2]];
+		coordMax1stPu[0] := (cuAddr[0] & (lcuSizeMax - 1)) + cuInfo[3] >>2;
+		coordMax1stPu[1] := (cuAddr[1] & (lcuSizeMax - 1)) + cuInfo[4] >>2;
 		numPartDecoded := numPartDecoded + 1;
 	end
 
@@ -429,34 +660,56 @@ actor GenerateBs()
 			rstEdgeTables([cuInfo[1], cuInfo[2]]);
 		end
 		cuAddr := [cuInfo[1], cuInfo[2]];
-		nS := max(cuInfo[3], cuInfo[4]);
-		puSize := [cuInfo[3], cuInfo[4]];
-		processPUBoundary(cuAddr, puSize);
-		savePredInfo(cuAddr, puSize, 0);
-		puSize := [cuInfo[8], cuInfo[9]];
 		cuAddrNQT := [cuInfo[6], cuInfo[7]];
-		processPUBoundary(cuAddrNQT, puSize);
-		savePredInfo(cuAddrNQT, puSize, 1);
+		foreach int i in 0 .. 1
+		do
+			foreach int j in 0 .. 1
+			do
+				mv[0][i][j] := mv[0][i][j] - (cuAddr[j] << 2);
+				mv[1][i][j] := mv[1][i][j] - (cuAddrNQT[j] << 2);
+			end
+		end
+		nS := max(cuInfo[3], cuInfo[4]);
+
+		puSize := [cuInfo[3], cuInfo[4]];
+		savePredPuEdge(cuAddr, puSize, cuInfo[2] != cuInfo[7]);
+
+		puSize := [cuInfo[8], cuInfo[9]];
+		processPUBoundary(cuAddrNQT, puSize, cuInfo[2] != cuInfo[7]);
+
 		numPart := 2;
 		numPartDecoded := 2;
 		trafoTreeDepth  := 0;
 		trafoTreeIdx[0] := 3;
-		
+
+		coordMax1stPu[0] := (cuAddr[0] & (lcuSizeMax - 1)) + cuInfo[3] >>2;
+		xAddr2ndPu        := cuAddr[0] + cuInfo[3] >> 2;
+		yAddr2ndPu        := cuAddr[1] + cuInfo[4] >> 2;
+		coordMax1stPu[1] := (cuAddr[1] & (lcuSizeMax - 1)) + cuInfo[4] >>2;
 	end
 
 	getCuInfo.done: action ==>
 	guard
 		numPartDecoded = numPart
+	var
+		int idxMax = nS * nS / 32
+	do
+		foreach int i in 0 .. idxMax - 1
+		do
+			bsTable[0][i] := 0;
+			bsTable[1][i] := 0;
+		end
 	end
 
 	getCuMode.isNotOther: action ==>
 	guard
 		cuMode = INTER || cuMode = SKIP || cuMode = INTRA
 	do
-		processPUBoundary(cuAddr, [nS, nS]);
 		trafoTreeDepth  := 0;
 		trafoTreeIdx[0] := 3;
 		currIdx := 0;
+		currIdxHor := 0;
+		currIdxVer := 0;
 		numMvInfo :=
 			if(cuMode=INTRA) then
 				0
@@ -485,15 +738,14 @@ actor GenerateBs()
 	guard
 		trafoTreeDepth>-1 && not splitTrafo
 	var
+		uint(size=8)  partIdx,
 		uint(size=7)  treeNS,
 		uint(size=16) treeAddr[2],
 		uint(size=16) xMin,
 		uint(size=16) xMax,
 		uint(size=16) yMin,
-		uint(size=16) yMax,
-		uint(size=16) y
+		uint(size=16) yMax
 	do
-		processTUBoundaries();
 
 		/* Computing the size and the address of the current block. */
 		treeNS := nS;
@@ -508,26 +760,51 @@ actor GenerateBs()
 				treeAddr[1] := treeAddr[1] + treeNS;
 			end
 		end
+		treeAddrInBlk := [treeAddr[i] >> 2: for int i in 0 .. 1];
+		savePredInfoTu(treeAddrInBlk, treeNS >> 2);
 
-		xMin := (treeAddr[0] & PICT_WIDTH-1) >>2;
-		xMax := (xMin+(treeNS>>2))&(PICT_WIDTH/4-1);
-		yMin := treeAddr[1]/4;
-		yMax := (treeAddr[1]+treeNS)/4;
-		foreach int x in xMin .. xMax-1
+		xMin := (treeAddr[0] & (lcuSizeMax - 1))>>2;
+		xMax := xMin+(treeNS>>2);
+		yMin := (treeAddr[1] & (lcuSizeMax - 1))>>2;
+		yMax := yMin + (treeNS>>2);
+		processTUBoundaries(cbf, treeAddr, treeNS);
+
+		/* Saving cbfNeighb, mvNeighb and refPocNeighb */
+		foreach int x in treeAddrInBlk[0] .. treeAddrInBlk[0] + (treeNS>>2) - 1
 		do
-			y := yMin;
-			while(y!=yMax)
+			cbfUpNeighb[x] := cbf;
+			partIdx := castBoolToInt(
+				not(numMvInfo = 1 || x < xAddr2ndPu && (yMax - 1) < coordMax1stPu[1])
+			);
+			foreach int i in 0 .. 1
 			do
-				cbfTab[x][y] := cbf;
-				y:= y+1;
+				mvUpNeighb[x][i][0] := mv[partIdx][i][0];
+				mvUpNeighb[x][i][1] := mv[partIdx][i][1];
+				refPocUpNeighb[x][i] := refPoc[partIdx][i];
 			end
 		end
+
+		foreach int y in yMin .. yMax - 1
+		do
+			cbfLeftNeighb[treeAddrInBlk[1] + y - yMin] := cbf;
+			partIdx := castBoolToInt(
+				not(numMvInfo = 1 || (xMax-1) < coordMax1stPu[0] && y < coordMax1stPu[1])
+			);
+			foreach int i in 0 .. 1
+			do
+				mvLeftNeighb[treeAddrInBlk[1] + y - yMin][i][0] := mv[partIdx][i][0];
+				mvLeftNeighb[treeAddrInBlk[1] + y - yMin][i][1] := mv[partIdx][i][1];
+				refPocLeftNeighb[treeAddrInBlk[1] + y - yMin][i] := refPoc[partIdx][i];
+			end
+		end
+
+		nbBlkToSend := treeNS * treeNS / 16;
 
 		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
 		/* Replace by (trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4) when orcc's simulator
 		 * support short-circuit evaluation.
 		 */
-		while(if trafoTreeDepth > -1 then trafoTreeIdx[trafoTreeDepth] = 4 else false end)
+		while (if trafoTreeDepth > -1 then trafoTreeIdx[trafoTreeDepth] = 4 else false end)
 		do
 			trafoTreeDepth := trafoTreeDepth - 1;
 			if(trafoTreeDepth>-1) then
@@ -540,59 +817,117 @@ actor GenerateBs()
 	getSplitTrafo.done: action ==>
 	guard
 		trafoTreeDepth = -1
-	end
-
-	generateBS: action ==>
-	var
-		int(size=16) xMin = (cuAddr[0] & (lcuSizeMax - 1))>>2,
-		int(size=16) xMax = xMin+(nS>>2),
-		int(size=16) yMin = (cuAddr[1] & (lcuSizeMax - 1))>>2,
-		int(size=16) yMax = yMin + (nS>>2),
-		uint(size=2) bS[1],
-		uint(size=16) addrBlk[2],
-		uint(size=16) rasterIdx
 	do
-		addrBlk := cuAddr;
-		foreach int y in yMin .. yMax - 1
-		do
-			foreach int x in xMin .. xMax - 1
-			do
-				rasterIdx := absCoordToZScan(addrBlk);
-				if(edgeFlag[VERT][x][y]) then
-					genBoundFilterStrength(bS, addrBlk, true, 0, isTUEdge[VERT][x][y]);
-					bsTable[0][rasterIdx] := bS[0];
-				else				
-					bsTable[0][rasterIdx] := 0;
-				end
-				if(edgeFlag[HORIZ][x][y]) then
-					genBoundFilterStrength(bS, addrBlk, false, 0, isTUEdge[HORIZ][x][y]);
-					bsTable[1][rasterIdx] := bS[0];
-				else
-					bsTable[1][rasterIdx] := 0;
-				end
-				addrBlk[0] := addrBlk[0] + 4;
-			end
-			addrBlk[1] := addrBlk[1] + 4;
-			addrBlk[0] := cuAddr[0];
-		end
 		currIdx := absCoordToZScan(cuAddr);
-		addrBlk := [cuAddr[0]+nS-1, cuAddr[1]+nS-1];
-		maxRasterScanIdx := absCoordToZScan(addrBlk);
+		currIdxHor := absCoordToZScan2(cuAddr);
+		currIdxVer := absCoordToZScan3(cuAddr);
 	end
 
-	sendBS.launch: action ==> BS:[bs] repeat 2
+	sendBS.launch.is4x4.isbSHorVer: action ==> BSHor:[bsHor], BSVer:[bsVer]
 	guard
-		currIdx <= maxRasterScanIdx
+		nbBlkToSend = 1 and (treeAddrInBlk[0] & 0x01) != 1 and (treeAddrInBlk[1] & 0x01) != 1
 	var
-		uint(size=2)  bs[2]
+		uint(size=2)  bsHor,
+		uint(size=2)  bsVer
 	do
-		bs := [bsTable[i][currIdx]: for uint i in 0 .. 1];
-		currIdx := currIdx + 1;
+		bsHor := bsTable[1][currIdxHor];
+		bsVer := bsTable[0][currIdxVer];
+		bsTable[0][currIdxVer] := 0;
+		bsTable[1][currIdxHor] := 0;
+		currIdxHor := currIdxHor + 1;
+		currIdxVer := currIdxVer + 1;
+	end
+	
+	sendBS.launch.is4x4.isbSHor: action ==> BSHor:[bsHor] 
+	guard
+		nbBlkToSend = 1 and (treeAddrInBlk[1] & 0x01) != 1
+	var
+		uint(size=2)  bsHor
+	do
+		bsHor := bsTable[1][currIdxHor];
+		bsTable[1][currIdxHor] := 0;
+		currIdxHor := currIdxHor + 1;
+	end
+	
+	sendBS.launch.is4x4.isbSVer: action ==> BSVer:[bsVer] 
+	guard
+		nbBlkToSend = 1 and (treeAddrInBlk[0] & 0x01) != 1
+	var
+		uint(size=2)  bsVer
+	do
+		bsVer := bsTable[0][currIdxVer];
+		bsTable[0][currIdxVer] := 0;
+		currIdxVer := currIdxVer + 1;
+	end
+	
+	sendBS.launch.is4x4: action ==>  
+	guard
+		nbBlkToSend = 1
+	do
 	end
 
-	sendBS.done: action ==>
+	sendBS.launch.is8x8: action ==> BSHor:[bsHor] repeat 2, BSVer:[bsVer] repeat 2 
 	guard
-		currIdx > maxRasterScanIdx
+		nbBlkToSend = 4
+	var
+		uint(size=2)  bsHor[2],
+		uint(size=2)  bsVer[2]
+	do
+		foreach uint i in 0 .. 1
+		do
+			bsVer[i] := bsTable[0][currIdxVer+i];
+			bsHor[i] := bsTable[1][currIdxHor+i];
+		end
+		currIdxHor := currIdxHor + 2;
+		currIdxVer := currIdxVer + 2;
+	end
+
+	sendBS.launch.is16x16: action ==> BSHor:[bsHor] repeat 8, BSVer:[bsVer] repeat 8
+	guard
+		nbBlkToSend = 16
+	var
+		uint(size=2)  bsHor[8],
+		uint(size=2)  bsVer[8]
+	do
+		foreach uint i in 0 .. 7
+		do
+			bsVer[i] := bsTable[0][currIdxVer+i];
+			bsHor[i] := bsTable[1][currIdxHor+i];
+		end
+		currIdxHor := currIdxHor + 8;
+		currIdxVer := currIdxVer + 8;
+	end
+
+	sendBS.launch.is32x32: action ==> BSHor:[bsHor] repeat 32, BSVer:[bsVer] repeat 32
+	guard
+		nbBlkToSend = 64
+	var
+		uint(size=2)  bsHor[32],
+		uint(size=2)  bsVer[32]
+	do
+		foreach uint i in 0 .. 31
+		do
+			bsVer[i] := bsTable[0][currIdxVer+i];
+			bsHor[i] := bsTable[1][currIdxHor+i];
+		end
+		currIdxHor := currIdxHor + 32;
+		currIdxVer := currIdxVer + 32;
+	end
+
+	sendBS.launch.is64x64: action ==> BSHor:[bsHor] repeat 128, BSVer:[bsVer] repeat 128
+	guard
+		nbBlkToSend = 256
+	var
+		uint(size=2)  bsHor[128],
+		uint(size=2)  bsVer[128]
+	do
+		foreach uint i in 0 .. 127
+		do
+			bsVer[i] := bsTable[0][currIdxVer+i];
+			bsHor[i] := bsTable[1][currIdxHor+i];
+		end
+		currIdxHor := currIdxHor + 128;
+		currIdxVer := currIdxVer + 128;
 	end
 
 	schedule fsm GetPartMode:
@@ -611,18 +946,19 @@ actor GenerateBs()
 		GetCuInfo (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo (getCuInfo.done   )--> GetPartMode;
 
-		GetCuMode (getCuMode.isNotOther )--> GetRefPictInfo2;
+		GetCuMode (getCuMode.isNotOther )--> GetRefPictInfo;
 		GetCuMode (getCuMode.isOther    )--> GetCuInfo;
 
-		GetRefPictInfo2 (getRefPictInfo.launch )--> GetRefPictInfo2;
-		GetRefPictInfo2 (getRefPictInfo.done   )--> GetSplitTrafo;
+		GetRefPictInfo (getRefPictInfo.launch )--> GetRefPictInfo;
+		GetRefPictInfo (getRefPictInfo.done   )--> GetSplitTrafo;
 
-		GetSplitTrafo (getSplitTrafo.launch )--> GetSplitTrafo;
-		GetSplitTrafo (getSplitTrafo.done   )--> GenerateBS;
+		GetSplitTrafo (getSplitTrafo.launch.isTrue )--> GetSplitTrafo;
+		GetSplitTrafo (getSplitTrafo.launch.isFalse )--> SendBS;
+		GetSplitTrafo (getSplitTrafo.done   )--> GetCuInfo;
 
-		GenerateBS (generateBS )--> SendBS;
-
-		SendBS (sendBS.launch )--> SendBS;
-		SendBS (sendBS.done   )--> GetCuInfo;
+		SendBS (sendBS.launch )--> GetSplitTrafo;
+	end
+	priority
+		sendBS.launch.is64x64 > sendBS.launch.is32x32 > sendBS.launch.is16x16 > sendBS.launch.is8x8 > sendBS.launch.is4x4;
 	end
 end

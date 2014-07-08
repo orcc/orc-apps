@@ -61,83 +61,212 @@ package org.ietr.mpegh.part2.main.inter;
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
-import org.ietr.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+import devel.org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
 actor DecodingPictureBufferLuma ()
 	uint(size=2)  IsBiPredOrLx,
-	uint(size=1)  IsReadOrNewSlc,
+	uint(size=8)  LcuSizeMax,
+	uint(size=1)  IsReadOrNewSlice,
 	int (size=32) Mv,
-	uint(size=16) PicSize,
-	int(size=16) Poc,
+	uint(size=16) PictSize,
+	int(size=16)  Poc,
 	int (size=16) PocRef,
 	uint(size=7)  PredCuSize,
 	int (size=16) RpsPoc,
+	uint(size=8)  ReorderPics,
 	uint(size=8)  Sample
 		==>
-	uint(size=8)  RefSample
+	uint(size=8)  RefSample,
+	uint(size=8)  VID
 		:
+		
+	bool DEBUG_DPB := false;
 
+	uint(size=8)  pictureBuffer[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM];
+	int (size=16) pocIndex[32];
+	int (size=16) pocRef[DPB_SIZE] := [-1 : for int i in 0 .. DPB_SIZE-1];
 
-	/* /!\ : Check the size of the border. */
-	uint(size = 16) BORDER_SIZE = 128;
-	uint(size = 8) DPB_SIZE = 17;
-
-	uint(size=8)  pictureBuffer[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE][PICT_WIDTH+2*BORDER_SIZE];
-	int (size=16) pocRef[DPB_SIZE];
-	bool          isRef[DPB_SIZE];
-	bool          isStillRef[DPB_SIZE];
-	
-
-	int (size=4)  currIdx := -1;
-	int (size=4)  lastIdx := -1;
+	uint(size=8)  currIdx := 0;
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
 	uint(size=6)  xIdx;
 	uint(size=6)  yIdx;
-	uint(size=1)  numPocRef;
+	uint(size=1)  numPocRef := 0;
+	uint          pictNum;
+	int           numReorderPic;
+	int           numAvailablePic := 0;
+
+	bool          isSent[DPB_SIZE] := [true : for int i in 0 .. DPB_SIZE-1];
+	bool          skip[DPB_SIZE] := [false : for int i in 0 .. DPB_SIZE-1];
+	bool          isRef[DPB_SIZE];
 	uint(size=3)  nbList;
 	uint(size=3)  sizeOfList;
-	bool          isNewPicture;
-
+	
+	bool pocDone[32] := [false : for int i in 0 .. 31];
+	int sendingPoc := 0;
+	int readingPoc := -1;
+	uint sendx := 0;
+	uint sendy := 0;
+	uint(size=8) lcuSizeMax;
+	
+	uint(size=8) seqIdOutput := 1;
+	uint(size=8) seqIdDecode := 1;
+	
+	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_luma_orcc")
+    procedure getmvinfo_dpb_64_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
+  	      uint(size= 8) RefCu[(64 + 7) * (64 + 7)],
+  	      uint(size= 3) idx,
+  	      uint(size= 8) sideMax, 
+  	      int (size=32) xOffset,
+  	      int (size=32) yOffset)
+    begin
+      foreach int y in 0 .. sideMax - 1
+	  	do
+			foreach int x in 0 .. sideMax - 1
+			do
+				RefCu[x+y*(sideMax)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+			end
+		end
+    end
+  
+    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_32_luma_orcc")
+    procedure getmvinfo_dpb_32_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
+  	      uint(size= 8) RefCu[(32 + 7) * (32 + 7)],
+  	      uint(size= 3) idx,
+  	      uint(size= 8) sideMax, 
+  	      int (size=32) xOffset,
+  	      int (size=32) yOffset)
+    begin
+      foreach int y in 0 .. sideMax - 1
+		do
+			foreach int x in 0 .. sideMax - 1
+			do
+				RefCu[x+y*(sideMax)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+			end
+		end
+    end
+  
+    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_16_luma_orcc")
+    procedure getmvinfo_dpb_16_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
+  	      uint(size= 8) RefCu[(16 + 7) * (16 + 7)],
+  	      uint(size= 3) idx,
+  	      uint(size= 8) sideMax, 
+  	      int (size=32) xOffset,
+  	      int (size=32) yOffset)
+    begin
+      foreach int y in 0 .. sideMax - 1
+		do
+			foreach int x in 0 .. sideMax - 1
+			do
+				RefCu[x+y*(sideMax)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+			end
+		end
+    end
+  
+    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_8_luma_orcc")
+    procedure getmvinfo_dpb_8_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
+  	      uint(size= 8) RefCu[(8 + 7) * (8 + 7)],
+  	      uint(size= 3) idx,
+  	      uint(size= 8) sideMax, 
+  	      int (size=32) xOffset,
+  	      int (size=32) yOffset)
+    begin
+		foreach int y in 0 .. sideMax - 1
+		do
+			foreach int x in 0 .. sideMax - 1
+			do
+				RefCu[x+y*(sideMax)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+			end
+		end
+    end
+	
 	/** Getting informations from new slice/picture. Updating these informations **/
-	isNewSlice: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc] ==>
+	isNewSlice: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
+		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize] ==>
 	guard
 		/* Fix me : We should know when there is a new picture */
-		isRead = 0 and currIdx != -1 and poc = pocRef[currIdx]
-	do
-		isNewPicture := false;
+		isRead = 0,
+		poc = readingPoc
+	do	
+		lcuSizeMax := 1 << log2LcuSize;
+		isRef := [false: for int i in 0 .. DPB_SIZE - 1];
 		nbList := 0;
-		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
 	end
-uint pictNum;
-	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc] ==>
+	
+	isNewPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
+					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
+					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
+					  ,LcuSizeMax:[log2LcuSize] ==>
 	guard
-		isRead = 0 and not(currIdx != -1 and poc = pocRef[currIdx])
+		isRead = 0,
+		poc != readingPoc
 	do
+		lcuSizeMax := 1 << log2LcuSize;
 //		println("Dpb ; Pict num "+pictNum);
 		pictNum := pictNum + 1;
-		picSizeInCu[0] := (picWidthInPix+15)/16;
-		picSizeInCu[1] := (picHeightInPix+15)/16;
+		picSizeInCu[0] := (picWidthInPix+lcuSizeMax-1)/lcuSizeMax;
+		picSizeInCu[1] := (picHeightInPix+lcuSizeMax-1)/lcuSizeMax;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
 		xIdx := 0;
 		yIdx := 0;
-		lastIdx := currIdx;
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(not isRef[i]) then
-				currIdx := i;
+		
+		// Find the next available buffer
+		currIdx := 0;
+		while isRef[currIdx] or not isSent[currIdx] do
+			currIdx := currIdx + 1;
+			if currIdx = DPB_SIZE then currIdx := 0; end
+		end
+		
+		readingPoc := poc;
+		isRef := [false: for int i in 0 .. DPB_SIZE - 1];
+		nbList := 0;
+		
+		pocDone[readingPoc & 31] := false;
+		pocIndex[readingPoc & 31] := currIdx;
+		pocRef[currIdx] := readingPoc;
+		
+		if noOutputOfPriorPicsFlag = 1 then
+			// Flush the queue of next displayed frames
+			sendingPoc := poc;
+			numAvailablePic := 0;
+			isSent := [true : for int i in 0 .. DPB_SIZE-1];
+			skip := [false : for int i in 0 .. DPB_SIZE-1];
+		end
+		
+		isSent[currIdx] := false;
+		
+		if picOutputFlag = 1 then
+			skip[currIdx] := false;
+		else
+			skip[currIdx] := true;
+		end
+		
+		// Number of frames needed to display 
+		numReorderPic := spsNumReorderPics;
+		
+		seqIdDecode := videoSequenceId;
+		
+		if seqIdDecode = seqIdOutput then 
+			// Always display the frame with the smallest poc
+			if readingPoc < sendingPoc then 
+				sendingPoc := readingPoc;
 			end
 		end
-		isRef[currIdx]  := true;
-		pocRef[currIdx] := poc;
-		isNewPicture    := true;
-		nbList          := 0;
-		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
+		
+		if DEBUG_DPB then 
+			println("Dpb ; reading " + readingPoc + " (" + pocIndex[readingPoc & 31] + ")");
+			println("Dpb ; noOutputOfPriorPicsFlag "+noOutputOfPriorPicsFlag);
+			println("Dpb ; numReorderPic "+numReorderPic);
+			println("Dpb ; picOutputFlag "+picOutputFlag);
+			println("Dpb ; videoSequenceId "+videoSequenceId);
+		end
 	end
-
+	
 	/** We get all the references from the 5 lists of the Rps
 	 * (StCurrentBefore, StCurrentAfter, StFollowing, LtCurrent, LtFollowing)
 	 **/
@@ -147,19 +276,20 @@ uint pictNum;
 	do
 		sizeOfList := numPic;
 	end
-
+	
 	getRps.done: action ==>
 	guard
 		nbList = 5
 	do
-		/* We remove from the Dpb all the pictures who are not in the Rps of
-		 * the current picture
-		 */
-		foreach int i in 0 .. DPB_SIZE - 1
-		do
-			isRef[i] := isRef[i] and isStillRef[i];
+		isRef[currIdx]:= true;
+		
+		if DEBUG_DPB then
+			print("isRef = ");
+			foreach int i in 0 .. DPB_SIZE-1 do
+				print(isRef[i]);
+			end
+			println();
 		end
-		isRef[currIdx] := true;
 	end
 
 	/** For each we check the index of the reference poc
@@ -169,13 +299,14 @@ uint pictNum;
 	guard
 		sizeOfList > 0
 	do
-		sizeOfList := sizeOfList - 1;
 		foreach int i in 0 .. DPB_SIZE - 1
 		do
-			if(pocRef[i] = pocVal)then
-				isStillRef[i] := true;
+			if pocRef[i] = pocVal then
+				isRef[i] := true;
 			end
 		end
+
+		sizeOfList := sizeOfList - 1;
 	end
 
 	getRpsPoc.done: action ==>
@@ -188,52 +319,198 @@ uint pictNum;
 	/* We get the whole Cu decoded (luma and chroma components) and we save
 	 * it in the Dpb (pictureBuffer).
 	 */
-	getCuPix.launch: action Sample:[samp] repeat 16*16 ==>
+	getCuPix.launch.x64: action Sample:[samp] repeat 64*64 ==>
 	guard
-		yIdx < picSizeInCu[1]
-	var
-		int xPixIdx,
-		int yPixIdx
+		yIdx < picSizeInCu[1], 
+		lcuSizeMax = 64
 	do
-		xPixIdx := BORDER_SIZE + xIdx*16;
-		yPixIdx := BORDER_SIZE + yIdx*16;
-		foreach int y in 0 .. 15
-		do
-			foreach int x in 0 .. 15
-			do
-				pictureBuffer[lastIdx][yPixIdx+y][xPixIdx+x] := samp[x+y*16];
-			end
-		end
-
+		copy_cu_dpb_luma_x64_cal(
+          samp,
+  	      pictureBuffer,
+  	      BORDER_SIZE_LUM + xIdx*64,
+  	      BORDER_SIZE_LUM + yIdx*64,
+  	      pocIndex[readingPoc & 31]);
+		
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
 			xIdx := 0;
 			yIdx := yIdx + 1;
 		end
 	end
-
-	/* When we get the picture we add the border (in order to be able to give a
-	 * reference pixels which can be outside of the picture).
-	 */
+	
+	getCuPix.launch.x32: action Sample:[samp] repeat 32*32 ==>
+	guard
+		yIdx < picSizeInCu[1], 
+		lcuSizeMax = 32
+	do
+		copy_cu_dpb_luma_x32_cal(
+          samp,
+  	      pictureBuffer,
+  	      BORDER_SIZE_LUM + xIdx*32,
+  	      BORDER_SIZE_LUM + yIdx*32,
+  	      pocIndex[readingPoc & 31]);
+		
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+	
+	getCuPix.launch.x16: action Sample:[samp] repeat 16*16 ==>
+	guard
+		yIdx < picSizeInCu[1], 
+		lcuSizeMax = 16
+	do
+		copy_cu_dpb_luma_x16_cal(
+          samp,
+  	      pictureBuffer,
+  	      BORDER_SIZE_LUM + xIdx*16,
+  	      BORDER_SIZE_LUM + yIdx*16,
+  	      pocIndex[readingPoc & 31]);
+		
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+	
 	getCuPix.done: action ==>
 	guard
 		yIdx = picSizeInCu[1]
-	var
-		int xSize := picSize[0],
-		int ySize := picSize[1]
 	do
 		/* Fill in luma border */
 		fillBorder_luma_cal(
 			pictureBuffer,
-			lastIdx,
-			xSize,
-			ySize,
-			BORDER_SIZE);
+			pocIndex[readingPoc & 31],
+			picSize[0],
+			picSize[1],
+			BORDER_SIZE_LUM);
+		
+		pocDone[readingPoc & 31] := true;
+		numAvailablePic := numAvailablePic + 1;
+		
+		if DEBUG_DPB then
+			print("isSent = ");
+			foreach int i in 0 .. DPB_SIZE-1 do
+				print(isSent[i]);
+			end
+			println();
+		end
+	end
+	
+	sendCuPix.launch.x64: action ==> VID:[cu] repeat 64*64
+	guard
+		sendy < picSizeInCu[1],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
+		lcuSizeMax = 64
+	var
+		uint (size=8) cu[64*64]
+	do
+		foreach int i in 0 .. 63 do	
+			foreach int j in 0 .. 63 do
+				cu[i*64 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][BORDER_SIZE_LUM + sendy * 64 + i ][BORDER_SIZE_LUM + sendx * 64 + j];
+			end
+		end
+			
+		sendx := sendx + 1;
+		if(sendx = picSizeInCu[0]) then
+			sendx := 0;
+			sendy := sendy + 1;
+		end
+	end
+	
+	sendCuPix.launch.x32: action ==> VID:[cu] repeat 32*32
+	guard
+		sendy < picSizeInCu[1],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
+		lcuSizeMax = 32
+	var
+		uint (size=8) cu[32*32]
+	do
+		foreach int i in 0 .. 31 do	
+			foreach int j in 0 .. 31 do
+				cu[i*32 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][BORDER_SIZE_LUM + sendy * 32 + i ][BORDER_SIZE_LUM + sendx * 32 + j];
+			end
+		end
+			
+		sendx := sendx + 1;
+		if(sendx = picSizeInCu[0]) then
+			sendx := 0;
+			sendy := sendy + 1;
+		end
+	end
+	
+	sendCuPix.launch.x16: action ==> VID:[cu] repeat 16*16
+	guard
+		sendy < picSizeInCu[1],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
+		lcuSizeMax = 16
+	var
+		uint (size=8) cu[16*16]
+	do
+		foreach int i in 0 .. 15 do	
+			foreach int j in 0 .. 15 do
+				cu[i*16 + j] := pictureBuffer[pocIndex[sendingPoc & 31]][BORDER_SIZE_LUM + sendy * 16 + i ][BORDER_SIZE_LUM + sendx * 16 + j];
+			end
+		end
+			
+		sendx := sendx + 1;
+		if(sendx = picSizeInCu[0]) then
+			sendx := 0;
+			sendy := sendy + 1;
+		end
+	end
+	
+	sendCuPix.done: action ==>
+	guard
+		sendy = picSizeInCu[1],
+		pocDone[sendingPoc & 31]
+	do
+		sendx := 0;
+		sendy := 0;
+		
+		if DEBUG_DPB then 
+			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
+		end
+		
+		isSent[pocIndex[sendingPoc & 31]] := true;
+		sendingPoc := sendingPoc + 1;
+		numAvailablePic := numAvailablePic - 1;
+		
+		if seqIdDecode != seqIdOutput then
+			// Reset the DPB
+			if numAvailablePic = 0 then
+				seqIdOutput := seqIdDecode;
+				sendingPoc := 0;
+			end
+		end
+	end
+	
+	sendCuPix.skip: action ==>
+	guard
+		skip[pocIndex[sendingPoc & 31]],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput
+	do
+		if DEBUG_DPB then 
+			println("Dpb ; skip " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
+		end
+		
+		isSent[pocIndex[sendingPoc & 31]] := true;
+		skip[pocIndex[sendingPoc & 31]] := false;
+		sendingPoc := sendingPoc + 1;
+		numAvailablePic := numAvailablePic - 1;
 	end
 
-	getReadAddr: action IsReadOrNewSlc:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
+	getReadAddr: action IsReadOrNewSlice:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
 	guard
-		isRead = 1
+		isRead = 1,
+		numPocRef = 0
 	do
 		numPocRef :=
 			if(isBiPredOrLx = BI_PRED) then
@@ -244,275 +521,145 @@ uint pictNum;
 	end
 
 	/* We get all the informations needed for sending the reference Cu. We save
-	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
+	 * these samples in refCu, it will be sent with the actions sendCu.isYxY
 	 */
 	getMvInfo.launch.is64: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (64+7)*(64+7)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (64+7)*(64+7)
 	guard
-		numPocRef != 0 && predCuSize = 64
+		numPocRef != 0 && predCuSize = 64,
+		pocDone[poc & 31]
 	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
+		int (size=32) mvOffset[2],
 		uint(size=7)  sideMax = 64,
-		uint(size=8)  RefCu[(64+7)*(64+7)]
+		uint(size=8)  refCu[(64+7)*(64+7)]
 	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_64_luma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      pocIndex[poc & 31], 
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1]);
+  	      
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is32: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (32+7)*(32+7)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (32+7)*(32+7)
 	guard
-		numPocRef != 0 && predCuSize = 32
+		numPocRef != 0 && predCuSize = 32,
+		pocDone[poc & 31]
 	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
+		int (size=32) mvOffset[2],
 		uint(size=7)  sideMax = 32,
-		uint(size=8)  RefCu[(32+7)*(32+7)]
+		uint(size=8)  refCu[(32+7)*(32+7)]
 	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		
+		getmvinfo_dpb_32_luma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      pocIndex[poc & 31],
+  	      sideMax + 7,
+  	      mvOffset[0],
+  	      mvOffset[1]);
+		
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is16: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[RefCu] repeat (16+7)*(16+7)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (16+7)*(16+7)
 	guard
-		numPocRef != 0 && predCuSize = 16
+		numPocRef != 0 && predCuSize = 16,
+		pocDone[poc & 31]
 	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
+		int (size=32) mvOffset[2],
 		uint(size=7)  sideMax = 16,
-		uint(size=8)  RefCu[(16+7)*(16+7)]
+		uint(size=8)  refCu[(16+7)*(16+7)]
 	do
-		foreach int i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				RefCu[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		
+		getmvinfo_dpb_16_luma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      pocIndex[poc & 31], 
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1]);
+		
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is8: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (8+7)*(8+7)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (8+7)*(8+7)
 	guard
-		numPocRef != 0 && predCuSize = 8
+		numPocRef != 0 && predCuSize = 8,
+		pocDone[poc & 31]
 	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
+		int (size=32) mvOffset[2],
 		uint(size=7)  sideMax = 8,
 		uint(size=8)  refCu[(8+7)*(8+7)]
 	do
-		foreach uint i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
-		foreach int y in 0 .. sideMax+7 -1
-		do
-			foreach int x in 0 .. sideMax+7 -1
-			do
-				refCu[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
-			end
-		end
+		getmvinfo_dpb_8_luma_cal(
+  	      pictureBuffer,
+  	      refCu,
+  	      pocIndex[poc & 31], 
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1]);
+  	      
 		numPocRef := numPocRef - 1;
 	end
 	
 	getMvInfo.launch.is4: action PocRef:[poc], PredCuSize:[predCuSize],
-		Mv:[mvX, mvY] ==> RefSample:[refCu] repeat (4+7)*(4+7)
+		Mv:[mv] repeat 2 ==> RefSample:[refCu] repeat (4+7)*(4+7)
 	guard
-		numPocRef != 0 && predCuSize = 4
+		numPocRef != 0 && predCuSize = 4,
+		pocDone[poc & 31]
 	var
-		uint(size=3) idx := 0,
-		int (size=32) xOffset,
-		int (size=32) yOffset,
+		int (size=32) mvOffset[2],
 		uint(size=7)  sideMax = 4,
 		uint(size=8)  refCu[(4+7)*(4+7)]
 	do
-		foreach int i in 0 .. DPB_SIZE - 1
-		do
-			if(pocRef[i] = poc and isRef[i]) then
-				idx := i;
-			end
-		end
-		/* The mv components correspond to the absolute movement vector, that's
-		 * why we don't need to add the address of the current Cu
-		 */
-
-		/* We remove 3 for each coordinate component, because for the luma
-		 * prediction we need the 3 previous pixels
-		 */
-		xOffset := (mvX >> 2);
-		xOffset := min(xOffset, picSize[0]+3);
-		xOffset := max(xOffset, -(8 +3 -1) -(sideMax-1));
-		xOffset := xOffset +BORDER_SIZE-3;
-		yOffset := (mvY >> 2);
-		yOffset := min(yOffset, picSize[1]+3);
-		yOffset := max(yOffset, -(8 +3 -1) -(sideMax-1));
-		yOffset := yOffset +BORDER_SIZE-3;
-		/* We also need the 2 next pixels for the prediction, that's why we
-		 * add 7 to sideMax
-		 */
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		
 		foreach int y in 0 .. sideMax+7 -1
 		do
 			foreach int x in 0 .. sideMax+7 -1
 			do
-				refCu[x+y*(sideMax+7)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+				refCu[x+y*(sideMax+7)] := 
+					pictureBuffer[pocIndex[poc & 31]][y+mvOffset[1]][x+mvOffset[0]];
 			end
 		end
+		
 		numPocRef := numPocRef - 1;
 	end
-	
 	
 	getMvInfo.done: action ==>
 	guard
 		numPocRef = 0
 	end
 
-	checkIsNewPict.isTrue: action ==>
-	guard
-		isNewPicture
-	end
+	schedule fsm IsNewPict:
+		IsNewPict (isNewPict        )--> GetRps;
 
-	checkIsNewPict.isFalse: action ==>
-	guard
-		not isNewPicture
-	end
-
-	schedule fsm IsFirstNewPic:
-		IsFirstNewPic (isNewPict )--> GetFirstRps;
-
-		GetFirstRps (getRps.launch )--> GetRpsFirstPoc;
-		GetFirstRps (getRps.done   )--> IsNewSlice;
-
-		GetRpsFirstPoc (getRpsPoc.launch )--> GetRpsFirstPoc;
-		GetRpsFirstPoc (getRpsPoc.done   )--> GetFirstRps;
-
-		IsNewSlice (isNewPict   )--> GetRps;
-		IsNewSlice (isNewSlice  )--> GetRps;
-		IsNewSlice (getReadAddr )--> GetMvInfo;
-
+		ManageCu (isNewSlice        )--> GetRps;
+		ManageCu (getReadAddr       )--> GetMvInfo;
+		ManageCu (getCuPix.launch   )--> ManageCu;
+		ManageCu (getCuPix.done     )--> IsNewPict;
+		ManageCu (sendCuPix         )--> ManageCu;
+		
+		GetMvInfo (getMvInfo.launch )--> GetMvInfo;
+		GetMvInfo (getMvInfo.done   )--> ManageCu;
+		
 		GetRps (getRps.launch )--> GetRpsPoc;
-		GetRps (getRps.done   )--> CheckIsNewPict;
-
+		GetRps (getRps.done   )--> ManageCu;
 		GetRpsPoc (getRpsPoc.launch )--> GetRpsPoc;
 		GetRpsPoc (getRpsPoc.done   )--> GetRps;
-
-		CheckIsNewPict (checkIsNewPict.isTrue  )--> GetCuPix;
-		CheckIsNewPict (checkIsNewPict.isFalse )--> IsNewSlice;
-
-		GetCuPix (getCuPix.launch )--> GetCuPix;
-		GetCuPix (getCuPix.done   )--> IsNewSlice;
-
-		GetMvInfo (getMvInfo.launch )--> GetMvInfo;
-		GetMvInfo (getMvInfo.done   )--> IsNewSlice;
 	end
+	
 end

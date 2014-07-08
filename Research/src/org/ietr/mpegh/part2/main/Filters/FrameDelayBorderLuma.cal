@@ -30,11 +30,7 @@ package org.ietr.mpegh.part2.main.Filters;
 
 import std.util.Math.*;
 import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import devel.org.sc29.wg11.mpegh.part2.inter.NaluType.*;
 
-
-//There should be much less division.
-//There should be a function for the code which test if two pixels are in the same slice thanks to the variable filtAcrSlc.
 actor FrameDelayBorderLuma()
 	uint(size=2)  IsPicSlcLcu,
 	uint(size=8)  LcuSizeMax,
@@ -44,12 +40,12 @@ actor FrameDelayBorderLuma()
 	uint(size=16) TilesCoord
 		==>
 	uint(size=8)  FiltSample
-		:
-		
+		:		
 	
-	uint(size=8) OrigPict[PICT_WIDTH][PICT_HEIGHT];
+	uint(size=8) OrigPict[PICT_HEIGHT][PICT_WIDTH];
 	
 	uint(size=8)  lcuSizeMax;
+	uint(size=8)  log2_lcuSizeMax;
 	uint(size=6)  picSizeInMb[2];
 	uint(size=8)  xCu := 0;
 	uint(size=8)  yCu := 0;
@@ -90,28 +86,33 @@ actor FrameDelayBorderLuma()
 	uint numPict;
 	
 	isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu],
-		LcuSizeMax:[lcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
+		LcuSizeMax:[log2_lcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
 		PicSize:[picWidthInPix, picHeightInPix] ==>
 	guard
 		isNewPicSlcLcu = NEW_PIC
 	do
 		//println("Pict num : " + numPict + ". Pic size : {" + picWidthInPix + " ; " + picHeightInPix + "}");
+//		println("countReadSAO = " + countRead);
+//		println("countWriteSAO = " + countWrite);
+		countRead := 0;
+		countWrite := 0;
 		numPict := numPict + 1;
-
-		lcuSizeMax := lcuSz;
+		log2_lcuSizeMax := log2_lcuSz;
+		lcuSizeMax := 1 << log2_lcuSizeMax;
 		picSizeInMb := [(picWidthInPix+15)/16, (picHeightInPix+15)/16];
 		lcuTileIdx := 0;
-		numTokenPerLcu := lcuSz * lcuSz;
+		numTokenPerLcu := lcuSizeMax * lcuSizeMax;
 	end
 	
 	//There should be slice SAO enable for each independent slice.
 	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu],
-		LcuSizeMax:[lcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
+		LcuSizeMax:[log2_lcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
 		PicSize:[picWidthInPix, picHeightInPix]/*, SaoSe:[saoSe]*/ ==>
 	guard
 		isNewPicSlcLcu = NEW_SLC
 	do
-		lcuSizeMax := lcuSz;
+		log2_lcuSizeMax := log2_lcuSz;
+		lcuSizeMax := 1 << log2_lcuSizeMax;
 	end
 
 	getNumTiles: action TilesCoord:[valNumTiles] ==>
@@ -124,8 +125,8 @@ actor FrameDelayBorderLuma()
 	guard
 		iLoop < numTiles
 	do
-		tilesBeg[iLoop] := [tilesCoord[0]/lcuSizeMax, tilesCoord[1]/lcuSizeMax];
-		tilesEnd[iLoop] := [(tilesCoord[2]+(lcuSizeMax - 1))/lcuSizeMax, (tilesCoord[3]+(lcuSizeMax - 1))/lcuSizeMax];
+		tilesBeg[iLoop] := [tilesCoord[0] >> log2_lcuSizeMax, tilesCoord[1] >> log2_lcuSizeMax];
+		tilesEnd[iLoop] := [(tilesCoord[2]+(lcuSizeMax - 1)) >> log2_lcuSizeMax, (tilesCoord[3]+(lcuSizeMax - 1))>> log2_lcuSizeMax];
 		iLoop := iLoop + 1;
 	end
 
@@ -140,23 +141,27 @@ actor FrameDelayBorderLuma()
 	do
 		tokenGot := 0;
 	end
-
-	getCuPix.launch.luma: action SampleIn:[samp] repeat 16 ==>
+	int countRead := 0;
+	getCuPix.launch.luma: action SampleIn:[samp] repeat 16 * 16 ==>
 	guard
 		tokenGot < numTokenPerLcu
 	var
-		uint(size=16) xPic,
-		uint(size=16) yPic
+		int xPic,
+		int yPic
 	do
-		xPic := (xCu * lcuSizeMax) + (tokenGot & (lcuSizeMax - 1));
-		yPic := (yCu * lcuSizeMax) + tokenGot / lcuSizeMax;
-		
-		foreach uint x in 0 .. 15
+		countRead := countRead + 256;
+		foreach int y in 0 .. 15
 		do
-			OrigPict[x+xPic][yPic] := samp[x]; 
+			xPic := (xCu * lcuSizeMax) + (tokenGot & (lcuSizeMax - 1));
+			yPic := (yCu * lcuSizeMax) + (tokenGot >> log2_lcuSizeMax);
+			
+			foreach int x in 0 .. 15
+			do
+				OrigPict[yPic][x+xPic] := samp[y * 16 + x]; 
+			end
+	
+			tokenGot := tokenGot + 16;
 		end
-
-		tokenGot := tokenGot + 16;
 	end
 
 	getCuPix.launch.lumaDone: action ==>
@@ -174,7 +179,7 @@ actor FrameDelayBorderLuma()
 		xCu := 0;
 		yCu := 0;
 	end
-	
+	int countWrite := 0;
 	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 16*16
 	guard
 		yCu < picSizeInMb[1]
@@ -182,13 +187,14 @@ actor FrameDelayBorderLuma()
 		uint(size=8) filtSamp[16*16],
 		uint(size=16) blkAddrX, uint(size=16) blkAddrY
 	do
+		countWrite := countWrite + 256;
 		blkAddrX := xCu*16;
 		blkAddrY := yCu*16;
-		foreach uint y in 0 .. 15
+		foreach int y in 0 .. 15
 		do
-			foreach uint x in 0 .. 15
+			foreach int x in 0 .. 15
 			do
-				filtSamp[x+y*16] := OrigPict[blkAddrX+x][blkAddrY+y];
+				filtSamp[x+y*16] := OrigPict[blkAddrY+y][blkAddrX+x];
 			end
 		end
 
