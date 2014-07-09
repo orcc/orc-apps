@@ -12,9 +12,10 @@ import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
 import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
 import  devel.org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
 
-actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
+actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 // TilesInfo[0]: number of tiles to decode
 // TilesInfo[i>0]: increasing indexes of tiles
+				uint ParserSelect,
 				uint(size= 8) byte
 				==>
 				uint(size=16) CUInfo,
@@ -224,7 +225,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * look_for.Slice_header
 	 *************************************************************************/
-	look_for.Slice_header: action ==>
+	bool bypassFlag := false;
+	
+	look_for.Slice_header: action ParserSelect:[s]==>
 	guard
 		(nal_unit_type = NAL_TRAIL_R    or
 		 nal_unit_type = NAL_TSA_N      or
@@ -244,6 +247,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		 nal_unit_type = NAL_CRA_NUT    or
 		 nal_unit_type = NAL_RASL_R)
 	do
+		if s = PARSER_ID then
+			bypassFlag := false;
+		else
+			bypassFlag := true;
+		end
 		if DEBUG_PARSER then
 			println("=========== Slice ===========");
 		end
@@ -598,8 +606,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		sei_payloadType := sei_payloadType + res[0];
 		if res[0] != 0xFF then
 			se_idx := se_idx + 1;
-	        else
-	        	se_idx := 6;
+	    else
+        	se_idx := 6;
 		end
 	end
 	/**************************************************************************
@@ -611,23 +619,23 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	var
 		uint(size=32) res[1]
 	do
-			vld_u_name(8, fifo, res,
+		vld_u_name(8, fifo, res,
 			"payload_size                            ");
 		sei_payloadSize := sei_payloadSize + res[0];
-			if res[0] != 0xFF then // sei_payload( payloadType, payloadSize )
+		if res[0] != 0xFF then // sei_payload( payloadType, payloadSize )
 			se_idx := se_idx + 1;
-	        else
-	        	se_idx := 6;
+        else
+        	se_idx := 6;
 		end
 	end
 	    
-	    read_SEI_Header.skipSEI : action ==>
-	    guard
-	   		se_idx = 4 and isFifoFull(fifo),
-	    	sei_idx = 1 and sei_payloadType != 132
-	    do
-	        se_idx := 6;
-	    end
+    read_SEI_Header.skipSEI : action ==>
+    guard
+   		se_idx = 4 and isFifoFull(fifo),
+    	sei_idx = 1 and sei_payloadType != 132
+    do
+        se_idx := 6;
+    end
 	/**************************************************************************
 	 * read_SEI_Header.decoded_picture_hash
 	 *************************************************************************/
@@ -737,12 +745,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	var
 		uint(size=32) res[1]
 	do
-			vld_u_name(4, fifo, res,
+		vld_u_name(4, fifo, res,
 			"sps_video_parameter_set_id              ");
-			vld_u_name(3, fifo, res,
+		vld_u_name(3, fifo, res,
 			"sps_max_sub_layers_minus1               ");
 		sps_max_sub_layers_minus1[sps_id] := res[0];
-			vld_u_name(1, fifo, res,
+		vld_u_name(1, fifo, res,
 			"sps_temporal_id_nesting_flag            ");
 		se_idx := 20;
 	end
@@ -876,17 +884,17 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		vld_ue_name(    fifo, res, "sps_seq_parameter_set_id                ");
 		sps_id := res[0];
 			vld_ue_name(fifo, res,
-			"chroma_format_idc                       ");
+				"chroma_format_idc                       ");
 		sps_chroma_format_idc[sps_id] := res[0];
 		if res[0] = 3 then
-				vld_u_name(1, fifo, res,
+			vld_u_name(1, fifo, res,
 				"separate_colour_plane_flag              ");
 			sps_separate_colour_plane_flag[sps_id] := res[0];
 		end
-			vld_ue_name(fifo, res,
+		vld_ue_name(fifo, res,
 			"pic_width_in_luma_samples               ");
 		sps_pic_width_in_luma_samples[sps_id] := res[0];
-			vld_ue_name(fifo, res,
+		vld_ue_name(fifo, res,
 			"pic_height_in_luma_samples              ");
 		sps_pic_height_in_luma_samples[sps_id] := res[0];
 		se_idx := 2;
@@ -1818,7 +1826,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	read_SliceHeader.se_idx_1 : action ==> PartMode:[part_mode]
 
 	guard
-			se_idx = 1 and idx = 0 and isFifoFull(fifo)
+			se_idx = 1 and idx = 0 and isFifoFull(fifo), bypassFlag = false
 	var
 		uint(size=32) res[1],
 		uint(size= 4) part_mode
@@ -1880,10 +1888,118 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				se_idx := 6;
 			end
 		end
+		
+	read_SliceHeader.se_idx_1_bypass : action ==> 
+	guard
+			se_idx = 1 and idx = 0 and isFifoFull(fifo), bypassFlag = true
+	var
+		uint(size=32) res[1]
+	do
 
+		Log2MinCbSize     := sps_log2_min_coding_block_size[sps_id] ;
+		Log2CtbSize       := Log2MinCbSize + sps_log2_diff_max_min_coding_block_size[sps_id];
+		PicWidthInCtbsY   := ( sps_pic_width_in_luma_samples[sps_id]  + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
+		PicHeightInCtbsY  := ( sps_pic_height_in_luma_samples[sps_id] + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
+		PicSizeInCtbsY    := PicWidthInCtbsY * PicHeightInCtbsY;
+
+		TilesInfo := [TILE_SPLIT_ENABLE, TILE_INDEX];
+
+		vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
+		first_slice_segment_in_pic_flag := res[0];
+
+		no_output_of_prior_pics_flag := 0;
+		if nal_unit_type >= 16 and nal_unit_type <= 23 then
+			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
+			no_output_of_prior_pics_flag := res[0];
+		end
+//		if nal_unit_type = NAL_CRA_NUT and last_eos = 1 then
+//			no_output_of_prior_pics_flag := 1;
+//		end
+		vld_ue_name(    fifo, res, "slice_pic_parameter_set_id              ");
+		pps_id := res[0];
+		sps_id := pps_sps_id[pps_id];
+		dependent_slice_segment_flag := 0;
+
+		if first_slice_segment_in_pic_flag = 0 then
+			if (pps_dependent_slice_segments_enabled_flag[pps_id] = 1) then
+				vld_u_name(  1, fifo, res, "dependent_slice_segment_flag                    ");
+				dependent_slice_segment_flag := res[0];
+			end
+			vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "slice_segment_address                   ");
+			slice_segment_address := res[0];
+			if (dependent_slice_segment_flag = 0) then
+					slice_addr := slice_segment_address;
+				slice_idx := slice_idx + 1;
+			end
+		else
+			slice_segment_address := 0;
+				slice_addr := 0;
+		end
+
+		pictSize[0] := sps_pic_width_in_luma_samples[sps_id];
+		pictSize[1] := sps_pic_height_in_luma_samples[sps_id];
+
+		if dependent_slice_segment_flag = 0 then
+				se_idx := 200;
+			else
+				se_idx := 6;
+			end
+		end
+		
 	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
 		guard
-				se_idx = 200 and isFifoFull(fifo)
+				se_idx = 200 and isFifoFull(fifo), bypassFlag = false
+		var
+			uint(size=32) res[1],
+	        uint(size= 8) numbits := 0
+		do
+			foreach int i in 0 .. pps_num_extra_slice_header_bits[pps_id] - 1 do
+				vld_u_name(  1, fifo, res, "slice_reserved_undetermined_flag[i]     ");
+			end
+			vld_ue_name(    fifo, res, "slice_type                              ");
+			slice_type := res[0];
+
+			slice_temporal_mvp_enable_flag := 0;
+			idx := 0;
+			pic_output_flag := 1;
+			if(pps_output_flag_present_flag[pps_id] = 1) then
+				vld_u_name(  1, fifo, res, "pic_output_flag                         ");
+				pic_output_flag := res[0];
+			end
+			if sps_separate_colour_plane_flag[sps_id] = 1 then
+				vld_u_name(  2, fifo, res, "colour_plane_id                         ");
+			end
+
+			if nal_unit_type = NAL_IDR_W_DLP or nal_unit_type = NAL_IDR_N_LP then
+				poc := 0;
+	        	se_idx := 302;
+				//sps_num_short_term_ref_pic_sets[sps_id] := 0;
+			else
+				vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       ");
+				pic_order_cnt_lsb := res[0];
+				//compute the number of POC
+				compute_POC(res[0]);
+				vld_u_name(  1, fifo, res, "short_term_ref_pic_set_sps_flag         ");
+	            short_term_ref_pic_set_sps_flag := res[0];
+	            if short_term_ref_pic_set_sps_flag != 0 then
+					while ((1 << numbits) < sps_num_short_term_ref_pic_sets[sps_id]) do
+						numbits := numbits + 1;
+					end
+					res[0] := 0;
+					if (numbits > 0) then
+						vld_u_name(   numbits, fifo, res, "short_term_ref_pic_set_idx              ");
+					end
+					pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1];
+	                se_idx := 301;
+	       		else
+	    			se_idx := 300;
+	    		end
+	    	end
+		end
+		
+		read_SliceHeader.se_idx_11_bypass : action ==> 
+		guard
+				se_idx = 200 and isFifoFull(fifo), bypassFlag = true
 		var
 			uint(size=32) res[1],
 	        uint(size= 8) numbits := 0
@@ -2371,16 +2487,37 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
 	read_SliceHeader.sendRefPOC.init : action ==> NumRefIdxLxActive:[num_ref_idx_l0_active, num_ref_idx_l1_active]
 	guard
-		se_idx = 10
+		se_idx = 10, bypassFlag = false
 	do
 		setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
 		idxNumPic := 0;
 		se_idx    := 101;
 	end
-
+	
+	read_SliceHeader.sendRefPOC.init_bypass : action ==> 
+	guard
+		se_idx = 10, bypassFlag = true
+	do
+		setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
+		idxNumPic := 0;
+		se_idx    := 101;
+	end
+	
+	
 	read_SliceHeader.sendListEntryL0Flag : action ==> RefPicListModif:[ref_pic_list_modification_flag_lx[0]]
 	guard
-		se_idx = 101
+		se_idx = 101, bypassFlag = false
+	do
+		if ref_pic_list_modification_flag_lx[0] = 0 then
+			se_idx := 201;
+		else
+			se_idx := 102;
+		end
+	end
+	
+	read_SliceHeader.sendListEntryL0Flag_bypass : action ==> 
+	guard
+		se_idx = 101, bypassFlag = true
 	do
 		if ref_pic_list_modification_flag_lx[0] = 0 then
 			se_idx := 201;
@@ -2392,7 +2529,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	read_SliceHeader.sendListEntryL0Loop : action ==> RefPicListModif:[list_entry_lx[0][cnt_i - 1]]
 	guard
 		se_idx = 102,
-		cnt_i < num_ref_idx_l0_active
+		cnt_i < num_ref_idx_l0_active, bypassFlag = false
+	do
+		cnt_i := cnt_i + 1;
+	end
+	
+	read_SliceHeader.sendListEntryL0Loop_bypass : action ==> 
+	guard
+		se_idx = 102,
+		cnt_i < num_ref_idx_l0_active, bypassFlag = true
 	do
 		cnt_i := cnt_i + 1;
 	end
@@ -2409,7 +2554,18 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
 	read_SliceHeader.sendListEntryL1Flag : action ==> RefPicListModif:[ref_pic_list_modification_flag_lx[1]]
 	guard
-		se_idx = 201
+		se_idx = 201, bypassFlag = false
+	do
+		if ref_pic_list_modification_flag_lx[1] = 0 then
+			se_idx := 11;
+		else
+			se_idx := 202;
+		end
+	end
+	
+	read_SliceHeader.sendListEntryL1Flag_bypass : action ==> 
+	guard
+		se_idx = 201, bypassFlag = true
 	do
 		if ref_pic_list_modification_flag_lx[1] = 0 then
 			se_idx := 11;
@@ -2421,7 +2577,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	read_SliceHeader.sendListEntryL1Loop : action ==> RefPicListModif:[list_entry_lx[1][cnt_i - 1]]
 	guard
 		se_idx = 202,
-		cnt_i < num_ref_idx_l1_active
+		cnt_i < num_ref_idx_l1_active, bypassFlag = false
+	do
+		cnt_i := cnt_i + 1;
+	end
+	
+	read_SliceHeader.sendListEntryL1Loop_bypass : action ==> 
+	guard
+		se_idx = 202,
+		cnt_i < num_ref_idx_l1_active, bypassFlag = true
 	do
 		cnt_i := cnt_i + 1;
 	end
@@ -2437,7 +2601,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         
 	read_SliceHeader.sendRefPOC.sendSize : action ==> RefPoc:[refPocSize]
 	guard
-		se_idx = 11
+		se_idx = 11, bypassFlag = false
 	var
 				int(size=16) refPocSize = numPic[idxNumPic]
 	do
@@ -2451,11 +2615,43 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			se_idx    := 12;
 		end
 	end
+	
+	read_SliceHeader.sendRefPOC.sendSize_bypass : action ==> 
+	guard
+		se_idx = 11, bypassFlag = true
+	do
+		if numPic[idxNumPic] = 0 then
+			idxNumPic := idxNumPic + 1;
+			if idxNumPic = 5 then
+				se_idx := 3;
+			end
+		else
+			idxRefPoc := 0;
+			se_idx    := 12;
+		end
+	end
+	
+	
 	read_SliceHeader.sendRefPOC.sendRefPoc : action ==> RefPoc:[refPoc]
 	guard
-		se_idx = 12
+		se_idx = 12, bypassFlag = false
 	var
-				int(size=16) refPoc = pocTables[idxNumPic][idxRefPoc]
+		int(size=16) refPoc = pocTables[idxNumPic][idxRefPoc]
+	do
+		idxRefPoc := idxRefPoc + 1;
+		if idxRefPoc = numPic[idxNumPic] then
+			idxNumPic := idxNumPic + 1;
+			if idxNumPic = 5 then
+				se_idx := 3;
+			else
+				se_idx := 11;
+			end
+		end
+	end
+	
+	read_SliceHeader.sendRefPOC.sendRefPoc_bypass : action ==> 
+	guard
+		se_idx = 12, bypassFlag = true
 	do
 		idxRefPoc := idxRefPoc + 1;
 		if idxRefPoc = numPic[idxNumPic] then
@@ -2480,7 +2676,47 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
 	read_SliceHeader.se_idx_3 : action ==> WeightedPredLuma:[weighted_pred_flag], WeightedPredChroma:[weighted_pred_flag]
 	guard
-		se_idx = 3 and isFifoFull(fifo)
+		se_idx = 3 and isFifoFull(fifo), bypassFlag = false
+	var
+		uint(size=32) res[1],
+		uint(size= 2) weighted_pred_flag := 0,
+				uint(size= 1) collocated_from_l0_flag := 1
+	do
+				collocated_from_lX := 0;
+				collocated_ref_idx := 0;
+		cabac_init_flag := 0;
+		se_idx := 5;
+
+		if slice_type = P_SLICE or slice_type = B_SLICE then
+			if pps_cabac_init_present_flag[pps_id] = 1	then
+				vld_u_name(  1, fifo, res, "cabac_init_flag                         ");
+				cabac_init_flag := res[0];
+			end
+			if slice_temporal_mvp_enable_flag = 1 then
+				res[0] := 1;
+				if( slice_type = B_SLICE ) then
+					vld_u_name(  1, fifo, res, "collocated_from_l0_flag                 ");
+					collocated_from_l0_flag := res[0];
+					collocated_from_lX := res[0];
+				end
+				if ( collocated_from_l0_flag = 1 and num_ref_idx_l0_active > 1 ) or ( collocated_from_l0_flag = 0 and num_ref_idx_l1_active > 1 ) then
+					vld_ue_name(    fifo, res, "collocated_ref_idx                      ");
+					collocated_ref_idx := res[0];
+				end
+			end
+			if pps_weighted_pred_flag[pps_id] = 1 or pps_weighted_bipred_flag[pps_id] = 1 then
+				weighted_pred_flag := 1;
+			end
+
+			if weighted_pred_flag != 0 then
+				se_idx := 4;
+			end
+		end
+	end
+	
+	read_SliceHeader.se_idx_3_bypass : action ==> 
+	guard
+		se_idx = 3 and isFifoFull(fifo), bypassFlag = true
 	var
 		uint(size=32) res[1],
 		uint(size= 2) weighted_pred_flag := 0,
@@ -2989,9 +3225,33 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
 	uint totalByPass := 0;
 
-	    read_SliceHeader_done : action ==> StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
+	read_SliceHeader_done : action ==> StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
 	guard
-		se_idx = 100
+		se_idx = 100, bypassFlag = false
+	do
+		if DEBUG_CABAC or CHECK_CABAC then
+			println("\tPOC: "+poc);
+		end
+            first_qp_group := if dependent_slice_segment_flag = 1 then 0 else 1 end;
+            if (pps_cu_qp_delta_enabled_flag[pps_id] = 0) then
+        		qp_y := slice_qp;
+        	end
+		sliceData_idx := 1;
+		totalByPass := 0;
+		if num_entry_point_offsets > 0 and TILE_SPLIT_ENABLE != 0 then //bypass
+			if TilesInfo[1] != 0 then
+				byPassFlag := true;
+				byte_align(fifo);
+				foreach int k in 0 .. TilesInfo[1] - 1 do
+					totalByPass := totalByPass + entryOffsetsTab[k];
+				end
+			end
+		end
+	end
+	
+	read_SliceHeader_done_bypass : action ==> 
+	guard
+		se_idx = 100, bypassFlag = true
 	do
 		if DEBUG_CABAC or CHECK_CABAC then
 			println("\tPOC: "+poc);
@@ -5675,8 +5935,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		read_PPS_Header	  				( read_PPS_Header_done    			) --> byte_align;
 		// read_SliceHeader
 		read_SliceHeader				( read_SliceHeader					) --> read_SliceHeader;
-                read_SliceHeader                                ( weighted_start                                ) --> weightedLuma0;
+        read_SliceHeader                ( weighted_start                    ) --> weightedLuma0;
 		read_SliceHeader				( read_SliceHeader_done				) --> read_SliceData;
+		read_SliceHeader				( read_SliceHeader_done_bypass		) --> byte_align;
         //weightedPred
         weightedLuma0									(weighted_luma_l0								) --> weightedLuma0;
         weightedLuma0									(weighted_end_luma_l0							) --> weightedChroma0; 
