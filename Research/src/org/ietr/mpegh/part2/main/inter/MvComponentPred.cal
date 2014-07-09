@@ -90,12 +90,18 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	int (size=16) SyntaxElem,
 	uint(size=16) TilesCoord
 		==>
-	uint(size=2)  IsBiPredOrLx,
-	uint(size=1)  IsReadOrNewSlice,
-	int (size=32) Mv,
-	int (size=16) PocRef,
-	uint(size=7)  PredCuSize,
-	uint(size=3)  RefIdx
+	uint(size=2)  IsBiPredOrLx_0,
+	uint(size=1)  IsReadOrNewSlice_0,
+	int (size=32) Mv_0, 
+	int (size=16) PocRef_0,
+	uint(size=7)  PredCuSize_0,
+	uint(size=3)  RefIdx_0,
+	uint(size=2)  IsBiPredOrLx_1,
+	uint(size=1)  IsReadOrNewSlice_1,
+	int (size=32) Mv_1, 
+	int (size=16) PocRef_1,
+	uint(size=7)  PredCuSize_1,
+	uint(size=3)  RefIdx_1
 		:
 
 	uint(size=16) MAX_NUM_SLICE = 1000;
@@ -733,12 +739,15 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 	/* Getting information from new Slice, finding some place for the refence
 	 * tables, and initializing the reference tables
 	 */
+	uint Select := 0; 
+	 
 	isNewSlice: action PartMode:[partMode], SliceAddr:[sliceAddress] repeat 2,
-		SyntaxElem:[paralMergeLevel, tmvpFlag] ==>
+		SyntaxElem:[paralMergeLevel, tmvpFlag], ParserSelect:[s]==>
 	guard
 		partMode = PART_MODE_SLICE_DEP || partMode = PART_MODE_SLICE_INDEP ||
 		partMode = PART_MODE_PICT
 	do
+		Select := s;
 		slcAddr   := [sliceAddress[0]/4, sliceAddress[1]/4];
 		dependSlc := partMode = PART_MODE_SLICE_DEP;
 		newPict   := partMode = PART_MODE_PICT;
@@ -776,11 +785,69 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		dependSlc
 	end
 
-	checkDepSlc.isFalse: action SyntaxElem:[colFromLX, colRefIdxVal],
+	checkDepSlc.isFalse.F0: action SyntaxElem:[colFromLX, colRefIdxVal],
 		LcuSizeMax:[log2_lcuSz], PicSize:[picSize] repeat 2, Poc:[poc],
-		SliceType:[sliceType], TilesCoord:[valNumTiles] ==> IsReadOrNewSlice:[0]
+		SliceType:[sliceType], TilesCoord:[valNumTiles] ==> IsReadOrNewSlice_0:[0]
 	guard
-		not dependSlc
+		not dependSlc, Select = 0
+	do
+		isBSlice := sliceType = B_SLICE;
+		listIdx := 0;
+		maxPoc := MIN_INT16;
+		foreach int i in 0 .. 16
+		do
+			isStillRef[i] := false;
+		end
+
+		if(newPict) then
+			currIdx := -1;
+			foreach int i in 0 .. 16
+			do
+				if((currIdx = -1 and not isRef[i]) ||
+					(isRef[i] and pocRef[i]=poc)) then
+					currIdx  := i;
+				end
+			end
+			numSlcPerPict[currIdx] := 1;
+			slcAddrRef[currIdx][0] := [slcAddr[i]: for int i in 0 .. 1];
+
+			foreach int x in 0 .. (picSize[0] - 1) / 4
+			do
+				foreach int y in 0 .. (picSize[1] - 1) / 4
+				do
+					refIdxRef[currIdx][x][y] := [-1, -1];
+				end
+			end
+		end
+		
+		isRef[currIdx] := true;
+		pocRef[currIdx] := poc;
+		colRefIdx := colRefIdxVal & 15;
+		if(isBSlice)then
+			colFromLX := 1-colFromLX;
+		else
+			colFromLX := 0;
+		end
+		colocFromL0 := colFromLX^1;
+		if DEBUG_PicSize then
+			println("picSize = "+picSize[0] + " " + picSize[1]);
+		end
+		picSizeInPart[0] := picSize[0]/4;
+		picSizeInPart[1] := picSize[1]/4;
+
+		numTiles := valNumTiles;
+		iLoop := 0;
+
+		lcuSizeMax := 1 << log2_lcuSz;
+		lcuSizeMaxInPart := lcuSizeMax / 4;
+		maskLcuSzMax     := lcuSizeMaxInPart - 1;
+	end
+	
+	checkDepSlc.isFalse.F1: action SyntaxElem:[colFromLX, colRefIdxVal],
+		LcuSizeMax:[log2_lcuSz], PicSize:[picSize] repeat 2, Poc:[poc],
+		SliceType:[sliceType], TilesCoord:[valNumTiles] ==> IsReadOrNewSlice_1:[0]
+	guard
+		not dependSlc, Select = 1
 	do
 		isBSlice := sliceType = B_SLICE;
 		listIdx := 0;
@@ -1077,9 +1144,11 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		end
 	end
 
-	getMvd: action SyntaxElem:[mvd] repeat 4 ==> IsBiPredOrLx:[isBiPredOrLx],
-		IsReadOrNewSlice:[1], Mv:[mvToSend] repeat 2, RefIdx:[refIdxToSend],
-		PocRef:[pocToSend], PredCuSize:[predCuSize]
+	getMvd.F0: action SyntaxElem:[mvd] repeat 4 ==> IsBiPredOrLx_0:[isBiPredOrLx],
+		IsReadOrNewSlice_0:[1], Mv_0:[mvToSend] repeat 2, RefIdx_0:[refIdxToSend],
+		PocRef_0:[pocToSend], PredCuSize_0:[predCuSize]
+	guard
+		Select = 0
 	var
 		int idxMvInfo,
 		int(size=16) mv[2][2],
@@ -1150,6 +1219,83 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 			println("mv = "+mvToSend[0]+", "+mvToSend[1]);
 		end
 	end
+	
+	getMvd.F1: action SyntaxElem:[mvd] repeat 4 ==> IsBiPredOrLx_1:[isBiPredOrLx],
+		IsReadOrNewSlice_1:[1], Mv_1:[mvToSend] repeat 2, RefIdx_1:[refIdxToSend],
+		PocRef_1:[pocToSend], PredCuSize_1:[predCuSize]
+	guard
+		Select = 1
+	var
+		int idxMvInfo,
+		int(size=16) mv[2][2],
+		int refIdx[2],
+		int(size=32) mvToSend[2],
+		int refIdxToSend,
+		int(size=16) pocToSend
+	do
+		if DEBUG_SyntaxElem then
+			println("mvd_0_x = "+mvd[0]+" : mvd_0_y = "+mvd[1]);
+			println("mvd_1_x = "+mvd[2]+" : mvd_1_y = "+mvd[3]);
+		end
+		foreach int i in 0 .. 1
+		do
+			idxMvInfo :=
+				if(mergeIdx >= 0) then
+					mergeIdx
+				else
+					mvpIdx[i]
+				end;
+			if idxMvInfo > -1 and idxMvInfo < 5 then
+				if(mvPred[idxMvInfo][i][0] >  32767) then mvPred[idxMvInfo][i][0] :=  32767; end
+				if(mvPred[idxMvInfo][i][0] < -32768) then mvPred[idxMvInfo][i][0] := -32768; end
+				if(mvPred[idxMvInfo][i][1] >  32767) then mvPred[idxMvInfo][i][1] :=  32767; end
+				if(mvPred[idxMvInfo][i][1] < -32768) then mvPred[idxMvInfo][i][1] := -32768; end
+				mv[i][0] := mvPred[idxMvInfo][i][0] + mvd[2*i];
+				mv[i][1] := mvPred[idxMvInfo][i][1] + mvd[2*i + 1];
+				refIdx[i] := refIdxPred[idxMvInfo][i];
+			end
+		end
+		if(mergeIdx = -1) then
+			refIdx := [refIdxRef[currIdx][partAddr[0]][partAddr[1]][i]:
+				for int i in 0 .. 1];
+		end
+		if(not isBSlice || refIdx[0]!=-1 && refIdx[1] !=-1 &&
+			predCuSize = 8 && (cuSize[0] < 8 || cuSize[1]<8)) then
+			refIdx[1] := -1;
+			mv[1][0] := 0;
+			mv[1][1] := 0;
+		end
+		if(refIdx[0] = -1) then
+			mv[0][0] := 0;
+			mv[0][1] := 0;
+		end
+		if(refIdx[1] = -1) then
+			mv[1][0] := 0;
+			mv[1][1] := 0;
+		end
+		saveRefIdx(refIdx);
+		saveMvComponent(mv);
+		if(refIdx[0]!= -1 and refIdx[1]!= -1) then
+			isBiPredOrLx := BI_PRED;
+		else if(refIdx[0] != -1) then
+			isBiPredOrLx := PRED_L0;
+		else
+			isBiPredOrLx := PRED_L1;
+		end end
+		if(refIdx[0]!=-1) then
+			refIdxToSend := refIdx[0];
+			pocToSend := pocRefListX[0][refIdx[0]];
+			mvToSend := [mv[0][i] + (cuAddr[i]<<2): for int i in 0 ..1];
+		else
+			refIdxToSend := refIdx[1];
+			pocToSend    := pocRefListX[1][refIdx[1]];
+			mvToSend     := [mv[1][i] + (cuAddr[i]<<2): for int i in 0 ..1];
+		end
+		if DEBUG_Mv then
+			println("mv = "+mvToSend[0]+", "+mvToSend[1]);
+		end
+	end
+	
 
 	getRps.launch: action RpsPoc:[numPic]==>
 	guard
@@ -1251,10 +1397,28 @@ actor MvComponentPred(bool FIX_TMVP_REFIDX0)
 		listIdx := listIdx + 1;
 	end
 
-	send2ndMv.launch: action ==> PocRef:[pocToSend], RefIdx:[refIdxToSend],
-		Mv:[mvToSend] repeat 2, PredCuSize:[predCuSize]
+	send2ndMv.launch.F0: action ==> PocRef_0:[pocToSend], RefIdx_0:[refIdxToSend],
+		Mv_0:[mvToSend] repeat 2, PredCuSize_0:[predCuSize]
 	guard
-		isBiPredOrLx = BI_PRED
+		isBiPredOrLx = BI_PRED, Select = 0
+	var
+		int refIdxToSend,
+		int mvToSend[2],
+		int(size=16) pocToSend
+	do
+		refIdxToSend := refIdxRef[currIdx][partAddr[0]][partAddr[1]][1];
+		mvToSend := [mvRef[currIdx][partAddr[0]][partAddr[1]][1][i] +
+			(cuAddr[i]<<2): for int i in 0 .. 1];
+		pocToSend := pocRefListX[1][refIdxToSend];
+		if DEBUG_Mv then
+			println("mv = "+mvToSend[0]+", "+mvToSend[1]);
+		end		
+	end
+	
+	send2ndMv.launch.F1: action ==> PocRef_1:[pocToSend], RefIdx_1:[refIdxToSend],
+		Mv_1:[mvToSend] repeat 2, PredCuSize_1:[predCuSize]
+	guard
+		isBiPredOrLx = BI_PRED, Select = 1
 	var
 		int refIdxToSend,
 		int mvToSend[2],
