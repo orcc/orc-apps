@@ -3056,7 +3056,65 @@ actor Algo_Parser_FB (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 	read_SliceHeader.se_idx_5 : action ==> DBFDisable:[slice_disable_deblocking_filter_flag !=0],
 		DbfSe:[betaOff, tcOff, pps_cb_qp_offset[pps_id] + slice_cb_qp_offset, pps_cr_qp_offset[pps_id] + slice_cr_qp_offset]
 	guard
-		se_idx = 5 and isFifoFull(fifo)
+		se_idx = 5 and isFifoFull(fifo), bypassFlag = false
+	var
+		uint(size=32) res[1],
+		uint(size= 1) slice_disable_deblocking_filter_flag := pps_disable_deblocking_filter_flag[pps_id],
+		int(size=8) betaOff := pps_beta_offset[pps_id],
+		int(size=8) tcOff := pps_tc_offset[pps_id]
+	do
+		if slice_type = P_SLICE or slice_type = B_SLICE then
+			vld_ue_name(    fifo, res, "five_minus_max_num_merge_cand           ");
+			MaxNumMergeCand := 5 - res[0];
+		end
+		vld_se_name(    fifo, res, "slice_qp_delta                          ");
+		slice_qp := pps_init_qp_minus26[pps_id] + 26 +res[0];
+		slice_cb_qp_offset := 0;
+		slice_cr_qp_offset := 0;
+				qp_y := slice_qp;
+				qp_bd_offset_luma           := 6 * sps_bit_depth_luma_minus8[sps_id];
+				if pps_cu_qp_delta_enabled_flag[pps_id] = 0 then
+					qp_y    := ((slice_qp + 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma;
+				end
+		if pps_slice_chroma_qp_offsets_present_flag[pps_id] = 1 then
+			vld_se_name(    fifo, res, "slice_cb_qp_offset                      ");
+			slice_cb_qp_offset := res[0];
+			vld_se_name(    fifo, res, "slice_cr_qp_offset                      ");
+			slice_cr_qp_offset := res[0];
+		end
+		if(pps_deblocking_filter_control_present_flag[pps_id] = 1) then
+		   res[0] := 0;
+			if(deblocking_filter_override_enabled_flag[pps_id] = 1) then
+						vld_u_name(1, fifo, res,
+						"deblocking_filter_override_flag         ");
+			end
+			if res[0] = 1 then
+						vld_u_name(1, fifo, res,
+						"slice_disable_deblocking_filter_flag    ");
+				slice_disable_deblocking_filter_flag := res[0];
+				if( slice_disable_deblocking_filter_flag = 0) then
+							vld_se_name(fifo, res,
+							"beta_offset_div2                        ");
+					betaOff := res[0] << 1;
+							vld_se_name(fifo, res,
+							"tc_offset_div2                          ");
+					tcOff := res[0] << 1;
+				end
+			end
+		end
+				if (pps_loop_filter_across_slice_enabled_flag[sps_id] = 1 and
+				(slice_sample_adaptive_offset_flag[0] = 1 or
+				slice_sample_adaptive_offset_flag[1] = 1 or
+				slice_disable_deblocking_filter_flag = 0)) then
+					vld_u_name(1, fifo, res,
+					"slice_loop_filter_across_slices_enabled_flag");
+		end
+		se_idx := se_idx + 1;
+	end
+	
+	read_SliceHeader.se_idx_5_bypass : action ==> 
+	guard
+		se_idx = 5 and isFifoFull(fifo), bypassFlag = true
 	var
 		uint(size=32) res[1],
 		uint(size= 1) slice_disable_deblocking_filter_flag := pps_disable_deblocking_filter_flag[pps_id],
@@ -3620,7 +3678,7 @@ actor Algo_Parser_FB (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 				end
 			end
 		else
-			//println("endOfSlice ################################################### counter = " + counter);
+		//println("endOfSlice ################################################### counter = " + PARSER_ID);
 						counter := counter + 1;
 			sliceData_idx := 5;
 			//curr_Tile := 0;
