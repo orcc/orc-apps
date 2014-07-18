@@ -38,77 +38,105 @@ import  org.sc29.wg11.common.DisplayYUVFunctions.*;
 //@DEBUG
 actor Source_ffmpeg_FB2 () ==> uint(size=8) Om, uint(size=8) O1, uint(size=8) O2, int Select:
 
-	uint(size=8) framesBuffer[MAX_FRAME_SIZE];
-	int frameSize;
+	uint(size=8) framesBuffer[MAX_FRAME_DELAY][MAX_FRAME_SIZE];
+	int  frameSize;
 	uint ReadFrameIdx_1 := 0;
 	uint ReadFrameIdx_2 := 0;
 	uint ReadFrameIdx_m := 0;
 	uint totalFrameSize := 0;
+	uint currentFrame_1 := 0;
+	uint currentFrame_2 := 0;
+	uint currentFrame_m := 0;
+	uint currentFrame   := 0;
+	uint frameSizeList[MAX_FRAME_DELAY] := [0 : for int i in 0 .. MAX_FRAME_DELAY - 1];
 	
 	initialize ==>
 	do
 		ffmpeg_initSource();
 	end
 	
+	readFirstFrame: action ==> Select:[0]
+	do
+		ffmpeg_readFrame(framesBuffer, frameSize, (currentFrame & 3));
+		totalFrameSize := totalFrameSize + frameSize;
+		frameSizeList[currentFrame & 3] := frameSize;
+	end
+	
 	readFrame: action ==> 
 	do
-		ffmpeg_readFrame(framesBuffer, frameSize, 0);
+		ffmpeg_readFrame(framesBuffer, frameSize, (currentFrame & 3));
 		totalFrameSize := totalFrameSize + frameSize;
-	end
-	
-	checkFifo.d1: action ==> O1:[ Out ], Select:[0]
-	var
-		uint(size=8) Out
-	do
-		Out := framesBuffer[ReadFrameIdx_1];
-		ReadFrameIdx_1 := ReadFrameIdx_1 + 1;
-	end
-	
-	checkFifo.d2: action ==> O2:[ Out ], Select:[1]
-	var
-		uint(size=8) Out
-	do
-		Out := framesBuffer[ReadFrameIdx_2];
-		ReadFrameIdx_2 := ReadFrameIdx_2 + 1;
+		frameSizeList[currentFrame & 3] := frameSize;
 	end
 	
 	sendData.d1: action ==> O1:[ Out ]
 	var
 		uint(size=8) Out
 	do
-		Out := framesBuffer[ReadFrameIdx_1];
+		Out := framesBuffer[currentFrame_1 & 3][ReadFrameIdx_1];
 		ReadFrameIdx_1 := ReadFrameIdx_1 + 1;
+		if (ReadFrameIdx_1 = frameSizeList[currentFrame_1 & 3]) and (currentFrame_1 < currentFrame - 1) then
+			ReadFrameIdx_1 := 0;
+			currentFrame_1 := currentFrame_1 +1;
+		end
 	end
 	
 	sendData.d2: action ==> O2:[ Out ]
 	var
 		uint(size=8) Out
 	do
-		Out := framesBuffer[ReadFrameIdx_2];
+		Out := framesBuffer[currentFrame_2 & 3][ReadFrameIdx_2];
 		ReadFrameIdx_2 := ReadFrameIdx_2 + 1;
+		if (ReadFrameIdx_2 = frameSizeList[currentFrame_2 & 3]) and (currentFrame_2 < currentFrame - 1) then
+			ReadFrameIdx_2 := 0;
+			currentFrame_2 := currentFrame_2 +1;
+		end
 	end
 	
 	sendData.m: action ==> Om:[ Out ]
+	guard
+		ReadFrameIdx_m < frameSizeList[currentFrame_m & 3],
+		currentFrame_m < currentFrame
 	var
 		uint(size=8) Out
 	do
-		Out := framesBuffer[ReadFrameIdx_m];
+		Out := framesBuffer[currentFrame_m & 3][ReadFrameIdx_m];
 		ReadFrameIdx_m := ReadFrameIdx_m + 1;
+		if ReadFrameIdx_m = frameSizeList[currentFrame_m & 3] then
+			ReadFrameIdx_m := 0;
+			currentFrame_m := currentFrame_m +1;
+		end
 	end
 	
-	sendDataDone: action ==>
+	sendDataDone.d1: action ==>
 	guard
-		ReadFrameIdx_1 = totalFrameSize or 
-		ReadFrameIdx_2 = totalFrameSize 
+		ReadFrameIdx_1 = frameSizeList[currentFrame_1 & 3],
+		currentFrame_1 = currentFrame - 1
+	do
+		ReadFrameIdx_1 := 0;
+		currentFrame_1 := currentFrame_1 + 1;
+		currentFrame   := currentFrame + 1;
 	end
 	
-	schedule fsm readFrame :
-		readFrame 		(readFrame)		--> checkFifo;
-		checkFifo		(checkFifo) 	--> sendData;
+	sendDataDone.d2: action ==>
+	guard
+		ReadFrameIdx_2 = frameSizeList[currentFrame_2 & 3],
+		currentFrame_2 = currentFrame - 1
+	do
+		ReadFrameIdx_2 := 0;
+		currentFrame_2 := currentFrame_2 + 1;
+		currentFrame   := currentFrame + 1;
+	end
+	
+	schedule fsm readFirstFrame :
+		readFirstFrame	(readFirstFrame)--> sendData;
 		sendData 		(sendData)  	--> sendData;
 		sendData 		(sendDataDone)	--> readFrame;
+		readFrame 		(readFrame)		--> sendData;
 	end
+	
 	priority
 		sendDataDone > sendData;
 	end
+	
 end
