@@ -64,6 +64,7 @@ import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import devel.org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
 actor DecodingPictureBufferLuma ()
+	uint(size=2)  IsPicSlc,
 	uint(size=8)  LcuSizeMax,
 	uint(size=1)  IsReadOrNewSlice,
 	int (size=32) Mv,
@@ -106,7 +107,6 @@ actor DecodingPictureBufferLuma ()
 	uint sendx := 0;
 	uint sendy := 0;
 	uint(size=8) lcuSizeMax;
-	
 	uint(size=8) seqIdOutput := 1;
 	uint(size=8) seqIdDecode := 1;
 	
@@ -192,11 +192,12 @@ actor DecodingPictureBufferLuma ()
 	
 	/** Getting informations from new slice/picture. Updating these informations **/
 	isNewSlice: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize] ==>
+		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
 	guard
 		/* Fix me : We should know when there is a new picture */
 		isRead = 0,
-		poc = readingPoc
+		poc = readingPoc,
+		isPicSlc = 1
 	do	
 		lcuSizeMax := 1 << log2LcuSize;
 		isRef := [false: for int i in 0 .. DPB_SIZE - 1];
@@ -206,10 +207,11 @@ actor DecodingPictureBufferLuma ()
 	isNewPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
 					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
 					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
-					  ,LcuSizeMax:[log2LcuSize] ==>
+					  ,LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
 	guard
 		isRead = 0,
-		poc != readingPoc
+		poc != readingPoc,
+		isPicSlc = 0
 	do
 		lcuSizeMax := 1 << log2LcuSize;
 //		println("Dpb ; Pict num "+pictNum);
@@ -271,6 +273,29 @@ actor DecodingPictureBufferLuma ()
 			println("Dpb ; picOutputFlag "+picOutputFlag);
 			println("Dpb ; videoSequenceId "+videoSequenceId);
 		end
+	end
+	
+	isNewPict.lastPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
+					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
+					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
+					  ,LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
+	guard // case stream with only 1 frame
+		isRead = 0,
+		poc = readingPoc and videoSequenceId > 1,
+		isPicSlc = 0
+	do
+		lcuSizeMax := 1 << log2LcuSize;
+//		println("Dpb ; Pict num "+pictNum);
+		pictNum := pictNum + 1;
+		picSizeInCu[0] := (picWidthInPix+lcuSizeMax-1)/lcuSizeMax;
+		picSizeInCu[1] := (picHeightInPix+lcuSizeMax-1)/lcuSizeMax;
+		picSize[0] := picWidthInPix;
+		picSize[1] := picHeightInPix;
+		xIdx := 0;
+		yIdx := 0;
+		
+		seqIdDecode := videoSequenceId;
+
 	end
 	
 	/** We get all the references from the 5 lists of the Rps
@@ -415,7 +440,7 @@ actor DecodingPictureBufferLuma ()
 	sendCuPix.launch.x64: action ==> VID:[cu] repeat 64*64
 	guard
 		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
+		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 64
 	var
@@ -437,7 +462,7 @@ actor DecodingPictureBufferLuma ()
 	sendCuPix.launch.x32: action ==> VID:[cu] repeat 32*32
 	guard
 		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
+		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 32
 	var
@@ -459,7 +484,7 @@ actor DecodingPictureBufferLuma ()
 	sendCuPix.launch.x16: action ==> VID:[cu] repeat 16*16
 	guard
 		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
+		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 16
 	var
@@ -667,6 +692,5 @@ actor DecodingPictureBufferLuma ()
 	priority 
 		sendCuPix > getMvInfo > isNewSlice > getCuPix;
 		sendCuPix.skip > sendCuPix.launch > sendCuPix.done;
-		getCuPix.launch > getCuPix.done;
 	end
 end
