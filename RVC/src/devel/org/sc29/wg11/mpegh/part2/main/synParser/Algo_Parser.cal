@@ -26,6 +26,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                                 uint(size=8)  LcuSizeMax,
                                 uint(size= 4) PartMode,
                					uint(size=2)  IsPicSlcLcu,
+               					uint(size=2)  IsPicSlc,
                 				uint(size=2)  LFAcrossSlcTile,
                                 uint(size=16) PictSize,
                                  int(size=16) Poc,
@@ -45,6 +46,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                                 bool Cbf,
                                 bool DBFDisable,
                                  int(size= 8)  DbfSe,
+                                 int(size= 8)  ReorderPics,
                                  int(size=16) WeightedPred,
                                 uint(size=16) TileSize,
                                 uint(size=16) TileCUInfo,
@@ -259,7 +261,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size= 1) vps_timing_info_present_flag;
 	    uint(size=10) vps_num_op_sets_minus1;
 	    uint(size=10) vps_num_hrd_parameters;
-
+		uint(size= 8) video_sequence_id := 0;
+		
         /**************************************************************************
          * read_VPS_Header.se_idx_1
          *************************************************************************/
@@ -269,6 +272,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         var
         	uint(size=32) res[1]
         do
+        	video_sequence_id := video_sequence_id + 1;
             vld_u_name(  4, fifo, res, "vps_video_parameter_set_id              ");
             vld_u_name(  2, fifo, res, "vps_reserved_three_2bits                ");
             vld_u_name(  6, fifo, res, "vps_reserved_zero_6bits                 ");
@@ -950,29 +954,32 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        se_idx := se_idx + 1;
 	    end
 	
-	        /**************************************************************************
-	         * read_SPS_Header.se_idx_3
-	         *************************************************************************/
-	    read_SPS_Header.se_idx_3.loop : action ==>
-	    guard
-	            se_idx = 3 and isFifoFull(fifo),
-	            cnt_i <= sps_max_sub_layers_minus1[sps_id]
-	    var
-	            uint(size=32) res[1]
-	    do
-	            vld_ue_name(    fifo, res, "sps_max_dec_pic_buffering               ");
-	            vld_ue_name(    fifo, res, "sps_num_reorder_pics                    ");
-	            vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
-	            cnt_i := cnt_i + 1;
-	    end
+	       /**************************************************************************
+	 * read_SPS_Header.se_idx_3
+	 *************************************************************************/
+		uint sps_num_reorder_pics[NB_MAX_SPS];
+		
+		read_SPS_Header.se_idx_3.loop : action ==>
+		guard
+			se_idx = 3 and isFifoFull(fifo),
+			cnt_i <= sps_max_sub_layers_minus1[sps_id]
+		var
+			uint(size=32) res[1]
+		do
+			vld_ue_name(    fifo, res, "sps_max_dec_pic_buffering               ");
+			vld_ue_name(    fifo, res, "sps_num_reorder_pics                    ");
+			sps_num_reorder_pics[sps_id] := res[0];
+			vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
+			cnt_i := cnt_i + 1;
+		end
 	
-	    read_SPS_Header.se_idx_3.loopEnd : action ==>
-	    guard
-	    	se_idx = 3,
-	    	cnt_i = sps_max_sub_layers_minus1[sps_id] + 1
-	    do
-	    	se_idx := se_idx + 1;
-	    end
+		read_SPS_Header.se_idx_3.loopEnd : action ==>
+		guard
+			se_idx = 3,
+			cnt_i = sps_max_sub_layers_minus1[sps_id] + 1
+		do
+			se_idx := se_idx + 1;
+		end
 	    /**************************************************************************
 	     * read_SPS_Header.se_idx_4
 	     *************************************************************************/
@@ -1820,6 +1827,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint slice_addr := 0;
 	    int slice_idx :=0;
 	    int idx := 0;
+	    uint no_output_of_prior_pics_flag;
+	    uint pic_output_flag;
 	    
 	    read_SliceHeader.se_idx_1 : action ==> PartMode:[part_mode]       
 	    guard
@@ -1840,9 +1849,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
 	        first_slice_segment_in_pic_flag := res[0];
 	
-	        if nal_unit_type >= 16 and nal_unit_type <= 23 then
-	            vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
-	        end
+	        no_output_of_prior_pics_flag := 0;
+			if nal_unit_type >= 16 and nal_unit_type <= 23 then
+				vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
+				no_output_of_prior_pics_flag := res[0];
+			end
 	        vld_ue_name(    fifo, res, "slice_pic_parameter_set_id              ");
 	        pps_id := res[0];
 	        sps_id := pps_sps_id[pps_id];
@@ -1896,9 +1907,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        
 			slice_temporal_mvp_enable_flag := 0;
 			idx := 0;
-	        if(pps_output_flag_present_flag[pps_id] = 1) then
-	                vld_u_name(  1, fifo, res, "pic_output_flag                         ");
-	        end
+	        pic_output_flag := 1;
+			if(pps_output_flag_present_flag[pps_id] = 1) then
+				vld_u_name(  1, fifo, res, "pic_output_flag                         ");
+				pic_output_flag := res[0];
+			end
 	        if sps_separate_colour_plane_flag[sps_id] = 1 then
 	        	vld_u_name(  2, fifo, res, "colour_plane_id                         ");
 	    	end
@@ -3047,10 +3060,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         uint(size=16) colWidth[NB_MAX_PPS][PICT_WIDTH / MIN_CTB_SIZE_Y];
         uint(size=16) rowHeight[NB_MAX_PPS][PICT_HEIGHT / MIN_CTB_SIZE_Y];
 
-        read_SliceData.init: action ==> IsPicSlcLcu:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
+        read_SliceData.init: action ==> IsPicSlcLcu:[0], IsPicSlc:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
         								SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
         								, PicSizeInMb:[pictSize] repeat 2, DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1]
         								, LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
+        								ReorderPics:[no_output_of_prior_pics_flag, sps_num_reorder_pics[sps_id], pic_output_flag, video_sequence_id],
         								 PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2
         guard
                 sliceData_idx = 1 and isFifoFull(fifo),
@@ -3245,7 +3259,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         read_SliceData.noInit_isSlc: action ==> MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id],slice_temporal_mvp_enable_flag, collocated_from_lX , collocated_ref_idx],
         										IsPicSlcLcu:[1], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets],
         										LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
-        										PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2
+        										PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2, IsPicSlc:[1]
         guard
                 sliceData_idx = 1,
                 first_slice_segment_in_pic_flag = 0 and dependent_slice_segment_flag = 0 and prev_pps_id = pps_id
