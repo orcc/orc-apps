@@ -84,7 +84,8 @@ actor DecodingPictureBufferChroma ()
 	int (size=16) pocIndex[32];
 	int (size=16) pocRef[DPB_SIZE] := [-1 : for int i in 0 .. DPB_SIZE-1];
 
-	uint(size=8)  currIdx := 0;
+	int(size=8)  currIdx := -1;
+	int(size=8)  lastIdx := -1;
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
 	uint(size=6)  xIdx;
@@ -202,6 +203,7 @@ actor DecodingPictureBufferChroma ()
 		xIdx := 0;
 		yIdx := 0;
 		
+		lastIdx := currIdx;
 		// Find the next available buffer
 		currIdx := 0;
 		while isRef[currIdx] or not isSent[currIdx] do
@@ -247,15 +249,17 @@ actor DecodingPictureBufferChroma ()
 		
 	end
 	
-	isNewPict.lastPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
+	isNewPict_lastPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
 					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
 					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
 					  ,LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
 	guard // case stream with only 1 frame
 		isRead = 0,
-		poc = readingPoc and videoSequenceId > 1,
+		lastIdx = -1 and videoSequenceId > 1,
 		isPicSlc = 0
 	do
+		sendx := 0;
+		sendy := 0;
 		lcuSizeMax := 1 << log2LcuSize;
 //		println("Dpb ; Pict num "+pictNum);
 		pictNum := pictNum + 1;
@@ -265,8 +269,42 @@ actor DecodingPictureBufferChroma ()
 		picSize[1] := picHeightInPix;
 		xIdx := 0;
 		yIdx := 0;
+		nbList := 0;
+		readingPoc := poc;
+		isRef := [false: for int i in 0 .. DPB_SIZE - 1];
+		nbList := 0;
+		
+		pocDone[readingPoc & 31] := false;
+		pocIndex[readingPoc & 31] := currIdx;
+		pocRef[currIdx] := readingPoc;
+		
+		if noOutputOfPriorPicsFlag = 1 then
+			// Flush the queue of next displayed frames
+			sendingPoc := poc;
+			numAvailablePic := 0;
+			isSent := [true : for int i in 0 .. DPB_SIZE-1];
+			skip := [false : for int i in 0 .. DPB_SIZE-1];
+		end
+		
+		isSent[currIdx] := false;
+		
+		if picOutputFlag = 1 then
+			skip[currIdx] := false;
+		else
+			skip[currIdx] := true;
+		end
+		
+		// Number of frames needed to display 
+		numReorderPic := spsNumReorderPics;
 		
 		seqIdDecode := videoSequenceId;
+		
+		if seqIdDecode = seqIdOutput then 
+			// Always display the frame with the smallest poc
+			if readingPoc < sendingPoc then 
+				sendingPoc := readingPoc;
+			end
+		end
 
 	end
 	
@@ -619,8 +657,8 @@ actor DecodingPictureBufferChroma ()
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewPict        )--> GetRps;
-
+		IsNewPict (isNewPict         )--> GetRps;
+		IsNewPict (isNewPict_lastPict)--> GetRps;
 		ManageCu (isNewSlice        )--> GetRps;
 		ManageCu (getCuPix.launch   )--> ManageCu;
 		ManageCu (getCuPix.done     )--> IsNewPict;
@@ -636,5 +674,6 @@ actor DecodingPictureBufferChroma ()
 	priority 
 		sendCuPix > getMvInfo > isNewSlice > getCuPix;
 		sendCuPix.skip > sendCuPix.launch > sendCuPix.done;
+		isNewPict > isNewPict_lastPict;
 	end
 end
