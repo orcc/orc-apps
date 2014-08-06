@@ -1,0 +1,878 @@
+/********************************************************************************
+
+This software module was originally developed by 
+Damien de Saint Jorre (EPFL), 
+in the course of development of the ISO/IEC 23002-5 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-5.
+
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+license to copy, distribute, and make derivative works of this software 
+module or modifications thereof for use in implementations of the 
+ISO/IEC 23002-5 in products that satisfy conformance criteria (if any). 
+
+Those intending to use this software module in products are advised that 
+its use may infringe existing patents. ISO/IEC have no liability for use 
+of this software module or modifications thereof.
+
+Copyright is not released for products that do not conform to audiovisual 
+and image-coding related ITU Recommendations and/or ISO/IEC International 
+Standards.
+
+Assurance that the originally developed software module can be used 
+(1) in the ISO/IEC 23002-5 once the ISO/IEC 23002-5 has been adopted; and 
+(2) to develop the ISO/IEC 23002-5: 
+
+EPFL grants ISO/IEC all rights necessary to 
+include the originally developed software module or modifications thereof 
+in the ISO/IEC 23002-5 and to permit ISO/IEC to offer You a royalty-free, 
+worldwide, non-exclusive, copyright license to copy, distribute, and make 
+derivative works for use in implementations of the ISO/IEC 23002-5 in 
+products that satisfy conformance criteria (if any), and to the extent 
+that such originally developed software module or portions of it are 
+included in the ISO/IEC 23002-5.  To the extent that EPFL
+owns patent rights that would be required to make, use, or 
+sell the originally developed software module or portions thereof 
+included in the ISO/IEC 23002-5 in a conforming product, EPFL
+will assure the ISO/IEC that it is willing to 
+negotiate licenses under reasonable and non-discriminatory terms and 
+conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications 
+thereof for the sole  purpose of developing theISO/IEC 23002-5
+
+EPFL retains full right to modify and use the 
+code for its own purpose, assign or donate the code to a third party and 
+to inhibit third parties from using the code for products that do not 
+conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+This copyright notice must be included in all copies or derivative works. 
+Copyright (c) ISO/IEC 2011-2014.
+*****************************************************************************/
+
+/**
+ * This actor is a picture buffer containing all reference pictures. It sends
+ *		samples needed for the inter prediction
+ * 
+ * 
+ * @input IsBiPred : Indicates when the current CU is using Bi-prediction.
+ * 
+ * @input IsReadOrNewSlc : Indicates if samples are asked from the current RPS
+ *		or if there is a new picture.
+ * 
+ * @input Mv : movement vectors of the current CU.
+ * 
+ * @input PicSize : size of the current picture.
+ * 
+ * @input Poc : Picture Order Count of the current slice.
+ * 
+ * @output PocRef : POC used for the prediction of the current CU.
+ * 
+ * @input PredCuSize : Size of the largest side of the current CU.
+ * 
+ * @input Sample : Samples from the Inloop filter. It represents the pixels
+ * 		which will be displayed.
+ * 
+ * 
+ * @output Sample : Samples needed for the inter prediction.
+ * 
+ * 
+ * @author Damien de Saint Jorre (EPFL) <damien.desaintjorre@epfl.ch>
+ */
+package org.sc29.wg11.mpegh.part2.main.inter;
+
+import std.util.Math.*;
+import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+//@DEBUG
+actor DecodingPictureBuffer()
+	uint(size=2)  IsPicSlc,
+	uint(size=8)  ReorderPics,
+	uint(size=2)  IsBiPredOrLx,
+	uint(size=1)  IsReadOrNewSlc,
+	int (size=32) Mv,
+	uint(size=16) PicSize,
+	int (size=16) Poc,
+	int (size=16) PocRef,
+	uint(size=7)  PredCuSize,
+	int (size=16) RpsPoc,
+	uint(size=8)  Sample
+		==>
+	uint(size=8)  RefSample
+		:
+
+	uint(size=8)  pictureBuffer[DPB_SIZE][3][DPB_LUM_HEIGHT][DPB_LUM_WIDTH];
+	int (size=16) pocRef[DPB_SIZE];
+	bool          isRef[DPB_SIZE];
+	bool          isStillRef[DPB_SIZE];
+
+	int (size=9)  currIdx := -1;
+	int (size=4)  lastIdx := -1;
+	uint(size=6)  picSizeInCu[2];
+	uint(size=16) picSize[2];
+	uint(size=16) picSizeChr[2];
+	uint(size=6)  xIdx;
+	uint(size=6)  yIdx;
+	uint(size=1)  numPocRef;
+	uint(size=3)  nbList;
+	uint(size=3)  sizeOfList;
+	int (size=32) mvOffset[2];
+	int (size=32) mvOffChr[2];
+	uint(size=7)  iLoop;
+	uint(size=7)  jLoop;
+	uint(size=2)  compIdx;
+	uint(size=7)  puSize[2];
+	uint(size=7)  puSizeChr[2];
+	int (size=9)  refPicIdx;
+	bool          isBiPred;
+	int (size=16) lastPocRef;
+	int (size=32) lastMvRef[2];
+	bool          isNewPicture;
+
+	procedure fillBorder()
+	var
+		uint(size=16) xPixIdx,
+		uint(size=16) yPixIdx,
+		uint(size=16) xPixIdxChr,
+		uint(size=16) yPixIdxChr,
+		uint(size=16) xIdxDownRightBlk,
+		uint(size=16) yIdxDownRightBlk,
+		bool leftEdge,  bool upEdge,
+		bool rightEdge, bool downEdge,
+		bool isEdge
+	begin
+		xIdxDownRightBlk := xIdx*16 + 16;
+		yIdxDownRightBlk := yIdx*16 + 16;
+		xPixIdx := BORDER_SIZE_LUM + xIdx*16;
+		yPixIdx := BORDER_SIZE_LUM + yIdx*16;
+		xPixIdxChr := BORDER_SIZE_CHR + xIdx*8;
+		yPixIdxChr := BORDER_SIZE_CHR + yIdx*8;
+
+		leftEdge := xIdx = 0;
+		upEdge := yIdx = 0;
+		rightEdge := xIdxDownRightBlk >= picSize[0];
+		downEdge := yIdxDownRightBlk >= picSize[1];
+		isEdge := leftEdge || upEdge || downEdge || rightEdge;
+
+
+		if(isEdge) then
+			if(leftEdge) then
+				foreach uint y in yPixIdx .. yPixIdx + 15
+				do
+					foreach uint x in 0 .. BORDER_SIZE_LUM - 1
+					do
+						pictureBuffer[lastIdx][0][y][x] :=
+							pictureBuffer[lastIdx][0][y][BORDER_SIZE_LUM];
+					end
+				end
+				foreach uint comp in 1 .. 2
+				do
+					foreach uint y in yPixIdxChr .. yPixIdxChr + 7
+					do
+						foreach uint x in 0 .. BORDER_SIZE_CHR - 1
+						do
+							pictureBuffer[lastIdx][comp][y][x] :=
+								pictureBuffer[lastIdx][comp][y][BORDER_SIZE_CHR];
+						end
+					end
+				end
+			else if(rightEdge) then
+				foreach uint y in yPixIdx .. yPixIdx + 15
+				do
+					foreach uint x in 0 .. BORDER_SIZE_LUM - 1
+					do
+						pictureBuffer[lastIdx][0][y][x + picSize[0] + BORDER_SIZE_LUM] :=
+							pictureBuffer[lastIdx][0][y][picSize[0] + BORDER_SIZE_LUM - 1];
+					end
+				end
+				foreach uint comp in 1 .. 2
+				do
+					foreach uint y in yPixIdxChr .. yPixIdxChr + 7
+					do
+						foreach uint x in 0 .. BORDER_SIZE_CHR - 1
+						do
+							pictureBuffer[lastIdx][comp][y][x + picSizeChr[0] + BORDER_SIZE_CHR] :=
+								pictureBuffer[lastIdx][comp][y][picSizeChr[0] + BORDER_SIZE_CHR - 1];
+						end
+					end
+				end
+			end end
+
+			if(upEdge) then
+				foreach uint y in 0 .. BORDER_SIZE_LUM - 1
+				do
+					foreach uint x in xPixIdx .. xPixIdx + 15
+					do
+						pictureBuffer[lastIdx][0][y][x] :=
+							pictureBuffer[lastIdx][0][BORDER_SIZE_LUM][x];
+					end
+				end
+				foreach uint comp in 1 .. 2
+				do
+					foreach uint y in 0 .. BORDER_SIZE_CHR - 1
+					do
+						foreach uint x in xPixIdxChr .. xPixIdxChr + 7
+						do
+							pictureBuffer[lastIdx][comp][y][x] :=
+								pictureBuffer[lastIdx][comp][BORDER_SIZE_CHR][x];
+						end
+					end
+				end
+
+				//Corners.
+				if(leftEdge) then
+					foreach uint y in 0 .. BORDER_SIZE_LUM - 1
+					do
+						foreach uint x in 0 .. BORDER_SIZE_LUM - 1
+						do
+							pictureBuffer[lastIdx][0][y][x] :=
+								pictureBuffer[lastIdx][0][BORDER_SIZE_LUM][BORDER_SIZE_LUM];
+						end
+					end
+					foreach int comp in 1 .. 2
+					do
+						foreach uint y in 0 .. BORDER_SIZE_CHR - 1
+						do
+							foreach uint x in 0 .. BORDER_SIZE_CHR - 1
+							do
+								pictureBuffer[lastIdx][comp][y][x] :=
+									pictureBuffer[lastIdx][comp][BORDER_SIZE_CHR][BORDER_SIZE_CHR];
+							end
+						end
+					end
+				else if(rightEdge) then
+					foreach uint y in 0 .. BORDER_SIZE_LUM - 1
+					do
+						foreach uint x in 0 .. BORDER_SIZE_LUM - 1
+						do
+							pictureBuffer[lastIdx][0][y][x + picSize[0] + BORDER_SIZE_LUM] :=
+								pictureBuffer[lastIdx][0][BORDER_SIZE_LUM][picSize[0] + BORDER_SIZE_LUM - 1];
+						end
+					end
+					foreach int comp in 1 .. 2
+					do
+						foreach uint y in 0 .. BORDER_SIZE_CHR - 1
+						do
+							foreach uint x in 0 .. BORDER_SIZE_CHR - 1
+							do
+								pictureBuffer[lastIdx][comp][y][x + picSizeChr[0] + BORDER_SIZE_CHR] :=
+									pictureBuffer[lastIdx][comp][BORDER_SIZE_CHR][picSizeChr[0] + BORDER_SIZE_CHR - 1];
+							end
+						end
+					end
+				end end
+			else if(downEdge) then
+				foreach uint y in 0 .. BORDER_SIZE_LUM - 1
+				do
+					foreach uint x in xPixIdx .. xPixIdx + 15
+					do
+						pictureBuffer[lastIdx][0][y + picSize[1] + BORDER_SIZE_LUM][x] :=
+							pictureBuffer[lastIdx][0][picSize[1] + BORDER_SIZE_LUM - 1][x];
+					end
+				end
+				foreach int comp in 1 .. 2
+				do
+					foreach uint y in 0 .. BORDER_SIZE_CHR - 1
+					do
+						foreach uint x in xPixIdxChr .. xPixIdxChr + 7
+						do
+							pictureBuffer[lastIdx][comp][y + picSizeChr[1] + BORDER_SIZE_CHR][x] :=
+								pictureBuffer[lastIdx][comp][picSizeChr[1] + BORDER_SIZE_CHR - 1][x];
+						end
+					end
+				end
+
+				//Corners.
+				if(leftEdge) then
+					foreach uint y in 0 .. BORDER_SIZE_LUM - 1
+					do
+						foreach uint x in 0 .. BORDER_SIZE_LUM - 1
+						do
+							pictureBuffer[lastIdx][0][y + picSize[1] + BORDER_SIZE_LUM][x] :=
+								pictureBuffer[lastIdx][0][picSize[1] + BORDER_SIZE_LUM - 1][BORDER_SIZE_LUM];
+						end
+					end
+					foreach int comp in 1 .. 2
+					do
+						foreach uint y in 0 .. BORDER_SIZE_CHR - 1
+						do
+							foreach uint x in 0 .. BORDER_SIZE_CHR - 1
+							do
+								pictureBuffer[lastIdx][comp][y + picSizeChr[1] + BORDER_SIZE_CHR][x] :=
+									pictureBuffer[lastIdx][comp][picSizeChr[1] + BORDER_SIZE_CHR - 1][BORDER_SIZE_CHR];
+							end
+						end
+					end
+				else if(rightEdge) then
+					foreach uint y in 0 .. BORDER_SIZE_LUM - 1
+					do
+						foreach uint x in 0 .. BORDER_SIZE_LUM - 1
+						do
+							pictureBuffer[lastIdx][0][y + picSize[1] + BORDER_SIZE_LUM][x + picSize[0] + BORDER_SIZE_LUM] :=
+								pictureBuffer[lastIdx][0][picSize[1] + BORDER_SIZE_LUM - 1][picSize[0] + BORDER_SIZE_LUM - 1];
+						end
+					end
+					foreach int comp in 1 .. 2
+					do
+						foreach uint y in 0 .. BORDER_SIZE_CHR - 1
+						do
+							foreach uint x in 0 .. BORDER_SIZE_CHR - 1
+							do
+								pictureBuffer[lastIdx][comp][y + picSizeChr[1] + BORDER_SIZE_CHR][x + picSizeChr[0] + BORDER_SIZE_CHR] :=
+									pictureBuffer[lastIdx][comp][picSizeChr[1] + BORDER_SIZE_CHR - 1][picSizeChr[0] + BORDER_SIZE_CHR - 1];
+							end
+						end
+					end
+				end end
+			end end
+		end
+	end
+
+	/* We get the whole Cu decoded (luma and chroma components) and we save
+	 * it in the Dpb (pictureBuffer).
+	 */
+	getPix: action Sample:[samp]  repeat 16*16 + 8*8*2 ==>
+	guard
+		yIdx < picSizeInCu[1]
+	var
+		uint(size=16) xPixIdx,
+		uint(size=16) yPixIdx,
+		uint tokenOffset
+	do
+		xPixIdx := BORDER_SIZE_LUM + xIdx*16;
+		yPixIdx := BORDER_SIZE_LUM + yIdx*16;
+		foreach uint y in 0 .. 15
+		do
+			foreach uint x in 0 .. 15
+			do
+				pictureBuffer[lastIdx][0][yPixIdx+y][xPixIdx+x] := samp[x+y*16];
+			end
+		end
+
+		xPixIdx := BORDER_SIZE_CHR + xIdx*8;
+		yPixIdx := BORDER_SIZE_CHR + yIdx*8;
+		foreach uint component in 1 .. 2
+		do
+			tokenOffset:= 16*16 + 8*8*(component-1);
+			foreach uint y in 0 .. 7
+			do
+				foreach uint x in 0 .. 7
+				do
+					pictureBuffer[lastIdx][component][yPixIdx+y][xPixIdx+x] :=
+						samp[x+y*8 + tokenOffset];
+				end
+			end
+		end
+		fillBorder();
+
+		xIdx := xIdx + 1;
+		if(xIdx = picSizeInCu[0]) then
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+
+	/** Getting informations from new slice/picture. Updating these informations **/
+	isNewSlice: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
+		picHeightInPix], Poc:[poc], IsPicSlc:[isPicSlc] ==>
+	guard
+		/* Fix me : We should know when there is a new picture */
+		isPicSlc = 1,
+		isRead = 0 and if currIdx = -1 then false else poc = pocRef[currIdx] end
+	do
+		isNewPicture := false;
+		nbList := 0;
+		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
+	end
+
+	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix, picHeightInPix], 
+						Poc:[poc], IsPicSlc:[isPicSlc], 
+						ReorderPics:[noOutputOfPriorPicsFlag, spsNumReorderPics, picOutputFlag, videoSequenceId] ==>
+	guard
+		isPicSlc = 0,
+		isRead = 0 and not(if currIdx = -1 then false else poc = pocRef[currIdx] end)
+	do
+		picSizeInCu[0] := (picWidthInPix+15)/16;
+		picSizeInCu[1] := (picHeightInPix+15)/16;
+		picSize[0] := picWidthInPix;
+		picSize[1] := picHeightInPix;
+		picSizeChr[0] := picWidthInPix/2;
+		picSizeChr[1] := picHeightInPix/2;
+		xIdx := 0;
+		yIdx := 0;
+		lastIdx := currIdx;
+		foreach uint i in 0 .. DPB_SIZE - 1
+		do
+			if(not isRef[i]) then
+				currIdx := i;
+			end
+		end
+		isRef[currIdx]  := true;
+		pocRef[currIdx] := poc;
+		isNewPicture    := true;
+		nbList          := 0;
+		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
+	end
+	
+	isNewPict_lastPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix, picHeightInPix], 
+						Poc:[poc], IsPicSlc:[isPicSlc], 
+						ReorderPics:[noOutputOfPriorPicsFlag, spsNumReorderPics, picOutputFlag, videoSequenceId] ==>
+	guard //allows draining fifos for streams with only one frame
+		currIdx != -1 and lastIdx = -1 and videoSequenceId > 1,
+		isPicSlc = 0,
+		isRead = 0
+	do
+		picSizeInCu[0] := (picWidthInPix+15)/16;
+		picSizeInCu[1] := (picHeightInPix+15)/16;
+		picSize[0] := picWidthInPix;
+		picSize[1] := picHeightInPix;
+		picSizeChr[0] := picWidthInPix/2;
+		picSizeChr[1] := picHeightInPix/2;
+		xIdx := 0;
+		yIdx := 0;
+	end
+
+	/** We get all the references from the 5 lists of the Rps
+	 * (StCurrentBefore, StCurrentAfter, StFollowing, LtCurrent, LtFollowing)
+	 **/
+	getRps.launch: action RpsPoc:[numPic]==>
+	guard
+		nbList < 5
+	do
+		sizeOfList := numPic;
+	end
+
+	getRps.done: action ==>
+	guard
+		nbList = 5
+	do
+		/* We remove from the Dpb all the pictures who are not in the Rps of
+		 * the current picture
+		 */
+		foreach int i in 0 .. DPB_SIZE - 1
+		do
+			isRef[i] := isRef[i] and isStillRef[i];
+		end
+		isRef[currIdx] := true;
+	end
+
+	/** For each we check the index of the reference poc
+	 * (in order to not remove them from the Dpb).
+	 **/
+	getRpsPoc.launch: action RpsPoc:[pocVal] ==>
+	guard
+		sizeOfList > 0
+	do
+		sizeOfList := sizeOfList - 1;
+		foreach int i in 0 .. DPB_SIZE - 1
+		do
+			if(pocRef[i] = pocVal)then
+				isStillRef[i] := true;
+			end
+		end
+	end
+
+	getRpsPoc.done: action ==>
+	guard
+		sizeOfList = 0
+	do
+		nbList := nbList + 1;
+	end
+
+	/* When we get the picture we add the border (in order to be able to give a
+	 * reference pixels which can be outside of the picture).
+	 */
+	getCuPix.done: action ==>
+	guard
+		yIdx = picSizeInCu[1]
+	end
+
+	getReadAddr: action IsReadOrNewSlc:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
+	guard
+		isRead = 1
+	do
+		numPocRef :=
+			if(isBiPredOrLx = BI_PRED) then
+				2
+			else
+				1
+			end;
+		isBiPred := isBiPredOrLx = BI_PRED;
+	end
+
+	/* We get all the informations needed for sending the reference Cu. We save
+	 * these samples in RefCu, it will be sent with the actions sendCu.isYxY
+	 */
+	getMvInfo.launch: action PocRef:[poc], PredCuSize:[predUnitSize] repeat 2,
+		Mv:[mv] repeat 2 ==>
+	guard
+		numPocRef != 0,
+		not(isBiPred && numPocRef = 1 && lastPocRef = poc && lastMvRef[0] = mv[0] && lastMvRef[1] = mv[1])
+	var
+		uint(size=7)  sideMax,
+		uint(size=7)  sideMaxChr
+	do
+		lastPocRef := poc;
+		lastMvRef  := mv;
+		sideMax := max(predUnitSize[0], predUnitSize[1]);
+		puSize := [predUnitSize[i] + 7: for int i in 0 .. 1];
+		puSizeChr := [predUnitSize[i]/2 + 3: for int i in 0 .. 1];
+		sideMaxChr := sideMax >> 1;
+		refPicIdx := 0;
+		foreach uint i in 0 .. DPB_SIZE - 1
+		do
+			if(pocRef[i] = poc and isRef[i]) then
+				refPicIdx := i;
+			end
+		end
+		
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMaxChr);
+
+		numPocRef := numPocRef - 1;
+		iLoop := 0;
+		jLoop := 0;
+	end
+
+	getMvInfo.skip: action PocRef:[poc], PredCuSize:[predUnitSize] repeat 2,
+		Mv:[mvX, mvY] ==>
+	guard
+		isBiPred && numPocRef = 1 && lastPocRef = poc && lastMvRef[0] = mvX && lastMvRef[1] = mvY
+	end
+	
+	getMvInfo.done: action ==>
+	guard
+		numPocRef = 0
+	end
+
+	lumaWidth.is71: action ==>
+	guard
+		puSize[0] = 71
+	end
+
+	lumaWidth.is39: action ==>
+	guard
+		puSize[0] = 39
+	end
+
+	lumaWidth.is23: action ==>
+	guard
+		puSize[0] = 23
+	end
+
+	lumaWidth.is15: action ==>
+	guard
+		puSize[0] = 15
+	end
+
+	lumaWidth.is11: action ==>
+	guard
+		puSize[0] = 11
+	end
+
+	chromaWidth.is35: action ==>
+	guard
+		puSizeChr[0] = 35
+	end
+
+	chromaWidth.is19: action ==>
+	guard
+		puSizeChr[0] = 19
+	end
+
+	chromaWidth.is11: action ==>
+	guard
+		puSizeChr[0] = 11
+	end
+
+	chromaWidth.is7: action ==>
+	guard
+		puSizeChr[0] = 7
+	end
+
+	chromaWidth.is5: action ==>
+	guard
+		puSizeChr[0] = 5
+	end
+
+	valWidth.isOther: action ==>
+	end
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.luma.launch.is71: action ==> RefSample:[sample] repeat 71
+	guard
+		jLoop < puSize[1]
+	var
+		uint(size=8) sample[71] = [pictureBuffer[refPicIdx][0][jLoop+mvOffset[1]]
+			[i +mvOffset[0]]: for int i in 0 .. 70]
+	do
+		jLoop := jLoop + 1;
+	end
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.luma.launch.is39: action ==> RefSample:[sample] repeat 39
+	guard
+		jLoop < puSize[1]
+	var
+		uint(size=8) sample[39] = [pictureBuffer[refPicIdx][0][jLoop+mvOffset[1]]
+			[i +mvOffset[0]]: for int i in 0 .. 38]
+	do
+		jLoop := jLoop + 1;
+	end
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.luma.launch.is23: action ==> RefSample:[sample] repeat 23
+	guard
+		jLoop < puSize[1]
+	var
+		uint(size=8) sample[23] = [pictureBuffer[refPicIdx][0][jLoop+mvOffset[1]]
+			[i +mvOffset[0]]: for int i in 0 .. 22]
+	do
+		jLoop := jLoop + 1;
+	end
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.luma.launch.is15: action ==> RefSample:[sample] repeat 15
+	guard
+		jLoop < puSize[1]
+	var
+		uint(size=8) sample[15] = [pictureBuffer[refPicIdx][0][jLoop+mvOffset[1]]
+			[i +mvOffset[0]]: for int i in 0 .. 14]
+	do
+		jLoop := jLoop + 1;
+	end
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.luma.launch.is11: action ==> RefSample:[sample] repeat 11
+	guard
+		jLoop < puSize[1]
+	var
+		uint(size=8) sample[11] = [pictureBuffer[refPicIdx][0][jLoop+mvOffset[1]]
+			[i +mvOffset[0]]: for int i in 0 .. 10]
+	do
+		jLoop := jLoop + 1;
+	end
+
+	/** We send the reference samples according to the size of the predCu. **/
+	sendCu.luma.launch.is1: action ==> RefSample:[sample]
+	guard
+		jLoop < puSize[1]
+	var
+		uint(size=8) sample
+	do
+		sample := pictureBuffer[refPicIdx][0][jLoop+mvOffset[1]][iLoop+mvOffset[0]];
+
+		iLoop := iLoop + 1;
+		if(iLoop = puSize[0]) then
+			iLoop := 0;
+			jLoop := jLoop + 1;
+		end
+	end
+
+	sendCu.luma.done: action ==>
+	guard
+		jLoop = puSize[1]
+	do
+		iLoop   := 0;
+		jLoop   := 0;
+		compIdx := 1;
+	end
+
+	sendCu.chroma.launch.is35: action ==> RefSample:[sample] repeat 35
+	guard
+		compIdx < 3
+	var
+		uint(size=8) sample[35] = [pictureBuffer[refPicIdx][compIdx]
+			[jLoop+mvOffChr[1]][i+mvOffChr[0]]: for int i in 0 .. 34]
+	do
+		jLoop := jLoop + 1;
+		if(jLoop = puSizeChr[1]) then
+			jLoop   := 0;
+			compIdx := compIdx + 1;
+		end
+	end
+
+	sendCu.chroma.launch.is19: action ==> RefSample:[sample] repeat 19
+	guard
+		compIdx < 3
+	var
+		uint(size=8) sample[19] = [pictureBuffer[refPicIdx][compIdx]
+			[jLoop+mvOffChr[1]][i+mvOffChr[0]]: for int i in 0 .. 18]
+	do
+		jLoop := jLoop + 1;
+		if(jLoop = puSizeChr[1]) then
+			jLoop   := 0;
+			compIdx := compIdx + 1;
+		end
+	end
+
+	sendCu.chroma.launch.is11: action ==> RefSample:[sample] repeat 11
+	guard
+		compIdx < 3
+	var
+		uint(size=8) sample[11] = [pictureBuffer[refPicIdx][compIdx]
+			[jLoop+mvOffChr[1]][i+mvOffChr[0]]: for int i in 0 .. 10]
+	do
+		jLoop := jLoop + 1;
+		if(jLoop = puSizeChr[1]) then
+			jLoop   := 0;
+			compIdx := compIdx + 1;
+		end
+	end
+
+	sendCu.chroma.launch.is7: action ==> RefSample:[sample] repeat 7
+	guard
+		compIdx < 3
+	var
+		uint(size=8) sample[7] = [pictureBuffer[refPicIdx][compIdx]
+			[jLoop+mvOffChr[1]][i+mvOffChr[0]]: for int i in 0 .. 6]
+	do
+		jLoop := jLoop + 1;
+		if(jLoop = puSizeChr[1]) then
+			jLoop   := 0;
+			compIdx := compIdx + 1;
+		end
+	end
+
+	sendCu.chroma.launch.is5: action ==> RefSample:[sample] repeat 5
+	guard
+		compIdx < 3
+	var
+		uint(size=8) sample[5] = [pictureBuffer[refPicIdx][compIdx]
+			[jLoop+mvOffChr[1]][i+mvOffChr[0]]: for int i in 0 .. 4]
+	do
+		jLoop := jLoop + 1;
+		if(jLoop = puSizeChr[1]) then
+			jLoop   := 0;
+			compIdx := compIdx + 1;
+		end
+	end
+
+	sendCu.chroma.launch.is1: action ==> RefSample:[sample]
+	guard
+		compIdx < 3
+	var
+		uint(size=8) sample
+	do
+		sample := pictureBuffer[refPicIdx][compIdx][jLoop+mvOffChr[1]][iLoop+mvOffChr[0]];
+
+		iLoop := iLoop + 1;
+		if(iLoop = puSizeChr[0]) then
+			iLoop := 0;
+			jLoop := jLoop + 1;
+			if(jLoop = puSizeChr[1]) then
+				jLoop   := 0;
+				compIdx := compIdx + 1;
+			end
+		end
+	end
+
+	sendCu.chroma.done: action ==>
+	guard
+		compIdx = 3
+	end
+
+	checkIsNewPict.isTrue: action ==>
+	guard
+		isNewPicture
+	end
+
+	checkIsNewPict.isFalse: action ==>
+	guard
+		not isNewPicture
+	end
+
+	schedule fsm IsFirstNewPic:
+		IsFirstNewPic (isNewPict )--> GetFirstRps;
+
+		GetFirstRps (getRps.launch )--> GetRpsFirstPoc;
+		GetFirstRps (getRps.done   )--> IsNewSlice;
+
+		GetRpsFirstPoc (getRpsPoc.launch )--> GetRpsFirstPoc;
+		GetRpsFirstPoc (getRpsPoc.done   )--> GetFirstRps;
+
+		IsNewSlice (isNewPict   )--> GetRps;
+		IsNewSlice (isNewPict_lastPict)--> GetRps;
+		IsNewSlice (isNewSlice  )--> GetRps;
+		IsNewSlice (getReadAddr )--> GetMvInfo;
+
+		GetRps (getRps.launch )--> GetRpsPoc;
+		GetRps (getRps.done   )--> CheckIsNewPict;
+
+		GetRpsPoc (getRpsPoc.launch )--> GetRpsPoc;
+		GetRpsPoc (getRpsPoc.done   )--> GetRps;
+
+		CheckIsNewPict (checkIsNewPict.isTrue  )--> GetCuPix;
+		CheckIsNewPict (checkIsNewPict.isFalse )--> IsNewSlice;
+
+		GetCuPix (getPix          )--> GetCuPix;
+		GetCuPix (getCuPix.done   )--> IsNewSlice;
+
+		GetMvInfo (getMvInfo.launch )--> CheckLumaWidth;
+		GetMvInfo (getMvInfo.skip   )--> IsNewSlice;
+		GetMvInfo (getMvInfo.done   )--> IsNewSlice;
+
+		CheckLumaWidth (lumaWidth.is71    )--> SendCuLuma71;
+		CheckLumaWidth (lumaWidth.is39    )--> SendCuLuma39;
+		CheckLumaWidth (lumaWidth.is23    )--> SendCuLuma23;
+		CheckLumaWidth (lumaWidth.is15    )--> SendCuLuma15;
+		CheckLumaWidth (lumaWidth.is11    )--> SendCuLuma11;
+		CheckLumaWidth (valWidth.isOther  )--> SendCuLuma;
+	
+		SendCuLuma71 (sendCu.luma.launch.is71 )--> SendCuLuma71;
+		SendCuLuma71 (sendCu.luma.done        )--> CheckChromaWidth;
+	
+		SendCuLuma39 (sendCu.luma.launch.is39 )--> SendCuLuma39;
+		SendCuLuma39 (sendCu.luma.done        )--> CheckChromaWidth;
+	
+		SendCuLuma23 (sendCu.luma.launch.is23 )--> SendCuLuma23;
+		SendCuLuma23 (sendCu.luma.done        )--> CheckChromaWidth;
+	
+		SendCuLuma15 (sendCu.luma.launch.is15 )--> SendCuLuma15;
+		SendCuLuma15 (sendCu.luma.done        )--> CheckChromaWidth;
+	
+		SendCuLuma11 (sendCu.luma.launch.is11 )--> SendCuLuma11;
+		SendCuLuma11 (sendCu.luma.done        )--> CheckChromaWidth;
+	
+		SendCuLuma (sendCu.luma.launch.is1 )--> SendCuLuma;
+		SendCuLuma (sendCu.luma.done       )--> CheckChromaWidth;
+
+		CheckChromaWidth (chromaWidth.is35 )--> SendCuChroma35;
+		CheckChromaWidth (chromaWidth.is19 )--> SendCuChroma19;
+		CheckChromaWidth (chromaWidth.is11 )--> SendCuChroma11;
+		CheckChromaWidth (chromaWidth.is7  )--> SendCuChroma7;
+		CheckChromaWidth (chromaWidth.is5  )--> SendCuChroma5;
+		CheckChromaWidth (valWidth.isOther )--> SendCuChroma;
+
+		SendCuChroma35 (sendCu.chroma.launch.is35 )--> SendCuChroma35;
+		SendCuChroma35 (sendCu.chroma.done        )--> GetMvInfo;
+
+		SendCuChroma19 (sendCu.chroma.launch.is19 )--> SendCuChroma19;
+		SendCuChroma19 (sendCu.chroma.done        )--> GetMvInfo;
+
+		SendCuChroma11 (sendCu.chroma.launch.is11 )--> SendCuChroma11;
+		SendCuChroma11 (sendCu.chroma.done        )--> GetMvInfo;
+
+		SendCuChroma7 (sendCu.chroma.launch.is7 )--> SendCuChroma7;
+		SendCuChroma7 (sendCu.chroma.done       )--> GetMvInfo;
+
+		SendCuChroma5 (sendCu.chroma.launch.is5 )--> SendCuChroma5;
+		SendCuChroma5 (sendCu.chroma.done       )--> GetMvInfo;
+
+		SendCuChroma (sendCu.chroma.launch.is1 )--> SendCuChroma;
+		SendCuChroma (sendCu.chroma.done       )--> GetMvInfo;
+	end
+	priority
+		getPix > sendCu;
+		getPix > getMvInfo;
+		getPix > getReadAddr > getCuPix > isNewSlice;
+		getReadAddr > getCuPix > isNewSlice;
+		sendCu.luma.launch > sendCu.luma.done;
+		sendCu.chroma.launch > sendCu.chroma.done;
+		lumaWidth > valWidth;
+		chromaWidth > valWidth;
+		isNewPict > isNewPict_lastPict;
+	end
+end
