@@ -45,13 +45,28 @@ Standard GCC compilation with the following
 				<output_folder>/libs/orcc/src/mapping.c
 - libraries:    pthread
 
-e.g.
-gcc -o bin/dpd src/*.c libs/orcc/src/util.c libs/orcc/src/serialize.c 
-libs/orcc/src/dataflow.c -Ilibs/orcc/include -lpthread -I/usr/include/SDL 
-libs/orcc/src/scheduler.c -I libs/roxml/include/ libs/roxml/src/roxml.c 
-libs/roxml/src/roxml-parse-engine.c libs/roxml/src/roxml-internal.c
-libs/orcc/src/mapping.c <orc-apps-folder>/Predistortion/lib/native/linux.c -O3
- 
+To compile and execute:
+
+1. Generate the C Orcc backend for Top_DPD.xdf
+
+2. Run:
+$ cd <C_output_dir> && cd build && cmake .. && cd ..
+
+3. Run:
+$ gcc -o bin/dpd src/*.c libs/orcc-native/src/framerate.c libs/orcc-runtime/src/profiling.c \
+libs/orcc-native/src/native.c libs/orcc-runtime/src/trace.c libs/orcc-runtime/src/options.c \
+libs/orcc-runtime/src/util.c libs/orcc-runtime/src/serialize.c libs/orcc-runtime/src/dataflow.c \
+-Ilibs/orcc/include -lpthread -I/usr/include/SDL libs/orcc-runtime/src/scheduler.c -Ibuild/libs/ \
+-Ilibs/orcc-runtime/include/ -Ilibs/orcc-native/include/ -I libs/roxml/include/ libs/roxml/src/roxml.c \
+libs/roxml/src/roxml-parse-engine.c libs/roxml/src/roxml-internal.c libs/orcc-runtime/src/mapping.c \
+ ../lib/native/linux.c -O3
+
+4. Run:
+$ cd bin && cp <Predistortion_root>/lib/input_signals/in_*.txt .
+
+5. Run:
+./dpd
+
 
 Changelog:
 - initial version 16/12/2013

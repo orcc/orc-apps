@@ -5,12 +5,12 @@ import  std.stdio.Source.*;
 
 import  org.sc29.wg11.common.BitstreamReadUtils.*;
 import  org.sc29.wg11.common.CabacDecodeBinFunction.*;
-import  devel.org.sc29.wg11.mpegh.part2.main.synParser.Algo_ParserUtils.*;
-import  devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
-import  devel.org.sc29.wg11.mpegh.part2.common.CabacDecodeBinFunction.*;
-import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
-import  devel.org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
-import  devel.org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
+import  org.sc29.wg11.mpegh.part2.main.synParser.Algo_ParserUtils.*;
+import  org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import  org.sc29.wg11.mpegh.part2.common.CabacDecodeBinFunction.*;
+import  org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
+import  org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
+import  org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
 
 actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 // TilesInfo[0]: number of tiles to decode
@@ -27,6 +27,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 				uint(size=8)  LcuSizeMax,
 				uint(size= 4) PartMode,
 				uint(size=2)  IsPicSlcLcu,
+				uint(size=2)  IsPicSlc,
 				uint(size=2)  LFAcrossSlcTile,
 				uint(size=16) PictSize,
 				 int(size=16) Poc,
@@ -659,24 +660,45 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 		sei_i               := 0;
 		sei_idx             := sei_idx + 1;
 	end
+	
 	read_SEI_Header.decoded_picture_hash.loop : action ==> SEI_MD5:[res[0]]
 	guard
 		se_idx = 4 and isFifoFull(fifo),
 		sei_idx = 2 and sei_payloadType = 132,
 		sei_cIdx < 3, /*if sps_chroma_format_idc[sps_id] = 0 then 1 else 3 end,*/
-		sei_i    < 16
+		sei_i    < 16,
+		sei_hash_type = 0
 	var
 		uint(size=32) res[1]
 	do
-		if sei_hash_type = 0 then
-			vld_u_name(  8, fifo, res, "picture_md5                             ");
-			sei_payloadPosition := sei_payloadPosition +  8;
-			sei_i               := sei_i + 1;
-				elsif sei_hash_type = 1 then vld_u_name(16, fifo, res,
+		vld_u_name(  8, fifo, res, "picture_md5                             ");
+		sei_payloadPosition := sei_payloadPosition +  8;
+		sei_i               := sei_i + 1;
+		if sei_i = 16 then
+			sei_i := 0;
+			sei_cIdx := sei_cIdx + 1;
+			if sei_cIdx = 3 then
+				se_idx := se_idx + 1;
+			end
+		end
+	end
+	
+	read_SEI_Header.decoded_picture_hash.skip : action ==> 
+	guard
+		se_idx = 4 and isFifoFull(fifo),
+		sei_idx = 2 and sei_payloadType = 132,
+		sei_cIdx < 3, /*if sps_chroma_format_idc[sps_id] = 0 then 1 else 3 end,*/
+		sei_i    < 16,
+		sei_hash_type != 0
+	var
+		uint(size=32) res[1]
+	do
+		println("no support for crc or checksum ! (support only md5)");
+		if sei_hash_type = 1 then vld_u_name(16, fifo, res,
 				"picture_crc                             ");
 			sei_payloadPosition := sei_payloadPosition + 16;
 			sei_i               := 16;
-				elsif sei_hash_type = 2 then vld_u_name(32, fifo, res,
+		elsif sei_hash_type = 2 then vld_u_name(32, fifo, res,
 				"picture_checksum                        ");
 			sei_payloadPosition := sei_payloadPosition + 32;
 			sei_i               := 16;
@@ -684,10 +706,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 		if sei_i = 16 then
 			sei_i := 0;
 			sei_cIdx := sei_cIdx + 1;
-				if sei_cIdx = 3
-
-				/*if sps_chroma_format_idc[sps_id] = 0 then 1 else 3 end*/
-				then
+			if sei_cIdx = 3 then
 				se_idx := se_idx + 1;
 			end
 		end
@@ -3305,7 +3324,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
         uint(size=16) colWidth[NB_MAX_PPS][PICT_WIDTH / MIN_CTB_SIZE_Y];
         uint(size=16) rowHeight[NB_MAX_PPS][PICT_HEIGHT / MIN_CTB_SIZE_Y];
 
-		read_SliceData.init: action ==> IsPicSlcLcu:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
+		read_SliceData.init: action ==> IsPicSlcLcu:[0], IsPicSlc:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
 										SaoSeLuma:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
 										SaoSeChromaU:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
 										SaoSeChromaV:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)],
@@ -3506,7 +3525,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint PARSER_ID)
 	read_SliceData.noInit_isSlc: action ==> MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id],slice_temporal_mvp_enable_flag, collocated_from_lX , collocated_ref_idx],
         										IsPicSlcLcu:[1], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets],
         										LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_slice_enabled_flag[pps_id]<<1)],
-        										PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2
+        										PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2, IsPicSlc:[1]
 		guard
 			sliceData_idx = 1,
 			first_slice_segment_in_pic_flag = 0 and dependent_slice_segment_flag = 0 and prev_pps_id = pps_id
