@@ -62,7 +62,7 @@ import std.util.Math.*;
 import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
-actor DecodingPictureBuffer_chroma_FB3 ()
+actor DecodingPictureBuffer_luma_FB3_next ()
 	uint(size=2)  IsBiPredOrLx0,
 	uint(size=2)  IsBiPredOrLx1,
 	uint(size=8)  LcuSizeMax0,
@@ -82,8 +82,8 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	int (size=16) RpsPoc0,
 	int (size=16) RpsPoc1,
 	uint(size=8)  ReorderPics,
-	uint(size=8)  SampleV0,
-	uint(size=8)  SampleV1,
+	uint(size=8)  SampleY0,
+	uint(size=8)  SampleY1,
 	uint(size=2)  IsBiPredOrLx2,
 	uint(size=8)  LcuSizeMax2,
 	uint(size=1)  IsReadOrNewSlice2,
@@ -93,20 +93,20 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	int (size=16) PocRef2,
 	uint(size=7)  PredCuSize2,
 	int (size=16) RpsPoc2,
-	uint(size=8)  SampleV2
-		==>
+	uint(size=8)  SampleY2
 	
-	uint(size=8)  RefSampleV0,
-	uint(size=8)  RefSampleV1,
-	uint(size=8)  RefSampleV2,
-	uint(size=8)  VidV
+		==>
+	uint(size=8)  RefSampleY0,
+	uint(size=8)  RefSampleY1,
+	uint(size=8)  RefSampleY2,
+	bool  Done
 		:
 		
 	bool DEBUG_DPB := false;
 	
 	int FB_SIZE = 4;
 
-	uint(size=8)  pictureBufferV[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH];
+	uint(size=8)  pictureBufferY[DPB_SIZE][DPB_LUM_HEIGHT][DPB_LUM_WIDTH];
 	
 	int (size=16) pocIndex[32];
 	int (size=16) pocRef[DPB_SIZE] := [-1 : for int i in 0 .. DPB_SIZE-1];
@@ -115,8 +115,8 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
 	
-	uint(size=16)  xIdxV[FB_SIZE];
-	uint(size=16)  yIdxV[FB_SIZE];
+	uint(size=16)  xIdxY[FB_SIZE];
+	uint(size=16)  yIdxY[FB_SIZE];
 	
 	uint          pictNum;
 	int           numReorderPic;
@@ -130,7 +130,7 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	uint(size=3)  sizeOfList[FB_SIZE];
 	
 	bool pocDone[32] := [false : for int i in 0 .. 31];
-	int cuHeightDone[32] := [BORDER_SIZE_CHR : for int i in 0 .. 31];
+	int cuHeightDone[32] := [BORDER_SIZE_LUM : for int i in 0 .. 31];
 	int sendingPoc := 0;
 	int readingPoc[FB_SIZE] := [-1 : for int i in 0 .. FB_SIZE - 1];
 	
@@ -141,12 +141,12 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	uint(size=8) seqIdOutput := 1;
 	uint(size=8) seqIdDecode := 1;
 	
-	bool needNewPict[FB_SIZE] := [true : for int i in 0 .. FB_SIZE - 1];    
+	bool needNewPict[FB_SIZE] := [true : for int i in 0 .. FB_SIZE - 1];
     
     @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_orcc")
-    procedure getmvinfo_dpb_chroma_v_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
-  	      uint(size= 8) RefCu[(32 + 3) * (32 + 3)],
+    procedure getmvinfo_dpb_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_LUM_HEIGHT][DPB_LUM_WIDTH],
+  	      uint(size= 8) RefCu[(64 + 7) * (64 + 7)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
   	      int (size=32) xOffset,
@@ -155,15 +155,13 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		  uint(size=16) height)
     begin
       foreach int y in 0 .. sideMax - 1
-		do
+	  	do
 			foreach int x in 0 .. sideMax - 1
 			do
-				RefCu[x+y*(sideMax)] := pictureBufferV[idx][y+yOffset][x+xOffset];
+				RefCu[x+y*(sideMax)] := pictureBufferY[idx][y+yOffset][x+xOffset];
 			end
 		end
     end
-    
-    
     
 //////////////////////////////////// is newPict & slice 0 /////////////////////////////////////////////	
 	/** Getting informations from new slice/picture. Updating these informations **/
@@ -196,8 +194,8 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		picSizeInCu[1] := (picHeightInPix+lcuSizeMax-1)/lcuSizeMax;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
-		xIdxV[0] := 0;
-		yIdxV[0] := 0;
+		xIdxY[0] := 0;
+		yIdxY[0] := 0;
 		
 		// Find the next available buffer
 		currIdx := 0;
@@ -215,7 +213,7 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		nbList[0] := 0;
 		
 		pocDone[readingPoc[0] & 31] := false;
-		cuHeightDone[readingPoc[0] & 31] := BORDER_SIZE_CHR;
+		cuHeightDone[readingPoc[0] & 31] := BORDER_SIZE_LUM;
 		pocIndex[readingPoc[0] & 31] := currIdx;
 		pocRef[currIdx] := readingPoc[0];
 		
@@ -286,8 +284,8 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
 		
-		xIdxV[1] := 0;
-		yIdxV[1] := 0;
+		xIdxY[1] := 0;
+		yIdxY[1] := 0;
 		
 		// Find the next available buffer
 		currIdx := 0;
@@ -305,7 +303,7 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		nbList[1] := 0;
 		
 		pocDone[readingPoc[1] & 31] := false;
-		cuHeightDone[readingPoc[1] & 31] := BORDER_SIZE_CHR;
+		cuHeightDone[readingPoc[1] & 31] := BORDER_SIZE_LUM;
 		pocIndex[readingPoc[1] & 31] := currIdx;
 		pocRef[currIdx] := readingPoc[1];
 		
@@ -377,8 +375,8 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
 		
-		xIdxV[2] := 0;
-		yIdxV[2] := 0;
+		xIdxY[2] := 0;
+		yIdxY[2] := 0;
 		
 		// Find the next available buffer
 		currIdx := 0;
@@ -396,7 +394,7 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		nbList[2] := 0;
 		
 		pocDone[readingPoc[2] & 31] := false;
-		cuHeightDone[readingPoc[2] & 31] := BORDER_SIZE_CHR;
+		cuHeightDone[readingPoc[2] & 31] := BORDER_SIZE_LUM;
 		pocIndex[readingPoc[2] & 31] := currIdx;
 		pocRef[currIdx] := readingPoc[2];
 		
@@ -584,89 +582,93 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	do
 		nbList[2] := nbList[2] + 1;
 	end
-
+	
 ////////////////////////////////////////getCuPix 0 ///////////////////////////////////////////////////
 	/* We get the whole Cu decoded (luma and chroma components) and we save
 	 * it in the Dpb (pictureBuffer).
 	 */
-	
-	getCuPix.d0.launch.x64.v: action SampleV0:[samp] repeat 32*32 ==>
+	getCuPix.d0.launch.x64.y: action SampleY0:[samp] repeat 64*64 ==>
 	guard
-		yIdxV[0] < picSizeInCu[1], lcuSizeMax = 64
+		yIdxY[0] < picSizeInCu[1], 
+		lcuSizeMax = 64
 	do
-		copy_cu_dpb_chroma_x64_cal(
+		copy_cu_dpb_luma_x64_cal(
           samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[0]*32,
-  	      BORDER_SIZE_CHR + yIdxV[0]*32,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[0]*64,
+  	      BORDER_SIZE_LUM + yIdxY[0]*64,
   	      pocIndex[readingPoc[0] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
-		xIdxV[0] := xIdxV[0] + 1;
-		if(xIdxV[0] = picSizeInCu[0]) then
-			xIdxV[0] := 0;
-			yIdxV[0] := yIdxV[0] + 1;
+		xIdxY[0] := xIdxY[0] + 1;
+		if(xIdxY[0] = picSizeInCu[0]) then
+			xIdxY[0] := 0;
+			yIdxY[0] := yIdxY[0] + 1;
+			cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + 64;
+		end
+	end
+	
+	getCuPix.d0.launch.x32.y: action SampleY0:[samp] repeat 32*32 ==>
+	guard
+		yIdxY[0] < picSizeInCu[1], 
+		lcuSizeMax = 32
+	do
+		copy_cu_dpb_luma_x32_cal(
+          samp,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[0]*32,
+  	      BORDER_SIZE_LUM + yIdxY[0]*32,
+  	      pocIndex[readingPoc[0] & 31],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+		
+		xIdxY[0] := xIdxY[0] + 1;
+		if(xIdxY[0] = picSizeInCu[0]) then
+			xIdxY[0] := 0;
+			yIdxY[0] := yIdxY[0] + 1;
 			cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + 32;
 		end
 	end
 	
-	getCuPix.d0.launch.x32.v: action SampleV0:[samp] repeat 16*16 ==>
+	getCuPix.d0.launch.x16.y: action SampleY0:[samp] repeat 16*16 ==>
 	guard
-		yIdxV[0] < picSizeInCu[1], lcuSizeMax = 32
-	do		
-		copy_cu_dpb_chroma_x32_cal(
+		yIdxY[0] < picSizeInCu[1], 
+		lcuSizeMax = 16
+	do
+		copy_cu_dpb_luma_x16_cal(
           samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[0]*16,
-  	      BORDER_SIZE_CHR + yIdxV[0]*16,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[0]*16,
+  	      BORDER_SIZE_LUM + yIdxY[0]*16,
   	      pocIndex[readingPoc[0] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
-		xIdxV[0] := xIdxV[0] + 1;
-		if(xIdxV[0] = picSizeInCu[0]) then
-			xIdxV[0] := 0;
-			yIdxV[0] := yIdxV[0] + 1;
+		xIdxY[0] := xIdxY[0] + 1;
+		if(xIdxY[0] = picSizeInCu[0]) then
+			xIdxY[0] := 0;
+			yIdxY[0] := yIdxY[0] + 1;
 			cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + 16;
 		end
 	end
 	
-	getCuPix.d0.launch.x16.v: action SampleV0:[samp] repeat 8*8 ==>
-	guard
-		yIdxV[0] < picSizeInCu[1], lcuSizeMax = 16
-	do		
-		copy_cu_dpb_chroma_x16_cal(
-          samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[0]*8,
-  	      BORDER_SIZE_CHR + yIdxV[0]*8,
-  	      pocIndex[readingPoc[0] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
-		
-		xIdxV[0] := xIdxV[0] + 1;
-		if(xIdxV[0] = picSizeInCu[0]) then
-			xIdxV[0] := 0;
-			yIdxV[0] := yIdxV[0] + 1;
-			cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + 8;
-		end
-	end
 	
 	getCuPix.d0.done: action ==>
 	guard
-		yIdxV[0] = picSizeInCu[1],
+		yIdxY[0] = picSizeInCu[1],
 		needNewPict[0] = false
 	do
-		fillBorder_chroma_cal(
-			pictureBufferV,
+		fillBorder_luma_cal(
+			pictureBufferY,
 			pocIndex[readingPoc[0] & 31],
-			picSize[0] / 2,
-			picSize[1] / 2,
-			BORDER_SIZE_CHR);
+			picSize[0],
+			picSize[1],
+			BORDER_SIZE_LUM);
+
 		
 		pocDone[readingPoc[0] & 31] := true;
-		cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + BORDER_SIZE_CHR;
+		cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + BORDER_SIZE_LUM;
 		numAvailablePic := numAvailablePic + 1;
 		
 		if DEBUG_DPB then
@@ -680,86 +682,88 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		needNewPict[0] := true;
 	end
 	////////////////////////////////////////getCuPix 1 ///////////////////////////////////////////////////
-	
-	getCuPix.d1.launch.x64.v: action SampleV1:[samp] repeat 32*32 ==>
+	getCuPix.d1.launch.x64.y: action SampleY1:[samp] repeat 64*64 ==>
 	guard
-		yIdxV[1] < picSizeInCu[1], lcuSizeMax = 64
+		yIdxY[1] < picSizeInCu[1], 
+		lcuSizeMax = 64
 	do
-		copy_cu_dpb_chroma_x64_cal(
+		copy_cu_dpb_luma_x64_cal(
           samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[1]*32,
-  	      BORDER_SIZE_CHR + yIdxV[1]*32,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[1]*64,
+  	      BORDER_SIZE_LUM + yIdxY[1]*64,
   	      pocIndex[readingPoc[1] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
-		xIdxV[1] := xIdxV[1] + 1;
-		if(xIdxV[1] = picSizeInCu[0]) then
-			xIdxV[1] := 0;
-			yIdxV[1] := yIdxV[1] + 1;
+		xIdxY[1] := xIdxY[1] + 1;
+		if(xIdxY[1] = picSizeInCu[0]) then
+			xIdxY[1] := 0;
+			yIdxY[1] := yIdxY[1] + 1;
+			cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + 64;
+		end
+	end
+	
+	getCuPix.d1.launch.x32.y: action SampleY1:[samp] repeat 32*32 ==>
+	guard
+		yIdxY[1] < picSizeInCu[1], 
+		lcuSizeMax = 32
+	do
+		copy_cu_dpb_luma_x32_cal(
+          samp,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[1]*32,
+  	      BORDER_SIZE_LUM + yIdxY[1]*32,
+  	      pocIndex[readingPoc[1] & 31],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+		
+		xIdxY[1] := xIdxY[1] + 1;
+		if(xIdxY[1] = picSizeInCu[0]) then
+			xIdxY[1] := 0;
+			yIdxY[1] := yIdxY[1] + 1;
 			cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + 32;
 		end
 	end
 	
-	getCuPix.d1.launch.x32.v: action SampleV1:[samp] repeat 16*16 ==>
+	getCuPix.d1.launch.x16.y: action SampleY1:[samp] repeat 16*16 ==>
 	guard
-		yIdxV[1] < picSizeInCu[1], lcuSizeMax = 32
-	do		
-		copy_cu_dpb_chroma_x32_cal(
+		yIdxY[1] < picSizeInCu[1], 
+		lcuSizeMax = 16
+	do
+		copy_cu_dpb_luma_x16_cal(
           samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[1]*16,
-  	      BORDER_SIZE_CHR + yIdxV[1]*16,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[1]*16,
+  	      BORDER_SIZE_LUM + yIdxY[1]*16,
   	      pocIndex[readingPoc[1] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
-		xIdxV[1] := xIdxV[1] + 1;
-		if(xIdxV[1] = picSizeInCu[0]) then
-			xIdxV[1] := 0;
-			yIdxV[1] := yIdxV[1] + 1;
+		xIdxY[1] := xIdxY[1] + 1;
+		if(xIdxY[1] = picSizeInCu[0]) then
+			xIdxY[1] := 0;
+			yIdxY[1] := yIdxY[1] + 1;
 			cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + 16;
 		end
 	end
 	
-	getCuPix.d1.launch.x16.v: action SampleV1:[samp] repeat 8*8 ==>
-	guard
-		yIdxV[1] < picSizeInCu[1], lcuSizeMax = 16
-	do		
-		copy_cu_dpb_chroma_x16_cal(
-          samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[1]*8,
-  	      BORDER_SIZE_CHR + yIdxV[1]*8,
-  	      pocIndex[readingPoc[1] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
-		
-		xIdxV[1] := xIdxV[1] + 1;
-		if(xIdxV[1] = picSizeInCu[0]) then
-			xIdxV[1] := 0;
-			yIdxV[1] := yIdxV[1] + 1;
-			cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + 8;
-		end
-	end
 	
 	getCuPix.d1.done: action ==>
 	guard
-		yIdxV[1] = picSizeInCu[1],
+		yIdxY[1] = picSizeInCu[1],
 		needNewPict[1] = false
 	do
 		//println("getCuDone_1 ");
-			
-		fillBorder_chroma_cal(
-			pictureBufferV,
+		fillBorder_luma_cal(
+			pictureBufferY,
 			pocIndex[readingPoc[1] & 31],
-			picSize[0] / 2,
-			picSize[1] / 2,
-			BORDER_SIZE_CHR);
+			picSize[0],
+			picSize[1],
+			BORDER_SIZE_LUM);
 		
 		pocDone[readingPoc[1] & 31] := true;
-		cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + BORDER_SIZE_CHR;
+		cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + BORDER_SIZE_LUM;
 		numAvailablePic := numAvailablePic + 1;
 		
 		if DEBUG_DPB then
@@ -774,86 +778,87 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	end
 	
 	////////////////////////////////////////getCuPix 2 ///////////////////////////////////////////////////
-	
-	getCuPix.d2.launch.x64.v: action SampleV2:[samp] repeat 32*32 ==>
+	getCuPix.d2.launch.x64.y: action SampleY2:[samp] repeat 64*64 ==>
 	guard
-		yIdxV[2] < picSizeInCu[1], lcuSizeMax = 64
+		yIdxY[2] < picSizeInCu[1], 
+		lcuSizeMax = 64
 	do
-		copy_cu_dpb_chroma_x64_cal(
+		copy_cu_dpb_luma_x64_cal(
           samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[2]*32,
-  	      BORDER_SIZE_CHR + yIdxV[2]*32,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[2]*64,
+  	      BORDER_SIZE_LUM + yIdxY[2]*64,
   	      pocIndex[readingPoc[2] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
-		xIdxV[2] := xIdxV[2] + 1;
-		if(xIdxV[2] = picSizeInCu[0]) then
-			xIdxV[2] := 0;
-			yIdxV[2] := yIdxV[2] + 1;
+		xIdxY[2] := xIdxY[2] + 1;
+		if(xIdxY[2] = picSizeInCu[0]) then
+			xIdxY[2] := 0;
+			yIdxY[2] := yIdxY[2] + 1;
+			cuHeightDone[readingPoc[2] & 31] := cuHeightDone[readingPoc[2] & 31] + 64;
+		end
+	end
+	
+	getCuPix.d2.launch.x32.y: action SampleY2:[samp] repeat 32*32 ==>
+	guard
+		yIdxY[2] < picSizeInCu[1], 
+		lcuSizeMax = 32
+	do
+		copy_cu_dpb_luma_x32_cal(
+          samp,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[2]*32,
+  	      BORDER_SIZE_LUM + yIdxY[2]*32,
+  	      pocIndex[readingPoc[2] & 31],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+		
+		xIdxY[2] := xIdxY[2] + 1;
+		if(xIdxY[2] = picSizeInCu[0]) then
+			xIdxY[2] := 0;
+			yIdxY[2] := yIdxY[2] + 1;
 			cuHeightDone[readingPoc[2] & 31] := cuHeightDone[readingPoc[2] & 31] + 32;
 		end
 	end
 	
-	getCuPix.d2.launch.x32.v: action SampleV2:[samp] repeat 16*16 ==>
+	getCuPix.d2.launch.x16.y: action SampleY2:[samp] repeat 16*16 ==>
 	guard
-		yIdxV[2] < picSizeInCu[1], lcuSizeMax = 32
-	do		
-		copy_cu_dpb_chroma_x32_cal(
+		yIdxY[2] < picSizeInCu[1], 
+		lcuSizeMax = 16
+	do
+		copy_cu_dpb_luma_x16_cal(
           samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[2]*16,
-  	      BORDER_SIZE_CHR + yIdxV[2]*16,
+  	      pictureBufferY,
+  	      BORDER_SIZE_LUM + xIdxY[2]*16,
+  	      BORDER_SIZE_LUM + yIdxY[2]*16,
   	      pocIndex[readingPoc[2] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
-		xIdxV[2] := xIdxV[2] + 1;
-		if(xIdxV[2] = picSizeInCu[0]) then
-			xIdxV[2] := 0;
-			yIdxV[2] := yIdxV[2] + 1;
+		xIdxY[2] := xIdxY[2] + 1;
+		if(xIdxY[2] = picSizeInCu[0]) then
+			xIdxY[2] := 0;
+			yIdxY[2] := yIdxY[2] + 1;
 			cuHeightDone[readingPoc[2] & 31] := cuHeightDone[readingPoc[2] & 31] + 16;
-		end
-	end
-	
-	getCuPix.d2.launch.x16.v: action SampleV2:[samp] repeat 8*8 ==>
-	guard
-		yIdxV[2] < picSizeInCu[1], lcuSizeMax = 16
-	do		
-		copy_cu_dpb_chroma_x16_cal(
-          samp,
-  	      pictureBufferV,
-  	      BORDER_SIZE_CHR + xIdxV[2]*8,
-  	      BORDER_SIZE_CHR + yIdxV[2]*8,
-  	      pocIndex[readingPoc[2] & 31],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
-		
-		xIdxV[2] := xIdxV[2] + 1;
-		if(xIdxV[2] = picSizeInCu[0]) then
-			xIdxV[2] := 0;
-			yIdxV[2] := yIdxV[2] + 1;
-			cuHeightDone[readingPoc[2] & 31] := cuHeightDone[readingPoc[2] & 31] + 8;
 		end
 	end
 	
 	getCuPix.d2.done: action ==>
 	guard
-		yIdxV[2] = picSizeInCu[1],
+		yIdxY[2] = picSizeInCu[1],
 		needNewPict[2] = false
 	do
 		//println("getCuDone_2 ");
-		
-		fillBorder_chroma_cal(
-			pictureBufferV,
+		fillBorder_luma_cal(
+			pictureBufferY,
 			pocIndex[readingPoc[2] & 31],
-			picSize[0] / 2,
-			picSize[1] / 2,
-			BORDER_SIZE_CHR);
+			picSize[0],
+			picSize[1],
+			BORDER_SIZE_LUM);
 		
 		pocDone[readingPoc[2] & 31] := true;
-		cuHeightDone[readingPoc[2] & 31] := cuHeightDone[readingPoc[2] & 31] + BORDER_SIZE_CHR;
+		cuHeightDone[readingPoc[2] & 31] := cuHeightDone[readingPoc[2] & 31] + BORDER_SIZE_LUM;
 		numAvailablePic := numAvailablePic + 1;
 		
 		if DEBUG_DPB then
@@ -866,85 +871,14 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		
 		needNewPict[2] := true;
 	end
-
+	
 	////////////////////////////////////////end GetCuPix ////////////////////////////////////////////////
-	sendCuPix.launch.x64: action ==> 
-		VidV:[cuV] repeat 32*32
+	sendCuPix.done: action ==> Done:[true]
 	guard
-		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
-		lcuSizeMax = 64
-	var
-		uint (size=8) cuV[32*32]
-	do
-		foreach int i in 0 .. 31 do	
-			foreach int j in 0 .. 31 do
-				cuV[i*32 + j] := pictureBufferV[pocIndex[sendingPoc & 31]][BORDER_SIZE_CHR + sendy * 32+ i][BORDER_SIZE_CHR + sendx * 32 + j];
-			end
-		end
-			
-		sendx := sendx + 1;
-		if(sendx = picSizeInCu[0]) then
-			sendx := 0;
-			sendy := sendy + 1;
-		end
-	end
-	
-	sendCuPix.launch.x32: action ==> 
-		VidV:[cuV] repeat 16*16
-	guard
-		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
-		lcuSizeMax = 32
-	var
-		uint (size=8) cuV[16*16]
-	do
-		foreach int i in 0 .. 15 do	
-			foreach int j in 0 .. 15 do
-				cuV[i*16 + j] := pictureBufferV[pocIndex[sendingPoc & 31]][BORDER_SIZE_CHR + sendy * 16 + i][BORDER_SIZE_CHR + sendx * 16 + j];
-			end
-		end
-			
-		sendx := sendx + 1;
-		if(sendx = picSizeInCu[0]) then
-			sendx := 0;
-			sendy := sendy + 1;
-		end
-	end
-	
-	sendCuPix.launch.x16: action ==> 
-		VidV:[cuV] repeat 8*8
-	guard
-		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
-		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
-		lcuSizeMax = 16
-	var
-		uint (size=8) cuV[8*8]
-	do
-		foreach int i in 0 .. 7 do	
-			foreach int j in 0 .. 7 do
-				cuV[i*8 + j] := pictureBufferV[pocIndex[sendingPoc & 31]][BORDER_SIZE_CHR + sendy * 8 + i][BORDER_SIZE_CHR + sendx * 8 + j];
-			end
-		end
-			
-		sendx := sendx + 1;
-		if(sendx = picSizeInCu[0]) then
-			sendx := 0;
-			sendy := sendy + 1;
-		end
-	end
-	
-	sendCuPix.done: action ==>
-	guard
-		sendy = picSizeInCu[1],
-		pocDone[sendingPoc & 31]
+		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput
 	do
 		//println("sendCuDone_1 ");
-		sendx := 0;
-		sendy := 0;
 		
 		if DEBUG_DPB then 
 			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
@@ -978,147 +912,153 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 	end
 
 //////////////////////////////////////// getMVInfo 0 /////////////////////////////////////////////////////
+	
 	getMvInfo.d0.launch.is64: action 
 		IsReadOrNewSlice0:[isRead],
 		PocRef0:[poc], PredCuSize0:[predCuSize], Mv0:[mv] repeat 2 
 		==> 
-		RefSampleV0:[refCuV] repeat (32+3)*(32+3)
+		RefSampleY0:[refCuY] repeat (64+7)*(64+7)
 	guard
 		isRead = 1,
 		predCuSize = 64,
-		computeMvHeightChroma(mv[1], picSize[1], 64) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 64) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 64,
-		uint(size=8)  refCuV[(32+3)*(32+3)]
+		uint(size=8)  refCuY[(64+7)*(64+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-  	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
   	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
 	end
 	
 	getMvInfo.d0.launch.is32: action 
 		IsReadOrNewSlice0:[isRead],
 		PocRef0:[poc], PredCuSize0:[predCuSize], Mv0:[mv] repeat 2 
 		==> 
-		RefSampleV0:[refCuV] repeat (16+3)*(16+3)
+		RefSampleY0:[refCuY] repeat (32+7)*(32+7)
 	guard
 		isRead = 1,
 		predCuSize = 32,
-		computeMvHeightChroma(mv[1], picSize[1], 32) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 32) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 32,
-		uint(size=8)  refCuV[(16+3)*(16+3)]
+		uint(size=8)  refCuY[(32+7)*(32+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
- 	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
-  	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
+  	      pocIndex[poc & 31],
+  	      sideMax + 7,
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
 	end
 	
 	getMvInfo.d0.launch.is16: action 
 		IsReadOrNewSlice0:[isRead],
 		PocRef0:[poc], PredCuSize0:[predCuSize], Mv0:[mv] repeat 2 
 		==> 
-		RefSampleV0:[refCuV] repeat (8+3)*(8+3)
+		RefSampleY0:[refCuY] repeat (16+7)*(16+7)
 	guard
 		isRead = 1,
 		predCuSize = 16,
-		computeMvHeightChroma(mv[1], picSize[1], 16) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 16) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 16,
-		uint(size=8)  refCuV[(8+3)*(8+3)]
+		uint(size=8)  refCuY[(16+7)*(16+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-	 	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
   	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 	end
 	
 	getMvInfo.d0.launch.is8: action 
 		IsReadOrNewSlice0:[isRead],
 		PocRef0:[poc], PredCuSize0:[predCuSize], Mv0:[mv] repeat 2 
 		==> 
-		RefSampleV0:[refCuV] repeat (4+3)*(4+3)
+		RefSampleY0:[refCuY] repeat (8+7)*(8+7)
 	guard
 		isRead = 1,
 		predCuSize = 8,
-		computeMvHeightChroma(mv[1], picSize[1], 8) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 8) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 8,
-		uint(size=8)  refCuV[(4+3)*(4+3)]
+		uint(size=8)  refCuY[(8+7)*(8+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				refCuV[x+y*(sideMax/2+3)] := 
-					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
-			end
-		end
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
+  	      pocIndex[poc & 31], 
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	    
 	end
 	
 	getMvInfo.d0.launch.is4: action 
 		IsReadOrNewSlice0:[isRead],
 		PocRef0:[poc], PredCuSize0:[predCuSize], Mv0:[mv] repeat 2 
 		==> 
-		RefSampleV0:[refCuV] repeat (2+3)*(2+3)
+		RefSampleY0:[refCuY] repeat (4+7)*(4+7)
 	guard
 		isRead = 1,
 		predCuSize = 4,
-		computeMvHeightChroma(mv[1], picSize[1], 4) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 4) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 4,
-		uint(size=8)  refCuV[(2+3)*(2+3)]
+		uint(size=8)  refCuY[(4+7)*(4+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 		
-		foreach int y in 0 .. sideMax/2+3 -1
+		foreach int y in 0 .. sideMax+7 -1
 		do
-			foreach int x in 0 .. sideMax/2+3 -1
+			foreach int x in 0 .. sideMax+7 -1
 			do
-				refCuV[x+y*(sideMax/2+3)] := 
-					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
+				refCuY[x+y*(sideMax+7)] := 
+					pictureBufferY[pocIndex[poc & 31]][y+mvOffset[1]][x+mvOffset[0]];
 			end
 		end
+		
 	end
 	
 //////////////////////////////////////// getMVInfo 1 /////////////////////////////////////////////////////
@@ -1127,143 +1067,153 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		IsReadOrNewSlice1:[isRead],
 		PocRef1:[poc], PredCuSize1:[predCuSize], Mv1:[mv] repeat 2 
 		==> 
-		RefSampleV1:[refCuV] repeat (32+3)*(32+3)
+		RefSampleY1:[refCuY] repeat (64+7)*(64+7)
 	guard
 		isRead = 1,
 		predCuSize = 64,
-		computeMvHeightChroma(mv[1], picSize[1], 64) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 64) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 64,
-		uint(size=8)  refCuV[(32+3)*(32+3)]
+		uint(size=8)  refCuY[(64+7)*(64+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
   	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
+  	    
 	end
 	
 	getMvInfo.d1.launch.is32: action 
 		IsReadOrNewSlice1:[isRead],
 		PocRef1:[poc], PredCuSize1:[predCuSize], Mv1:[mv] repeat 2 
 		==> 
-		RefSampleV1:[refCuV] repeat (16+3)*(16+3)
+		RefSampleY1:[refCuY] repeat (32+7)*(32+7)
 	guard
 		isRead = 1,
 		predCuSize = 32,
-		computeMvHeightChroma(mv[1], picSize[1], 32) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 32) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 32,
-		uint(size=8)  refCuV[(16+3)*(16+3)]
+		uint(size=8)  refCuY[(32+7)*(32+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-		 	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
-  	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
+  	      pocIndex[poc & 31],
+  	      sideMax + 7,
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
+  	    
 	end
 	
 	getMvInfo.d1.launch.is16: action 
 		IsReadOrNewSlice1:[isRead],
 		PocRef1:[poc], PredCuSize1:[predCuSize], Mv1:[mv] repeat 2 
 		==> 
-		RefSampleV1:[refCuV] repeat (8+3)*(8+3)
+		RefSampleY1:[refCuY] repeat (16+7)*(16+7)
 	guard
 		isRead = 1,
 		predCuSize = 16,
-		computeMvHeightChroma(mv[1], picSize[1], 16) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 16) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 16,
-		uint(size=8)  refCuV[(8+3)*(8+3)]
+		uint(size=8)  refCuY[(16+7)*(16+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-			      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
   	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
+		
 	end
 	
 	getMvInfo.d1.launch.is8: action 
 		IsReadOrNewSlice1:[isRead],
 		PocRef1:[poc], PredCuSize1:[predCuSize], Mv1:[mv] repeat 2 
 		==> 
-		RefSampleV1:[refCuV] repeat (4+3)*(4+3)
+		RefSampleY1:[refCuY] repeat (8+7)*(8+7)
 	guard
 		isRead = 1,
 		predCuSize = 8,
-		computeMvHeightChroma(mv[1], picSize[1], 8) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 8) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 8,
-		uint(size=8)  refCuV[(4+3)*(4+3)]
+		uint(size=8)  refCuY[(8+7)*(8+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				refCuV[x+y*(sideMax/2+3)] := 
-					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
-			end
-		end
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
+  	      pocIndex[poc & 31], 
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
+  	    
 	end
 	
 	getMvInfo.d1.launch.is4: action 
 		IsReadOrNewSlice1:[isRead],
 		PocRef1:[poc], PredCuSize1:[predCuSize], Mv1:[mv] repeat 2 
 		==> 
-		RefSampleV1:[refCuV] repeat (2+3)*(2+3)
+		RefSampleY1:[refCuY] repeat (4+7)*(4+7)
 	guard
 		isRead = 1,
 		predCuSize = 4,
-		computeMvHeightChroma(mv[1], picSize[1], 4) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 4) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 4,
-		uint(size=8)  refCuV[(2+3)*(2+3)]
+		uint(size=8)  refCuY[(4+7)*(4+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 		
-		foreach int y in 0 .. sideMax/2+3 -1
+		foreach int y in 0 .. sideMax+7 -1
 		do
-			foreach int x in 0 .. sideMax/2+3 -1
+			foreach int x in 0 .. sideMax+7 -1
 			do
-				refCuV[x+y*(sideMax/2+3)] := 
-					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
+				refCuY[x+y*(sideMax+7)] := 
+					pictureBufferY[pocIndex[poc & 31]][y+mvOffset[1]][x+mvOffset[0]];
 			end
 		end
+		
 	end
 	
 	//////////////////////////////////////// getMVInfo 2 /////////////////////////////////////////////////////
@@ -1271,144 +1221,149 @@ actor DecodingPictureBuffer_chroma_FB3 ()
 		IsReadOrNewSlice2:[isRead],
 		PocRef2:[poc], PredCuSize2:[predCuSize], Mv2:[mv] repeat 2 
 		==> 
-		RefSampleV2:[refCuV] repeat (32+3)*(32+3)
+		RefSampleY2:[refCuY] repeat (64+7)*(64+7)
 	guard
 		isRead = 1,
 		predCuSize = 64,
-		computeMvHeightChroma(mv[1], picSize[1], 64) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 64) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 64,
-		uint(size=8)  refCuV[(32+3)*(32+3)]
+		uint(size=8)  refCuY[(64+7)*(64+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-  	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
   	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
+  	   
 	end
 	
 	getMvInfo.d2.launch.is32: action 
 		IsReadOrNewSlice2:[isRead],
 		PocRef2:[poc], PredCuSize2:[predCuSize], Mv2:[mv] repeat 2 
 		==> 
-		RefSampleV2:[refCuV] repeat (16+3)*(16+3)
+		RefSampleY2:[refCuY] repeat (32+7)*(32+7)
 	guard
 		isRead = 1,
 		predCuSize = 32,
-		computeMvHeightChroma(mv[1], picSize[1], 32) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 32) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 32,
-		uint(size=8)  refCuV[(16+3)*(16+3)]
+		uint(size=8)  refCuY[(32+7)*(32+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 		
- 	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
-  	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
+  	      pocIndex[poc & 31],
+  	      sideMax + 7,
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+ 
 	end
 	
 	getMvInfo.d2.launch.is16: action 
 		IsReadOrNewSlice2:[isRead],
 		PocRef2:[poc], PredCuSize2:[predCuSize], Mv2:[mv] repeat 2 
 		==> 
-		RefSampleV2:[refCuV] repeat (8+3)*(8+3)
+		RefSampleY2:[refCuY] repeat (16+7)*(16+7)
 	guard
 		isRead = 1,
 		predCuSize = 16,
-		computeMvHeightChroma(mv[1], picSize[1], 16) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 16) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 16,
-		uint(size=8)  refCuV[(8+3)*(8+3)]
+		uint(size=8)  refCuY[(16+7)*(16+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
-		  	      
-  	    getmvinfo_dpb_chroma_v_cal(
-  	      pictureBufferV,
-  	      refCuV,
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
   	      pocIndex[poc & 31], 
-  	      sideMax/2 + 3, 
-  	      mvOffChr[0],
-  	      mvOffChr[1],
-  	      DPB_CHR_WIDTH,
-  	      DPB_CHR_HEIGHT);
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 	end
 	
 	getMvInfo.d2.launch.is8: action 
 		IsReadOrNewSlice2:[isRead],
 		PocRef2:[poc], PredCuSize2:[predCuSize], Mv2:[mv] repeat 2 
 		==> 
-		RefSampleV2:[refCuV] repeat (4+3)*(4+3)
+		RefSampleY2:[refCuY] repeat (8+7)*(8+7)
 	guard
 		isRead = 1,
 		predCuSize = 8,
-		computeMvHeightChroma(mv[1], picSize[1], 8) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 8) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 8,
-		uint(size=8)  refCuV[(4+3)*(4+3)]
+		uint(size=8)  refCuY[(8+7)*(8+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 
-		foreach int y in 0 .. sideMax/2+3 -1
-		do
-			foreach int x in 0 .. sideMax/2+3 -1
-			do
-				refCuV[x+y*(sideMax/2+3)] := 
-					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
-			end
-		end
+		getmvinfo_dpb_luma_cal(
+  	      pictureBufferY,
+  	      refCuY,
+  	      pocIndex[poc & 31], 
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+  	      
 	end
 	
 	getMvInfo.d2.launch.is4: action 
 		IsReadOrNewSlice2:[isRead],
 		PocRef2:[poc], PredCuSize2:[predCuSize], Mv2:[mv] repeat 2 
 		==> 
-		RefSampleV2:[refCuV] repeat (2+3)*(2+3)
+		RefSampleY2:[refCuY] repeat (4+7)*(4+7)
 	guard
 		isRead = 1,
 		predCuSize = 4,
-		computeMvHeightChroma(mv[1], picSize[1], 4) <= cuHeightDone[poc & 31]
+		computeMvHeightLuma(mv[1], picSize[1], 4) <= cuHeightDone[poc & 31]
 	var
-		//int (size=32) mvOffset[2],
-		int (size=32) mvOffChr[2],
+		int (size=32) mvOffset[2],
+		//int (size=32) mvOffChr[2],
 		uint(size=7)  sideMax = 4,
-		uint(size=8)  refCuV[(2+3)*(2+3)]
+		uint(size=8)  refCuY[(4+7)*(4+7)]
 	do
-		//computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		//computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 		
-		foreach int y in 0 .. sideMax/2+3 -1
+		foreach int y in 0 .. sideMax+7 -1
 		do
-			foreach int x in 0 .. sideMax/2+3 -1
+			foreach int x in 0 .. sideMax+7 -1
 			do
-				refCuV[x+y*(sideMax/2+3)] := 
-					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
+				refCuY[x+y*(sideMax+7)] := 
+					pictureBufferY[pocIndex[poc & 31]][y+mvOffset[1]][x+mvOffset[0]];
 			end
 		end
+		
 	end
 	
 //////////////////////////////////////// end getMVInfo  /////////////////////////////////////////////////////
