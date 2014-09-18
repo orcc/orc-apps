@@ -59,12 +59,12 @@
 package org.ietr.mpegh.part2.main.inter;
 
 import std.util.Math.*;
-import devel.org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
-import devel.org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
 actor DecodingPictureBuffer ()
-	uint(size=2)  IsBiPredOrLx,
+	uint(size=2)  IsPicSlc,
 	uint(size=8)  LcuSizeMax,
 	uint(size=1)  IsReadOrNewSlice,
 	int (size=32) Mv,
@@ -95,7 +95,8 @@ actor DecodingPictureBuffer ()
 	int (size=16) pocIndex[32];
 	int (size=16) pocRef[DPB_SIZE] := [-1 : for int i in 0 .. DPB_SIZE-1];
 
-	uint(size=8)  currIdx := 0;
+	int(size=8)  currIdx := -1;
+	int(size=8)  lastIdx := -1;
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
 	uint(size=16)  xIdxY;
@@ -105,7 +106,6 @@ actor DecodingPictureBuffer ()
 	uint(size=16)  xIdxV;
 	uint(size=16)  yIdxV;
 	
-	uint(size=1)  numPocRef := 0;
 	uint          pictNum;
 	int           numReorderPic;
 	int           numAvailablePic := 0;
@@ -126,52 +126,18 @@ actor DecodingPictureBuffer ()
 	uint(size=8) seqIdOutput := 1;
 	uint(size=8) seqIdDecode := 1;
 	
-	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_chroma_orcc")
-    procedure getmvinfo_dpb_64_chroma_u_cal(
+	@optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_orcc")
+    procedure getmvinfo_dpb_chroma_u_cal(
   	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
   	      uint(size= 8) RefCu[(32 + 3) * (32 + 3)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
   	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
+  	      int (size=32) yOffset,
+  	      uint(size=16) width,
+		  uint(size=16) height)
     begin
       foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferU[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
-  
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_32_chroma_orcc")
-    procedure getmvinfo_dpb_32_chroma_u_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
-  	      uint(size= 8) RefCu[(16 + 3) * (16 + 3)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-      foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferU[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
-  
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_16_chroma_orcc")
-    procedure getmvinfo_dpb_16_chroma_u_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
-  	      uint(size= 8) RefCu[(8 + 3) * (8 + 3)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-		foreach int y in 0 .. sideMax - 1
 		do
 			foreach int x in 0 .. sideMax - 1
 			do
@@ -180,14 +146,16 @@ actor DecodingPictureBuffer ()
 		end
     end
     
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_chroma_orcc")
-    procedure getmvinfo_dpb_64_chroma_v_cal(
+    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_orcc")
+    procedure getmvinfo_dpb_chroma_v_cal(
   	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
   	      uint(size= 8) RefCu[(32 + 3) * (32 + 3)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
   	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
+  	      int (size=32) yOffset,
+  	      uint(size=16) width,
+		  uint(size=16) height)
     begin
       foreach int y in 0 .. sideMax - 1
 		do
@@ -198,50 +166,16 @@ actor DecodingPictureBuffer ()
 		end
     end
     
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_32_chroma_orcc")
-    procedure getmvinfo_dpb_32_chroma_v_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
-  	      uint(size= 8) RefCu[(16 + 3) * (16 + 3)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-      foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferV[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
-  
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_16_chroma_orcc")
-    procedure getmvinfo_dpb_16_chroma_v_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_CHR_HEIGHT][DPB_CHR_WIDTH],
-  	      uint(size= 8) RefCu[(8 + 3) * (8 + 3)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-		foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferV[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
-    
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_64_luma_orcc")
-    procedure getmvinfo_dpb_64_luma_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
+    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_orcc")
+    procedure getmvinfo_dpb_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_LUM_HEIGHT][DPB_LUM_WIDTH],
   	      uint(size= 8) RefCu[(64 + 7) * (64 + 7)],
   	      uint(size= 3) idx,
   	      uint(size= 8) sideMax, 
   	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
+  	      int (size=32) yOffset,
+  	      uint(size=16) width,
+		  uint(size=16) height)
     begin
       foreach int y in 0 .. sideMax - 1
 	  	do
@@ -251,68 +185,15 @@ actor DecodingPictureBuffer ()
 			end
 		end
     end
-  
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_32_luma_orcc")
-    procedure getmvinfo_dpb_32_luma_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
-  	      uint(size= 8) RefCu[(32 + 7) * (32 + 7)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-      foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferY[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
-  
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_16_luma_orcc")
-    procedure getmvinfo_dpb_16_luma_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
-  	      uint(size= 8) RefCu[(16 + 7) * (16 + 7)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-      foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferY[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
-  
-    @optimize_c(condition="defined(SSE_ENABLE)", name="getmvinfo_dpb_8_luma_orcc")
-    procedure getmvinfo_dpb_8_luma_cal(
-  	      uint(size= 8) pictureBufferTmp[DPB_SIZE][PICT_HEIGHT+2*BORDER_SIZE_LUM][PICT_WIDTH+2*BORDER_SIZE_LUM],
-  	      uint(size= 8) RefCu[(8 + 7) * (8 + 7)],
-  	      uint(size= 3) idx,
-  	      uint(size= 8) sideMax, 
-  	      int (size=32) xOffset,
-  	      int (size=32) yOffset)
-    begin
-		foreach int y in 0 .. sideMax - 1
-		do
-			foreach int x in 0 .. sideMax - 1
-			do
-				RefCu[x+y*(sideMax)] := pictureBufferY[idx][y+yOffset][x+xOffset];
-			end
-		end
-    end
 	
 	/** Getting informations from new slice/picture. Updating these informations **/
 	isNewSlice: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize] ==>
+		picHeightInPix], Poc:[poc], LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
 	guard
 		/* Fix me : We should know when there is a new picture */
 		isRead = 0,
-		poc = readingPoc
+		poc = readingPoc,
+		isPicSlc = 1
 	do	
 		lcuSizeMax := 1 << log2LcuSize;
 		isRef := [false: for int i in 0 .. DPB_SIZE - 1];
@@ -322,10 +203,11 @@ actor DecodingPictureBuffer ()
 	isNewPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
 					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
 					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
-					  ,LcuSizeMax:[log2LcuSize] ==>
+					  ,LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
 	guard
 		isRead = 0,
-		poc != readingPoc
+		poc != readingPoc,
+		isPicSlc = 0
 	do
 		lcuSizeMax := 1 << log2LcuSize;
 //		println("Dpb ; Pict num "+pictNum);
@@ -342,6 +224,7 @@ actor DecodingPictureBuffer ()
 		yIdxV := 0;
 		
 		// Find the next available buffer
+		lastIdx := currIdx;
 		currIdx := 0;
 		while isRef[currIdx] or not isSent[currIdx] do
 			currIdx := currIdx + 1;
@@ -393,6 +276,69 @@ actor DecodingPictureBuffer ()
 		end
 	end
 	
+	isNewPict_lastPict: action IsReadOrNewSlice:[isRead], PictSize:[picWidthInPix,
+					  picHeightInPix], Poc:[poc], ReorderPics:[noOutputOfPriorPicsFlag, 
+					  spsNumReorderPics, picOutputFlag, videoSequenceId] 
+					  ,LcuSizeMax:[log2LcuSize], IsPicSlc:[isPicSlc] ==>
+	guard // case stream with only 1 frame
+		isRead = 0,
+		lastIdx = -1 and videoSequenceId > 1,
+		isPicSlc = 0
+	do
+		sendx := 0;
+		sendy := 0;
+		lcuSizeMax := 1 << log2LcuSize;
+//		println("Dpb ; Pict num "+pictNum);
+		pictNum := pictNum + 1;
+		picSizeInCu[0] := (picWidthInPix+lcuSizeMax-1)/lcuSizeMax;
+		picSizeInCu[1] := (picHeightInPix+lcuSizeMax-1)/lcuSizeMax;
+		picSize[0] := picWidthInPix;
+		picSize[1] := picHeightInPix;
+		xIdxY := 0;
+		yIdxY := 0;
+		xIdxU := 0;
+		yIdxU := 0;
+		xIdxV := 0;
+		yIdxV := 0;
+		
+		nbList := 0;
+		readingPoc := poc;
+		isRef := [false: for int i in 0 .. DPB_SIZE - 1];
+		nbList := 0;
+		
+		pocDone[readingPoc & 31] := false;
+		pocIndex[readingPoc & 31] := currIdx;
+		pocRef[currIdx] := readingPoc;
+		
+		if noOutputOfPriorPicsFlag = 1 then
+			// Flush the queue of next displayed frames
+			sendingPoc := poc;
+			numAvailablePic := 0;
+			isSent := [true : for int i in 0 .. DPB_SIZE-1];
+			skip := [false : for int i in 0 .. DPB_SIZE-1];
+		end
+		
+		isSent[currIdx] := false;
+		
+		if picOutputFlag = 1 then
+			skip[currIdx] := false;
+		else
+			skip[currIdx] := true;
+		end
+		
+		// Number of frames needed to display 
+		numReorderPic := spsNumReorderPics;
+		
+		seqIdDecode := videoSequenceId;
+		
+		if seqIdDecode = seqIdOutput then 
+			// Always display the frame with the smallest poc
+			if readingPoc < sendingPoc then 
+				sendingPoc := readingPoc;
+			end
+		end
+
+	end
 	/** We get all the references from the 5 lists of the Rps
 	 * (StCurrentBefore, StCurrentAfter, StFollowing, LtCurrent, LtFollowing)
 	 **/
@@ -455,7 +401,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferY,
   	      BORDER_SIZE_LUM + xIdxY*64,
   	      BORDER_SIZE_LUM + yIdxY*64,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
 		xIdxY := xIdxY + 1;
 		if(xIdxY = picSizeInCu[0]) then
@@ -474,7 +422,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferY,
   	      BORDER_SIZE_LUM + xIdxY*32,
   	      BORDER_SIZE_LUM + yIdxY*32,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
 		xIdxY := xIdxY + 1;
 		if(xIdxY = picSizeInCu[0]) then
@@ -493,7 +443,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferY,
   	      BORDER_SIZE_LUM + xIdxY*16,
   	      BORDER_SIZE_LUM + yIdxY*16,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
 		
 		xIdxY := xIdxY + 1;
 		if(xIdxY = picSizeInCu[0]) then
@@ -511,7 +463,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferU,
   	      BORDER_SIZE_CHR + xIdxU*32,
   	      BORDER_SIZE_CHR + yIdxU*32,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 		
 		xIdxU := xIdxU + 1;
 		if(xIdxU = picSizeInCu[0]) then
@@ -529,7 +483,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferU,
   	      BORDER_SIZE_CHR + xIdxU*16,
   	      BORDER_SIZE_CHR + yIdxU*16,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 		
 		xIdxU := xIdxU + 1;
 		if(xIdxU = picSizeInCu[0]) then
@@ -547,7 +503,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferU,
   	      BORDER_SIZE_CHR + xIdxU*8,
   	      BORDER_SIZE_CHR + yIdxU*8,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 		
 		xIdxU := xIdxU + 1;
 		if(xIdxU = picSizeInCu[0]) then
@@ -565,7 +523,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferV,
   	      BORDER_SIZE_CHR + xIdxV*32,
   	      BORDER_SIZE_CHR + yIdxV*32,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 		
 		xIdxV := xIdxV + 1;
 		if(xIdxV = picSizeInCu[0]) then
@@ -583,7 +543,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferV,
   	      BORDER_SIZE_CHR + xIdxV*16,
   	      BORDER_SIZE_CHR + yIdxV*16,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 		
 		xIdxV := xIdxV + 1;
 		if(xIdxV = picSizeInCu[0]) then
@@ -601,7 +563,9 @@ actor DecodingPictureBuffer ()
   	      pictureBufferV,
   	      BORDER_SIZE_CHR + xIdxV*8,
   	      BORDER_SIZE_CHR + yIdxV*8,
-  	      pocIndex[readingPoc & 31]);
+  	      pocIndex[readingPoc & 31],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 		
 		xIdxV := xIdxV + 1;
 		if(xIdxV = picSizeInCu[0]) then
@@ -655,7 +619,7 @@ actor DecodingPictureBuffer ()
 		VidV:[cuV] repeat 32*32
 	guard
 		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
+		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 64
 	var
@@ -692,7 +656,7 @@ actor DecodingPictureBuffer ()
 		VidV:[cuV] repeat 16*16
 	guard
 		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
+		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 32
 	var
@@ -729,7 +693,7 @@ actor DecodingPictureBuffer ()
 		VidV:[cuV] repeat 8*8
 	guard
 		sendy < picSizeInCu[1],
-		pocDone[sendingPoc & 31],
+		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 16
 	var
@@ -799,27 +763,15 @@ actor DecodingPictureBuffer ()
 		numAvailablePic := numAvailablePic - 1;
 	end
 
-	getReadAddr: action IsReadOrNewSlice:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
-	guard
-		isRead = 1,
-		numPocRef = 0
-	do
-		numPocRef :=
-			if(isBiPredOrLx = BI_PRED) then
-				2
-			else
-				1
-			end;
-	end
-
-	getMvInfo.launch.is64: action 
-		PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+	getMvInfo.is64: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSampleY:[refCuY] repeat (64+7)*(64+7),
 		RefSampleU:[refCuU] repeat (32+3)*(32+3),
 		RefSampleV:[refCuV] repeat (32+3)*(32+3)
 	guard
-		numPocRef != 0 && predCuSize = 64,
+		isRead = 1,
+		predCuSize = 64,
 		pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -832,41 +784,46 @@ actor DecodingPictureBuffer ()
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 
-		getmvinfo_dpb_64_luma_cal(
+		getmvinfo_dpb_luma_cal(
   	      pictureBufferY,
   	      refCuY,
   	      pocIndex[poc & 31], 
   	      sideMax + 7, 
   	      mvOffset[0],
-  	      mvOffset[1]);
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
   	      
-  	    getmvinfo_dpb_64_chroma_u_cal(
+  	    getmvinfo_dpb_chroma_u_cal(
   	      pictureBufferU,
   	      refCuU,
   	      pocIndex[poc & 31], 
   	      sideMax/2 + 3, 
   	      mvOffChr[0],
-  	      mvOffChr[1]);
+  	      mvOffChr[1],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
   	      
-  	    getmvinfo_dpb_64_chroma_v_cal(
+  	    getmvinfo_dpb_chroma_v_cal(
   	      pictureBufferV,
   	      refCuV,
   	      pocIndex[poc & 31], 
   	      sideMax/2 + 3, 
   	      mvOffChr[0],
-  	      mvOffChr[1]);
-  	      
-		numPocRef := numPocRef - 1;
+  	      mvOffChr[1],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 	end
 	
-	getMvInfo.launch.is32: action 
-		PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+	getMvInfo.is32: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSampleY:[refCuY] repeat (32+7)*(32+7),
 		RefSampleU:[refCuU] repeat (16+3)*(16+3),
 		RefSampleV:[refCuV] repeat (16+3)*(16+3)
 	guard
-		numPocRef != 0 && predCuSize = 32,
+		isRead = 1,
+		predCuSize = 32,
 		pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -879,41 +836,46 @@ actor DecodingPictureBuffer ()
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 		
-		getmvinfo_dpb_32_luma_cal(
+		getmvinfo_dpb_luma_cal(
   	      pictureBufferY,
   	      refCuY,
   	      pocIndex[poc & 31],
   	      sideMax + 7,
   	      mvOffset[0],
-  	      mvOffset[1]);
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
   	      
-  	    getmvinfo_dpb_32_chroma_u_cal(
+  	    getmvinfo_dpb_chroma_u_cal(
   	      pictureBufferU,
   	      refCuU,
   	      pocIndex[poc & 31], 
   	      sideMax/2 + 3, 
   	      mvOffChr[0],
-  	      mvOffChr[1]);
+  	      mvOffChr[1],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
   	      
-  	    getmvinfo_dpb_32_chroma_v_cal(
+  	    getmvinfo_dpb_chroma_v_cal(
   	      pictureBufferV,
   	      refCuV,
   	      pocIndex[poc & 31], 
   	      sideMax/2 + 3, 
   	      mvOffChr[0],
-  	      mvOffChr[1]);
-		
-		numPocRef := numPocRef - 1;
+  	      mvOffChr[1],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 	end
 	
-	getMvInfo.launch.is16: action 
-		PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+	getMvInfo.is16: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSampleY:[refCuY] repeat (16+7)*(16+7),
 		RefSampleU:[refCuU] repeat (8+3)*(8+3),
 		RefSampleV:[refCuV] repeat (8+3)*(8+3)
 	guard
-		numPocRef != 0 && predCuSize = 16,
+		isRead = 1,
+		predCuSize = 16,
 		pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -926,41 +888,46 @@ actor DecodingPictureBuffer ()
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 		
-		getmvinfo_dpb_16_luma_cal(
+		getmvinfo_dpb_luma_cal(
   	      pictureBufferY,
   	      refCuY,
   	      pocIndex[poc & 31], 
   	      sideMax + 7, 
   	      mvOffset[0],
-  	      mvOffset[1]);
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
   	      
-		getmvinfo_dpb_16_chroma_u_cal(
+		getmvinfo_dpb_chroma_u_cal(
   	      pictureBufferU,
   	      refCuU,
   	      pocIndex[poc & 31], 
   	      sideMax/2 + 3, 
   	      mvOffChr[0],
-  	      mvOffChr[1]);
+  	      mvOffChr[1],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
   	      
-  	    getmvinfo_dpb_16_chroma_v_cal(
+  	    getmvinfo_dpb_chroma_v_cal(
   	      pictureBufferV,
   	      refCuV,
   	      pocIndex[poc & 31], 
   	      sideMax/2 + 3, 
   	      mvOffChr[0],
-  	      mvOffChr[1]);
-		
-		numPocRef := numPocRef - 1;
+  	      mvOffChr[1],
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
 	end
 	
-	getMvInfo.launch.is8: action 
-		PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+	getMvInfo.is8: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSampleY:[refCuY] repeat (8+7)*(8+7),
 		RefSampleU:[refCuU] repeat (4+3)*(4+3),
 		RefSampleV:[refCuV] repeat (4+3)*(4+3)
 	guard
-		numPocRef != 0 && predCuSize = 8,
+		isRead = 1,
+		predCuSize = 8,
 		pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -973,13 +940,15 @@ actor DecodingPictureBuffer ()
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 		computeMvOffsetChroma(mvOffChr, mv, picSize, sideMax/2);
 
-		getmvinfo_dpb_8_luma_cal(
+		getmvinfo_dpb_luma_cal(
   	      pictureBufferY,
   	      refCuY,
   	      pocIndex[poc & 31], 
   	      sideMax + 7, 
   	      mvOffset[0],
-  	      mvOffset[1]);
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
   	      
   	    foreach int y in 0 .. sideMax/2+3 -1
 		do
@@ -997,18 +966,17 @@ actor DecodingPictureBuffer ()
 					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
 			end
 		end
-  	      
-		numPocRef := numPocRef - 1;
 	end
 	
-	getMvInfo.launch.is4: action 
-		PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+	getMvInfo.is4: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSampleY:[refCuY] repeat (4+7)*(4+7),
 		RefSampleU:[refCuU] repeat (2+3)*(2+3),
 		RefSampleV:[refCuV] repeat (2+3)*(2+3)
 	guard
-		numPocRef != 0 && predCuSize = 4,
+		isRead = 1,
+		predCuSize = 4,
 		pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -1045,26 +1013,16 @@ actor DecodingPictureBuffer ()
 					pictureBufferV[pocIndex[poc & 31]][y+mvOffChr[1]][x+mvOffChr[0]];
 			end
 		end
-		
-		numPocRef := numPocRef - 1;
-	end
-	
-	getMvInfo.done: action ==>
-	guard
-		numPocRef = 0
 	end
 
 	schedule fsm IsNewPict:
-		IsNewPict (isNewPict        )--> GetRps;
-
+		IsNewPict (isNewPict        		 )--> GetRps;
+		IsNewPict (isNewPict_lastPict        )--> GetRps;
 		ManageCu (isNewSlice        )--> GetRps;
-		ManageCu (getReadAddr       )--> GetMvInfo;
 		ManageCu (getCuPix.launch   )--> ManageCu;
 		ManageCu (getCuPix.done     )--> IsNewPict;
 		ManageCu (sendCuPix         )--> ManageCu;
-		
-		GetMvInfo (getMvInfo.launch )--> GetMvInfo;
-		GetMvInfo (getMvInfo.done   )--> ManageCu;
+		ManageCu (getMvInfo         )--> ManageCu;
 		
 		GetRps (getRps.launch )--> GetRpsPoc;
 		GetRps (getRps.done   )--> ManageCu;
@@ -1072,4 +1030,9 @@ actor DecodingPictureBuffer ()
 		GetRpsPoc (getRpsPoc.done   )--> GetRps;
 	end
 	
+	priority 
+		sendCuPix > getCuPix > getMvInfo > isNewSlice;
+		sendCuPix.skip > sendCuPix.launch > sendCuPix.done;
+		isNewPict > isNewPict_lastPict;
+	end
 end
