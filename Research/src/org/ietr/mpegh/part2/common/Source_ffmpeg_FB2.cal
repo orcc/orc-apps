@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, IRISA
+ * Copyright (c) 2014, INSA of Rennes
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -27,54 +27,53 @@
  * SUCH DAMAGE.
  */
   
-// Author: Herve Yvique <herve.yviquel@irisa.fr>
-// Modified by Damien de Saint Jorre IETR/INSA of Rennes (France)
-// Modified by Jerome Gorin IETR/INSA of Rennes (France)
+// Authors: 
+// Herve Yviquel <herve.yviquel@insa-rennes.fr>
+// Khaled Jerbi <khaled.jerbi@insa-rennes.fr>
 
 package org.ietr.mpegh.part2.common;
+
 import std.video.FFmpegUtil.*;
-import  std.video.Display.*;
-import  org.sc29.wg11.common.DisplayYUVFunctions.*;
+
 //@DEBUG
-actor Source_ffmpeg_FB2 () ==> uint(size=8) Om, uint(size=8) O1, uint(size=8) O2, uint(size=8) Select:
+actor Source_ffmpeg_FB2 () ==> uint(size=8) Om, uint(size=8) O1, uint(size=8) O2:
 
 	uint(size=8) framesBuffer[MAX_FRAME_DELAY][MAX_FRAME_SIZE];
-	int  frameSize[1];
-	uint ReadFrameIdx_1 := 0;
-	uint ReadFrameIdx_2 := 0;
-	uint ReadFrameIdx_m := 0;
-	uint currentFrame_1 := 0;
-	uint currentFrame_2 := 0;
-	uint currentFrame_m := 0;
-	uint currentFrame   := 0;
-	uint frameSizeList[MAX_FRAME_DELAY] := [0 : for int i in 0 .. MAX_FRAME_DELAY - 1];
+	int framesSize[MAX_FRAME_DELAY];
+	
+	int ReadFrameIdx_1 := 0;
+	int ReadFrameIdx_2 := 0;
+	int ReadFrameIdx_m := 0;
+	int currentFrame_1 := 0;
+	int currentFrame_2 := 0;
+	int currentFrame_m := 0;
+	int currentFrame   := -1;
 	
 	initialize ==>
 	do
 		ffmpeg_initSource();
 	end
 	
-	readFirstFrame: action ==> Select:[0]
-	do
-		ffmpeg_readFrame(framesBuffer, frameSize, (currentFrame & (MAX_FRAME_DELAY - 1)));
-		frameSizeList[currentFrame & (MAX_FRAME_DELAY - 1)] := frameSize[0];
-	end
-	
 	readFrame: action ==> 
+	guard
+		currentFrame_1 > currentFrame 
+		|| currentFrame_2 > currentFrame
 	do
-		ffmpeg_readFrame(framesBuffer, frameSize, (currentFrame & (MAX_FRAME_DELAY - 1)));
-		frameSizeList[currentFrame & (MAX_FRAME_DELAY - 1)] := frameSize[0];
+		currentFrame   := currentFrame + 1;
+		ffmpeg_readFrame(framesBuffer, framesSize, (currentFrame & (MAX_FRAME_DELAY - 1)));
 	end
 	
 	@schedule_outputs
 	sendData.d1: action ==> O1:[ Out ]
+	guard
+		currentFrame_1 <= currentFrame
 	var
 		uint(size=8) Out
 	do
 		Out := framesBuffer[currentFrame_1 & (MAX_FRAME_DELAY - 1)][ReadFrameIdx_1];
 		ReadFrameIdx_1 := ReadFrameIdx_1 + 1;
-		if (ReadFrameIdx_1 = frameSizeList[currentFrame_1 & (MAX_FRAME_DELAY - 1)]) and (currentFrame_1 < currentFrame) then
-			//current frame 1 is sent and next frame is already in the buffer
+		if ReadFrameIdx_1 = framesSize[currentFrame_1 & (MAX_FRAME_DELAY - 1)] then
+			//current frame 1 is sent
 			ReadFrameIdx_1 := 0;
 			currentFrame_1 := currentFrame_1 + 1;
 		end
@@ -82,13 +81,15 @@ actor Source_ffmpeg_FB2 () ==> uint(size=8) Om, uint(size=8) O1, uint(size=8) O2
 	
 	@schedule_outputs
 	sendData.d2: action ==> O2:[ Out ]
+	guard
+		currentFrame_2 <= currentFrame
 	var
 		uint(size=8) Out
 	do
 		Out := framesBuffer[currentFrame_2 & (MAX_FRAME_DELAY - 1)][ReadFrameIdx_2];
 		ReadFrameIdx_2 := ReadFrameIdx_2 + 1;
-		if (ReadFrameIdx_2 = frameSizeList[currentFrame_2 & (MAX_FRAME_DELAY - 1)]) and (currentFrame_2 < currentFrame) then
-			//current frame 2 is sent and next frame is already in the buffer
+		if ReadFrameIdx_2 = framesSize[currentFrame_2 & (MAX_FRAME_DELAY - 1)] then
+			//current frame 2 is sent
 			ReadFrameIdx_2 := 0;
 			currentFrame_2 := currentFrame_2 + 1;
 		end
@@ -97,49 +98,21 @@ actor Source_ffmpeg_FB2 () ==> uint(size=8) Om, uint(size=8) O1, uint(size=8) O2
 	@schedule_outputs
 	sendData.m: action ==> Om:[ Out ]
 	guard
-		//ReadFrameIdx_m < frameSizeList[currentFrame_m & (MAX_FRAME_DELAY - 1)],
 		currentFrame_m <= currentFrame
 	var
 		uint(size=8) Out
 	do
 		Out := framesBuffer[currentFrame_m & (MAX_FRAME_DELAY - 1)][ReadFrameIdx_m];
 		ReadFrameIdx_m := ReadFrameIdx_m + 1;
-		if ReadFrameIdx_m = frameSizeList[currentFrame_m & (MAX_FRAME_DELAY - 1)] then
-			//current frame m is sent -> remain in sendData state 
+		if ReadFrameIdx_m = framesSize[currentFrame_m & (MAX_FRAME_DELAY - 1)] then
+			//current frame m is sent
 			ReadFrameIdx_m := 0;
 			currentFrame_m := currentFrame_m +1;
 		end
 	end
 	
-	sendDataDone.d1: action ==> Select:[0] //current frame 1 is sent and next frame is not yet put in the buffer
-	guard
-		ReadFrameIdx_1 = frameSizeList[currentFrame_1 & (MAX_FRAME_DELAY - 1)],
-		currentFrame_1 = currentFrame
-	do
-		ReadFrameIdx_1 := 0;
-		currentFrame_1 := currentFrame_1 + 1;
-		currentFrame   := currentFrame + 1;
-	end
-	
-	sendDataDone.d2: action ==> Select:[1] //current frame 2 is sent and next frame is not yet put in the buffer
-	guard
-		ReadFrameIdx_2 = frameSizeList[currentFrame_2 & (MAX_FRAME_DELAY - 1)],
-		currentFrame_2 = currentFrame
-	do
-		ReadFrameIdx_2 := 0;
-		currentFrame_2 := currentFrame_2 + 1;
-		currentFrame   := currentFrame + 1;
-	end
-	
-	schedule fsm readFirstFrame :
-		readFirstFrame	(readFirstFrame)--> sendData;
-		sendData 		(sendData)  	--> sendData;
-		sendData 		(sendDataDone)	--> readFrame;
-		readFrame 		(readFrame)		--> sendData;
-	end
-	
 	priority
-		sendDataDone > sendData;
+		sendData > readFrame;
 	end
 	
 end
