@@ -1,0 +1,351 @@
+package motion;
+
+import motion.Constants.*;
+
+actor AlgoMotion() uint INMVFS, uint INPMV ==> uint OUTMVFS, uint OUTPMV :
+	uint PMV[2][2][2];
+	uint dmvector[2];
+	uint motion_vertical_field_select[2][2];
+	uint s := 0; 
+	uint motion_vector_count := 1; 
+	uint mv_format := 0; 
+	uint h_r_size := 200; 
+	uint v_r_size := 200; 
+	uint dmv := 0; 
+	uint mvscale := 1;
+	uint System_Stream_Flag := 0;
+	uint ld_Rdbfr[2048];
+	uint ld_Rdptr; 
+	uint ld_Rdmax;
+	uint ld_Bfr;
+	int ld_Incnt;
+	int Incnt;
+	int n_tmp;
+	int Buffer_Level;
+	int code;
+	int lim;
+	int vec;
+	int pmv_tmp[2];
+	int motion_code;
+	int motion_residual;
+	int full_pel_vector;
+	int ret[5];
+	int read_ret = 0;
+	int gb_ret = 1;
+	int gmc_ret = 2;
+	int dmv_ret_r_size = 3;
+	int get_dmv_ret = 4;
+	
+	procedure read (int p1, int p2, int n) begin
+		n_tmp := n;
+		  
+		while n_tmp > 0 do
+			ld_Rdbfr[p1] := inRdbfr[p2];
+			      
+			p1 := p1 + 1;
+			p2 := p2 + 1;
+			n_tmp := n_tmp - 1;   
+		end
+		  
+		ret[read_ret] := n;
+	end
+	procedure Fill_Buffer () begin
+		read (0, 0, 2048);
+		Buffer_Level := ret[read_ret];
+		ld_Rdptr := 0;
+		
+		if System_Stream_Flag != 0 then
+			ld_Rdmax := ld_Rdmax - 2048;
+		end
+		
+		/* end of the bitstream file */
+		if Buffer_Level < 2048 then
+			/* just to be safe */
+			if Buffer_Level < 0 then
+				Buffer_Level := 0;
+			end
+			
+			/* pad until the next to the next 32-bit word boundary */
+			while (Buffer_Level & 3) != 0 do
+				ld_Rdbfr[Buffer_Level] := 0;
+				Buffer_Level := Buffer_Level + 1;
+			end
+			
+			/* pad the buffer with sequence end codes */
+			while Buffer_Level < 2048 do
+				ld_Rdbfr[Buffer_Level] := SEQUENCE_END_CODE >> 24;
+				ld_Rdbfr[Buffer_Level + 1] := SEQUENCE_END_CODE >> 16;
+				ld_Rdbfr[Buffer_Level + 2] := SEQUENCE_END_CODE >> 8;
+				ld_Rdbfr[Buffer_Level + 3] := SEQUENCE_END_CODE & 0xff;
+				Buffer_Level := Buffer_Level + 1;
+			end
+		end
+	end
+	procedure Flush_Buffer (int N) begin
+		ld_Bfr := ld_Bfr << N;
+		ld_Incnt := ld_Incnt - N;
+		Incnt := ld_Incnt;
+
+		if Incnt <= 24 then
+			if ld_Rdptr < 2044 then
+				while Incnt <= 24 do
+					ld_Bfr := ld_Bfr | (ld_Rdbfr[ld_Rdptr] << (24 - Incnt));
+					ld_Rdptr := ld_Rdptr + 1;
+					Incnt := Incnt + 8;
+				end
+			else
+				while Incnt <= 24 do
+					if ld_Rdptr >= 2048 then
+						Fill_Buffer ();
+					end
+					ld_Bfr := ld_Bfr | (ld_Rdbfr[ld_Rdptr] << (24 - Incnt));
+					ld_Rdptr := ld_Rdptr + 1;
+					Incnt := Incnt + 8;
+				end
+			end
+		ld_Incnt := Incnt;
+		end
+	end
+	procedure Initialize_Buffer() begin
+		ld_Incnt := 0;
+		ld_Rdptr := 2048;
+		ld_Rdmax := ld_Rdptr;
+		ld_Bfr := 68157440;
+		Flush_Buffer (0);		/* fills valid data into bfr */
+	end
+	function Show_Bits (int N) --> uint :
+		ld_Bfr >> ((32-N) mod 32)
+	end
+	procedure Get_Bits (int N) begin
+		ret[gb_ret] := Show_Bits(N);
+		Flush_Buffer (N);
+	end	
+	procedure Get_motion_code() begin
+		Get_Bits(1);
+		if ret[gb_ret] != 0 then
+			ret[gmc_ret] := 0;
+		else
+			code := Show_Bits(9);
+			if code >= 64 then
+				code := code >> 6;
+				Flush_Buffer (MVtab0[code][1]);
+				Get_Bits(1);
+				if ret[gb_ret] != 0 then
+					ret[gmc_ret] := -MVtab0[code][0];
+				else
+					ret[gmc_ret] := MVtab0[code][0];
+				end
+			else
+				if code >= 24 then
+					code := code >> 3;
+					Flush_Buffer (MVtab1[code][1]);
+					Get_Bits(1);
+					if ret[gb_ret] != 0 then
+						ret[gmc_ret] := -MVtab1[code][0];
+					else
+						ret[gmc_ret] := MVtab1[code][0];
+					end
+				else
+					if code < 12 then
+						ret[gmc_ret] := 0;
+					else
+					code := code - 12;
+						Flush_Buffer (MVtab2[code][1]);
+						Get_Bits(1);
+						if ret[gb_ret] != 0 then
+							ret[gmc_ret] := -MVtab2[code][0];
+						else
+							ret[gmc_ret] := MVtab2[code][0];
+						end
+					end
+				end
+			end
+		end
+	end
+	procedure decode_motion_vector (int pred, int r_size) begin
+		r_size := r_size mod 32;
+		lim := 16 << r_size;
+		if full_pel_vector != 0 then
+			vec := pmv_tmp[pred] >> 1;
+		else
+			vec := pmv_tmp[pred];
+		end
+		if motion_code > 0 then
+			vec := vec + (((motion_code - 1) << r_size) + motion_residual + 1);
+			if vec >= lim then
+				vec := vec - (lim + lim);
+			end
+		else 
+			if motion_code < 0 then
+				vec := vec - (((-motion_code - 1) << r_size) + motion_residual + 1);
+				if vec < -lim then
+					vec := vec + (lim + lim);
+				end
+			end
+		end
+		if full_pel_vector != 0 then
+			pmv_tmp[pred] := vec << 1;
+		else
+			pmv_tmp[pred] := vec;
+		end
+		ret[dmv_ret_r_size] := r_size;
+	end
+/* get differential motion vector (for dual prime prediction) */
+	procedure Get_dmvector() begin
+		Get_Bits (1);
+		if ret[gb_ret] != 0 then
+			Get_Bits (1);
+			if ret[gb_ret] != 0 then
+				ret[get_dmv_ret] := -1;
+			else
+				ret[get_dmv_ret] := 1;
+			end
+		else
+			ret[get_dmv_ret] := 0;
+		end
+	end
+	procedure motion_vector (int pmv_i) begin
+		/* horizontal component */
+		/* ISO/IEC 13818-2 Table B-10 */
+		Get_motion_code();
+		motion_code := ret[gmc_ret];
+		if (h_r_size != 0) && (motion_code != 0) then
+			Get_Bits(h_r_size);
+			motion_residual := ret[gb_ret];
+		else
+			motion_residual := 0;
+		end
+		decode_motion_vector (pmv_i, h_r_size);
+		h_r_size := ret[dmv_ret_r_size];
+		
+		if dmv != 0 then
+			Get_dmvector ();
+			dmvector[0] := ret[get_dmv_ret]; 
+		end
+		
+		
+		/* vertical component */
+		Get_motion_code ();
+		motion_code := ret[gmc_ret];
+		if (v_r_size != 0) && (motion_code != 0) then
+			Get_Bits (v_r_size);
+			motion_residual := ret[gb_ret];
+		else
+			motion_residual := 0;
+		end
+		
+		if mvscale != 0 then
+			pmv_tmp[pmv_i + 1] := pmv_tmp[pmv_i + 1] >> 1;  /* DIV 2 */
+		end
+		decode_motion_vector (pmv_i + 1, v_r_size);
+		v_r_size := ret[dmv_ret_r_size];
+		
+		if mvscale != 0 then
+			pmv_tmp[pmv_i + 1] := pmv_tmp[pmv_i + 1] << 1;
+		end
+		
+		if dmv != 0 then
+			Get_dmvector ();
+			dmvector[1] := ret[get_dmv_ret];
+		end
+	end
+	procedure motion_vectors() begin
+		if motion_vector_count != 0 then
+			if (mv_format = MV_FIELD) && (dmv = 0) then
+				Get_Bits (1);
+				motion_vertical_field_select[1][s] := ret[gb_ret];
+				motion_vertical_field_select[0][s] := ret[gb_ret];
+			end
+			pmv_tmp[0] := PMV[0][s][0];
+			pmv_tmp[1] := PMV[0][s][1];
+			motion_vector (0);
+			PMV[0][s][0] := pmv_tmp[0];
+			PMV[0][s][1] := pmv_tmp[1];
+			/* update other motion vector predictors */
+			PMV[1][s][0] := PMV[0][s][0];
+			PMV[1][s][1] := PMV[0][s][1];
+		else
+			Get_Bits (1);
+			motion_vertical_field_select[0][s] := ret[gb_ret]; 
+			
+			pmv_tmp[0] := PMV[0][s][0];
+			pmv_tmp[1] := PMV[0][s][1];
+			motion_vector (0);
+			PMV[0][s][0] := pmv_tmp[0];
+			PMV[0][s][1] := pmv_tmp[1];
+			Get_Bits (1);
+			motion_vertical_field_select[1][s] := ret[gb_ret]; 
+			
+			pmv_tmp[0] := PMV[1][s][0];
+			pmv_tmp[1] := PMV[1][s][1];
+			motion_vector (0);
+			PMV[0][s][0] := pmv_tmp[0];
+			PMV[0][s][1] := pmv_tmp[1];
+		end
+	end
+	
+	input: action INMVFS:[in_mvfs] repeat 4, INPMV:[in_pmv] repeat 8 ==>
+	var
+		int i := 0,
+		int j := 0,
+		int k := 0,
+		int in_mvfs_i := 0,
+		int in_pmv_i := 0
+	do 
+		while i < 2 do
+			while j < 2 do
+				motion_vertical_field_select[i][j] := in_mvfs[in_mvfs_i];
+				while k < 2 do
+					PMV[i][j][k] := in_pmv[in_pmv_i];
+					in_pmv_i := in_pmv_i + 1;
+					k := k + 1;
+				end
+				k := 0;
+				in_mvfs_i := in_mvfs_i + 1;
+				j := j + 1;
+			end
+			j := 0;
+			i := i + 1;
+		end
+		
+		Initialize_Buffer();
+	end
+
+	process: action ==>
+	do
+		motion_vectors();
+	end
+	
+	output: action ==> OUTMVFS:[out_mvfs] repeat 4, OUTPMV:[out_pmv] repeat 8
+	var
+		int i := 0,
+		int j := 0,
+		int k := 0,
+		int out_mvfs_i := 0,
+		int out_pmv_i := 0,
+		int out_mvfs[4],
+		int out_pmv[8]
+	do 
+		while i < 2 do
+			while j < 2 do
+				 out_mvfs[out_mvfs_i] := motion_vertical_field_select[i][j];
+					while k < 2 do
+						out_pmv[out_pmv_i] := PMV[i][j][k];
+						out_pmv_i := out_pmv_i + 1;
+						k := k + 1;
+					end
+				k := 0;
+				out_mvfs_i := out_mvfs_i + 1;
+				j := j + 1;
+			end
+			j := 0;
+			i := i + 1;
+		end
+	end
+	
+	schedule fsm read:
+		read (input) --> busy;
+		busy (process) --> write;
+		write (output) --> read;
+	end
+end

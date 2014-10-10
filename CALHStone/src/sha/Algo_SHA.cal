@@ -1,0 +1,190 @@
+package sha;
+
+import sha.Constants.*;
+
+actor Algo_SHA() uint Digest_In, uint Count_Lo_In, uint Count_Hi_In ==> uint Digest_Out, uint Data_Out, uint Count_Lo_Out, uint Count_Hi_Out :
+
+	uint sha_info_digest[5];
+	uint sha_info_count_lo;
+	uint sha_info_count_hi;
+	uint sha_info_data[16];
+	uint indata_i;
+	uint i;
+	uint m;
+	uint count;
+	uint p1;
+	uint p2;
+	uint temp;
+	uint f_temp;
+	uint A;
+	uint B;
+	uint C;
+	uint D;
+	uint E;
+	uint W[80];
+	
+	function ROT32(uint x, uint n) --> uint :
+		(x << n) | (x >> (32 - n))
+	end
+	function f1(uint x, uint y, uint z) --> uint :
+		(x & y) | (~x & z)
+	end
+	function f2(uint x, uint y, uint z) --> uint :
+		x ^ y ^ z
+	end
+	function f3(uint x, uint y, uint z) --> uint :
+		(x & y) | (x & z) | (y & z)
+	end
+	function f4(uint x, uint y, uint z) --> uint :
+		x ^ y ^ z
+	end
+	procedure FUNC(uint n, uint k) begin
+		if n = 1 then
+			f_temp := f1(B,C,D);
+		end
+		if n = 2 then
+			f_temp := f2(B,C,D);
+		end
+		if n = 3 then
+			f_temp := f3(B,C,D);
+		end
+		if n = 4 then
+			f_temp := f4(B,C,D);
+		end
+		
+		temp := ROT32(A,5) + f_temp + E + W[k] + CONST[n - 1];
+		E := D; 
+		D := C; 
+		C := ROT32(B,30); 
+		B := A; 
+		A := temp;
+	end
+	procedure sha_transform() begin
+		i := 0;
+		while i < 16 do
+			W[i] := sha_info_data[i];
+			i := i + 1;
+		end
+		while i < 80 do
+			W[i] := W[i - 3] ^ W[i - 8] ^ W[i - 14] ^ W[i - 16];
+			i := i + 1;
+		end
+		
+		A := sha_info_digest[0];
+		B := sha_info_digest[1];
+		C := sha_info_digest[2];
+		D := sha_info_digest[3];
+		E := sha_info_digest[4];
+
+		i := 0;
+		while i < 20 do
+			FUNC(1, i);
+			i := i + 1;
+		end
+		while i < 40 do
+			FUNC(2, i);
+			i := i + 1;
+		end
+		while i < 60 do
+			FUNC(3, i);
+			i := i + 1;
+		end
+		while i < 80 do
+			FUNC(4, i);
+			i := i + 1;
+		end
+
+		sha_info_digest[0] := sha_info_digest[0] + A;
+		sha_info_digest[1] := sha_info_digest[1] + B;
+		sha_info_digest[2] := sha_info_digest[2] + C;
+		sha_info_digest[3] := sha_info_digest[3] + D;
+		sha_info_digest[4] := sha_info_digest[4] + E;
+	end
+	procedure local_memcpy(uint s2, uint n) begin
+		p1 := 0;
+		p2 := 0;
+		m := n / 4;
+		
+		while m > 0 do
+			temp := 0;
+			temp := temp | (0xFF & indata[indata_i][s2 + p2]);
+			temp := temp | ((0xFF & indata[indata_i][s2 + p2 + 1]) << 8);
+			temp := temp | ((0xFF & indata[indata_i][s2 + p2 + 2]) << 16);
+			temp := temp | ((0xFF & indata[indata_i][s2 + p2 + 3]) << 24);
+			sha_info_data[p1] := temp;
+			p1 := p1 + 1;
+			p2 := p2 + 4;
+			m := m - 1;
+		end
+	end
+	procedure local_memset(uint c, uint n, uint e) begin
+		m := n / 4;
+		while m > 0 do
+			sha_info_data[e] := c;
+			e := e + 1;
+			m := m - 1;
+		end
+	end
+	procedure sha_update(uint buffer, uint count) begin
+		if (sha_info_count_lo + (count << 3)) < sha_info_count_lo then
+			sha_info_count_hi := sha_info_count_hi + 1;
+		end
+		sha_info_count_lo := sha_info_count_lo + (count << 3);
+		sha_info_count_hi := sha_info_count_hi + (count >> 29);
+		while count >= SHA_BLOCKSIZE do
+			local_memcpy (buffer, SHA_BLOCKSIZE);
+			sha_transform ();
+			buffer := buffer + SHA_BLOCKSIZE;
+			count := count - SHA_BLOCKSIZE;
+		end
+		local_memcpy (buffer, count);
+	end
+	procedure sha_final() begin
+	count := (sha_info_count_lo >> 3) & 0x3f;
+	sha_info_data[count] := 0x80;
+	count := count + 1;
+	if count > 56 then
+		local_memset (0, 64 - count, count);
+		sha_transform ();
+		local_memset (0, 56, 0);
+	else
+		local_memset (0, 56 - count, count);
+	end
+	sha_info_data[14] := sha_info_count_hi;
+	sha_info_data[15] := sha_info_count_lo;
+	sha_transform ();
+	end
+
+	sha_init: action Digest_In:[digest] repeat 5, Count_Lo_In:[lo], Count_Hi_In:[hi] ==>
+	do
+		sha_info_digest[0] := digest[0];
+		sha_info_digest[1] := digest[1];
+		sha_info_digest[2] := digest[2];
+		sha_info_digest[3] := digest[3];
+		sha_info_digest[4] := digest[4];
+		sha_info_count_lo := lo;
+		sha_info_count_hi := hi;
+	end
+	
+	sha_process: action ==>
+	do
+		indata_i := 0;		  
+		while indata_i < VSIZE do			
+			sha_update (0, in_i[indata_i]);
+			indata_i := indata_i + 1;
+		end
+	end
+	
+	sha_out:action 
+		==> 
+			Digest_Out:[sha_info_digest] repeat 5, Data_Out:[sha_info_data] repeat 16, Count_Lo_Out:[sha_info_count_lo], Count_Hi_Out:[sha_info_count_hi]
+	do
+		sha_final();
+	end
+	
+	schedule fsm init:
+		init 	(sha_init) 	  --> process;
+		process (sha_process) --> output;
+		output  (sha_out) 	  --> init;
+	end
+end
