@@ -62,7 +62,7 @@ import std.util.Math.*;
 import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
-actor DecodingPictureBuffer_chroma_FB2 ()
+actor DecodingPictureBuffer_chroma_FB2 (bool sendPict = true)
 	uint(size=2)  IsPicSlc0,
 	uint(size=2)  IsPicSlc1,	
 	uint(size=8)  LcuSizeMax0,
@@ -87,7 +87,8 @@ actor DecodingPictureBuffer_chroma_FB2 ()
 		==>
 	uint(size=8)  RefSample0,
 	uint(size=8)  RefSample1,
-	uint(size=8)  Vid
+	uint(size=8)  Vid,
+	bool          Done
 		:
 		
 	bool DEBUG_DPB := false;
@@ -637,6 +638,7 @@ actor DecodingPictureBuffer_chroma_FB2 ()
 	
 	sendCuPix.launch.x64: action ==> Vid:[cu] repeat 32*32
 	guard
+		sendPict,
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
@@ -661,6 +663,7 @@ actor DecodingPictureBuffer_chroma_FB2 ()
 	
 	sendCuPix.launch.x32: action ==> Vid:[cu] repeat 16*16
 	guard
+		sendPict,
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
@@ -685,6 +688,7 @@ actor DecodingPictureBuffer_chroma_FB2 ()
 	
 	sendCuPix.launch.x16: action ==> Vid:[cu] repeat 8*8
 	guard
+		sendPict,
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
@@ -709,7 +713,29 @@ actor DecodingPictureBuffer_chroma_FB2 ()
 	
 	sendCuPix.done: action ==>
 	guard
+		sendPict,
 		sendy = picSizeInCu[1],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic 
+			|| needReset[0] || needReset[1],
+		numAvailablePic > 0
+	do
+		//println("sendCuDone_1 ");
+		sendx := 0;
+		sendy := 0;
+		
+		if DEBUG_DPB then 
+			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
+		end
+		
+		isSent[pocIndex[sendingPoc & 31]] := true;
+		sendingPoc := sendingPoc + 1;
+		numAvailablePic := numAvailablePic - 1;
+	end
+	
+	sendCuPix.done.next: action ==> Done: [true]
+	guard
+		not sendPict,
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
 			|| needReset[0] || needReset[1],

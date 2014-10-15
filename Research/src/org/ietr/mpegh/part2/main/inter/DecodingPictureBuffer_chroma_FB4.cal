@@ -62,7 +62,7 @@ import std.util.Math.*;
 import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 
-actor DecodingPictureBuffer_chroma_FB4 ()
+actor DecodingPictureBuffer_chroma_FB4 (bool sendPict = true)
 	uint(size=2)  IsPicSlc0,
 	uint(size=2)  IsPicSlc1,	
 	uint(size=2)  IsPicSlc2,
@@ -110,7 +110,8 @@ actor DecodingPictureBuffer_chroma_FB4 ()
 	uint(size=8)  RefSample1,
 	uint(size=8)  RefSample2,
 	uint(size=8)  RefSample3,
-	uint(size=8)  Vid
+	uint(size=8)  Vid,
+	bool          Done
 		:
 		
 	bool DEBUG_DPB := false;
@@ -143,7 +144,7 @@ actor DecodingPictureBuffer_chroma_FB4 ()
 	bool pocDone[32] := [false : for int i in 0 .. 31];
 	int cuHeightDone[32] := [BORDER_SIZE_CHR : for int i in 0 .. 31];
 	int sendingPoc := 0;
-	int readingPoc[FB_SIZE] := [-1 : for int i in 0 .. FB_SIZE - 1];
+	int readingPoc[FB_SIZE];
 	
 	uint sendx := 0;
 	uint sendy := 0;
@@ -1152,6 +1153,7 @@ actor DecodingPictureBuffer_chroma_FB4 ()
 	////////////////////////////////////////end GetCuPix ////////////////////////////////////////////////
 	sendCuPix.launch.x64: action ==> Vid:[cu] repeat 32*32
 	guard
+		sendPict,
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
@@ -1176,6 +1178,7 @@ actor DecodingPictureBuffer_chroma_FB4 ()
 	
 	sendCuPix.launch.x32: action ==> Vid:[cu] repeat 16*16
 	guard
+		sendPict,
 		sendy < picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
@@ -1200,6 +1203,7 @@ actor DecodingPictureBuffer_chroma_FB4 ()
 	
 	sendCuPix.launch.x16: action ==> Vid:[cu] repeat 8*8
 	guard
+		sendPict,
 		sendy < picSizeInCu[1],
 		numAvailablePic >= numReorderPic 
 			|| needReset[0] || needReset[1] || needReset[2] || needReset[3],
@@ -1223,7 +1227,29 @@ actor DecodingPictureBuffer_chroma_FB4 ()
 	
 	sendCuPix.done: action ==>
 	guard
+		sendPict,
 		sendy = picSizeInCu[1],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic 
+			|| needReset[0] || needReset[1] || needReset[2] || needReset[3],
+		numAvailablePic > 0
+	do
+		//println("sendCuDone_1 ");
+		sendx := 0;
+		sendy := 0;
+		
+		if DEBUG_DPB then 
+			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
+		end
+		
+		isSent[pocIndex[sendingPoc & 31]] := true;
+		sendingPoc := sendingPoc + 1;
+		numAvailablePic := numAvailablePic - 1;
+	end
+	
+	sendCuPix.done.next: action ==> Done: [true]
+	guard
+		not sendPict,
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
 			|| needReset[0] || needReset[1] || needReset[2] || needReset[3],
