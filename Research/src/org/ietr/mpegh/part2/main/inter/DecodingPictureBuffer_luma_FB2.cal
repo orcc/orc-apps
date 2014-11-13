@@ -130,7 +130,10 @@ actor DecodingPictureBuffer_luma_FB2 ()
 	
 	bool needNewPict[FB_SIZE] := [true : for int i in 0 .. FB_SIZE - 1];
     
-    
+//    int PICT_WIDTH        = 256;
+//	int PICT_HEIGHT       = 256;
+//	uint DPB_LUM_HEIGHT = PICT_HEIGHT + 2 * BORDER_SIZE_LUM;
+//	uint DPB_LUM_WIDTH  = PICT_WIDTH  + 2 * BORDER_SIZE_LUM;
 	
     procedure getmvinfo_dpb_luma_cal(
   	      uint(size= 8) pictureBufferTmp[DPB_SIZE][DPB_LUM_HEIGHT][DPB_LUM_WIDTH],
@@ -436,10 +439,27 @@ actor DecodingPictureBuffer_luma_FB2 ()
 	/* We get the whole Cu decoded (luma and chroma components) and we save
 	 * it in the Dpb (pictureBuffer).
 	 */
+	 procedure copy_cu_dpb_luma_x64_cal(
+		uint(size= 8) samp[4096],
+		uint(size= 8) pictureBuffer[DPB_SIZE][DPB_LUM_HEIGHT][DPB_LUM_WIDTH],
+		int (size=32) xPixIdx,
+		int (size=32) yPixIdx,
+		int (size= 4) lastIdx,
+		uint(size=16) width,
+		uint(size=16) height)
+	begin
+		foreach int y in 0 .. 63
+		do
+			foreach int x in 0 .. 63
+			do
+				pictureBuffer[lastIdx][yPixIdx+y][xPixIdx+x] := samp[x+y*64];
+			end
+		end
+	end
 	getCuPix.d0.launch.x64.y: action Sample0:[samp] repeat 64*64 ==>
 	guard
 		yIdx[0] < picSizeInCu[1], 
-	
+		//lcuSizeMax = 64,
 		not needReset[0]
 	do
 		copy_cu_dpb_luma_x64_cal(
@@ -504,7 +524,34 @@ actor DecodingPictureBuffer_luma_FB2 ()
 //			cuHeightDone[readingPoc[0] & 31] := cuHeightDone[readingPoc[0] & 31] + 16;
 //		end
 //	end
-	
+	procedure fillBorder_luma_cal(
+		uint(size=8) pictureBuffer[DPB_SIZE][DPB_LUM_HEIGHT][DPB_LUM_WIDTH],
+		int(size=4) frameIdx,
+		int xSize,
+		int ySize,
+		uint(size=16) borderSize)
+	begin
+		foreach int y in 0 .. borderSize - 1
+		do
+			foreach int x in borderSize .. xSize + borderSize - 1
+			do
+				pictureBuffer[frameIdx][y][x] :=
+					pictureBuffer[frameIdx][borderSize][x];
+				pictureBuffer[frameIdx][y+ySize+borderSize][x] :=
+					pictureBuffer[frameIdx][ySize+borderSize-1][x];
+			end
+		end
+		foreach int y in 0 .. ySize + 2*borderSize - 1
+		do
+			foreach int x in 0 .. borderSize - 1
+			do
+				pictureBuffer[frameIdx][y][x] :=
+					pictureBuffer[frameIdx][y][borderSize];
+				pictureBuffer[frameIdx][y][x+xSize+borderSize] :=
+					pictureBuffer[frameIdx][y][xSize+borderSize-1];
+			end
+		end
+	end
 	getCuPix.d0.done: action ==>
 	guard
 		yIdx[0] = picSizeInCu[1],
@@ -536,7 +583,7 @@ actor DecodingPictureBuffer_luma_FB2 ()
 	getCuPix.d1.launch.x64.y: action Sample1:[samp] repeat 64*64 ==>
 	guard
 		yIdx[1] < picSizeInCu[1], 
-		lcuSizeMax = 64,
+		//lcuSizeMax = 64,
 		not needReset[1]
 	do
 		copy_cu_dpb_luma_x64_cal(
@@ -601,7 +648,7 @@ actor DecodingPictureBuffer_luma_FB2 ()
 //			cuHeightDone[readingPoc[1] & 31] := cuHeightDone[readingPoc[1] & 31] + 16;
 //		end
 //	end
-//	
+	
 	
 	
 	getCuPix.d1.done: action ==>
@@ -642,8 +689,8 @@ actor DecodingPictureBuffer_luma_FB2 ()
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
 			|| needReset[0] || needReset[1],
-		numAvailablePic > 0,
-		lcuSizeMax = 64
+		numAvailablePic > 0//,
+		//lcuSizeMax = 64
 	var
 		uint (size=8) cu[64*64]
 	do
@@ -712,14 +759,38 @@ actor DecodingPictureBuffer_luma_FB2 ()
 //		end
 //	end
 	
-	sendCuPix.done: action ==>
+//	sendCuPix.done: action ==>
+//	guard
+//	 	
+//		sendy = picSizeInCu[1],
+//		pocDone[sendingPoc & 31],
+//		numAvailablePic >= numReorderPic 
+//			|| needReset[0] || needReset[1],
+//		numAvailablePic > 0
+//	do
+//		//println("sendCuDone_1 ");
+//		sendx := 0;
+//		sendy := 0;
+//		
+//		if DEBUG_DPB then 
+//			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
+//		end
+//		
+//		isSent[pocIndex[sendingPoc & 31]] := true;
+//		sendingPoc := sendingPoc + 1;
+//		numAvailablePic := numAvailablePic - 1;
+//		
+//	end
+bool switcher := true;
+		sendCuPix_done.f0: action ==>
 	guard
-	 	
+	 	//sendPict,
 		sendy = picSizeInCu[1],
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
 			|| needReset[0] || needReset[1],
-		numAvailablePic > 0
+		numAvailablePic > 0,
+		switcher = true
 	do
 		//println("sendCuDone_1 ");
 		sendx := 0;
@@ -732,12 +803,35 @@ actor DecodingPictureBuffer_luma_FB2 ()
 		isSent[pocIndex[sendingPoc & 31]] := true;
 		sendingPoc := sendingPoc + 1;
 		numAvailablePic := numAvailablePic - 1;
-		
+		switcher := false;
 	end
 	
+	sendCuPix_done.f1: action ==>
+	guard
+	 	//sendPict,
+		sendy = picSizeInCu[1],
+		pocDone[sendingPoc & 31],
+		numAvailablePic >= numReorderPic 
+			|| needReset[0] || needReset[1],
+		numAvailablePic > 0,
+		switcher = false
+	do
+		//println("sendCuDone_1 ");
+		sendx := 0;
+		sendy := 0;
+		
+		if DEBUG_DPB then 
+			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
+		end
+		
+		isSent[pocIndex[sendingPoc & 31]] := true;
+		sendingPoc := sendingPoc + 1;
+		numAvailablePic := numAvailablePic - 1;
+		switcher := true;
+	end
 	sendCuPix.done.next: action ==> 
 	guard
-
+	 	//not sendPict,
 		pocDone[sendingPoc & 31],
 		numAvailablePic >= numReorderPic 
 			|| needReset[0] || needReset[1],
@@ -1073,15 +1167,19 @@ actor DecodingPictureBuffer_luma_FB2 ()
 
 	
 //////////////////////////////////////// end getMVInfo  /////////////////////////////////////////////////////
-
-	schedule fsm ManageCu:
-		ManageCu (isNewPict.d0        )--> GetRps;
+schedule fsm f0:
+		f0 (isNewPict.d0         )--> GetRps;
 
 		ManageCu (isNewSlice.d0        )--> GetRps;
-		ManageCu (getCuPix.d0.launch   )--> ManageCu;
-		ManageCu (getCuPix.d0.done     )--> ManageCu;
-		ManageCu (sendCuPix            )--> ManageCu;
-		ManageCu (getMvInfo.d0.launch )--> ManageCu;
+		ManageCu (getCuPix.d0.launch   )--> get0;
+		get0	 (getCuPix.d0.launch   )--> get0;
+		get0	 (getCuPix.d0.done     )--> ManageCu;
+		ManageCu (sendCuPix            )--> send;
+		send	 (sendCuPix            )--> send;
+		send	 (sendCuPix_done.f0       )--> f1;
+		send	 (sendCuPix_done.f1       )--> f0;
+		
+		ManageCu (getMvInfo.d0.launch  )--> ManageCu;
 		
 		GetRps (getRps.d0.launch )--> GetRpsPoc;
 		GetRps (getRps.d0.done   )--> ManageCu;
@@ -1092,11 +1190,12 @@ actor DecodingPictureBuffer_luma_FB2 ()
 		/////////////////////////////////////////////
 		
 		
-		ManageCu (isNewPict.d1        )--> GetRps1;
+		f1 (isNewPict.d1        )--> GetRps1;
 
 		ManageCu (isNewSlice.d1        )--> GetRps;
-		ManageCu (getCuPix.d1.launch   )--> ManageCu;
-		ManageCu (getCuPix.d1.done     )--> ManageCu;
+		ManageCu (getCuPix.d1.launch   )--> get1;
+		get1	 (getCuPix.d1.launch   )--> get1;
+		get1	 (getCuPix.d1.done     )--> ManageCu;
 		//ManageCu (sendCuPix            )--> ManageCu;
 		ManageCu (getMvInfo.d1.launch )--> ManageCu;
 		
@@ -1106,8 +1205,8 @@ actor DecodingPictureBuffer_luma_FB2 ()
 		GetRpsPoc1 (getRpsPoc.d1.done   )--> GetRps1;
 	end
 	priority
-		sendCuPix > getCuPix > getMvInfo > isNewSlice;
-		sendCuPix > isNewPict;
-		sendCuPix.skip > sendCuPix.launch > sendCuPix.done;
+		sendCuPix > sendCuPix_done > getCuPix > getMvInfo > isNewSlice;
+		sendCuPix > sendCuPix_done > isNewPict;
+		sendCuPix.skip > sendCuPix.launch > sendCuPix_done;
 	end
 end
