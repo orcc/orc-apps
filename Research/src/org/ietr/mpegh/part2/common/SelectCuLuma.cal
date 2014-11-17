@@ -65,10 +65,11 @@ actor SelectCuLuma()
 	uint(size=8)  InterSample,
 	uint(size=8)  IntraSample,
 	uint(size=4)  PartMode,
-	int (size=9)  ResidualSample
+	int (size=9)  ResidualSample,
+	bool          SplitTransform
 		==>
-	uint(size=8) Sample
-	,uint(size=8) VidSample
+    uint(size=8) VidSample,
+    uint(size=8)  IntraNeighb
 		:
 
 	uint(size=16) PU_SIZE_TO_NB_BLK_TO_CLIP[17] =
@@ -77,7 +78,10 @@ actor SelectCuLuma()
 	uint(size=8)  SCU_SIZE = 16;
 	uint(size=4)  numPart;
 	uint(size=3)  numPartDecoded;
-    uint(size=8)  predSamp[64 * 64]; // + 2 * 32 * 32];
+
+    uint(size=8)  puNeighb[NEIGHB_TAB_SZ];
+
+    uint(size=8)  predSamp[64 * 64];
 	bool          sampGot[512];
     uint(size=16) nbBlkToClip;
 	uint(size=7)  cuSize[4][2];
@@ -86,12 +90,24 @@ actor SelectCuLuma()
 	uint(size=5)  cuOff[4][2] := [[0,0],[0,0],[0,0],[0,0]];
 	uint(size=7)  cuWidth;
 	uint(size=9)  nbBlk;
-	uint(size=9)  idxBlk;
+	uint(size=9)  nbBlkPu;
 	uint(size=9)  idxBlkInterpred;
-	// uint(size=8)  interSamp[16][16][SCU_SIZE];
 	uint(size=7)  xIdx;
 	uint(size=7)  yIdx;
-	uint(size=8)  LcuBuffer[64*64];
+	uint(size=8)  LcuBuffer[64][64];
+	
+    int (size=16) puAddr[2];
+	int (size=16) treeAddr[2];
+
+    uint(size=9)  idxBlk := 0;
+	uint(size=9)  idxBlkMax := 0;
+
+	uint(size=8)  tuSize;
+	
+	uint(size=32) maskLcuSizeMax;
+
+	int (size=4) trafoTreeDepth;
+	uint(size=3) trafoTreeIdx[6];
 	
 	uint(size=8)  lcuSizeMax;	
 	uint(size=16) picSize[2];
@@ -127,7 +143,7 @@ actor SelectCuLuma()
 			do
 				foreach int x in 0 .. 3
 				do
-					LcuBuffer[64*(pixAddr[1]+y) + pixAddr[0]+x] := sample[offset + 4 * y + x];
+					  LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[offset + 4 * y + x];
 				end
 			end
 			blkIdx := blkIdx + 1;
@@ -147,7 +163,7 @@ actor SelectCuLuma()
 			// vert
 			  
 			offset := 0;
-			foreach int j in 0 .. n-1
+	      foreach int j in 0 .. n-1
 			do
 				// store
 				if (XIdx + pixAddr[0]) < picSize[0] then
@@ -156,7 +172,7 @@ actor SelectCuLuma()
 					do
 						foreach int x in 0 .. 3
 						do
-							LcuBuffer[64*(pixAddr[1]+y) + pixAddr[0]+x] := sample[offset + 4*y+x];
+						  LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[offset + 4*y+x];
 						end
 					end
 					blkIdx := blkIdx + 1;
@@ -180,17 +196,17 @@ actor SelectCuLuma()
 		elsif LcuType = 2 then
 			// Hor
 			offset := 0;
-			foreach int j in 0 .. n-1
+	          foreach int j in 0 .. n-1
 			do
 			
 				// store
 				if (YIdx + pixAddr[1]) < picSize[1]   then
-	//				println("pixAddrHOR[0] = " + pixAddr[0] + "  pixAddrHOR[1] = " + pixAddr[1]);
+//				  println("pixAddrHOR[0] = " + pixAddr[0] + "  pixAddrHOR[1] = " + pixAddr[1]);
 					foreach int y in 0 .. 3
 					do
 						foreach int x in 0 .. 3
 						do
-							LcuBuffer[64*(pixAddr[1]+y) + pixAddr[0]+x] := sample[offset + 4*y+x];
+						  LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[offset + 4*y+x];
 						end
 					end
 					blkIdx := blkIdx + 1;
@@ -213,9 +229,8 @@ actor SelectCuLuma()
 		else //if (XIdx >= picSize[0]-lcuSizeMax) && (YIdx >= (picSize[1]-lcuSizeMax)) then
 			// vertHor
 			offset := 0;
-			foreach int j in 0 .. n-1
+	          foreach int j in 0 .. n-1
 			do
-			
 				// store
 				if ((XIdx + pixAddr[0]) < picSize[0]) && ((YIdx + pixAddr[1]) < picSize[1]) then
 //				println("pixAddrHORVERT[0] = " + pixAddr[0] + "  pixAddrHORVERT[1] = " + pixAddr[1]);
@@ -223,7 +238,7 @@ actor SelectCuLuma()
 					do
 						foreach int x in 0 .. 3
 						do
-								LcuBuffer[64*(pixAddr[1]+y) + pixAddr[0]+x] := sample[offset + 4*y+x];
+					  	  LcuBuffer[pixAddr[1]+y][pixAddr[0]+x] := sample[offset + 4*y+x];
 						end
 					end
 					blkIdx := blkIdx + 1;
@@ -234,12 +249,12 @@ actor SelectCuLuma()
 			
 				// bypass 
 				while (((XIdx + pixAddr[0]) >= picSize[0]) || ((YIdx + pixAddr[1]) >= picSize[1])) && (blkIdx < numPartition) do
-	//				println("pixAddr[0]bypassHORVERT = " + pixAddr[0] + "  pixAddr[1]bypassHORVERT = " + pixAddr[1]);
+//				  println("pixAddr[0]bypassHORVERT = " + pixAddr[0] + "  pixAddr[1]bypassHORVERT = " + pixAddr[1]);
 					blkIdx := blkIdx + 1;
 					zScanToAbsCoord(blkIdx, pixAddr);
 					pixAddr[0] := pixAddr[0] + xAddrVert;
 					pixAddr[1] := pixAddr[1] + yAddrVert;
-	//				println("blkIdxHORVERT = " + blkIdx);
+//				  println("blkIdxHORVERT = " + blkIdx);
 				end
 				offset := offset + 16;  	
            end
@@ -269,6 +284,65 @@ actor SelectCuLuma()
 			LcuType := 3;
 		end
 	end
+
+    procedure saveNeighbours(int(size=16) pictOff[2])
+	var
+		uint tabOff,
+		uint(size=16) numPixNeighb = 2 * lcuSizeMax - 1
+	begin
+		tabOff := PICT_HEIGHT - pictOff[1] + pictOff[0] - lcuSizeMax + 1;
+		foreach uint x in 0 .. lcuSizeMax - 1
+		do
+			puNeighb[tabOff + x] :=
+				LcuBuffer[lcuSizeMax - 1][x];
+		end
+		foreach uint y in 0 .. lcuSizeMax - 1 - 1
+		do
+			puNeighb[tabOff + numPixNeighb - 1 - y] :=
+				LcuBuffer[y][lcuSizeMax - 1];
+		end
+	end
+
+	procedure setIntraNeighb(
+		uint(size=8) samples[64][64],
+		uint(size=8) intraNeighb[130 + 2 * 66])
+	var
+		int xLimit,
+		uint(size=16) origPixIdx := PICT_HEIGHT - treeAddr[1] + treeAddr[0] - 2 * tuSize,
+		int(size=16) samplesOff[2] = [treeAddr[i]: for int i in 0 .. 1]
+	begin
+		intraNeighb[2 * tuSize] := puNeighb[origPixIdx + 2 * tuSize];
+		// Pixels under the LCU do not exist.
+		if((samplesOff[0] & maskLcuSizeMax) != 0) then
+			foreach int i in 0 .. 2 * tuSize - 1
+			do
+				intraNeighb[i] := samples[(samplesOff[1] & maskLcuSizeMax) + 2 * tuSize - 1 - i]
+					[(samplesOff[0] & maskLcuSizeMax) - 1];
+			end
+			if((samplesOff[1] & maskLcuSizeMax) != 0) then
+				intraNeighb[2 * tuSize] := samples
+					[(samplesOff[1] & maskLcuSizeMax) - 1][(samplesOff[0] & maskLcuSizeMax) - 1];
+			end
+		else
+			foreach int i in 0 .. 2 * tuSize - 1
+			do
+				intraNeighb[i] := puNeighb[origPixIdx + i];
+			end
+		end
+		if((samplesOff[1] & maskLcuSizeMax) != 0) then
+			xLimit := min((samplesOff[0] & maskLcuSizeMax) + 2 * tuSize, (samplesOff[0] & ~maskLcuSizeMax) + lcuSizeMax) - (samplesOff[0] & maskLcuSizeMax);
+			foreach int i in 0 .. xLimit - 1
+			do
+				intraNeighb[2 * tuSize + 1 + i] := samples
+					[(samplesOff[1] & maskLcuSizeMax) - 1][(samplesOff[0] & maskLcuSizeMax) + i];
+			end
+		else
+			foreach int i in 2 * tuSize + 1 .. 4 * tuSize + 1
+			do
+				intraNeighb[i] := puNeighb[origPixIdx + i];
+			end
+		end
+	end
 	
 	initialize ==>
 	do
@@ -291,6 +365,7 @@ actor SelectCuLuma()
 	guard
 		partModeVal = PART_MODE_PICT
 	do
+        maskLcuSizeMax := (1 << log2_lcuSz) - 1;
 		lcuSizeMax := 1 << log2_lcuSz;
 		numPartition := (lcuSizeMax * lcuSizeMax) / 16;
 		
@@ -319,15 +394,21 @@ actor SelectCuLuma()
 	do
 		cuMode  := cuInfo[0];
 		cuWidth := cuInfo[3];
+        tuSize := cuWidth;
         nbBlkToClip := PU_SIZE_TO_NB_BLK_TO_CLIP[cuWidth >> 2];
 		nbBlk   := nbBlkToClip;
+		nbBlkPu   := nbBlkToClip;
 		// nbBlk   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
 		cuSize := [[cuInfo[i]/4:for int i in 3 .. 4]:for int j in 0 .. 3];
-		cuOff[0] := [0:for int i in 0 .. 1];	
+		cuOff[0] := [0:for int i in 0 .. 1];
+		puAddr := [cuInfo[1], cuInfo[2]];
+		treeAddr := [cuInfo[1], cuInfo[2]];
+        trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
 	end
 
-	/* Getting informations of the next CU when there are two part.
+	/* Getting informations of the next CU when there are two parts.
 	 * Get twice informations in order to have all the informations concerning
 	 * this CU.
 	 */
@@ -338,8 +419,14 @@ actor SelectCuLuma()
 		cuMode := cuInfo[0];
 		cuSize  := [[cuInfo[i+5*j]/4:for uint i in 3 .. 4]:
 			for uint j in 0 .. 1];
+        puAddr := [cuInfo[1], cuInfo[2]];
+		treeAddr := [cuInfo[1], cuInfo[2]];
 		cuWidth := max(cuInfo[3], cuInfo[4]);
+        trafoTreeDepth  := 0;
+		trafoTreeIdx[0] := 3;
+        tuSize := cuWidth;
 		nbBlk   := cuWidth*cuWidth/16;
+		nbBlkPu   := cuWidth*cuWidth/16;
 		idxBlk  := 0;
 		nbBlkToClip := PU_SIZE_TO_NB_BLK_TO_CLIP[min(cuInfo[3], cuInfo[4]) >> 2];
 		if(partMode=PART_2NxN || partMode=PART_2NxnU ||
@@ -385,9 +472,9 @@ actor SelectCuLuma()
 	/* Getting samples from intraPrediction */
 	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
 		ResidualSample:[resSample] repeat SCU_SIZE
-		==> Sample:[sample] repeat SCU_SIZE
+		==> 
 	guard
-		blkIdx < numPartition
+		idxBlk < nbBlk
 	var
 		uint(size=8) sample[SCU_SIZE]
 	do
@@ -402,7 +489,6 @@ actor SelectCuLuma()
           0,
           0);
         idxBlk := idxBlk + 1;
-        
         storeLCU_Nx4x4(sample, 1);
 	end
 	
@@ -410,6 +496,7 @@ actor SelectCuLuma()
 	guard
 		blkIdx = numPartition, lcuSizeMax = 64
 	var
+	    int(size=16) pictOff[2] = [puAddr[i] & ~maskLcuSizeMax: for int i in 0 .. 1],
 		uint(size=8) vidSamp[64 * 64]
 	do
 //		println("line Done");
@@ -425,15 +512,18 @@ actor SelectCuLuma()
 		do			
 			foreach int x in 0 .. 63
 			do
-				vidSamp[y * 64 + x] := LcuBuffer[y * 64 + x];
+				vidSamp[y * 64 + x] := LcuBuffer[y][x];
 			end
 		end
+		
+		saveNeighbours(pictOff);
 	end
 	
 	endLCU.x32 : action ==> VidSample:[vidSamp] repeat 1024
 	guard
 		blkIdx = numPartition, lcuSizeMax = 32
 	var
+	    int(size=16) pictOff[2] = [puAddr[i] & ~maskLcuSizeMax: for int i in 0 .. 1],
 		uint(size=8) vidSamp[32 * 32]
 	do
 //		println("line Done");
@@ -449,15 +539,18 @@ actor SelectCuLuma()
 		do			
 			foreach int x in 0 .. 31
 			do
-				vidSamp[y * 32 + x] := LcuBuffer[y * 64 + x];
+				vidSamp[y * 32 + x] := LcuBuffer[y][x];
 			end
 		end
+		
+		saveNeighbours(pictOff);
 	end
 	
 	endLCU.x16 : action ==> VidSample:[vidSamp] repeat 256
 	guard
 		blkIdx = numPartition, lcuSizeMax = 16
 	var
+	    int(size=16) pictOff[2] = [puAddr[i] & ~maskLcuSizeMax: for int i in 0 .. 1],
 		uint(size=8) vidSamp[16 * 16]
 	do
 //		println("line Done");
@@ -473,15 +566,48 @@ actor SelectCuLuma()
 		do			
 			foreach int x in 0 .. 15
 			do
-				vidSamp[y * 16 + x] := LcuBuffer[y * 64 + x];
+				vidSamp[y * 16 + x] := LcuBuffer[y][x];
 			end
 		end
+		
+		saveNeighbours(pictOff);
+	end
+
+    endLCU.isFalse : action ==> 
+	guard
+		blkIdx < numPartition
+	do
+    end
+	
+	checkNbBlkToClip.is1: action ==>
+	guard
+		tuSize = 4
+	end
+
+	checkNbBlkToClip.is4: action ==>
+	guard
+		tuSize = 8
+	end
+
+	checkNbBlkToClip.is16: action ==>
+	guard
+		tuSize = 16
+	end
+
+	checkNbBlkToClip.is64: action ==>
+	guard
+		tuSize = 32
+	end
+
+	checkNbBlkToClip.is256: action ==>
+	guard
+		tuSize = 64
 	end
 	
 	/* Getting prediction samples from interPrediction */
 	getCuSample.isInter: action InterSample:[interSample] repeat SCU_SIZE ==>
 	guard
-		idxBlkInterpred < nbBlk
+		idxBlkInterpred < nbBlkPu
 	var
 		uint(size=16) blkAddr[2],
 		/* Offset is not null when numPart = 2 and partIdx = 1. */
@@ -497,7 +623,7 @@ actor SelectCuLuma()
   	      SCU_SIZE*blkIdx,
   	      0);
   	    sampGot[blkIdx] := true;
-		/* Computing the location of the next block (it's sent in ZScan order instead of RasterScan. */
+		/* Computing the location of the next block (it's sent in ZScan order instead of RasterScan) */
 		xIdx := xIdx + 1;
 		if(xIdx = cuSize[numPartDecoded][0]) then
 			xIdx := 0;
@@ -510,40 +636,14 @@ actor SelectCuLuma()
 
 		idxBlkInterpred := idxBlkInterpred + 1;
 	end
-
-	chekNbBlkToClip.is1: action ==>
-	guard
-		nbBlkToClip = 1
-	end
-
-	chekNbBlkToClip.is4: action ==>
-	guard
-		nbBlkToClip = 4
-	end
-
-	chekNbBlkToClip.is16: action ==>
-	guard
-		nbBlkToClip = 16
-	end
-
-	chekNbBlkToClip.is64: action ==>
-	guard
-		nbBlkToClip = 64
-	end
-
-	chekNbBlkToClip.is256: action ==>
-	guard
-		nbBlkToClip = 256
-	end
-
+	
 	/* Getting the residual part for interPrediction then computing the
 	 * result.
 	 */
 	getInterRes.get1Blk: action ResidualSample:[resSample] repeat SCU_SIZE
-		==> Sample:[sample] repeat SCU_SIZE
+		==> 
 	guard
-		// idxBlk < nbBlk
-        sampGot[idxBlk],
+        sampGot[idxBlkMax],
         blkIdx < numPartition
 	var
 		uint(size=8) sample[SCU_SIZE]
@@ -555,18 +655,19 @@ actor SelectCuLuma()
           SCU_SIZE*idxBlk,
           0,
           0);
-		idxBlk := idxBlk + 1;
 
 		storeLCU_Nx4x4(sample, 1);
+		
+		idxBlk := idxBlkMax + 1;
 	end
 
     /* Getting the residual part for interPrediction then computing the
 	 * result.
 	 */
     getInterRes.get4Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 4
-		==> Sample:[sample] repeat SCU_SIZE * 4
+		==> 
 	guard
-        sampGot[idxBlk + 3],
+        sampGot[idxBlkMax],
         blkIdx < numPartition
 	var
 		uint(size=8) sample[SCU_SIZE * 4]
@@ -588,9 +689,9 @@ actor SelectCuLuma()
 	 * result.
 	 */
     getInterRes.get16Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 16
-		==> Sample:[sample] repeat SCU_SIZE * 16
+		==> 
 	guard
-        sampGot[idxBlk + 15],
+        sampGot[idxBlkMax],
         blkIdx < numPartition
 	var
 		uint(size=8) sample[SCU_SIZE * 16]
@@ -611,9 +712,9 @@ actor SelectCuLuma()
 	 * result.
 	 */
     getInterRes.get64Blk: action ResidualSample:[resSample] repeat SCU_SIZE * 64
-		==> Sample:[sample] repeat SCU_SIZE * 64
+		==> 
 	guard
-        sampGot[idxBlk + 63],
+        sampGot[idxBlkMax],
         blkIdx < numPartition
 	var
 		uint(size=8) sample[SCU_SIZE * 64]
@@ -634,11 +735,111 @@ actor SelectCuLuma()
 	guard
 		idxBlk = nbBlk
 	do
-		idxBlk := 0;
-		foreach int i in 0 .. nbBlk - 1
+		foreach int i in 0 .. idxBlkMax
 		do
 			sampGot[i] := false;
 		end
+	end
+
+    /* Check if the intra prediction CU has to be split in 4 "subCU" */
+	getSplitTrafo.isTrue: action SplitTransform:[splitTrafo] ==>
+	guard
+		splitTrafo
+	do
+		trafoTreeDepth := trafoTreeDepth + 1;
+		trafoTreeIdx[trafoTreeDepth] := 0;
+		nbBlk := nbBlk >> 2;
+	end
+
+	/* Check if the intra prediction will not be split again, then realize the
+	 * prediction for this part of CU
+	 */
+	getSplitTrafo.isFalse: action SplitTransform:[splitTrafo] ==>
+	guard
+		not splitTrafo
+	do
+		/* Computing the size and the address of the current block. */
+		tuSize := cuWidth;
+		treeAddr := [puAddr[i]: for int i in 0 .. 1];
+		foreach uint idx in 1 .. trafoTreeDepth
+		do
+			tuSize := tuSize >> 1;
+			if((trafoTreeIdx[idx]&1) != 0) then
+				treeAddr[0] := treeAddr[0] + tuSize;
+			end
+			if((trafoTreeIdx[idx]&2) != 0) then
+				treeAddr[1] := treeAddr[1] + tuSize;
+			end
+		end
+	
+		nbBlk := tuSize * tuSize / 16;
+
+		idxBlk := 0;
+
+		/* going to the next "branch of the tree" */
+		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+		/* Replace by (trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4) when orcc's simulator
+		 * support short-circuit evaluation.
+		 */
+		while (if trafoTreeDepth>= 0 then (trafoTreeIdx[trafoTreeDepth] = 4) else false end)
+		do
+			trafoTreeDepth := trafoTreeDepth - 1;
+			if(trafoTreeDepth>-1) then
+				trafoTreeIdx[trafoTreeDepth] :=
+					trafoTreeIdx[trafoTreeDepth] + 1;
+			end
+		end
+	end
+
+	getSplitTrafo.isInter.isTrue: action SplitTransform:[splitTrafo] ==>
+	guard
+		splitTrafo = true
+	do
+		trafoTreeDepth := trafoTreeDepth + 1;
+		trafoTreeIdx[trafoTreeDepth] := 0;
+	end
+
+	getSplitTrafo.isInter.isFalse: action SplitTransform:[splitTrafo] ==>
+	guard
+		splitTrafo = false
+	do
+		// tuSize := cuWidth >> trafoTreeDepth;
+		tuSize := cuWidth;
+
+		idxBlkMax := 
+			if(tuSize = 4 || tuSize = 8) then
+				idxBlk + 3
+			else if(tuSize = 16) then
+				idxBlk + 15
+			else if(tuSize = 32) then
+				idxBlk + 63
+			else
+				idxBlk + 255
+			end end end;
+			
+		nbBlk := tuSize * tuSize / 16;
+
+		/* going to the next "branch of the tree" */
+		trafoTreeIdx[trafoTreeDepth] := trafoTreeIdx[trafoTreeDepth] + 1;
+		/* Replace by (trafoTreeDepth > -1 && trafoTreeIdx[trafoTreeDepth] = 4) when orcc's simulator
+		 * support short-circuit evaluation.
+		 */
+		while(if trafoTreeDepth>= 0 then (trafoTreeIdx[trafoTreeDepth] = 4) else false end)
+		do
+			trafoTreeDepth := trafoTreeDepth - 1;
+			if(trafoTreeDepth>-1) then
+				trafoTreeIdx[trafoTreeDepth] :=
+					trafoTreeIdx[trafoTreeDepth] + 1;
+			end
+		end
+	end
+	
+	getSplitTrafo.done: action ==>
+	guard
+		trafoTreeDepth = -1
+	do
+		idxBlk := 0;
+        idxBlkInterpred := 0;
 	end
 	
 	getNumTiles: action TilesCoord:[valNumTiles] ==>
@@ -661,6 +862,42 @@ actor SelectCuLuma()
 		iLoop = numTiles
 	end
 
+	sendNeighb.is4x4: action ==> IntraNeighb:[intraNeighb] repeat 18
+	guard
+		tuSize = 4
+	var
+		uint(size=8) intraNeighb[18]
+	do
+		setIntraNeighb(LcuBuffer, intraNeighb);
+	end
+
+	sendNeighb.is8x8: action ==> IntraNeighb:[intraNeighb] repeat 34
+	guard
+		tuSize = 8
+	var
+		uint(size=8) intraNeighb[34]
+	do
+		setIntraNeighb(LcuBuffer, intraNeighb);
+	end
+
+	sendNeighb.is16x16: action ==> IntraNeighb:[intraNeighb] repeat 66
+	guard
+		tuSize = 16
+	var
+		uint(size=8) intraNeighb[66]
+	do
+		setIntraNeighb(LcuBuffer, intraNeighb);
+	end
+
+	sendNeighb.is32x32: action ==> IntraNeighb:[intraNeighb] repeat 130
+	guard
+		tuSize = 32
+	var
+		uint(size=8) intraNeighb[130]
+	do
+		setIntraNeighb(LcuBuffer, intraNeighb);
+	end
+
 	schedule fsm GetPartMode:
 		GetPartMode (isNewPict        )--> GetNumTiles;
 		GetPartMode (isNewSlc_dep     )--> GetCuInfo;
@@ -671,53 +908,89 @@ actor SelectCuLuma()
 		GetTilesCoord (getTilesCoord.launch )--> GetTilesCoord;
 		GetTilesCoord (getTilesCoord.done   )--> GetPartMode;
 		
-
 		GetCuInfo   (getCuInfo.launch )--> GetCuMode;
 		GetCuInfo   (getCuInfo.done   )--> GetPartMode;
 
-		GetCuMode (getCuMode.isIntra )--> GetCuSampleIntra;
-		GetCuMode (getCuMode.isInter )--> CheckNbBlkToClip;
+		GetCuMode (getCuMode.isIntra )--> GetSplitTrafoIntra;
+		GetCuMode (getCuMode.isInter )--> GetSplitTrafoInter;
 		GetCuMode (getCuMode.isOther )--> GetCuInfo;
 
-		GetCuSampleIntra (getCuSample.isIntra )--> GetCuSampleIntra;
-		GetCuSampleIntra (getCuSample.done    )--> GetCuInfo;
-		GetCuSampleIntra (endLCU  )--> GetCuSampleIntra;
-		
-		CheckNbBlkToClip (chekNbBlkToClip.is1   )--> GetCuSampleInter1Blk;
-		CheckNbBlkToClip (chekNbBlkToClip.is4   )--> GetCuSampleInter4Blk;
-		CheckNbBlkToClip (chekNbBlkToClip.is16  )--> GetCuSampleInter16Blk;
-		CheckNbBlkToClip (chekNbBlkToClip.is64  )--> GetCuSampleInter64Blk;
-		CheckNbBlkToClip (chekNbBlkToClip.is256 )--> GetCuSampleInter256Blk;
+        GetSplitTrafoIntra (getSplitTrafo.isTrue  )--> GetSplitTrafoIntra;
+		GetSplitTrafoIntra (getSplitTrafo.isFalse )--> SendNeighb;
+		GetSplitTrafoIntra (getSplitTrafo.done    )--> GetCuInfo;
 
+        SendNeighb (sendNeighb.is4x4   )--> GetPuIntra4x4;
+		SendNeighb (sendNeighb.is8x8   )--> GetPuIntraNot4x4;
+		SendNeighb (sendNeighb.is16x16 )--> GetPuIntraNot4x4;
+		SendNeighb (sendNeighb.is32x32 )--> GetPuIntraNot4x4;
+
+        EndLcu    (endLCU  )--> GetSplitTrafoIntra;
+		
+		GetPuIntraNot4x4 (getCuSample.isIntra )--> GetPuIntraNot4x4;
+		GetPuIntraNot4x4 (getCuSample.done    )--> EndLcu;
+		
+		GetPuIntra4x4    (getCuSample.isIntra    )--> EndLcu2;
+		EndLcu2    (endLCU  )--> GetSplitTrafoIntra_2;
+		
+		// Block4x4 :
+		// Only one block (PU == 4)
+		GetSplitTrafoIntra_2 (getSplitTrafo.done    )--> GetCuInfo;
+
+		// 2nd Block
+		GetSplitTrafoIntra_2 (getSplitTrafo.isFalse )--> SendNeighb_2;
+		SendNeighb_2 (sendNeighb.is4x4 )--> GetPuIntra_2;
+		GetPuIntra_2 (getCuSample.isIntra )--> GetSplitTrafoIntra_3;
+
+		// 3rd Block
+		GetSplitTrafoIntra_3 (getSplitTrafo.isFalse )--> SendNeighb_3;
+		SendNeighb_3 (sendNeighb.is4x4 )--> GetPuIntra_3;
+		GetPuIntra_3 (getCuSample.isIntra )--> GetSplitTrafoIntra_4;
+
+		// 4th Block
+		GetSplitTrafoIntra_4 (getSplitTrafo.isFalse )--> SendNeighb_4;
+		SendNeighb_4 (sendNeighb.is4x4 )--> GetPuIntra_4;
+		GetPuIntra_4 (getCuSample.isIntra )--> EndLcu;
+
+        GetSplitTrafoInter (getSplitTrafo.isInter  )--> GetSplitTrafoInter;
+		GetSplitTrafoInter (getSplitTrafo.done     )--> CheckNbBlkToClip;
+		
+		CheckNbBlkToClip (checkNbBlkToClip.is1   )--> GetSplitTrafoInter1;
+		CheckNbBlkToClip (checkNbBlkToClip.is4   )--> GetCuSampleInter4Blk;
+		CheckNbBlkToClip (checkNbBlkToClip.is16  )--> GetCuSampleInter16Blk;
+		CheckNbBlkToClip (checkNbBlkToClip.is64  )--> GetCuSampleInter64Blk;
+		CheckNbBlkToClip (checkNbBlkToClip.is256 )--> GetCuSampleInter256Blk;
+
+        GetSplitTrafoInter1 (getSplitTrafo.isInter.isFalse )--> GetSplitTrafoInter2;
+		GetSplitTrafoInter2 (getSplitTrafo.isInter.isFalse )--> GetSplitTrafoInter3;
+		GetSplitTrafoInter3 (getSplitTrafo.isInter.isFalse )--> GetCuSampleInter1Blk;
+		
+		EndLcuInter(endLCU) --> GetPartMode;
+		
 		GetCuSampleInter1Blk (getCuSample.isInter )--> GetCuSampleInter1Blk;
 		GetCuSampleInter1Blk (getInterRes.get1Blk )--> GetCuSampleInter1Blk;
-		GetCuSampleInter1Blk (getCuSample.done    )--> GetCuInfo;
-		GetCuSampleInter1Blk (endLCU  )--> GetCuSampleInter1Blk;
+		GetCuSampleInter1Blk (getCuSample.done    )--> EndLcuInter;
 
 		GetCuSampleInter4Blk (getCuSample.isInter    )--> GetCuSampleInter4Blk;
 		GetCuSampleInter4Blk (getInterRes.get4Blk )--> GetCuSampleInter4Blk;
-		GetCuSampleInter4Blk (getCuSample.done       )--> GetCuInfo;
-		GetCuSampleInter4Blk (endLCU  )--> GetCuSampleInter4Blk;
-
+		GetCuSampleInter4Blk (getCuSample.done       )--> EndLcuInter;
+        
 		GetCuSampleInter16Blk (getCuSample.isInter    )--> GetCuSampleInter16Blk;
 		GetCuSampleInter16Blk (getInterRes.get16Blk )--> GetCuSampleInter16Blk;
-		GetCuSampleInter16Blk (getCuSample.done       )--> GetCuInfo;
-		GetCuSampleInter16Blk (endLCU  )--> GetCuSampleInter16Blk;
+		GetCuSampleInter16Blk (getCuSample.done       )--> EndLcuInter;
 
 		GetCuSampleInter64Blk (getCuSample.isInter    )--> GetCuSampleInter64Blk;
 		GetCuSampleInter64Blk (getInterRes.get64Blk )--> GetCuSampleInter64Blk;
-		GetCuSampleInter64Blk (getCuSample.done       )--> GetCuInfo;
-		GetCuSampleInter64Blk (endLCU  )--> GetCuSampleInter64Blk;
+		GetCuSampleInter64Blk (getCuSample.done       )--> EndLcuInter;
 
 		GetCuSampleInter256Blk (getCuSample.isInter    )--> GetCuSampleInter256Blk;
 		GetCuSampleInter256Blk (getInterRes.get64Blk )--> GetCuSampleInter256Blk;
-		GetCuSampleInter256Blk (getCuSample.done       )--> GetCuInfo;
-		GetCuSampleInter256Blk (endLCU  )--> GetCuSampleInter256Blk;
+		GetCuSampleInter256Blk (getCuSample.done       )--> EndLcuInter;
 	end
 	priority
+		getSplitTrafo.done > getSplitTrafo.isFalse > getSplitTrafo.isInter > getSplitTrafo.isTrue;
 		getCuSample.done > getCuSample.isIntra;
 		getCuSample.done > getInterRes > getCuSample.isInter;
-		chekNbBlkToClip.is64 > chekNbBlkToClip.is16  > chekNbBlkToClip.is4;
-		chekNbBlkToClip.is4  > chekNbBlkToClip.is256 > chekNbBlkToClip.is1;
+		checkNbBlkToClip.is64 > checkNbBlkToClip.is16  > checkNbBlkToClip.is4;
+		checkNbBlkToClip.is4  > checkNbBlkToClip.is256 > checkNbBlkToClip.is1;
 	end
 end
