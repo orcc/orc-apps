@@ -1,7 +1,7 @@
 /********************************************************************************
 
 This software module was originally developed by 
-khaled JERBI (IETR/INSA of Rennes), 
+khaled JERBI (IETR/INSA of Rennes)
 in the course of development of the ISO/IEC 23002-5 (Video Tool Library) 
 for reference purposes and its performance may not have been optimized. 
 This software module is an implementation of one or more tools as 
@@ -53,6 +53,7 @@ Copyright (c) ISO/IEC 2011-2014.
  
 
 *****************************************************************************/
+// Modified by Damien de Saint Jorre (EPFL)
 package org.sc29.wg11.mpegh.part2.main.synParser;
 
 import  std.util.Math.*;
@@ -306,6 +307,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
          *************************************************************************/
         look_for_other_header: action ==>
         end
+
+		skipCurrentNal.isTrue: action ==>
+		guard
+			skipCurrentNal
+		do
+			println("\tNAL skipped");
+			skipCurrentNal := false;
+		end
+
         /**************************************************************************
          **************************************************************************
          ********        Video Parameter Set HEADER           *********************
@@ -617,7 +627,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	         ********        SEI message                          *********************
 	         **************************************************************************
 	         *************************************************************************/
-	
+		bool         need_md5 := false;
+		bool         md5_needed := false;
 	        /**************************************************************************
 	         * read_SEI_Header.se_idx_1
 	         *************************************************************************/
@@ -677,7 +688,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    read_SEI_Header.skipSEI : action ==>
 	    guard
 	   		se_idx = 4 and isFifoFull(fifo),
-	    	sei_idx = 1 and sei_payloadType != 132
+	    	sei_idx = 1 and (sei_payloadType != 132 or not need_md5)
 	    do
 	        se_idx := 6;
 	    end
@@ -690,7 +701,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    read_SEI_Header.decoded_picture_hash.init : action ==>
 	    guard
 	   		se_idx = 4 and isFifoFull(fifo),
-	    	sei_idx = 1 and sei_payloadType = 132
+	    	sei_idx = 1 and sei_payloadType = 132 and need_md5
 	    var
 	    	uint(size=32) res[1]
 	    do
@@ -704,12 +715,22 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        sei_i               := 0;
 	        sei_idx             := sei_idx + 1;
 	    end
-	    read_SEI_Header.decoded_picture_hash.loop : action ==> SEI_MD5:[res[0]]
+
+	read_SEI_Header.decoded_picture_hash.startCode : action ==> SEI_MD5:[1]
 	guard
 		se_idx = 4 and isFifoFull(fifo),
 		sei_idx = 2 and sei_payloadType = 132,
-		sei_cIdx < 3, /*if sps_chroma_format_idc[sps_id] = 0 then 1 else 3 end,*/
-		sei_i    < 16,
+		sei_i = 0,
+		sei_hash_type = 0
+	do
+		sei_i := 1;
+	end
+
+	read_SEI_Header.decoded_picture_hash.loop : action ==> SEI_MD5:[res[0]]
+	guard
+		se_idx = 4 and isFifoFull(fifo),
+		sei_idx = 2 and sei_payloadType = 132,
+		sei_i != 0,
 		sei_hash_type = 0
 	var
 		uint(size=32) res[1]
@@ -717,11 +738,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		vld_u_name(  8, fifo, res, "picture_md5                             ");
 		sei_payloadPosition := sei_payloadPosition +  8;
 		sei_i               := sei_i + 1;
-		if sei_i = 16 then
+		if sei_i = 16 + 1 then
 			sei_i := 0;
 			sei_cIdx := sei_cIdx + 1;
 			if sei_cIdx = 3 then
 				se_idx := se_idx + 1;
+				need_md5 := false;
 			end
 		end
 	end
@@ -730,8 +752,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	guard
 		se_idx = 4 and isFifoFull(fifo),
 		sei_idx = 2 and sei_payloadType = 132,
-		sei_cIdx < 3, /*if sps_chroma_format_idc[sps_id] = 0 then 1 else 3 end,*/
-		sei_i    < 16,
 		sei_hash_type != 0
 	var
 		uint(size=32) res[1]
@@ -1407,6 +1427,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	     ********        Picture Parameter Set HEADER         *********************
 	     **************************************************************************
 	     *************************************************************************/
+		bool pps_id_decoded[64] := [false : for int i in 0 .. 63];
 	
 	    /**************************************************************************
 	     * read_PPS_Header.se_idx_1
@@ -1425,6 +1446,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        pps_id := res[0];
 	        vld_ue_name(    fifo, res, "pps_seq_parameter_set_id                ");
 	        sps_id := res[0];
+	        pps_id_decoded[pps_id] := true;
 	        pps_sps_id[pps_id] := res[0];
 	        se_idx := se_idx + 1;
 	        cnt_i  := 0;
@@ -1884,13 +1906,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    int idx := 0;
 	    uint no_output_of_prior_pics_flag;
 	    uint pic_output_flag;
+		uint(size= 4) part_mode;
+
+		bool skipCurrentNal := false;
 	    
-	    read_SliceHeader.se_idx_1 : action ==> PartMode:[part_mode]       
+	    read_SliceHeader.se_idx_1 : action ==>       
 	    guard
 	        se_idx = 1 and idx = 0 and isFifoFull(fifo)
 	    var
-	        uint(size=32) res[1],
-		    uint(size= 4) part_mode
+	        uint(size=32) res[1]
 	    do
 	    	
 	        Log2MinCbSize     := sps_log2_min_coding_block_size[sps_id] ;
@@ -1911,42 +1935,70 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			end
 	        vld_ue_name(    fifo, res, "slice_pic_parameter_set_id              ");
 	        pps_id := res[0];
-	        sps_id := pps_sps_id[pps_id];
-	        dependent_slice_segment_flag := 0;
-	
-	        if first_slice_segment_in_pic_flag = 0 then
-	        	if (pps_dependent_slice_segments_enabled_flag[pps_id] = 1) then
-	                vld_u_name(  1, fifo, res, "dependent_slice_segment_flag                    ");
-	                dependent_slice_segment_flag := res[0];
-	            end
-	        	vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "slice_segment_address                   ");
-	            slice_segment_address := res[0];
-	           	if (dependent_slice_segment_flag = 0) then
-	                slice_addr := slice_segment_address;
-	                slice_idx := slice_idx + 1;
-	            end
-	       	else
-	            slice_segment_address := 0;
-	            slice_addr := 0;
-	        end
-	        
-	        pictSize[0] := sps_pic_width_in_luma_samples[sps_id];
-	        pictSize[1] := sps_pic_height_in_luma_samples[sps_id];
-	        
-	        if first_slice_segment_in_pic_flag = 1 then
-	            part_mode := PART_MODE_PICT;
-	        elsif dependent_slice_segment_flag = 0 then
-	            part_mode := PART_MODE_SLICE_INDEP;
+	        if(pps_id_decoded[pps_id] = false) then
+	        	skipCurrentNal := true;
 	        else
-	            part_mode := PART_MODE_SLICE_DEP;
-	        end
+	        	if(first_slice_segment_in_pic_flag = 1) then
+	        		md5_needed := need_md5;
+	        		need_md5 := true;
+	        	end
+		        sps_id := pps_sps_id[pps_id];
+		        dependent_slice_segment_flag := 0;
+		
+		        if first_slice_segment_in_pic_flag = 0 then
+		        	if (pps_dependent_slice_segments_enabled_flag[pps_id] = 1) then
+		                vld_u_name(  1, fifo, res, "dependent_slice_segment_flag                    ");
+		                dependent_slice_segment_flag := res[0];
+		            end
+		        	vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifo, res, "slice_segment_address                   ");
+		            slice_segment_address := res[0];
+		           	if (dependent_slice_segment_flag = 0) then
+		                slice_addr := slice_segment_address;
+		                slice_idx := slice_idx + 1;
+		            end
+		       	else
+		            slice_segment_address := 0;
+		            slice_addr := 0;
+		        end
+		        
+		        pictSize[0] := sps_pic_width_in_luma_samples[sps_id];
+		        pictSize[1] := sps_pic_height_in_luma_samples[sps_id];
+		        
+		        if first_slice_segment_in_pic_flag = 1 then
+		            part_mode := PART_MODE_PICT;
+		        elsif dependent_slice_segment_flag = 0 then
+		            part_mode := PART_MODE_SLICE_INDEP;
+		        else
+		            part_mode := PART_MODE_SLICE_DEP;
+		        end
+		        se_idx := 400;
+			end
+	    end
+
+		read_SliceHeader.sendMD5.launch: action ==> SEI_MD5:[0, 0, 0], PartMode:[part_mode]
+		guard
+			se_idx = 400 and first_slice_segment_in_pic_flag = 1 and
+			md5_needed
+		do
 	        if dependent_slice_segment_flag = 0 then
 	        	se_idx := 200;
 	        else
 	        	se_idx := 6;
 	        end
-	    end
-	        
+		end
+
+		read_SliceHeader.sendMD5.skip: action ==> PartMode:[part_mode]
+		guard
+			se_idx = 400 and (first_slice_segment_in_pic_flag = 0 or
+			not md5_needed)
+		do
+	        if dependent_slice_segment_flag = 0 then
+	        	se_idx := 200;
+	        else
+	        	se_idx := 6;
+	        end
+		end
+        
 	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
 	    guard
 	            se_idx = 200 and isFifoFull(fifo)
@@ -5658,6 +5710,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 read_PPS_Header                                 ( read_PPS_Header                               ) --> read_PPS_Header;
                 read_PPS_Header                                 ( read_PPS_Header_done                          ) --> byte_align;
                 // read_SliceHeader
+                read_SliceHeader                                ( skipCurrentNal.isTrue                         ) --> byte_align;
                 read_SliceHeader                                ( read_SliceHeader                              ) --> read_SliceHeader;
                 read_SliceHeader                                ( weighted_start                                ) --> weightedLuma0;
                 read_SliceHeader                                ( read_SliceHeader_done                         ) --> read_SliceData;
@@ -5745,12 +5798,14 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 // undefined
                 //undefined                       ( undefined           					                                    ) --> undefined;
         end
-
         /**************************************************************************
          * priority
          *************************************************************************/
         priority
                 look_for        												> look_for_other_header;
+                skipCurrentNal.isTrue                                           > read_SliceHeader;
+                skipCurrentNal.isTrue                                           > weighted_start;
+                skipCurrentNal.isTrue                                           > read_SliceHeader_done;
                 read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_end 	> read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL;
                 read_ResidualCoding_end 										> read_ResidualCoding.for_numLastSubset.start;
                 weighted_end_luma_l0 											> weighted_luma_l0;
