@@ -1,0 +1,268 @@
+/*
+ * Copyright (c) 2014, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+package dfsin;
+
+import dfsin.Constants.*;
+
+actor LocalSin() uint(size = 64) Rad,
+				 uint(size = 64) Mul_In, 
+				 uint Mul_Flag, 
+				 uint(size = 64) Div_In, 
+				 uint Div_Flag, 
+				 uint(size = 64) Add_In, 
+				 uint Add_Flag,
+				 uint(size = 64) Pack_In,
+				 uint Num_SignA,
+				 uint(size = 64) Num_SigA,
+				 uint Num_ExpA,
+				 uint Num_SignB,
+				 uint(size = 64) Num_SigB,
+				 uint Num_ExpB
+				 	==> 
+				 		uint(size = 64) Mul_OutA,
+				 		uint(size = 64) Mul_OutB,
+				 		uint(size = 64) Div_OutA,
+				 		uint(size = 64) Div_OutB, 
+				 		uint(size = 64) Add_OutA,
+				 		uint(size = 64) Add_OutB,
+				 		uint Pack_Sign,
+				 		uint Pack_Exp,
+				 		uint(size = 64) Pack_Sig,
+				 		uint(size = 64) Extract_A,
+				 		uint(size = 64) Extract_B, 
+				 		uint(size = 64) Result, 
+				 		uint Flag :
+
+	uint flag;
+	uint(size = 64) m_rad2;
+	uint(size = 64) diff;
+	uint(size = 64) app;
+	uint inc;
+	uint shiftCount;
+	uint(size = 64) float64_ge_out;
+	int i := 0;
+
+	procedure countLeadingZeros32(uint a) begin
+		shiftCount := 0;
+		if a < 0x10000 then
+			shiftCount := shiftCount + 16;
+			a := a << 16;
+		end
+		if a < 0x1000000 then
+			shiftCount := shiftCount + 8;
+			a := a << 8;
+		end
+		shiftCount := shiftCount + countLeadingZerosHigh[a >> 24];
+	end
+	function float64_neg(uint(size = 64) a) --> uint(size = 64) :
+		((~a) & 0x8000000000000000) | (a & 0x7fffffffffffffff)
+	end
+	function float64_abs(uint(size = 64) x) --> uint(size = 64) :
+		x & 0x7fffffffffffffff
+	end
+	
+	rad_in: action Rad:[rad] ==> Mul_OutA:[rad], Mul_OutB:[rad]
+	do
+		diff := rad;
+		app := rad;
+		inc := 1;
+		flag := 0;
+		//println("["+i+"] rad := "+rad);
+	end
+	
+	mul_first: action Mul_In:[mul], Mul_Flag:[mf] ==> Mul_OutA:[diff], Mul_OutB:[m_rad2]
+	do
+			m_rad2 := float64_neg(mul);
+			if (flag & mf) = 0 then
+				flag := flag | mf;
+			end
+			//println("["+i+"] m_rad2 := "+m_rad2);
+	end
+
+	mul_out: action ==> Mul_OutA:[diff], Mul_OutB:[m_rad2]
+	end
+		
+	int32_to_float64.azero: action ==>
+	guard
+		((2 * inc) * (2 * inc + 1)) = 0		
+	end
+	
+	int32_to_float64.anotzero: action 
+										==> 
+											Pack_Sign:[zSign], 
+											Pack_Exp:[0x432 - shiftCount], 
+											Pack_Sig:[zSig << shiftCount]
+	guard
+		((2 * inc) * (2 * inc + 1)) != 0
+	var
+		int a,
+		uint zSign,
+		uint absA,
+		uint(size = 64) zSig
+	do
+		a := (2 * inc) * (2 * inc + 1);
+		if a < 0 then
+			zSign := 1;
+			absA := -a;
+		else
+			zSign := 0;
+			absA := a;
+		end
+		countLeadingZeros32 (absA);
+		shiftCount := shiftCount + 21;
+		zSig := absA;
+	end
+	
+	div_out.azero: action Mul_In:[m], Mul_Flag:[mf] ==> Div_OutA:[m], Div_OutB:[0]
+	do
+		if (flag & mf) = 0 then
+			flag := flag | mf;
+		end
+	end
+	
+	div_out.anotzero: action Mul_In:[m], Mul_Flag:[mf], Pack_In:[p] ==> Div_OutA:[m], Div_OutB:[p]
+	do
+		if (flag & mf) = 0 then
+			flag := flag | mf;
+		end
+		//println("["+i+"] p := "+p+" m := "+m);
+	end
+	
+	div_in: action Div_In:[d], Div_Flag:[df] ==>
+	do
+		diff := d;
+		if (flag & df) = 0 then
+			flag := flag | df;
+		end
+		//println("["+i+"] diff := "+diff);		
+	end
+	
+	add_out: action ==> Add_OutA:[app], 
+						Add_OutB:[diff], 
+						Extract_B:[float64_abs(diff)], 
+						Extract_A:[0x3ee4f8b588e368f1]
+	do
+		inc := inc + 1;
+		//println("["+i+"] app := "+app+" diff := "+diff);
+	end
+	
+	float64_ge: action Num_SigA:[aSig],
+						  Num_ExpA:[aExp],
+						  Num_SignA:[aSign],
+						  Num_SigB:[bSig],
+						  Num_ExpB:[bExp],
+						  Num_SignB:[bSign]
+						  	==>
+	
+	var
+		uint(size = 64) a,
+		uint(size = 64) b
+	do
+		a := 0x3ee4f8b588e368f1;
+		b := float64_abs(diff);
+		//println("["+i+"] a := "+a+" aSig := "+aSig+" aExp := "+aExp+" aSign := "+aSign);
+		//println("["+i+"] b := "+b+" bSig := "+bSig+" bExp := "+bExp+" bSign := "+bSign);
+		if ((aExp = 0x7FF) && (aSig != 0))|| ((bExp = 0x7FF) && (bSig != 0)) then
+			if (flag & float_flag_invalid) = 0 then 
+				flag := flag | float_flag_invalid;
+			end
+			float64_ge_out := 0;
+		end
+		if aSign != bSign then
+			if ((a | b) << 1) = 0 then
+				float64_ge_out := aSign | 1;
+			else
+				float64_ge_out := aSign;
+			end
+		else
+			if a = b then
+				if a < b then
+					float64_ge_out := 1 | (aSign ^ 1);
+				else
+					float64_ge_out := 1 | (aSign ^ 0);
+				end
+			else
+				if a < b then
+					float64_ge_out := aSign ^ 1;
+				else
+					float64_ge_out := aSign ^ 0;
+				end
+			end
+		end
+	end 
+
+	result_app.out: action Add_In:[ap], Add_Flag:[af] ==> Result:[ap], Flag:[flag]
+	guard
+		float64_ge_out = 0
+	do
+		if (flag & af) = 0 then
+			flag := flag | af;
+		end
+		//println("["+i+"] app := "+ap);
+		i := i + 1;
+	end
+	
+	result_app.loop: action Add_In:[ap], Add_Flag:[af] ==>
+	guard
+		float64_ge_out != 0
+	do
+		app := ap;
+		if (flag & af) = 0 then
+			flag := flag | af;
+		end
+		//println("["+i+"] app := "+ap);
+	end
+	
+	schedule fsm rad_in:
+		rad_in (rad_in) --> mul_first;
+		
+		mul_first (mul_first) --> int32_to_float64;
+		
+		int32_to_float64 (int32_to_float64.azero) --> div_out_azero;
+		
+		int32_to_float64 (int32_to_float64.anotzero) --> div_out_anotzero;
+		
+		div_out_azero (div_out.azero) --> div_in;
+		
+		div_out_anotzero (div_out.anotzero) --> div_in;
+		
+		div_in (div_in) --> add_float_ge;
+		
+		add_float_ge (add_out) --> add_float_ge2;
+		
+		add_float_ge2 (float64_ge) --> result;
+		
+		result (result_app.out) --> rad_in;
+		
+		result (result_app.loop) --> mul_out;
+		
+		mul_out (mul_out) --> int32_to_float64;
+	end
+end
