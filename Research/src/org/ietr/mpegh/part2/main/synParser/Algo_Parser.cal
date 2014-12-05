@@ -36,8 +36,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				uint(size= 8) SEI_MD5,
 				uint(size= 2) SliceType,
 				bool          SplitTransform,
-				 int(size= 8) TUSize,
-				 int(size=16) Coeff,
+				 int(size= 8) TUSize_y,
+				 int(size= 8) TUSize_u,
+				 int(size= 8) TUSize_v,
+				 int(size=16) Coeff_y,
+				 int(size=16) Coeff_u,
+				 int(size=16) Coeff_v,
 				bool 		  StrongIntraSmoothing,
 				uint(size=14) DispCoord,
 				uint(size=9)  PicSizeInMb,
@@ -4210,9 +4214,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 *************************************************************************/
 	read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf :[false],
                  PartMode:[PART_2Nx2N], SplitTransform:[false]
-                 , TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
-																1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,	//cb
-																1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
+                 , 	TUSize_y:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0], //luma
+				   	TUSize_u:[1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0],	//cb
+					TUSize_v:[1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
 																																
 	guard
 		cu_idx = 2,
@@ -4539,9 +4543,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 
 	end
 
-	read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
-																1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,	//cb
-																1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
+	read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], 	TUSize_y:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0], //luma
+																			TUSize_u:[1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0],	//cb
+																			TUSize_v:[1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
 																																Cbf:[false]
 	guard
 		cu_idx = 11
@@ -5264,9 +5268,23 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_TransformUnit.skipResidualCoding
 	 *************************************************************************/
-	read_TransformUnit.skipResidualCoding : action ==> TUSize:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0]
+	read_TransformUnit.skipResidualCoding.y : action ==> TUSize_y:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0]
 	guard
-		tu_idx = 8 or tu_idx = 10 or tu_idx = 12
+		tu_idx = 8 or tu_idx = 10 or tu_idx = 12, rc_cIdx = 0
+	do
+		tu_idx := tu_idx - 5;
+	end
+	
+	read_TransformUnit.skipResidualCoding.u : action ==> TUSize_u:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0]
+	guard
+		tu_idx = 8 or tu_idx = 10 or tu_idx = 12, rc_cIdx = 1
+	do
+		tu_idx := tu_idx - 5;
+	end
+	
+	read_TransformUnit.skipResidualCoding.v : action ==> TUSize_v:[1<<rc_log2TrafoSize, 2, 0, 0, slice_qp, rc_cIdx, 0]
+	guard
+		tu_idx = 8 or tu_idx = 10 or tu_idx = 12, rc_cIdx = 2
 	do
 		tu_idx := tu_idx - 5;
 	end
@@ -5320,14 +5338,14 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		 int(size=16) qp;
 
 
-		read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
+	read_ResidualCoding.start.y : action ==> TUSize_y:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
 											if rc_cIdx = TEXT_CHROMA_U then
 												pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
 											else
 												pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
 																						end]
 	guard
-		isFifoFull(fifo)
+		isFifoFull(fifo), rc_cIdx = 0
 	var
 		 int(size=32) res[1],
 //        uint(size=16) xS := 0,
@@ -5467,6 +5485,304 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
 		rc_i := rc_lastSubBlock;
 	end
+	
+	read_ResidualCoding.start.u : action ==> TUSize_u:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
+											if rc_cIdx = TEXT_CHROMA_U then
+												pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
+											else
+												pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
+																						end]
+	guard
+		isFifoFull(fifo), rc_cIdx = 1
+	var
+		 int(size=32) res[1],
+//        uint(size=16) xS := 0,
+//        uint(size=16) yS := 0,
+//         int(size=16) xC := -1,
+//         int(size=16) yC := -1,
+		 int sz = 1 << rc_log2TrafoSize,
+		 uint(size=1) transform_skip_flag,
+		 int matrix_id,
+		 int qp_offset,
+		 int(size=16) qp_i,
+
+		 int x_cg_last_sig,
+		 int y_cg_last_sig,
+		 int last_x_c,
+		 int last_y_c,
+
+
+		uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
+		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
+		 uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
+	do
+		if DEBUG_CABAC and DEBUG_TRACE1 then
+			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end+"("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
+		elsif DEBUG_CABAC then
+			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end);
+		end
+
+
+		shift := if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5
+							  else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end;
+		if rc_cIdx = 0 then
+			qp := qp_y + qp_bd_offset_luma;
+		else
+			if rc_cIdx = 1 then
+				qp_offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
+			else
+				qp_offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
+			end
+			qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
+			if qp_i < 30 then
+				qp := qp_i;
+			elsif qp_i > 43 then
+				qp := qp_i - 6;
+			else
+				qp := qp_c[qp_i - 30];
+			end
+				qp := qp + qp_bd_offset_luma;
+		end
+		add := 1 << (shift - 1 );
+		scale := levelScale[ rem6[qp] ] << (div6[qp]);
+		scale_m := 16;
+		if sps_scaling_list_enabled_flag[sps_id] = 1 then
+			matrix_id := if predMode != INTRA then 1 else 0 end;
+
+			if rc_log2TrafoSize != 5 then
+				matrix_id := 3 * matrix_id + rc_cIdx;
+			end
+			if pps_scaling_list_data_present_flag[pps_id] = 1 then
+				foreach int i in 0 .. 63 do
+					scale_matrix[i] := pps_sl[pps_id][rc_log2TrafoSize - 2][matrix_id][i];
+				end
+				if rc_log2TrafoSize >= 4 then
+					dc_scale := pps_sl_dc[pps_id][rc_log2TrafoSize - 4][matrix_id];
+				end
+			else
+				foreach int i in 0 .. 63 do
+					scale_matrix[i] := sps_sl[sps_id][rc_log2TrafoSize - 2][matrix_id][i];
+				end
+				if rc_log2TrafoSize >= 4 then
+					dc_scale := sps_sl_dc[sps_id][rc_log2TrafoSize - 4][matrix_id];
+				end
+			end
+		end
+
+		foreach int i in 0 .. sz * sz - 1 do
+			tabTransCoeffLevel[i] := 0;
+		end
+		coded_sub_block_flag := [[0	: for int j in 0 .. 7]	: for int i in 0 .. 7];
+		if pps_transform_skip_enabled_flag[pps_id] = 1 and cu_transquant_bypass_flag = 0 and
+			rc_log2TrafoSize = 2 then
+			get_TRANSFORM_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, rc_cIdx);
+			transform_skip_flag := res[0];
+		else
+			transform_skip_flag := 0;
+		end
+
+		get_LAST_SIGNIFICANT_COEFF_X_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
+		LastSignificantCoeffX := res[0];
+		get_LAST_SIGNIFICANT_COEFF_Y_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
+		LastSignificantCoeffY := res[0];
+		if LastSignificantCoeffX > 3 then
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffX);
+			LastSignificantCoeffX := (1 << ((LastSignificantCoeffX >> 1) - 1)) *
+									 (2  +  (LastSignificantCoeffX & 1 )) + res[0];
+		end
+		if LastSignificantCoeffY > 3 then
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffY);
+			LastSignificantCoeffY := (1 << ((LastSignificantCoeffY >> 1) - 1)) *
+									 (2  +  (LastSignificantCoeffY & 1 )) + res[0];
+		end
+
+
+		if rc_scanIdx = SCAN_VER then
+			res[0] := LastSignificantCoeffX;
+			LastSignificantCoeffX := LastSignificantCoeffY;
+			LastSignificantCoeffY := res[0];
+		end
+
+		x_cg_last_sig := LastSignificantCoeffX >> 2;
+		y_cg_last_sig := LastSignificantCoeffY >> 2;
+
+		if rc_scanIdx = 0 then
+		  last_x_c := LastSignificantCoeffX & 3;
+		  last_y_c := LastSignificantCoeffY & 3;
+
+		  num_coeff := diag_scan4x4_inv[last_y_c][last_x_c];
+
+		  if rc_log2TrafoSize = 3 then
+			num_coeff := (num_coeff + (diag_scan2x2_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+		  elsif rc_log2TrafoSize = 4 then
+			num_coeff := (num_coeff + (diag_scan4x4_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+		   else // rc_log2TrafoSize = 5 then
+			num_coeff := (num_coeff + (diag_scan8x8_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+		  end
+
+		elsif rc_scanIdx = 1 then
+		  num_coeff := horiz_scan8x8_inv[LastSignificantCoeffY][LastSignificantCoeffX];
+
+		elsif rc_scanIdx = 2 then
+		  num_coeff := horiz_scan8x8_inv[LastSignificantCoeffX][LastSignificantCoeffY];
+		end
+
+		num_coeff := num_coeff + 1;
+		rc_lastSubBlock := (num_coeff - 1) >> 4;
+		rc_lastScanPos := num_coeff - (rc_lastSubBlock << 4) - 1;
+
+		rc_i := rc_lastSubBlock;
+	end
+	
+	
+	read_ResidualCoding.start.v : action ==> TUSize_v:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
+											if rc_cIdx = TEXT_CHROMA_U then
+												pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
+											else
+												pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
+																						end]
+	guard
+		isFifoFull(fifo), rc_cIdx = 2
+	var
+		 int(size=32) res[1],
+//        uint(size=16) xS := 0,
+//        uint(size=16) yS := 0,
+//         int(size=16) xC := -1,
+//         int(size=16) yC := -1,
+		 int sz = 1 << rc_log2TrafoSize,
+		 uint(size=1) transform_skip_flag,
+		 int matrix_id,
+		 int qp_offset,
+		 int(size=16) qp_i,
+
+		 int x_cg_last_sig,
+		 int y_cg_last_sig,
+		 int last_x_c,
+		 int last_y_c,
+
+
+		uint(size= 8) qp_c[15] = [ 29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37],
+		uint(size= 8) levelScale[6] = [ 40, 45, 51, 57, 64, 72 ],
+		 uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
+	do
+		if DEBUG_CABAC and DEBUG_TRACE1 then
+			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end+"("+rc_x0+", "+rc_y0+", "+rc_log2TrafoSize+", "+rc_scanIdx+", "+rc_cIdx+")");
+		elsif DEBUG_CABAC then
+			println("read_ResidualCoding.start "+if rc_cIdx = TEXT_LUMA then "cbY" elsif rc_cIdx = TEXT_CHROMA_U then "cbU" else "cbV" end);
+		end
+
+
+		shift := if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5
+							  else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end;
+		if rc_cIdx = 0 then
+			qp := qp_y + qp_bd_offset_luma;
+		else
+			if rc_cIdx = 1 then
+				qp_offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
+			else
+				qp_offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
+			end
+			qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
+			if qp_i < 30 then
+				qp := qp_i;
+			elsif qp_i > 43 then
+				qp := qp_i - 6;
+			else
+				qp := qp_c[qp_i - 30];
+			end
+				qp := qp + qp_bd_offset_luma;
+		end
+		add := 1 << (shift - 1 );
+		scale := levelScale[ rem6[qp] ] << (div6[qp]);
+		scale_m := 16;
+		if sps_scaling_list_enabled_flag[sps_id] = 1 then
+			matrix_id := if predMode != INTRA then 1 else 0 end;
+
+			if rc_log2TrafoSize != 5 then
+				matrix_id := 3 * matrix_id + rc_cIdx;
+			end
+			if pps_scaling_list_data_present_flag[pps_id] = 1 then
+				foreach int i in 0 .. 63 do
+					scale_matrix[i] := pps_sl[pps_id][rc_log2TrafoSize - 2][matrix_id][i];
+				end
+				if rc_log2TrafoSize >= 4 then
+					dc_scale := pps_sl_dc[pps_id][rc_log2TrafoSize - 4][matrix_id];
+				end
+			else
+				foreach int i in 0 .. 63 do
+					scale_matrix[i] := sps_sl[sps_id][rc_log2TrafoSize - 2][matrix_id][i];
+				end
+				if rc_log2TrafoSize >= 4 then
+					dc_scale := sps_sl_dc[sps_id][rc_log2TrafoSize - 4][matrix_id];
+				end
+			end
+		end
+
+		foreach int i in 0 .. sz * sz - 1 do
+			tabTransCoeffLevel[i] := 0;
+		end
+		coded_sub_block_flag := [[0	: for int j in 0 .. 7]	: for int i in 0 .. 7];
+		if pps_transform_skip_enabled_flag[pps_id] = 1 and cu_transquant_bypass_flag = 0 and
+			rc_log2TrafoSize = 2 then
+			get_TRANSFORM_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res, rc_cIdx);
+			transform_skip_flag := res[0];
+		else
+			transform_skip_flag := 0;
+		end
+
+		get_LAST_SIGNIFICANT_COEFF_X_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
+		LastSignificantCoeffX := res[0];
+		get_LAST_SIGNIFICANT_COEFF_Y_PREFIX(codIRange, codIOffset, ctxTable, fifo, res, rc_log2TrafoSize, rc_cIdx);
+		LastSignificantCoeffY := res[0];
+		if LastSignificantCoeffX > 3 then
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffX);
+			LastSignificantCoeffX := (1 << ((LastSignificantCoeffX >> 1) - 1)) *
+									 (2  +  (LastSignificantCoeffX & 1 )) + res[0];
+		end
+		if LastSignificantCoeffY > 3 then
+			get_LAST_SIGNIFICANT_COEFF_XY_SUFFIX(codIRange, codIOffset, fifo, res, LastSignificantCoeffY);
+			LastSignificantCoeffY := (1 << ((LastSignificantCoeffY >> 1) - 1)) *
+									 (2  +  (LastSignificantCoeffY & 1 )) + res[0];
+		end
+
+
+		if rc_scanIdx = SCAN_VER then
+			res[0] := LastSignificantCoeffX;
+			LastSignificantCoeffX := LastSignificantCoeffY;
+			LastSignificantCoeffY := res[0];
+		end
+
+		x_cg_last_sig := LastSignificantCoeffX >> 2;
+		y_cg_last_sig := LastSignificantCoeffY >> 2;
+
+		if rc_scanIdx = 0 then
+		  last_x_c := LastSignificantCoeffX & 3;
+		  last_y_c := LastSignificantCoeffY & 3;
+
+		  num_coeff := diag_scan4x4_inv[last_y_c][last_x_c];
+
+		  if rc_log2TrafoSize = 3 then
+			num_coeff := (num_coeff + (diag_scan2x2_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+		  elsif rc_log2TrafoSize = 4 then
+			num_coeff := (num_coeff + (diag_scan4x4_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+		   else // rc_log2TrafoSize = 5 then
+			num_coeff := (num_coeff + (diag_scan8x8_inv[y_cg_last_sig][x_cg_last_sig] << 4));
+		  end
+
+		elsif rc_scanIdx = 1 then
+		  num_coeff := horiz_scan8x8_inv[LastSignificantCoeffY][LastSignificantCoeffX];
+
+		elsif rc_scanIdx = 2 then
+		  num_coeff := horiz_scan8x8_inv[LastSignificantCoeffX][LastSignificantCoeffY];
+		end
+
+		num_coeff := num_coeff + 1;
+		rc_lastSubBlock := (num_coeff - 1) >> 4;
+		rc_lastScanPos := num_coeff - (rc_lastSubBlock << 4) - 1;
+
+		rc_i := rc_lastSubBlock;
+	end
+	
 
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.start
@@ -5528,49 +5844,151 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_ResidualCoding_end
 	 *************************************************************************/
-	read_ResidualCoding_end.xIT4 : action ==>
-						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1]] repeat 4 * 4
+	read_ResidualCoding_end.xIT4_y : action ==>
+						Coeff_y:[[tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1]] repeat 4 * 4
 	guard
 		rc_i < 0,
-		rc_log2TrafoSize = 2
+		rc_log2TrafoSize = 2,
+		rc_cIdx = 0
 	do
 		if DEBUG_CABAC then
 			println("read_ResidualCoding_end");
 		end
 	end
 
-	read_ResidualCoding_end.xIT8 : action ==>
-						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 8 * 8 - 1]] repeat 8 * 8
+	read_ResidualCoding_end.xIT8_y : action ==>
+						Coeff_y:[[tabTransCoeffLevel[i]: for int i in 0 .. 8 * 8 - 1]] repeat 8 * 8
 	guard
 		rc_i < 0,
-		rc_log2TrafoSize = 3
+		rc_log2TrafoSize = 3,
+		rc_cIdx = 0
 	do
 		if DEBUG_CABAC then
 			println("read_ResidualCoding_end");
 		end
 	end
 
-	read_ResidualCoding_end.xIT16 : action ==>
-						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 16 * 16 - 1]] repeat 16 * 16
+	read_ResidualCoding_end.xIT16_y : action ==>
+						Coeff_y:[[tabTransCoeffLevel[i]: for int i in 0 .. 16 * 16 - 1]] repeat 16 * 16
 	guard
 		rc_i < 0,
-		rc_log2TrafoSize = 4
+		rc_log2TrafoSize = 4,
+		rc_cIdx = 0
 	do
 		if DEBUG_CABAC then
 			println("read_ResidualCoding_end");
 		end
 	end
 
-	read_ResidualCoding_end.xIT32 : action ==>
-						Coeff:[[tabTransCoeffLevel[i]: for int i in 0 .. 32 * 32 - 1]] repeat 32 * 32
+	read_ResidualCoding_end.xIT32_y : action ==>
+						Coeff_y:[[tabTransCoeffLevel[i]: for int i in 0 .. 32 * 32 - 1]] repeat 32 * 32
 	guard
 		rc_i < 0,
-		rc_log2TrafoSize = 5
+		rc_log2TrafoSize = 5,
+		rc_cIdx = 0
 	do
 		if DEBUG_CABAC then
 			println("read_ResidualCoding_end");
 		end
 	end
+	
+	////////////////////////////////////////////////////////////////////////////////////////////////////////
+	read_ResidualCoding_end.xIT4_u : action ==>
+						Coeff_u:[[tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1]] repeat 4 * 4
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 2,
+		rc_cIdx = 1
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+
+	read_ResidualCoding_end.xIT8_u : action ==>
+						Coeff_u:[[tabTransCoeffLevel[i]: for int i in 0 .. 8 * 8 - 1]] repeat 8 * 8
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 3,
+		rc_cIdx = 1
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+
+	read_ResidualCoding_end.xIT16_u : action ==>
+						Coeff_u:[[tabTransCoeffLevel[i]: for int i in 0 .. 16 * 16 - 1]] repeat 16 * 16
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 4,
+		rc_cIdx = 1
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+
+	read_ResidualCoding_end.xIT32_u : action ==>
+						Coeff_u:[[tabTransCoeffLevel[i]: for int i in 0 .. 32 * 32 - 1]] repeat 32 * 32
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 5,
+		rc_cIdx = 1
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+	////////////////////////////////////////////////////////////////////////////////////////////////////////
+		read_ResidualCoding_end.xIT4_v : action ==>
+						Coeff_v:[[tabTransCoeffLevel[i]: for int i in 0 .. 4 * 4 - 1]] repeat 4 * 4
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 2,
+		rc_cIdx = 2
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+
+	read_ResidualCoding_end.xIT8_v : action ==>
+						Coeff_v:[[tabTransCoeffLevel[i]: for int i in 0 .. 8 * 8 - 1]] repeat 8 * 8
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 3,
+		rc_cIdx = 2
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+
+	read_ResidualCoding_end.xIT16_v : action ==>
+						Coeff_v:[[tabTransCoeffLevel[i]: for int i in 0 .. 16 * 16 - 1]] repeat 16 * 16
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 4,
+		rc_cIdx = 2
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+
+	read_ResidualCoding_end.xIT32_v : action ==>
+						Coeff_v:[[tabTransCoeffLevel[i]: for int i in 0 .. 32 * 32 - 1]] repeat 32 * 32
+	guard
+		rc_i < 0,
+		rc_log2TrafoSize = 5,
+		rc_cIdx = 2
+	do
+		if DEBUG_CABAC then
+			println("read_ResidualCoding_end");
+		end
+	end
+	////////////////////////////////////////////////////////////////////////////////////////////////////////
 	/**************************************************************************
 	 * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
 	 *************************************************************************/
