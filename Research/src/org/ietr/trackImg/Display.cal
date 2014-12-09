@@ -14,12 +14,17 @@ actor Display()
 	int  RectCoords,
 	int PictSize
 		==>
+	int SelectedObjCoords,
+	uint(size=8)  SelectedObj_Red,
+	uint(size=8)  SelectedObj_Green,
+	uint(size=8)  SelectedObj_Blue
 		:
 
 	uint(size=8)  pictureBufferR[WIDTH * HEIGHT];
 	uint(size=8)  pictureBufferG[WIDTH * HEIGHT];
 	uint(size=8)  pictureBufferB[WIDTH * HEIGHT];
 	int (size=32) pictureSizeInMb;
+	int (size=32) picture_width;
 	int (size=32) nbBlockGot;
 	int (size=32) nbFrameDecoded;
 	uint(size=16) cropPicWthLuma;
@@ -35,12 +40,20 @@ actor Display()
 	int Rect_x2;
 	int Rect_y2;
 	
+	int Rect_h;
+	int Rect_w;
+	uint counter := 0;
+	
 	int pos1[2]:=[50,50];
 	int pos2[2]:=[150,90];
+	
+	int index_x := 0;
+	int index_y := 0;
 	
 	getFirstPictureSize: action PictSize:[width, height] ==>
 	do
 		displayRGB_init(width, height, width, height);
+		picture_width  := width;
 		pictureSizeInMb   := width * height / MB_SIZE_IN_PIX;
 		xMin := 0;
 		xMax := width - 1;
@@ -81,7 +94,7 @@ actor Display()
 		nbBlockGot := nbBlockGot + 1;
 	end
 
-	displayFirstPicture: action ==>
+	displayFirstPicture: action ==> SelectedObjCoords:[Rect_x1, Rect_y1, Rect_x2, Rect_y2]
 	guard
 		nbBlockGot = pictureSizeInMb
 	do
@@ -94,9 +107,43 @@ actor Display()
 			Rect_y1 := pos1[1];
 			Rect_x2 := pos2[0];
 			Rect_y2 := pos2[1];
-			displayTrackRect( Rect_x1, Rect_y1, Rect_x2, Rect_y2);
+			displayTrackRect(Rect_x1, Rect_y1, Rect_x2, Rect_y2);
 		end
 		nbFrameDecoded := nbFrameDecoded + 1;
+		Rect_w := if Rect_x1 >= Rect_x2 then Rect_x1-Rect_x2 else  Rect_x2-Rect_x1 end;
+		Rect_h := if Rect_y1 >= Rect_y2 then Rect_y1-Rect_y2 else  Rect_y2-Rect_y1 end;
+	end
+	
+	sendSelectedObj: action ==> SelectedObj_Red:[red], SelectedObj_Green:[green], SelectedObj_Blue:[blue]
+	guard
+		counter < Rect_w*Rect_h
+	var
+		uint (size=8) red,
+		uint (size=8) green,
+		uint (size=8) blue
+	do
+		red   := pictureBufferR[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
+		green := pictureBufferG[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
+		blue  := pictureBufferB[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
+//		println("red = " + red);
+//		println("green = " + green);
+//		println("blue = " + blue);
+		if index_x = Rect_w then 
+			index_x := 0;
+			index_y := index_y + 1;
+		else
+			index_x := index_x + 1;
+		end
+		counter := counter + 1;
+	end
+	
+	sendSelectedObj_done: action ==>
+	guard
+		counter = Rect_w*Rect_h
+	do
+		counter := 0;
+		index_x := 0;
+		index_y := 0;
 	end
 	
 	displayPicture: action ==>
@@ -114,7 +161,9 @@ actor Display()
 	schedule fsm GetFirstPictureSize:
 		GetFirstPictureSize 		(getFirstPictureSize	)--> GetFirstBlocks;
 		GetFirstBlocks      		(getBlocks  			)--> GetFirstBlocks;
-		GetFirstBlocks      		(displayFirstPicture   	)--> GetPictureSize;
+		GetFirstBlocks      		(displayFirstPicture   	)--> sendSelectedObj;
+		sendSelectedObj				(sendSelectedObj		)--> sendSelectedObj;
+		sendSelectedObj				(sendSelectedObj_done	)--> GetPictureSize;
 		GetPictureSize    			(getPictureSize   		)--> GetBlocks;
 		GetBlocks					(getBlocks				)--> GetBlocks;
 		GetBlocks					(displayPicture			)--> GetPictureSize;
