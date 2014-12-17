@@ -1,13 +1,8 @@
 package org.ietr.trackImg;
 
 import org.ietr.trackImg.DisplayNative.*;
+import org.ietr.trackImg.TrackConstants.*;
 
-actor tracker () ==> :
-	
-	uint(size=8) Tar_fea1 [SEL_OBJ_MAX_SZ * 3];
-	
-	action ==>
-	do
 		/* ------------------------------------------ 
 		 * |	---------------------				|
 		 * |	|	sliding window	|				|
@@ -15,12 +10,104 @@ actor tracker () ==> :
 		 * |	|	|obj|			|				|
 		 * |	|	-----			|				|
 		 * |	---------------------				|
+		 * |										|
+		 * |										|
 		 * |	picture								|
-		 * |										|
-		 * |										|
 		 * |										|
 		 * |-----------------------------------------
 		 * */
+
+actor tracker () uint(size=8)  Red,
+	uint(size=8)  Green,
+	uint(size=8)  Blue,
+	int SelectedObjCoords,
+	int PictSize  ==> :
+	
+	int Rect_h;
+	int Rect_w;
+	
+	int pos1[2]:=[50,50];
+	int pos2[2]:=[150,90];
+	
+	int index_x := 0;
+	int index_y := 0;
+	
+	uint(size=8)  pictureBufferR[WIDTH * HEIGHT];
+	uint(size=8)  pictureBufferG[WIDTH * HEIGHT];
+	uint(size=8)  pictureBufferB[WIDTH * HEIGHT];
+	uint(size=8)  red  [WIDTH/4 * HEIGHT/4];
+	uint(size=8)  green[WIDTH/4 * HEIGHT/4];
+	uint(size=8)  blue [WIDTH/4 * HEIGHT/4];
+	int (size=32) pictureSizeInMb;
+	int (size=32) picture_width;
+	int (size=32) nbBlockGot;
+	
+	uint(size=8) Tar_fea1 [SEL_OBJ_MAX_SZ * 3];
+	
+	procedure Rec_two_stage_sparse ()
+	begin
+		
 	end
 	
+	getPictureSize: action PictSize:[width, height] ==>
+	do
+		picture_width  := width;
+		pictureSizeInMb   := width * height / MB_SIZE_IN_PIX;
+		nbBlockGot := 0;
+	end
+
+	getBlocks: action Red :[red] repeat MB_SIZE_IN_PIX, Green :[green] repeat MB_SIZE_IN_PIX, Blue :[blue] repeat MB_SIZE_IN_PIX ==>
+	guard
+		nbBlockGot < pictureSizeInMb
+	do
+		
+		foreach int i in 0 .. MB_SIZE_IN_PIX - 1 do
+			pictureBufferR[i + MB_SIZE_IN_PIX * nbBlockGot] := red[i];
+			pictureBufferG[i + MB_SIZE_IN_PIX * nbBlockGot] := green[i];
+			pictureBufferB[i + MB_SIZE_IN_PIX * nbBlockGot] := blue[i];
+		end
+		nbBlockGot := nbBlockGot + 1;
+	end
+	
+	getBlocks_done: action ==>
+	guard
+		nbBlockGot = pictureSizeInMb
+	do
+		nbBlockGot := 0;
+	end
+	
+	
+	getFirstRectSize: action SelectedObjCoords:[Rect_x1, Rect_y1, Rect_x2, Rect_y2] ==> 
+	guard
+		nbBlockGot = pictureSizeInMb
+	do
+		Rect_w := if Rect_x1 >= Rect_x2 then Rect_x1-Rect_x2 else  Rect_x2-Rect_x1 end;
+		Rect_h := if Rect_y1 >= Rect_y2 then Rect_y1-Rect_y2 else  Rect_y2-Rect_y1 end;
+		
+		foreach int i in 0 .. Rect_w * Rect_h - 1 do
+			red[i]   := pictureBufferR[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
+			green[i] := pictureBufferG[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
+			blue[i]  := pictureBufferB[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
+		
+			if index_x = Rect_w then 
+				index_x := 0;
+				index_y := index_y + 1;
+			else
+				index_x := index_x + 1;
+			end
+		end
+		index_x := 0;
+		index_y := 0;
+		nbBlockGot := 0;
+	end
+	
+	schedule fsm GetFirstPictureSize:
+		GetFirstPictureSize 		(getPictureSize			)--> GetFirstBlocks;
+		GetFirstBlocks      		(getBlocks  			)--> GetFirstBlocks;
+		GetFirstBlocks      		(getFirstRectSize   	)--> GetPictureSize;
+		
+		GetPictureSize    			(getPictureSize   		)--> GetBlocks;
+		GetBlocks					(getBlocks				)--> GetBlocks;
+		GetBlocks					(getBlocks_done			)--> GetPictureSize;
+	end
 end
