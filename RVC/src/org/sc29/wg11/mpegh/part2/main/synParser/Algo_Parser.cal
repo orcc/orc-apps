@@ -328,6 +328,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size=10) vps_num_hrd_parameters;
 		uint(size= 8) video_sequence_id := 0;
 		uint(size=16) vps_m_extensionOffset;
+		uint(size=8 ) vps_max_layers;
+		uint(size=1 ) vps_temporal_id_nesting_flag;
 		
         /**************************************************************************
          * read_VPS_Header.se_idx_1
@@ -341,10 +343,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         	video_sequence_id := video_sequence_id + 1;
             vld_u_name(  4, fifo, res, "vps_video_parameter_set_id              ");
             vld_u_name(  2, fifo, res, "vps_reserved_three_2bits                ");
-            vld_u_name(  6, fifo, res, "vps_reserved_zero_6bits                 ");
+            vld_u_name(  6, fifo, res, "vps_max_layers                          ");
+            vps_max_layers := res[0] + 1;
             vld_u_name(  3, fifo, res, "vps_max_sub_layers_minus1               ");
 	        vps_max_sub_layers_minus1 := res[0];
 	        vld_u_name(  1, fifo, res, "vps_temporal_id_nesting_flag            ");
+	        vps_temporal_id_nesting_flag := res[0];
 	        vld_u_name( 16, fifo, res, "vps_reserved_ffff_16bits                ");
 	        vps_m_extensionOffset := res[0];
 	        se_idx := se_idx + 1;
@@ -639,17 +643,33 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	     *************************************************************************/
 	    int numScalabilityTypes;
 	    int vps_avc_base_layer_flag;
-	    int vps_splitting_flag;
+	    uint(size=1) vps_splitting_flag;
 	    int vps_scalability_mask[16];
 	    int vps_m_numScalabilityTypes;
 	    int vps_dimension_id_len[16];
+	    uint(size=1) vps_nuh_layer_id_present_flag;
+	    int vps_layer_id_in_nuh[2];
+    	int vps_m_layerIdInVps[2];
+	    int loop1Counter := 1;
+	    int loop2Counter := 0;
+	    int dimension_id[2][16];
+	    uint(size=8) vps_m_viewIdLenMinus1;
+	    int numViews := 1;
+	    uint vps_m_scalabilityMask[16]:=[0:for int k in 0 .. 15];
+	    uint vps_m_dimensionId[2][16] := [[0:for int j in 0 .. 15]:for int k in 0 .. 1];
+	    int scalIdx := 0;
+	    int scalabilityIdReturn :=0;
+	    uint vps_m_layerIdInNuh[2]:=[0,0];
+	    uint vps_m_viewIdVal[2];
+	    uint vps_m_numDirectRefLayers[16];
+	    uint vps_m_directDependencyFlag[2][2];
+	    uint vps_m_refLayerId[2][2];
 	    
 	    read_VPS_Header_scalableExtensions : action ==>
 	    guard
 	    	se_idx = 12 and isFifoFull(fifo)
 	    var
-	    	uint(size=32) res[1],
-	    	int numBits
+	    	uint(size=32) res[1]
 	    do
 	    	//start extensions
 	    	numScalabilityTypes := 0;
@@ -657,12 +677,23 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    	vps_avc_base_layer_flag := res[0];
 	    	vld_u_name(  1, fifo, res, "vps_splitting_flag                      ");
 	    	vps_splitting_flag := res[0];
-	    	foreach int i in 0 .. MAX_VPS_NUM_SCALABILITY_TYPES do
+	    	foreach int i in 0 .. MAX_VPS_NUM_SCALABILITY_TYPES -1 do
 	    		vld_u_name(  1, fifo, res, "vps_scalability_mask                    ");
         		vps_scalability_mask[i] := res[0];
         		numScalabilityTypes := numScalabilityTypes + vps_scalability_mask[i];
     		end	    	
 	    	vps_m_numScalabilityTypes := numScalabilityTypes;
+	    	
+	    	se_idx := 1;
+	    end
+	     
+	    read_VPS_Extensions.se_idx_1: action ==>
+	    guard
+	    	se_idx = 1 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int numBits
+	    do
 	    	foreach int i in 0 .. (numScalabilityTypes - vps_splitting_flag) - 1 do
 	    		vld_u_name(  3, fifo, res, "vps_dimension_id_len_minus1             ");
         		vps_dimension_id_len[i] := res[0] + 1;
@@ -678,15 +709,135 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         		//TODO: vps_m_dimensionIdLen[numScalabilityTypes-1] := 6-numBits;
         		numBits := 6;
         	end
-	    	
-	    	se_idx := 1;
+        	vld_u_name(  1, fifo, res, "vps_nuh_layer_id_present_flag           ");
+	    	vps_nuh_layer_id_present_flag := res[0];
+	    	vps_layer_id_in_nuh[0] := 0;
+    		vps_m_layerIdInVps[0]  := 0;
+    		
+        	se_idx := 2;
 	    end
-	     
-	    read_VPS_Extensions: action ==>
+	    
+	    read_VPS_Extensions.se_idx_2_loop1: action ==>
 	    guard
-	    	se_idx = 1 and isFifoFull(fifo)
+	    	se_idx = 2 and isFifoFull(fifo), loop1Counter < vps_max_layers
+	    var
+	    	uint(size=32) res[1]
 	    do
-	    	
+	    	if vps_nuh_layer_id_present_flag = 1 then
+	    		vld_u_name(  6, fifo, res, "vps_layer_id_in_nuh                     ");
+            	vps_layer_id_in_nuh[loop1Counter] := res[0];
+        	else
+            	vps_layer_id_in_nuh[loop1Counter] := loop1Counter;
+            end
+        	vps_m_layerIdInVps[vps_layer_id_in_nuh[loop1Counter]] := loop1Counter;
+    		
+	    	se_idx := 21;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_endLoop1: action ==>
+	    guard
+	    	se_idx = 2 and loop1Counter = vps_max_layers
+	    do
+	    	loop1Counter := 1;
+	    	se_idx := 3;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_loop2: action ==>
+	    guard
+	    	se_idx = 21 and isFifoFull(fifo), loop2Counter < numScalabilityTypes
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  vps_dimension_id_len[loop2Counter], fifo, res, "dimension_id                            ");
+	    	dimension_id[loop1Counter][loop2Counter] := res[0];
+	    	loop2Counter := loop2Counter + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_loop2_done: action ==>
+	    guard
+	    	se_idx = 21 and loop2Counter = numScalabilityTypes
+	    do
+	    	loop2Counter := 0;
+	    	loop1Counter := loop1Counter + 1;
+	    	se_idx := 2;
+	    end
+	    
+	    procedure scalTypeToScalIdx(int scalType)
+		begin
+			scalIdx := 0;
+		    foreach int curScalType in 0 .. scalType - 1 do
+		        scalIdx := scalIdx + ( if vps_m_scalabilityMask[curScalType] !=0 then 1 else 0 end);
+			end
+		end
+	    
+	    
+	    procedure getScalabilityId( int layerIdInVps, int scalType)
+	    begin
+    		if vps_m_scalabilityMask[scalType] != 0  then
+    			scalTypeToScalIdx(scalType);
+    			scalabilityIdReturn := vps_m_dimensionId[layerIdInVps][scalIdx];
+    		else 
+    			scalabilityIdReturn := 0;
+    		end
+		end
+	    procedure getNumViews ()
+	    var
+	    	int lId,
+	    	int resProc1,
+	    	int resProc2
+	    begin
+	    	numViews := 1;
+		    foreach int i in 0 .. vps_max_layers - 1 do
+		        lId := vps_m_layerIdInNuh[ i ];
+		        if i > 0 then
+			        getScalabilityId( vps_m_layerIdInVps[lId], VIEW_ORDER_INDEX );
+			        resProc1 := scalabilityIdReturn;
+			        getScalabilityId( i - 1, VIEW_ORDER_INDEX );
+			        resProc2 := scalabilityIdReturn;
+		        
+		        	if ( resProc1 != resProc2 ) then
+		            	numViews := numViews + 1;
+		            end
+				end
+		    end    
+		end
+	    
+	    read_VPS_Extensions.se_idx_3: action ==>
+	    guard
+	    	se_idx = 3 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  4, fifo, res, "vps_m_viewIdLenMinus1                   ");
+	    	vps_m_viewIdLenMinus1 := res[0];
+	    	getNumViews();
+	    	foreach int i in 0 .. numViews - 1 do
+	    		vld_u_name(  vps_m_viewIdLenMinus1 + 1, fifo, res, "view_id_val                             ");
+        		vps_m_viewIdVal[i] := res[0];
+			end
+			
+			se_idx := 4; 
+	    end
+	    
+	    read_VPS_Extensions.se_idx_4: action ==>
+	    guard
+	    	se_idx = 4 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int numDirectRefLayers := 0
+	    do
+	    	vps_m_numDirectRefLayers[0] := 0;
+	    	foreach int i in 1 .. vps_max_layers - 1 do
+        		foreach int j in 0 .. i - 1 do
+        			vld_u_name(  1, fifo, res, "direct_dependency_flag                  ");
+            		vps_m_directDependencyFlag[i][j] := res[0];
+            		if vps_m_directDependencyFlag[i][j] != 0 then
+                		vps_m_refLayerId[i][numDirectRefLayers] := j;
+                		numDirectRefLayers := numDirectRefLayers + 1;
+            		end
+        		end
+        		vps_m_numDirectRefLayers[i] := numDirectRefLayers;
+    		end
 	    end
 	    
 	    read_VPS_Extensions_done: action ==>
