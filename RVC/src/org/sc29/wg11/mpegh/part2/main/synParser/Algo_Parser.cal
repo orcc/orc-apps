@@ -327,6 +327,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size=10) vps_num_op_sets_minus1;
 	    uint(size=10) vps_num_hrd_parameters;
 		uint(size= 8) video_sequence_id := 0;
+		uint(size=16) vps_m_extensionOffset;
 		
         /**************************************************************************
          * read_VPS_Header.se_idx_1
@@ -345,6 +346,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        vps_max_sub_layers_minus1 := res[0];
 	        vld_u_name(  1, fifo, res, "vps_temporal_id_nesting_flag            ");
 	        vld_u_name( 16, fifo, res, "vps_reserved_ffff_16bits                ");
+	        vps_m_extensionOffset := res[0];
 	        se_idx := se_idx + 1;
         end
         /**************************************************************************
@@ -541,6 +543,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    var
 	        uint(size=32) res[1]
 	    do
+	    	//TODO: deriveLayerIdListVariables
 	        vld_u_name(  1, fifo, res, "vps_timing_info_present_flag            ");
 	        vps_timing_info_present_flag := res[0];
 	        if vps_timing_info_present_flag = 1 then
@@ -610,7 +613,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        /**************************************************************************
 	         * read_VPS_Header_done
 	         *************************************************************************/
-	    read_VPS_Header_done : action ==>
+	    read_VPS_Header.checkExtension : action ==>
 	    guard
 	    	se_idx = 10 and isFifoFull(fifo)
 	    var
@@ -618,9 +621,80 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    do
 	        vld_u_name(1, fifo, res,
 	        "vps_extension_flag                      ");
+	        se_idx := 11;
 	        if res[0] = 1 then
-	        	println("not support for vps_extension_flag != 0");
+	        	byte_align(fifo);
+	        	println("Now support for vps_extension_flag :)))))))))))) ");
+	        	se_idx := 12;
 	        end
+	    end
+	    
+	    read_VPS_Header_done: action ==>
+	    guard
+	    	se_idx = 11 and isFifoFull(fifo)
+	    end
+	    
+	    /**************************************************************************
+	     * read_VPS_Extensions
+	     *************************************************************************/
+	    int numScalabilityTypes;
+	    int vps_avc_base_layer_flag;
+	    int vps_splitting_flag;
+	    int vps_scalability_mask[16];
+	    int vps_m_numScalabilityTypes;
+	    int vps_dimension_id_len[16];
+	    
+	    read_VPS_Header_scalableExtensions : action ==>
+	    guard
+	    	se_idx = 12 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int numBits
+	    do
+	    	//start extensions
+	    	numScalabilityTypes := 0;
+	    	vld_u_name(  1, fifo, res, "vps_avc_base_layer_flag                 ");
+	    	vps_avc_base_layer_flag := res[0];
+	    	vld_u_name(  1, fifo, res, "vps_splitting_flag                      ");
+	    	vps_splitting_flag := res[0];
+	    	foreach int i in 0 .. MAX_VPS_NUM_SCALABILITY_TYPES do
+	    		vld_u_name(  1, fifo, res, "vps_scalability_mask                    ");
+        		vps_scalability_mask[i] := res[0];
+        		numScalabilityTypes := numScalabilityTypes + vps_scalability_mask[i];
+    		end	    	
+	    	vps_m_numScalabilityTypes := numScalabilityTypes;
+	    	foreach int i in 0 .. (numScalabilityTypes - vps_splitting_flag) - 1 do
+	    		vld_u_name(  3, fifo, res, "vps_dimension_id_len_minus1             ");
+        		vps_dimension_id_len[i] := res[0] + 1;
+			end
+	    	if vps_splitting_flag = 1 then
+	    		numBits := 0;
+	    		foreach int i in 0 .. numScalabilityTypes-2 do
+           			numBits := numBits + vps_dimension_id_len[i];
+        		end
+        		if numBits > 6 then
+        			println("error numBits > 6");
+        		end
+        		//TODO: vps_m_dimensionIdLen[numScalabilityTypes-1] := 6-numBits;
+        		numBits := 6;
+        	end
+	    	
+	    	se_idx := 1;
+	    end
+	     
+	    read_VPS_Extensions: action ==>
+	    guard
+	    	se_idx = 1 and isFifoFull(fifo)
+	    do
+	    	
+	    end
+	    
+	    read_VPS_Extensions_done: action ==>
+	    guard
+	    	//se_idx = ?? and 
+	    	isFifoFull(fifo)
+	    do
+	    	
 	    end
 	        /**************************************************************************
 	         **************************************************************************
@@ -5677,6 +5751,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 // read VPS header
                 read_VPS_Header                                 ( read_VPS_Header                               ) --> read_VPS_Header;
                 read_VPS_Header                                 ( read_VPS_Header_done                          ) --> byte_align;
+                read_VPS_Header                                 ( read_VPS_Header_scalableExtensions			) --> read_VPS_Extensions;
+                read_VPS_Extensions								( read_VPS_Extensions							) --> read_VPS_Extensions;
+                read_VPS_Extensions								( read_VPS_Extensions_done                      ) --> byte_align;
                 // read SEI header
                 read_SEI_Header                                 ( read_SEI_Header                               ) --> read_SEI_Header;
                 read_SEI_Header                                 ( read_SEI_Header_done                          ) --> byte_align;
