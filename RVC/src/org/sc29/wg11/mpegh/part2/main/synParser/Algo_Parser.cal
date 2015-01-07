@@ -404,6 +404,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
 	            vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
 	        end
+	        // end of decode_profile_tier_level()
 	        vld_u_name(  8, fifo, res, "general_level_idc                       ");
 	        cnt_i  := 0;
 	        se_idx := se_idx + 1;
@@ -411,9 +412,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        /**************************************************************************
 	         * read_VPS_Header.se_idx_4
 	         *************************************************************************/
-	    bool profile_present_flag := true;
-	    bool sub_layer_profile_present_flag;
-	    bool sub_layer_level_present_flag;
+	    bool vps_profile_present_flag := true;
+	    bool vps_sub_layer_profile_present_flag;
+	    bool vps_sub_layer_level_present_flag;
 	
 	    read_VPS_Header.se_idx_4.loop1 : action ==>
 	    guard
@@ -423,12 +424,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    	uint(size = 32) res[1]
 	    do
 	        res[0] := 0;
-	        if profile_present_flag then
+	        if vps_profile_present_flag then
 	            vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
 	        end
-	        sub_layer_profile_present_flag := (res[0] = 1);
+	        vps_sub_layer_profile_present_flag := (res[0] = 1);
 	        vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
-	        sub_layer_level_present_flag := (res[0] = 1);
+	        vps_sub_layer_level_present_flag := (res[0] = 1);
 	        cnt_i := cnt_i + 1;
 	    end
 	
@@ -451,7 +452,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    var
 	    	uint(size = 32) res[1]
 	    do
-	        if (profile_present_flag and sub_layer_profile_present_flag) then
+	        if vps_sub_layer_profile_present_flag then
 	        	vld_u_name(2, fifo, res, "sub_layer_profile_space[i]              ");
 	        	vld_u_name(1, fifo, res, "sub_layer_tier_flag[i]                  ");
 	        	vld_u_name(5, fifo, res, "sub_layer_profile_idc[i]                ");
@@ -462,7 +463,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        	flushBits_name(16, fifo,
 	        	"sub_layer_reserved_zero_16bits[i]         ");
 	    	end
-	    	if (sub_layer_level_present_flag) then
+	    	if (vps_sub_layer_level_present_flag) then
 	    		vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
 	        end
 	        cnt_i := cnt_i + 1;
@@ -918,22 +919,24 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			vld_u_name(  6, fifo, res, "vps_num_profile_tier_level          ");
 			vps_num_profile_tier_level := res[0]+1; 	
 	    	se_idx := 8;
-	    	cnt_i := 1;
+	    	vps_numProfileCounter := 1;
 	    end
+	    
+	    int vps_numProfileCounter;
 	    
 	    read_VPS_Extensions.se_idx_8_loop: action ==>
 	    guard
-	    	se_idx = 8 and isFifoFull(fifo), cnt_i < vps_num_profile_tier_level
+	    	se_idx = 8 and isFifoFull(fifo), vps_numProfileCounter < vps_num_profile_tier_level
 	    var
 	    	uint(size=32) res[1]
 	    do
 	    	vld_u_name(  1, fifo, res, "vps_profile_present_flag            ");
 			if res[0] = 0 then
 				vld_u_name(  6, fifo, res, "profile_ref                         ");
-				profile_ref[cnt_i] := res[0]+1;
+				profile_ref[vps_numProfileCounter] := res[0]+1;
 				//TODO: memcpy(&vps->PTLExt[i], &vps->PTLExt[vps->profile_ref[i]], sizeof(PTL));
 			end	    	
-	    	//parse_ptl()
+	    	//start parse_ptl()
 	    	se_idx := 81;
 	    end
 	    
@@ -943,7 +946,151 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    var
 	    	uint(size=32) res[1]
 	    do
+	    	// start decode_profile_tier_level()
+        	vld_u_name(2, fifo, res,
+        	"XXX_profile_space[]                     ");
+        	vld_u_name(1, fifo, res,
+        	"XXX_tier_flag[]                         ");
+        	vld_u_name(5, fifo, res,
+        	"XXX_profile_idc[]                       ");
+        	foreach int i in 0 .. 31 do
+        		vld_u_name(1, fifo, res,
+        		"XXX_profile_compatibility_flag[][j]     ");
+        	end
+        	vld_u_name(1, fifo, res,
+        	"general_progressive_source_flag         ");
+        	vld_u_name(1, fifo, res,
+        	"general_interlaced_source_flag          ");
+        	vld_u_name(1, fifo, res,
+        	"general_non_packed_constraint_flag      ");
+        	vld_u_name(1, fifo, res,
+        	"general_frame_only_constraint_flag      ");
+        	
+            se_idx := 82;
+	    end
+	    
+	    uint(size=1) vpsExt_sub_layer_profile_present_flag[MAX_VPS_NUM_PROFILE_TIER_LEVEL];
+	    uint(size=1) vpsExt_sub_layer_level_present_flag[MAX_VPS_NUM_PROFILE_TIER_LEVEL];
+	    
+	    read_VPS_Extensions.se_idx_82: action ==>
+	    guard
+	    	se_idx = 82 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
+            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
+            vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	       
+	        // end of decode_profile_tier_level()
+	        vld_u_name(  8, fifo, res, "general_level_idc                       ");
+	        	        
+            se_idx := 83;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_83: action ==>
+	    guard
+	    	se_idx = 83 and isFifoFull(fifo)
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	    	foreach int i in 0 .. vps_max_sub_layers_minus1 - 1 do
+		        vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
+		        vpsExt_sub_layer_profile_present_flag[vps_numProfileCounter] := res[0];
+		        vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
+		        vpsExt_sub_layer_level_present_flag[vps_numProfileCounter]   := res[0];
+			end
+			if vps_max_sub_layers_minus1 > 0 then
+		        foreach int i in vps_max_sub_layers_minus1 .. 7 do
+		        	vld_u_name( 2, fifo, res, "reserved_zero_2bits                     ");
+		        end
+		    end
+		    cnt_i  := 0;
+		    se_idx := 84;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_84_loop: action ==>
+	    guard
+	    	se_idx = 84 and isFifoFull(fifo),
+	    	cnt_i < vps_max_sub_layers_minus1
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	        if vpsExt_sub_layer_profile_present_flag[vps_numProfileCounter] = 1 then
+	        	// start decode_profile_tier_level()
+	        	vld_u_name(2, fifo, res,
+	        	"XXX_profile_space[]                     ");
+	        	vld_u_name(1, fifo, res,
+	        	"XXX_tier_flag[]                         ");
+	        	vld_u_name(5, fifo, res,
+	        	"XXX_profile_idc[]                       ");
+	        	foreach int i in 0 .. 31 do
+	        		vld_u_name(1, fifo, res,
+	        		"XXX_profile_compatibility_flag[][j]     ");
+	        	end
+	        	vld_u_name(1, fifo, res,
+	        	"general_progressive_source_flag         ");
+	        	vld_u_name(1, fifo, res,
+	        	"general_interlaced_source_flag          ");
+	        	vld_u_name(1, fifo, res,
+	        	"general_non_packed_constraint_flag      ");
+	        	vld_u_name(1, fifo, res,
+	        	"general_frame_only_constraint_flag      ");
+	        end
+	        	se_idx := 85;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_85: action ==>
+	    guard
+	    	se_idx = 85 and isFifoFull(fifo)
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	    	if vpsExt_sub_layer_profile_present_flag[vps_numProfileCounter] = 1 then
+	    		vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
+            	vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
+            	vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	       	end
+	        // end of decode_profile_tier_level()
+	        if vpsExt_sub_layer_level_present_flag[vps_numProfileCounter] = 1 then
+           		vld_u_name( 8, fifo, res, "sub_layer_level_idc                     ");
+           	end
+        	se_idx := 84;
+        	cnt_i := cnt_i + 1;
+	    end
+	    
+	    int numOutputLayerSets;
+	    
+	    read_VPS_Extensions.se_idx_84_endLoop: action ==>
+	    guard
+	    	se_idx = 84 and isFifoFull(fifo),
+	    	cnt_i = vps_max_sub_layers_minus1
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	    	// end parse_ptl
+	        cnt_i := 0;
+	        vps_numProfileCounter := vps_numProfileCounter + 1;
+	        se_idx := 8;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_8_endLoop: action ==>
+	    guard
+	    	se_idx = 8 and isFifoFull(fifo), vps_numProfileCounter = vps_num_profile_tier_level
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vps_numProfileCounter := 0;
 	    	
+	    	vld_u_name( 1, fifo, res, "more_output_layer_sets_than_default_flag");
+	    	numOutputLayerSets := 0;
+	    	if res[0] = 0 then
+	    		numOutputLayerSets := vps_num_layer_sets_minus1 + 1;
+	    	else
+	    		vld_u_name( 10, fifo, res, "num_add_output_layer_sets               ");
+	    		numOutputLayerSets := vps_num_layer_sets_minus1 + 1 + res[0];
+	    	end
+	    	se_idx := 9;
 	    end
 	    
 	    read_VPS_Extensions_done: action ==>
