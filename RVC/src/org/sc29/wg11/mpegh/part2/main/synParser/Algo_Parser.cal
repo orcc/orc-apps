@@ -113,7 +113,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         uint(size= 2) zeroByte := 0;
         uint(size= 16) se_idx;
         uint(size=32) cnt_i;
-        uint(size=10) sps_id;
+        uint(size=10) sps_id := 0;
         uint(size=10) pps_id;
         uint(size= 8) localizeAEB := 0;
         uint NUM_ENTRY_MAX = 64;
@@ -202,7 +202,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
          * read_nal_unit_header
          *************************************************************************/
         uint temporal_id := 0;
-        uint(size= 6) nal_unit_type;
+        uint(size= 8) nal_unit_type;
+        uint(size= 8) nuh_layer_id;
+        uint(size= 8) nuh_temporal_id_plus1;
 
         read_nal_unit_header : action ==>
         guard
@@ -218,9 +220,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             	"nal_unit_type                           ");
             	nal_unit_type := res[0];
             	flushBits_name(6, fifo,
-            	"nuh_reserved_zero_6bits                 ");
+            	"nuh_layer_id                            ");
+            	nuh_layer_id := res[0];
             	vld_u_name(3, fifo, res,
             	"nuh_temporal_id_plus1                   ");
+            	nuh_temporal_id_plus1 := res[0];
             else
             	flushBits(1, fifo);
             	vld_u(6, fifo, res);
@@ -361,29 +365,28 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         guard
         	se_idx = 2 and isFifoFull(fifo)
         var
-        	bool profile_present_flag = true,
         	uint(size = 32) res[1]
         do
-            if (profile_present_flag) then
-            	vld_u_name(2, fifo, res,
-            	"XXX_profile_space[]                     ");
-            	vld_u_name(1, fifo, res,
-            	"XXX_tier_flag[]                         ");
-            	vld_u_name(5, fifo, res,
-            	"XXX_profile_idc[]                       ");
-            	foreach int i in 0 .. 31 do
-            		vld_u_name(1, fifo, res,
-            		"XXX_profile_compatibility_flag[][j]     ");
-            	end
-            	vld_u_name(1, fifo, res,
-            	"general_progressive_source_flag         ");
-            	vld_u_name(1, fifo, res,
-            	"general_interlaced_source_flag          ");
-            	vld_u_name(1, fifo, res,
-            	"general_non_packed_constraint_flag      ");
-            	vld_u_name(1, fifo, res,
-            	"general_frame_only_constraint_flag      ");
-            end
+        	// start decode_profile_tier_level()
+        	vld_u_name(2, fifo, res,
+        	"XXX_profile_space[]                     ");
+        	vld_u_name(1, fifo, res,
+        	"XXX_tier_flag[]                         ");
+        	vld_u_name(5, fifo, res,
+        	"XXX_profile_idc[]                       ");
+        	foreach int i in 0 .. 31 do
+        		vld_u_name(1, fifo, res,
+        		"XXX_profile_compatibility_flag[][j]     ");
+        	end
+        	vld_u_name(1, fifo, res,
+        	"general_progressive_source_flag         ");
+        	vld_u_name(1, fifo, res,
+        	"general_interlaced_source_flag          ");
+        	vld_u_name(1, fifo, res,
+        	"general_non_packed_constraint_flag      ");
+        	vld_u_name(1, fifo, res,
+        	"general_frame_only_constraint_flag      ");
+        	
             se_idx := se_idx + 1;
         end
 	    /**************************************************************************
@@ -934,6 +937,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    	se_idx := 81;
 	    end
 	    
+	    read_VPS_Extensions.se_idx_81: action ==>
+	    guard
+	    	se_idx = 81 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	
+	    end
+	    
 	    read_VPS_Extensions_done: action ==>
 	    guard
 	    	//se_idx = ?? and 
@@ -946,7 +958,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	         ********        SEI message                          *********************
 	         **************************************************************************
 	         *************************************************************************/
-		bool         need_md5 := false;
+		bool         need_md5   := false;
 		bool         md5_needed := false;
 	        /**************************************************************************
 	         * read_SEI_Header.se_idx_1
@@ -1140,6 +1152,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
 		uint(size= 1) sps_separate_colour_plane_flag[NB_MAX_SPS];
 	    uint(size= 2) sps_chroma_format_idc[NB_MAX_SPS];
+	    uint(size= 1) sps_m_bTemporalIdNestingFlag[NB_MAX_PPS];
+	    uint(size= 1) sps_m_updateRepFormatFlag[NB_MAX_PPS];
+	    int sps_chroma_array_type[NB_MAX_PPS];
+	    int sps_m_updateRepFormatIndex[NB_MAX_PPS];
 	
 	    read_SPS_Header.se_idx_1 : action ==>
 	    guard
@@ -1149,12 +1165,23 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    do
 	        vld_u_name(4, fifo, res,
 	        "sps_video_parameter_set_id              ");
-	        vld_u_name(3, fifo, res,
-	        "sps_max_sub_layers_minus1               ");
-	        sps_max_sub_layers_minus1[sps_id] := res[0];
-	        vld_u_name(1, fifo, res,
-	        "sps_temporal_id_nesting_flag            ");
-	        se_idx := 20;
+	        if nuh_layer_id = 0 then
+		        vld_u_name(3, fifo, res,
+		        "sps_max_sub_layers_minus1               ");
+		        sps_max_sub_layers_minus1[sps_id] := res[0];
+		        vld_u_name(1, fifo, res,
+		        "sps_temporal_id_nesting_flag            ");
+		        sps_m_bTemporalIdNestingFlag[sps_id] := res[0];
+		        
+			else
+				sps_max_sub_layers_minus1[sps_id]:= vps_max_sub_layers_minus1;
+        		sps_m_bTemporalIdNestingFlag[sps_id] := vps_temporal_id_nesting_flag;
+			end
+			if nuh_layer_id = 0 then
+				se_idx := 20;
+			else
+				se_idx := 11;
+			end
 	    end
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_20
@@ -1286,20 +1313,40 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        vld_ue_name(fifo, res, "sps_seq_parameter_set_id                ");
 	        sps_id := res[0];
 	        sps_id_decoded[sps_id] := true;
-	        vld_ue_name(fifo, res,
-	        "chroma_format_idc                       ");
-	        sps_chroma_format_idc[sps_id] := res[0];
-	        if res[0] = 3 then
-	        	vld_u_name(1, fifo, res,
-	        	"separate_colour_plane_flag              ");
-	        	sps_separate_colour_plane_flag[sps_id] := res[0];
-	        end
-	        vld_ue_name(fifo, res,
-	        "pic_width_in_luma_samples               ");
-	        sps_pic_width_in_luma_samples[sps_id] := res[0];
-	        vld_ue_name(fifo, res,
-	        "pic_height_in_luma_samples              ");
-	        sps_pic_height_in_luma_samples[sps_id] := res[0];
+	        if nuh_layer_id > 0 then
+	        	vld_u_name(  1, fifo, res, "sps_m_updateRepFormatFlag               ");
+		        sps_m_updateRepFormatFlag[sps_id] := res[0];
+		    else
+		        sps_m_updateRepFormatFlag[sps_id] := 1;
+		    end
+		    if nuh_layer_id = 0 then
+		        vld_ue_name(fifo, res,
+		        "chroma_format_idc                       ");
+		        sps_chroma_format_idc[sps_id] := res[0];
+		        if res[0] = 3 then
+		        	vld_u_name(1, fifo, res,
+		        	"separate_colour_plane_flag              ");
+		        	sps_separate_colour_plane_flag[sps_id] := res[0];
+		        end
+		        if sps_separate_colour_plane_flag[sps_id] = 1 then
+		        	sps_chroma_array_type[sps_id] := 0;
+		       	else
+		       		sps_chroma_array_type[sps_id] := sps_chroma_format_idc[sps_id];
+		       	end
+		        
+		        vld_ue_name(fifo, res,
+		        "pic_width_in_luma_samples               ");
+		        sps_pic_width_in_luma_samples[sps_id] := res[0];
+		        vld_ue_name(fifo, res,
+		        "pic_height_in_luma_samples              ");
+		        sps_pic_height_in_luma_samples[sps_id] := res[0];
+		    else
+		    	if sps_m_updateRepFormatFlag[sps_id] = 1 then
+		    		sps_chroma_array_type[sps_id] := if sps_chroma_format_idc[sps_id] = 0 then 1 else 0 end;
+		    		vld_u_name(  8, fifo, res, "sps_m_updateRepFormatIndex              ");
+        			sps_m_updateRepFormatIndex[sps_id] := res[0];
+		    	end
+		    end
 	        se_idx := 2;
 	    end
 	        /**************************************************************************
@@ -1329,12 +1376,14 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        	vld_ue_name(fifo, res,
 	        	"conf_win_bottom_offset                  ");
 	        end
-	        vld_ue_name(fifo, res,
-	        "sps_bit_depth_luma_minus8                   ");
-	        sps_bit_depth_luma_minus8[sps_id] := res[0];
-	        vld_ue_name(fifo, res,
-	        "sps_bit_depth_chroma_minus8                 ");
-	        sps_bit_depth_chroma_minus8[sps_id] := res[0];
+	        if nuh_layer_id = 0 then
+		        vld_ue_name(fifo, res,
+		        "sps_bit_depth_luma_minus8                   ");
+		        sps_bit_depth_luma_minus8[sps_id] := res[0];
+		        vld_ue_name(fifo, res,
+		        "sps_bit_depth_chroma_minus8                 ");
+		        sps_bit_depth_chroma_minus8[sps_id] := res[0];
+		    end
 	        vld_ue_name(fifo, res,
 	        "log2_max_pic_order_cnt_lsb_minus4       ");
 	        sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
