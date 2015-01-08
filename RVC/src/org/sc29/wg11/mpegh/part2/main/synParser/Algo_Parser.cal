@@ -702,6 +702,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    uint(size=1) vps_m_repFormatIdxPresentFlag;
 	    int 		 vps_m_vpsNumRepFormats;
 	    int          vps_m_vpsRepFormatIdx[16];
+	    uint(size=1) vps_max_one_active_ref_layer_flag;
+	    int     	 vps_m_numSubDpbs[MAX_VPS_OP_LAYER_SETS_PLUS1];
+	    uint(size=1) vps_m_subLayerFlagInfoPresentFlag[MAX_VPS_OP_LAYER_SETS_PLUS1];
+	    uint(size=1) vps_m_defaultDirectDependencyTypeFlag;
 	    
 	    read_VPS_Header_scalableExtensions : action ==>
 	    guard
@@ -1257,6 +1261,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		    	foreach int i in 1 .. vps_max_layers - 1 do
 		            vps_m_vpsRepFormatIdx[i] := i;
 		        end
+		        vld_u_name( 1, fifo, res, "max_one_active_ref_layer_flag           ");
+	    		vps_max_one_active_ref_layer_flag := res[0];
 		        se_idx := 11;
 	    	else
 		        se_idx := 101;
@@ -1282,18 +1288,184 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    read_VPS_Extensions.se_idx_100_endLoop: action ==>
 	    guard
 	    	se_idx = 101 and isFifoFull(fifo), cnt_i = vps_max_layers
+	   	var
+	    	uint(size=32) res[1]
 	    do
-	    	cnt_i := 0;
+	    	cnt_i  := 0;
+	    	vld_u_name( 1, fifo, res, "max_one_active_ref_layer_flag           ");
+	    	vps_max_one_active_ref_layer_flag := res[0];
 	    	se_idx := 11;
 	    end
 	    
-	    read_VPS_Extensions.se_idx_11: action ==>
+	    read_VPS_Extensions.se_idx_11_loop: action ==>
 	    guard
-	    	se_idx = 11 and isFifoFull(fifo)
+	    	se_idx = 11 and isFifoFull(fifo), cnt_i < vps_max_layers
 	    var
 	    	uint(size=32) res[1]
 	    do
+			if(vps_m_numDirectRefLayers[vps_layer_id_in_nuh[cnt_i]] = 0) then
+				vld_u_name( 1, fifo, res, "poc_lsb_not_present_flag                ");
+        	end
+        	cnt_i := cnt_i + 1;
 	    end
+	    
+	    read_VPS_Extensions.se_idx_11_endLoop: action ==>
+	    guard
+	    	se_idx = 11 and isFifoFull(fifo), cnt_i = vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+        	cnt_i := 0;
+        	vld_u_name( 1, fifo, res, "cross_layer_phase_alignment_flag        ");
+        	// deriveNumberOfSubDpbs()
+        	vps_m_numSubDpbs[0] := 1;
+
+    		foreach int i in 1 .. vps_m_numOutputLayerSets - 1 do
+    			//TODO: check vps_m_numSubDpbs[i] := vps_m_numLayerInIdList[ vps_m_outputLayerSetIdx[i]];
+       	 		vps_m_numSubDpbs[i] := vps_m_numLayerInIdList[vps_m_outputLayerSetIdx];
+    		end
+    		se_idx := 12;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_12_loop: action ==>
+	    guard
+	    	se_idx = 12 and isFifoFull(fifo), cnt_i < vps_m_numOutputLayerSets
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "sub_layer_flag_info_present_flag        ");
+	    	vps_m_subLayerFlagInfoPresentFlag[cnt_i] := res[0];
+	    	se_idx := 121;
+	    	loop1Counter := 0;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_121_loop: action ==>
+	    guard
+	    	se_idx = 121 and isFifoFull(fifo), loop1Counter < (vps_max_sub_layers_minus1 + 1)
+	    var
+	    	uint(size=32) res[1],
+	    	uint    vps_m_subLayerDpbInfoPresentFlag  [MAX_VPS_OP_LAYER_SETS_PLUS1][MAX_LAYERS]
+	    do
+	    	if loop1Counter > 0 && (vps_m_subLayerFlagInfoPresentFlag[cnt_i] != 0) then
+	    		
+	    		vld_u_name( 1, fifo, res, "sub_layer_dpb_info_present_flag         ");
+                vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] := res[0];
+            else
+                if loop1Counter =0 then // Always signal for the first sub-layer
+                    vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] := 1;
+                else // if (j != 0) && !vps->getSubLayerFlagInfoPresentFlag(i)
+                    vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] := 0;
+                end
+            end
+            if vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] != 0 then
+            	se_idx := 122;
+            	loop2Counter := 0;
+            else
+            	loop1Counter := loop1Counter + 1;
+            end
+	    end
+	    
+	    read_VPS_Extensions.se_idx_122_loop: action ==>
+	    guard
+	    	se_idx = 122 and isFifoFull(fifo), loop2Counter < vps_m_numSubDpbs[cnt_i]
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_ue_name(fifo, res, "max_vps_dec_pic_buffering_minus1        ");
+	    	loop2Counter := loop2Counter + 1;
+	    end
+
+		read_VPS_Extensions.se_idx_122_endLoop: action ==>
+	    guard
+	    	se_idx = 122 and isFifoFull(fifo), loop2Counter = vps_m_numSubDpbs[cnt_i]
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_ue_name(fifo, res, "max_vps_num_reorder_pics                ");
+	    	vld_ue_name(fifo, res, "max_vps_latency_increase_plus1          ");
+	    	loop2Counter := 0;
+	    	loop1Counter := loop1Counter + 1;
+	    	se_idx := 121;
+	    end
+		
+		read_VPS_Extensions.se_idx_121_endLoop: action ==>
+	    guard
+	    	se_idx = 121 and isFifoFull(fifo), loop1Counter = (vps_max_sub_layers_minus1 + 1)
+	    do
+	    	loop1Counter := 0;
+	    	cnt_i := cnt_i + 1;
+	    	se_idx := 12;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_12_endLoop: action ==>
+	    guard
+	    	se_idx = 12 and isFifoFull(fifo), cnt_i = vps_m_numOutputLayerSets
+	    var
+	    	uint(size=32) res[1],
+	    	int vps_m_directDepTypeLen,
+	    	int vps_m_defaultDirectDependencyType
+	    do
+	    	cnt_i := 0;
+	    	vld_ue_name(fifo, res, "direct_dep_type_len_minus2              ");
+	    	vps_m_directDepTypeLen := res[0] + 2;
+	    	vld_u_name( 1, fifo, res, "default_direct_dependency_type_flag     ");
+		    vps_m_defaultDirectDependencyTypeFlag := res[0];
+		    if vps_m_defaultDirectDependencyTypeFlag != 0 then
+		    	vld_u_name( vps_m_directDepTypeLen, fifo, res, "default_direct_dependency_type          ");
+		        vps_m_defaultDirectDependencyType := res[0];
+		    end
+		    foreach int i in 1 .. vps_max_layers - 1 do
+		        foreach int j in 0 ..i - 1 do
+		            if vps_m_directDependencyFlag[i][j] != 0  then
+		                if vps_m_defaultDirectDependencyTypeFlag != 0 then
+		                    // TODO: vps_m_directDependencyType[i][j] :=  vps_m_defaultDirectDependencyType;
+		                else
+		                	vld_u_name( 1, fifo, res, "direct_dependency_type                  ");
+		                end
+		            end
+		        end
+		    end
+		    se_idx := 13;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_13: action ==>
+	    guard
+	    	se_idx = 13 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int iNuhLId,
+	    	int refLayerId,
+	    	int currLayerId
+	    do
+	    	foreach int k in 1 .. vps_max_layers - 1 do //setNumRefLayers();
+    		//   printf("setNumRefLayers \n");
+			    foreach int i in 0 .. vps_max_layers - 1 do
+			        iNuhLId := vps_m_layerIdInNuh[i];
+			        //setRefLayersFlags();
+				    foreach int l in 0 .. vps_m_numDirectRefLayers[currLayerId] - 1 do
+				        refLayerId := vps_m_refLayerId[currLayerId][l]; 
+				        //vps_m_recursiveRefLayerFlag[currLayerId][refLayerId] := 1;
+				        foreach int m in 0 ..  MAX_NUM_LAYER_IDS - 1 do
+				            //vps_m_recursiveRefLayerFlag[currLayerId][m] := (vps_m_recursiveRefLayerFlag[currLayerId][m] | vps_m_recursiveRefLayerFlag[refLayerId][m]);
+				        end
+				    end
+			        
+			        
+			        foreach int j in 0 .. MAX_NUM_LAYER_IDS - 1 do
+			            //vps_m_numberRefLayers[iNuhLId] := vps_m_numberRefLayers[iNuhLId] + (if vps_m_recursiveRefLayerFlag[iNuhLId][j] = 1 then 1 else 0 end);
+			        end
+			    end
+        	end
+        	vld_u_name( 1, fifo, res, "single_layer_for_non_irap_flag          ");
+        	vld_u_name( 1, fifo, res, "higher_layer_irap_skip_flag             ");
+        	
+        	vld_u_name( 1, fifo, res, "parse_vps_vui                           ");
+        	if res[0] = 1 then
+        		byte_align(fifo);
+        		//parseVPSVUI(gb, vps);
+    		end
+	    end
+	    
 	    
 	    read_VPS_Extensions_done: action ==>
 	    guard
