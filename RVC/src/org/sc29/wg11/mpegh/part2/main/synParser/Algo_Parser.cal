@@ -1469,7 +1469,15 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
     		end
 	    end
 	    
-	    int vps_parseFlag;
+	    uint(size=1) vps_parseFlag;
+	    uint(size=1) vps_m_bitRatePresentVpsFlag;
+	    uint(size=1) vps_m_picRatePresentVpsFlag;
+	    uint 		 layerIdx;
+    	uint(size=1) vps_refCode;
+    	uint(size= 1) vps_m_tilesNotInUseFlag;
+	    uint          vps_m_tilesInUseFlag[MAX_VPS_LAYER_ID_PLUS1];
+	    uint       	  vps_m_loopFilterNotAcrossTilesFlag[MAX_VPS_LAYER_ID_PLUS1];
+	  	uint          vps_m_tileBoundariesAlignedFlag[MAX_VPS_LAYER_ID_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
 	    
 	    read_VPS_Extensions.se_idx_15: action ==>
 	    guard
@@ -1486,10 +1494,135 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    	end
 	    	vps_parseFlag := 0;
 	    	vld_u_name( 1, fifo, res, "bit_rate_present_vps_flag               ");
-	    	vps_parseFlag := vps_parseFlag | res[0];
+	    	vps_m_bitRatePresentVpsFlag := res[0];
 	    	vld_u_name( 1, fifo, res, "pic_rate_present_vps_flag               ");
-		    vps_parseFlag := vps_parseFlag | res[0];
+	    	vps_m_picRatePresentVpsFlag := res[0];
+		    vps_parseFlag := vps_m_bitRatePresentVpsFlag | vps_m_picRatePresentVpsFlag;
+		    
+		    se_idx := 16;
 	    end
+	    
+	    read_VPS_Extensions.se_idx_16_loop: action ==>
+	    guard
+	    	se_idx = 16 and isFifoFull(fifo), cnt_i < (vps_num_layer_sets_minus1 + 1)
+	    do
+	    	se_idx := 161;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_161_loop: action ==>
+	    guard
+	    	se_idx = 161 and isFifoFull(fifo), loop1Counter < (vps_max_sub_layers_minus1 + 1)
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size=1)  vps_m_bitRatePresentFlag[MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_avgBitRate        [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_maxBitRate        [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_picRatePresentFlag[MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_constPicRateIdc   [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+            uint(size=8)  vps_m_avgPicRate        [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER]
+	    do
+	    	if (vps_parseFlag & vps_m_bitRatePresentVpsFlag) != 0 then
+	    		vld_u_name( 1, fifo, res, "bit_rate_present_vps_flag               ");
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := 0;
+            end
+            if (vps_parseFlag & vps_m_picRatePresentVpsFlag) != 0 then
+            	vld_u_name( 1, fifo, res, "pic_rate_present_vps_flag               ");
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := 0;
+            end
+            if (vps_parseFlag & vps_m_bitRatePresentFlag[cnt_i][loop1Counter]) != 0 then
+            	vld_u_name( 16, fifo, res, "avg_bit_rate                            ");
+            	vps_m_avgBitRate[cnt_i][loop1Counter] := res[0];
+            	vld_u_name( 16, fifo, res, "max_bit_rate                            ");
+                vps_m_maxBitRate[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_avgBitRate[cnt_i][loop1Counter] := 0;
+                vps_m_maxBitRate[cnt_i][loop1Counter] := 0;
+            end
+            if( vps_parseFlag & vps_m_picRatePresentFlag[cnt_i][loop1Counter]) != 0 then
+            	vld_u_name( 2, fifo, res, "constant_pic_rate_idc                   ");
+                vps_m_constPicRateIdc[cnt_i][loop1Counter] := res[0];
+                vld_u_name( 16, fifo, res, "avg_pic_rate                            ");
+                vps_m_avgPicRate[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_constPicRateIdc[cnt_i][loop1Counter] := 0;
+                vps_m_avgPicRate[cnt_i][loop1Counter]      := 0;
+            end
+            loop1Counter := loop1Counter + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_161_endLoop: action ==>
+	    guard
+	    	se_idx = 161 and isFifoFull(fifo), loop1Counter = (vps_max_sub_layers_minus1 + 1)
+	    do
+	    	loop1Counter := 0;
+	    	cnt_i := cnt_i + 1;
+	    	se_idx := 16;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_16_endLoop: action ==>
+	    guard
+	    	se_idx = 16 and isFifoFull(fifo), cnt_i = (vps_num_layer_sets_minus1 + 1)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	cnt_i := 0;
+	    	
+	    	vld_u_name( 1, fifo, res, "vps_refCode                             ");
+	    	vps_refCode := res[0];
+	    	//start setTilesNotInUseFlag()
+	    	vps_m_tilesNotInUseFlag := vps_refCode;
+		    if vps_m_tilesNotInUseFlag != 0 then
+		        foreach int i in 0 .. vps_max_layers - 1 do
+		            vps_m_tilesInUseFlag[i] := if vps_m_loopFilterNotAcrossTilesFlag[i] = vps_m_tilesNotInUseFlag then 1 else 0 end;
+		        end
+		    end
+		    if vps_m_tilesNotInUseFlag != 0 then
+		        foreach int i in 1 .. vps_max_layers - 1 do
+		            foreach int j in 0 .. vps_m_numDirectRefLayers[vps_m_layerIdInNuh[i]] - 1 do
+		                vps_m_tileBoundariesAlignedFlag[i][j]  := vps_m_tilesNotInUseFlag;
+		            end
+		        end
+		    end
+	    	//end setTilesNotInUseFlag()
+	    	if vps_refCode = 1 then	
+	    		se_idx := 19;
+	    	else
+	    		se_idx := 17;
+	    		cnt_i := 0;
+	    	end
+	    end
+	    
+	    read_VPS_Extensions.se_idx_17_loop: action ==>
+	    guard
+	    	se_idx = 17 and isFifoFull(fifo), cnt_i < vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "tiles_in_use_flag                       ");
+	    	vps_refCode := res[0];
+            vps_m_tilesInUseFlag[cnt_i] := vps_refCode;
+            if vps_refCode != 0 then
+            	vld_u_name( 1, fifo, res, "loop_filter_not_across_tiles_flag       ");
+                vps_m_loopFilterNotAcrossTilesFlag[cnt_i] := res[0];
+            else
+                vps_m_loopFilterNotAcrossTilesFlag[cnt_i] := 0;
+            end
+            cnt_i := cnt_i + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_17_endLoop: action ==>
+	    guard
+	    	se_idx = 17 and isFifoFull(fifo), cnt_i = vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	
+	    end
+	    
 	    
 	    read_VPS_Extensions_done: action ==>
 	    guard
