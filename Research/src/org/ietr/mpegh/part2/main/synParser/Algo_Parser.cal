@@ -60,7 +60,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size= 2) zeroByte := 0;
         uint(size= 16) se_idx;
 	uint(size=32) cnt_i;
-	uint(size=10) sps_id;
+	uint(size=10) sps_id := 0;
 	uint(size=10) pps_id;
 	uint(size= 8) localizeAEB := 0;
 	uint NUM_ENTRY_MAX = 64;
@@ -68,6 +68,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	//uint(size=8) curr_Tile := TilesInfo[1];
 	bool byPassFlag := false;
 	uint(size=8) TilesInfo[2];
+	uint (size=1) DEC_ID = 0;
 
 
 	/**************************************************************************
@@ -148,36 +149,50 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	/**************************************************************************
 	 * read_nal_unit_header
 	 *************************************************************************/
-		uint temporal_id := 0;
-	uint(size= 6) nal_unit_type;
+	uint temporal_id := 0;
+    uint(size= 8) nal_unit_type;
+    uint(size= 8) nuh_layer_id;
+    bool vps_bypass := false;
 
 	read_nal_unit_header : action ==>
-	guard
-		isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		if DEBUG_BITSTREAM then
-			println("=========== NAL_UNIT ===========");
-				flushBits_name(1, fifo,
-				"forbidden_zero_bit                      ");
-				vld_u_name(6, fifo, res,
-				"nal_unit_type                           ");
-			nal_unit_type := res[0];
-				flushBits_name(6, fifo,
-				"nuh_reserved_zero_6bits                 ");
-				vld_u_name(3, fifo, res,
-				"nuh_temporal_id_plus1                   ");
-		else
-			flushBits( 1, fifo );
-			vld_u(  6, fifo, res);
-			nal_unit_type := res[0];
-			flushBits( 6, fifo  );
-			vld_u(  3, fifo, res);
-				temporal_id := res[0] - 1;
-		end
-		se_idx := 1;
-	end
+        guard
+        	isFifoFull(fifo)
+        var
+        	uint(size=32) res[1]
+        do
+        	flushBits_name(1, fifo,
+        	"forbidden_zero_bit                      ");
+        	vld_u_name(6, fifo, res,
+        	"nal_unit_type                           ");
+        	nal_unit_type := res[0];
+        	vld_u_name(6, fifo, res,
+        	"nuh_layer_id                            ");
+        	nuh_layer_id := res[0];
+        	vld_u_name(3, fifo, res,
+        	"nuh_temporal_id_plus1                   ");
+          
+            se_idx := 1;
+            if nal_unit_type != NAL_VPS then
+	            if nuh_layer_id != DEC_ID then
+	            	vps_bypass := true;
+            	end
+            end
+        end
+        /**************************************************************************
+         * checkNAL
+         *************************************************************************/
+        
+        checkNAL.decode: action ==>
+        guard
+        	vps_bypass = false
+        end
+        
+        checkNAL.bypass: action ==>
+        guard
+        	vps_bypass = true
+        do
+        	vps_bypass := false;
+        end
 	/**************************************************************************
 	 * look_for.VPS_header
 	 *************************************************************************/
@@ -264,311 +279,1493 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	end
 
 	/**************************************************************************
-	 **************************************************************************
-	 ********        Video Parameter Set HEADER           *********************
-	 **************************************************************************
-	 *************************************************************************/
-	uint(size= 3) vps_max_sub_layers_minus1;
-	uint(size= 6) vps_max_nuh_reserved_zero_layer_id;
-	uint(size= 1) vps_timing_info_present_flag;
-	uint(size=10) vps_num_op_sets_minus1;
-	uint(size=10) vps_num_hrd_parameters;
-	uint(size= 8) video_sequence_id := 0;
-
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_1
-	 *************************************************************************/
-	read_VPS_Header.se_idx_1 : action ==>
-	guard
-		se_idx = 1 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		video_sequence_id := video_sequence_id + 1;
-		vld_u_name(  4, fifo, res, "vps_video_parameter_set_id              ");
-		vld_u_name(  2, fifo, res, "vps_reserved_three_2bits                ");
-		vld_u_name(  6, fifo, res, "vps_reserved_zero_6bits                 ");
-		vld_u_name(  3, fifo, res, "vps_max_sub_layers_minus1               ");
-		vps_max_sub_layers_minus1 := res[0];
-		vld_u_name(  1, fifo, res, "vps_temporal_id_nesting_flag            ");
-		vld_u_name( 16, fifo, res, "vps_reserved_ffff_16bits                ");
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_2
-	 *************************************************************************/
-	read_VPS_Header.se_idx_2 : action ==>
-	guard
-		se_idx = 2 and isFifoFull(fifo)
-	var
-		bool profile_present_flag = true,
-		uint(size = 32) res[1]
-	do
-		if (profile_present_flag) then
-				vld_u_name(2, fifo, res,
-				"XXX_profile_space[]                     ");
-				vld_u_name(1, fifo, res,
-				"XXX_tier_flag[]                         ");
-				vld_u_name(5, fifo, res,
-				"XXX_profile_idc[]                       ");
-			foreach int i in 0 .. 31 do
-					vld_u_name(1, fifo, res,
-					"XXX_profile_compatibility_flag[][j]     ");
+         **************************************************************************
+         ********        Video Parameter Set HEADER           *********************
+         **************************************************************************
+         *************************************************************************/
+	    uint(size= 3) vps_max_sub_layers_minus1;
+	    uint(size= 6) vps_max_layer_id;
+	    uint(size= 1) vps_timing_info_present_flag;
+	    uint(size=10) vps_num_layer_sets_minus1;
+	    uint(size=10) vps_num_hrd_parameters;
+		uint(size= 8) video_sequence_id := 0;
+		uint(size=16) vps_m_extensionOffset;
+		uint(size=8 ) vps_max_layers;
+		uint(size=1 ) vps_temporal_id_nesting_flag;
+		int 		  vps_m_layerIdIncludedFlag[MAX_VPS_LAYER_SETS_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
+		int           vps_m_layerSetLayerIdList[MAX_VPS_LAYER_SETS_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
+    	int           vps_m_numLayerInIdList[MAX_VPS_LAYER_SETS_PLUS1];
+		
+        /**************************************************************************
+         * read_VPS_Header.se_idx_1
+         *************************************************************************/
+        read_VPS_Header.se_idx_1 : action ==>
+        guard
+        	se_idx = 1 and isFifoFull(fifo)
+        var
+        	uint(size=32) res[1]
+        do
+        	video_sequence_id := video_sequence_id + 1;
+            vld_u_name(  4, fifo, res, "vps_video_parameter_set_id              ");
+            vld_u_name(  2, fifo, res, "vps_reserved_three_2bits                ");
+            vld_u_name(  6, fifo, res, "vps_max_layers                          ");
+            vps_max_layers := res[0] + 1;
+            vld_u_name(  3, fifo, res, "vps_max_sub_layers_minus1               ");
+	        vps_max_sub_layers_minus1 := res[0];
+	        vld_u_name(  1, fifo, res, "vps_temporal_id_nesting_flag            ");
+	        vps_temporal_id_nesting_flag := res[0];
+	        vld_u_name( 16, fifo, res, "vps_reserved_ffff_16bits                ");
+	        vps_m_extensionOffset := res[0];
+	        se_idx := se_idx + 1;
+        end
+        /**************************************************************************
+         * read_VPS_Header.se_idx_2
+         *************************************************************************/
+        read_VPS_Header.se_idx_2 : action ==>
+        guard
+        	se_idx = 2 and isFifoFull(fifo)
+        var
+        	uint(size = 32) res[1]
+        do
+        	// start decode_profile_tier_level()
+        	vld_u_name(2, fifo, res,
+        	"XXX_profile_space[]                     ");
+        	vld_u_name(1, fifo, res,
+        	"XXX_tier_flag[]                         ");
+        	vld_u_name(5, fifo, res,
+        	"XXX_profile_idc[]                       ");
+        	foreach int i in 0 .. 31 do
+        		vld_u_name(1, fifo, res,
+        		"XXX_profile_compatibility_flag[][j]     ");
+        	end
+        	vld_u_name(1, fifo, res,
+        	"general_progressive_source_flag         ");
+        	vld_u_name(1, fifo, res,
+        	"general_interlaced_source_flag          ");
+        	vld_u_name(1, fifo, res,
+        	"general_non_packed_constraint_flag      ");
+        	vld_u_name(1, fifo, res,
+        	"general_frame_only_constraint_flag      ");
+        	
+            se_idx := se_idx + 1;
+        end
+	    /**************************************************************************
+	     * read_VPS_Header.se_idx_3
+	     *************************************************************************/
+	        read_VPS_Header.se_idx_3 : action ==>
+	    guard
+	        se_idx = 3 and isFifoFull(fifo)
+	    var
+	        bool profile_present_flag = true,
+	        uint(size = 32) res[1]
+	    do
+	        if (profile_present_flag) then
+	            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
+	            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
+	            vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	        end
+	        // end of decode_profile_tier_level()
+	        vld_u_name(  8, fifo, res, "general_level_idc                       ");
+	        cnt_i  := 0;
+	        se_idx := se_idx + 1;
+	    end
+	        /**************************************************************************
+	         * read_VPS_Header.se_idx_4
+	         *************************************************************************/
+	    bool vps_profile_present_flag := true;
+	    bool vps_sub_layer_profile_present_flag;
+	    bool vps_sub_layer_level_present_flag;
+	
+	    read_VPS_Header.se_idx_4.loop1 : action ==>
+	    guard
+	    	se_idx = 4 and isFifoFull(fifo),
+	    	cnt_i < vps_max_sub_layers_minus1
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	        res[0] := 0;
+	        if vps_profile_present_flag then
+	            vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
+	        end
+	        vps_sub_layer_profile_present_flag := (res[0] = 1);
+	        vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
+	        vps_sub_layer_level_present_flag := (res[0] = 1);
+	        cnt_i := cnt_i + 1;
+	    end
+	
+	    read_VPS_Header.se_idx_4.insertedCond : action ==>
+	        guard
+	        	se_idx = 40 and isFifoFull(fifo)
+	        do
+		        if (vps_max_sub_layers_minus1 > 0) then
+		            foreach int k in vps_max_sub_layers_minus1 .. 7 do
+		            	flushBits_name( 2, fifo,    "reserved_zero_2bits[ i ]                ");
+		            end
+		        end
+		        se_idx := 41;
+	    end
+	
+	    read_VPS_Header.se_idx_4.loop2 : action ==>
+	    guard
+	    	se_idx = 41 and isFifoFull(fifo),
+	    	cnt_i < vps_max_sub_layers_minus1
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	        if vps_sub_layer_profile_present_flag then
+	        	vld_u_name(2, fifo, res, "sub_layer_profile_space[i]              ");
+	        	vld_u_name(1, fifo, res, "sub_layer_tier_flag[i]                  ");
+	        	vld_u_name(5, fifo, res, "sub_layer_profile_idc[i]                ");
+	        	foreach int j in 0 .. 31 do
+	        		vld_u_name(1, fifo, res,
+	        		"sub_layer_profile_compatibility_flags[i][j]");
+	        	end
+	        	flushBits_name(16, fifo,
+	        	"sub_layer_reserved_zero_16bits[i]         ");
+	    	end
+	    	if (vps_sub_layer_level_present_flag) then
+	    		vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
+	        end
+	        cnt_i := cnt_i + 1;
+	    end
+	    read_VPS_Header.se_idx_4.loop1End : action ==>
+	    guard
+	        se_idx = 4 ,
+	        cnt_i = vps_max_sub_layers_minus1
+	    do
+	    	cnt_i  := 0;
+	        se_idx := 40;
+	    end
+	
+	    read_VPS_Header.se_idx_4.loop2End : action ==>
+	    guard
+	        se_idx = 41 ,
+	        cnt_i = vps_max_sub_layers_minus1
+	    do
+	        se_idx := 42;
+	        cnt_i := 0;
+	    end
+	
+	    read_VPS_Header.se_idx_4.decodeInfoPresentFlag : action ==>
+	    guard
+	        se_idx = 42 and isFifoFull(fifo)
+	    var
+	        uint(size=32) res[1]
+	    do
+	        vld_u_name(  1, fifo, res, "vps_sub_layer_ordering_info_present_flag");
+	        if res[0] = 1 then
+	            cnt_i  := 0;
+	        else
+	            cnt_i  := vps_max_sub_layers_minus1;
+	        end
+	        se_idx := 5;
+	    end
+	    /**************************************************************************
+	     * read_VPS_Header.se_idx_5
+	     *************************************************************************/
+	    read_VPS_Header.se_idx_5.loop11 : action ==>
+	    guard
+	        se_idx = 5 and isFifoFull(fifo),
+	        cnt_i < vps_max_sub_layers_minus1 +1
+	    var
+	        int(size=32) res[1]
+	    do
+	        vld_ue_name(    fifo, res, "vps_max_dec_pic_buffering[i]            ");
+	        vld_ue_name(    fifo, res, "vps_num_reorder_pics[i]                 ");
+	        vld_ue_name(    fifo, res, "vps_max_latency_increase[i]             ");
+	        cnt_i := cnt_i + 1;
+	    end
+	    read_VPS_Header.se_idx_5.loopEnd : action ==>
+	    guard
+	        se_idx = 5 and isFifoFull(fifo),
+	        cnt_i = vps_max_sub_layers_minus1 + 1
+	    var
+	        uint(size=32) res[1]
+	    do
+	        vld_u_name(  6, fifo, res, "vps_max_nuh_reserved_zero_layer_id      ");
+	        vps_max_layer_id := res[0];
+	        vld_ue_name(    fifo, res, "vps_max_op_sets_minus1                  ");
+	        vps_num_layer_sets_minus1 := res[0];
+	        cnt_i  := 1;
+	        //cnt_i  := vps_num_layer_sets_minus1 + 1; // TODO : bypass layer_id_included_flag()
+	        se_idx := 6;
+	    end
+	    /**************************************************************************
+	     * read_VPS_Header.se_idx_6
+	     *************************************************************************/
+	    read_VPS_Header.se_idx_6.loop : action ==>
+	    guard
+	        se_idx = 6 and isFifoFull(fifo),
+	        cnt_i <= vps_num_layer_sets_minus1
+	    var
+	        uint(size=32) res[1]
+	    do
+	        foreach int j in 0 .. vps_max_layer_id do
+	            vld_u_name(  1, fifo, res, "layer_id_included_flag[][i]             ");
+	            vps_m_layerIdIncludedFlag[cnt_i][j] := res[0];
+	        end
+	        cnt_i := cnt_i + 1;
+	    end
+	    read_VPS_Header.se_idx_6.loopEnd : action ==>
+	    guard
+	        se_idx = 6 and isFifoFull(fifo),
+	        cnt_i = vps_num_layer_sets_minus1 + 1
+	    var
+	        uint(size=32) res[1],
+	        int n := 0
+	    do
+	    	//deriveLayerIdListVariables
+	    	vps_m_numLayerInIdList[0] := 1;
+		    vps_m_layerSetLayerIdList[0][0] := 0;
+		
+		    foreach int i in 1 .. vps_num_layer_sets_minus1 do
+		        n := 0;
+		        foreach int m in 0 .. vps_max_layer_id do
+		            if vps_m_layerIdIncludedFlag[i][ m] != 0 then
+		                vps_m_layerSetLayerIdList[i][n] := m;
+		                n := n + 1;
+		            end
+		        end
+		        vps_m_numLayerInIdList[i] := n;
+		    end
+	    	
+	        vld_u_name(  1, fifo, res, "vps_timing_info_present_flag            ");
+	        vps_timing_info_present_flag := res[0];
+	        if vps_timing_info_present_flag = 1 then
+	            se_idx := se_idx + 1;
+	        else
+	            se_idx := 10;
+	        end
+	        cnt_i := 0;
+	    end
+	    /**************************************************************************
+	     * read_VPS_Header.se_idx_7
+	     *************************************************************************/
+	    read_VPS_Header.se_idx_7 : action ==>
+	    guard
+	        se_idx = 7 and isFifoFull(fifo)
+	    var
+	        uint(size=32) res[1]
+	    do
+	        vld_u_name( 32, fifo, res, "vps_num_units_in_tick                   ");
+	        vld_u_name( 32, fifo, res, "vps_time_scale                          ");
+	        se_idx := se_idx + 1;
+	    end
+	    /**************************************************************************
+	     * read_VPS_Header.se_idx_8
+	     *************************************************************************/
+	    read_VPS_Header.se_idx_8 : action ==>
+	    guard
+	        se_idx = 8 and isFifoFull(fifo)
+	    var
+	        uint(size=32) res[1]
+	    do
+	        vld_u_name(  1, fifo, res, "vps_poc_proportional_to_timing_flag     ");
+	        if res[0] = 1 then
+	            vld_ue_name(    fifo, res, "vps_num_ticks_poc_diff_one_minus1       ");
+	        end
+	        vld_ue_name(    fifo, res, "vps_num_hrd_parameters                  ");
+	        vps_num_hrd_parameters := res[0];
+	        se_idx := se_idx + 1;
+	    end
+	    /**************************************************************************
+	     * read_VPS_Header.se_idx_9
+	     *************************************************************************/
+	    read_VPS_Header.se_idx_9.loop : action ==>
+	    guard
+	        se_idx = 9 and isFifoFull(fifo),
+	        cnt_i < vps_num_hrd_parameters
+	    var
+	        uint(size=32) res[1],
+	        uint(size= 1) cprms_present_flag := 0
+	    do
+	        vld_ue_name(    fifo, res, "hrd_op_set_idx[i]                       ");
+	        if cnt_i > 0 then
+	            vld_u_name(  1, fifo, res, "cprms_present_flag[i]                   ");
+	            cprms_present_flag := res[0];
+	        end
+	        if cprms_present_flag = 1 then
+	            println("not support for vps_num_hrd_parameters != 0");
+	        end
+	        cnt_i := cnt_i + 1;
+	    end
+	    read_VPS_Header.se_idx_9.loopEnd : action ==>
+	    guard
+	        se_idx = 9,
+	        cnt_i = vps_num_hrd_parameters
+	    do
+	        se_idx := se_idx + 1;
+	    end
+	        /**************************************************************************
+	         * read_VPS_Header_done
+	         *************************************************************************/
+	    read_VPS_Header.checkExtension : action ==>
+	    guard
+	    	se_idx = 10 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_u_name(1, fifo, res,
+	        "vps_extension_flag                      ");
+	        se_idx := 11;
+	        if res[0] = 1 then
+	        	byte_align(fifo);
+	        	println("Now support for vps_extension_flag");
+	        	se_idx := 12;
+	        end
+	    end
+	    
+	    read_VPS_Header_done: action ==>
+	    guard
+	    	se_idx = 11 and isFifoFull(fifo)
+	    end
+	 	    
+	    /**************************************************************************
+	     * read_VPS_Extensions
+	     *************************************************************************/
+	    int numScalabilityTypes;
+	    int vps_avc_base_layer_flag;
+	    uint(size=1) vps_splitting_flag;
+	    int vps_scalability_mask[MAX_VPS_NUM_SCALABILITY_TYPES];
+	    int vps_m_numScalabilityTypes;
+	    int vps_dimension_id_len[MAX_VPS_NUM_SCALABILITY_TYPES];
+	    uint(size=1) vps_nuh_layer_id_present_flag;
+	    int vps_layer_id_in_nuh[MAX_VPS_LAYER_ID_PLUS1];
+    	int vps_m_layerIdInVps[MAX_VPS_LAYER_ID_PLUS1];
+	    int loop1Counter := 1;
+	    int loop2Counter := 0;
+	    int 		 dimension_id[MAX_VPS_LAYER_ID_PLUS1][MAX_VPS_NUM_SCALABILITY_TYPES];
+	    uint(size=8) vps_m_viewIdLenMinus1;
+	    int 		 numViews := 1;
+	    uint 		 vps_m_scalabilityMask[MAX_VPS_NUM_SCALABILITY_TYPES]:=[0:for int k in 0 .. 15];
+	    uint 		 vps_m_dimensionId[MAX_VPS_LAYER_ID_PLUS1][MAX_VPS_NUM_SCALABILITY_TYPES] := [[0:for int j in 0 .. 15]:for int k in 0 .. 1];
+	    int 		 scalIdx := 0;
+	    int 		 scalabilityIdReturn :=0;
+	    uint 		 vps_m_layerIdInNuh[MAX_VPS_LAYER_ID_PLUS1]:=[0,0];
+	    uint 		 vps_m_viewIdVal[MAX_VPS_LAYER_ID_PLUS1];
+	    uint 		 vps_m_numDirectRefLayers[MAX_VPS_LAYER_ID_PLUS1];
+	    uint 		 vps_m_directDependencyFlag[MAX_VPS_LAYER_ID_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
+	    uint 		 vps_m_refLayerId[MAX_VPS_LAYER_ID_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
+	    uint(size=1) vps_m_maxTSLayersPresentFlag;
+	    int 		 vps_m_maxTSLayerMinus1[MAX_VPS_LAYER_ID_PLUS1 - 1];
+	    uint(size=1) vps_m_maxTidRefPresentFlag;
+	    uint 		 vps_m_maxTidIlRefPicsPlus1[MAX_VPS_LAYER_ID_PLUS1 - 1][MAX_VPS_LAYER_ID_PLUS1];
+	    uint(size=1) vps_m_ilpSshSignalingEnabledFlag;
+	    int 		 vps_num_profile_tier_level;
+	    uint 		 profile_ref[MAX_VPS_LAYER_SETS_PLUS1]; 
+	    uint(size=1) vps_default_one_target_output_layer_flag;
+	    int 		 vps_m_numOutputLayerSets;
+	    int 		 vps_m_outputLayerSetIdx;
+	    uint       	 vps_m_outputLayerFlag[MAX_VPS_LAYER_SETS_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
+	    uint(size=1) vps_m_repFormatIdxPresentFlag;
+	    int 		 vps_m_vpsNumRepFormats;
+	    int          vps_m_vpsRepFormatIdx[16];
+	    uint(size=1) vps_max_one_active_ref_layer_flag;
+	    int     	 vps_m_numSubDpbs[MAX_VPS_OP_LAYER_SETS_PLUS1];
+	    uint(size=1) vps_m_subLayerFlagInfoPresentFlag[MAX_VPS_OP_LAYER_SETS_PLUS1];
+	    uint(size=1) vps_m_defaultDirectDependencyTypeFlag;
+	    
+	    read_VPS_Header_scalableExtensions : action ==>
+	    guard
+	    	se_idx = 12 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	//start extensions
+	    	numScalabilityTypes := 0;
+	    	vld_u_name(  1, fifo, res, "vps_avc_base_layer_flag                 ");
+	    	vps_avc_base_layer_flag := res[0];
+	    	vld_u_name(  1, fifo, res, "vps_splitting_flag                      ");
+	    	vps_splitting_flag := res[0];
+	    	foreach int i in 0 .. MAX_VPS_NUM_SCALABILITY_TYPES -1 do
+	    		vld_u_name(  1, fifo, res, "vps_scalability_mask                    ");
+        		vps_scalability_mask[i] := res[0];
+        		numScalabilityTypes := numScalabilityTypes + vps_scalability_mask[i];
+    		end	    	
+	    	vps_m_numScalabilityTypes := numScalabilityTypes;
+	    	
+	    	se_idx := 1;
+	    end
+	     
+	    read_VPS_Extensions.se_idx_1: action ==>
+	    guard
+	    	se_idx = 1 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int numBits
+	    do
+	    	foreach int i in 0 .. (numScalabilityTypes - vps_splitting_flag) - 1 do
+	    		vld_u_name(  3, fifo, res, "vps_dimension_id_len_minus1             ");
+        		vps_dimension_id_len[i] := res[0] + 1;
 			end
-				vld_u_name(1, fifo, res,
-				"general_progressive_source_flag         ");
-				vld_u_name(1, fifo, res,
-				"general_interlaced_source_flag          ");
-				vld_u_name(1, fifo, res,
-				"general_non_packed_constraint_flag      ");
-				vld_u_name(1, fifo, res,
-				"general_frame_only_constraint_flag      ");
-		end
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_3
-	 *************************************************************************/
-	read_VPS_Header.se_idx_3 : action ==>
-	guard
-		se_idx = 3 and isFifoFull(fifo)
-	var
-		bool profile_present_flag = true,
-		uint(size = 32) res[1]
-	do
-		if (profile_present_flag) then
-			vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
-			vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
-			vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
-		end
-		vld_u_name(  8, fifo, res, "general_level_idc                       ");
-		cnt_i  := 0;
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_4
-	 *************************************************************************/
-	bool profile_present_flag := true;
-	bool sub_layer_profile_present_flag;
-	bool sub_layer_level_present_flag;
-
-	read_VPS_Header.se_idx_4.loop1 : action ==>
-	guard
-		se_idx = 4 and isFifoFull(fifo),
-		cnt_i < vps_max_sub_layers_minus1
-	var
-		uint(size = 32) res[1]
-	do
-		res[0] := 0;
-		if profile_present_flag then
-			vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
-		end
-		sub_layer_profile_present_flag := (res[0] = 1);
-		vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
-		sub_layer_level_present_flag := (res[0] = 1);
-		cnt_i := cnt_i + 1;
-	end
-
-	read_VPS_Header.se_idx_4.insertedCond : action ==>
-	guard
-		se_idx = 40 and isFifoFull(fifo)
-	do
-		if (vps_max_sub_layers_minus1 > 0) then
-			foreach int k in vps_max_sub_layers_minus1 .. 7 do
-				flushBits_name( 2, fifo,    "reserved_zero_2bits[ i ]                ");
+	    	if vps_splitting_flag = 1 then
+	    		numBits := 0;
+	    		foreach int i in 0 .. numScalabilityTypes-2 do
+           			numBits := numBits + vps_dimension_id_len[i];
+        		end
+        		if numBits > 6 then
+        			println("error numBits > 6");
+        		end
+        		//TODO: vps_m_dimensionIdLen[numScalabilityTypes-1] := 6-numBits;
+        		numBits := 6;
+        	end
+        	vld_u_name(  1, fifo, res, "vps_nuh_layer_id_present_flag           ");
+	    	vps_nuh_layer_id_present_flag := res[0];
+	    	vps_layer_id_in_nuh[0] := 0;
+    		vps_m_layerIdInVps[0]  := 0;
+    		
+        	se_idx := 2;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_loop1: action ==>
+	    guard
+	    	se_idx = 2 and isFifoFull(fifo), loop1Counter < vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	if vps_nuh_layer_id_present_flag = 1 then
+	    		vld_u_name(  6, fifo, res, "vps_layer_id_in_nuh                     ");
+            	vps_layer_id_in_nuh[loop1Counter] := res[0];
+        	else
+            	vps_layer_id_in_nuh[loop1Counter] := loop1Counter;
+            end
+        	vps_m_layerIdInVps[vps_layer_id_in_nuh[loop1Counter]] := loop1Counter;
+    		
+	    	se_idx := 21;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_endLoop1: action ==>
+	    guard
+	    	se_idx = 2 and loop1Counter = vps_max_layers
+	    do
+	    	loop1Counter := 1;
+	    	se_idx := 3;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_loop2: action ==>
+	    guard
+	    	se_idx = 21 and isFifoFull(fifo), loop2Counter < numScalabilityTypes
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  vps_dimension_id_len[loop2Counter], fifo, res, "dimension_id                            ");
+	    	dimension_id[loop1Counter][loop2Counter] := res[0];
+	    	loop2Counter := loop2Counter + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_2_loop2_done: action ==>
+	    guard
+	    	se_idx = 21 and loop2Counter = numScalabilityTypes
+	    do
+	    	loop2Counter := 0;
+	    	loop1Counter := loop1Counter + 1;
+	    	se_idx := 2;
+	    end
+	    
+	    procedure scalTypeToScalIdx(int scalType)
+		begin
+			scalIdx := 0;
+		    foreach int curScalType in 0 .. scalType - 1 do
+		        scalIdx := scalIdx + ( if vps_m_scalabilityMask[curScalType] !=0 then 1 else 0 end);
 			end
 		end
-		se_idx := 41;
-	end
-
-	read_VPS_Header.se_idx_4.loop2 : action ==>
-	guard
-		se_idx = 41 and isFifoFull(fifo),
-		cnt_i < vps_max_sub_layers_minus1
-	var
-		uint(size = 32) res[1]
-	do
-		if (profile_present_flag and sub_layer_profile_present_flag) then
-			vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
-			vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
-			vld_u_name(  5, fifo, res, "sub_layer_profile_idc[i]                ");
-			foreach int j in 0 .. 31 do
-					vld_u_name(1, fifo, res,
-					"sub_layer_profile_compatibility_flags[i][j]");
+	    
+	    
+	    procedure getScalabilityId( int layerIdInVps, int scalType)
+	    begin
+    		if vps_m_scalabilityMask[scalType] != 0  then
+    			scalTypeToScalIdx(scalType);
+    			scalabilityIdReturn := vps_m_dimensionId[layerIdInVps][scalIdx];
+    		else 
+    			scalabilityIdReturn := 0;
+    		end
+		end
+	    procedure getNumViews ()
+	    var
+	    	int lId,
+	    	int resProc1,
+	    	int resProc2
+	    begin
+	    	numViews := 1;
+		    foreach int i in 0 .. vps_max_layers - 1 do
+		        lId := vps_m_layerIdInNuh[ i ];
+		        if i > 0 then
+			        getScalabilityId( vps_m_layerIdInVps[lId], VIEW_ORDER_INDEX );
+			        resProc1 := scalabilityIdReturn;
+			        getScalabilityId( i - 1, VIEW_ORDER_INDEX );
+			        resProc2 := scalabilityIdReturn;
+		        
+		        	if ( resProc1 != resProc2 ) then
+		            	numViews := numViews + 1;
+		            end
+				end
+		    end    
+		end
+	    
+	    read_VPS_Extensions.se_idx_3: action ==>
+	    guard
+	    	se_idx = 3 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  4, fifo, res, "vps_m_viewIdLenMinus1                   ");
+	    	vps_m_viewIdLenMinus1 := res[0];
+	    	getNumViews();
+	    	foreach int i in 0 .. numViews - 1 do
+	    		vld_u_name(  vps_m_viewIdLenMinus1 + 1, fifo, res, "view_id_val                             ");
+        		vps_m_viewIdVal[i] := res[0];
 			end
-				flushBits_name(16, fifo,
-				"sub_layer_reserved_zero_16bits[i]         ");
-		end
-		if (sub_layer_level_present_flag) then
-			vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
-		end
-		cnt_i := cnt_i + 1;
-	end
-	read_VPS_Header.se_idx_4.loop1End : action ==>
-	guard
-		se_idx = 4 ,
-		cnt_i = vps_max_sub_layers_minus1
-		do
-		cnt_i  := 0;
-		se_idx := 40;
-	end
+			
+			se_idx := 4; 
+	    end
+	    
+	    read_VPS_Extensions.se_idx_4: action ==>
+	    guard
+	    	se_idx = 4 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int numDirectRefLayers
+	    do
+	    	vps_m_numDirectRefLayers[0] := 0;
+	    	foreach int i in 1 .. vps_max_layers - 1 do
+	    		numDirectRefLayers := 0;
+        		foreach int j in 0 .. i - 1 do
+        			vld_u_name(  1, fifo, res, "direct_dependency_flag                  ");
+            		vps_m_directDependencyFlag[i][j] := res[0];
+            		if vps_m_directDependencyFlag[i][j] != 0 then
+                		vps_m_refLayerId[i][numDirectRefLayers] := j;
+                		numDirectRefLayers := numDirectRefLayers + 1;
+            		end
+        		end
+        		vps_m_numDirectRefLayers[i] := numDirectRefLayers;
+    		end
+    		se_idx := 5; 
+	    end
+	    
+	    read_VPS_Extensions.se_idx_5: action ==>
+	    guard
+	    	se_idx = 5 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  1, fifo, res, "vps_sub_layers_max_minus1_present_flag  ");
+	    	vps_m_maxTSLayersPresentFlag := res[0];
+		    if vps_m_maxTSLayersPresentFlag != 0 then
+		        foreach int i in 0 .. vps_max_layers - 2 do
+		        	vld_u_name(  3, fifo, res, "sub_layers_vps_max_minus1               ");
+		            vps_m_maxTSLayerMinus1[i] := res[0];
+		        end
+		    else
+		    	foreach int i in 0 .. vps_max_layers - 2 do
+		            vps_m_maxTSLayerMinus1[i] := vps_max_sub_layers_minus1;
+		        end
+		    end
+		    
+		    se_idx := 6;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_6: action ==>
+	    guard
+	    	se_idx = 6 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  1, fifo, res, "vps_m_maxTidRefPresentFlag              ");
+	    	vps_m_maxTidRefPresentFlag := res[0];
+	    	if vps_m_maxTidRefPresentFlag != 0 then
+	    		foreach int i in 0 .. vps_max_layers - 2 do
+	            	foreach int j in i+1 .. vps_max_layers - 1 do
+	                	if (vps_m_directDependencyFlag[j][i] != 0) then
+	                		vld_u_name(  3, fifo, res, "max_tid_il_ref_pics_plus1               ");
+	                    	vps_m_maxTidIlRefPicsPlus1[i][j] :=  res[0];
+	                	end
+	            	end
+				end
+			else
+				foreach int i in 0 .. vps_max_layers - 2 do
+					foreach int j in i+1 .. vps_max_layers - 1 do
+                		vps_m_maxTidIlRefPicsPlus1[i][j] := 7;
+            		end
+				end
+	    	end
+	    	se_idx := 7;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_7: action ==>
+	    guard
+	    	se_idx = 7 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  1, fifo, res, "vps_m_ilpSshSignalingEnabledFlag        ");
+	    	vps_m_ilpSshSignalingEnabledFlag := res[0];
+	    	vld_u_name(  10, fifo, res, "check vps_number_layer_sets             ");
+			if (res[0] != vps_num_layer_sets_minus1) then
+				println("error vpsNumLayerSet");
+			end       
+			vld_u_name(  6, fifo, res, "vps_num_profile_tier_level              ");
+			vps_num_profile_tier_level := res[0]+1; 	
+	    	se_idx := 8;
+	    	vps_numProfileCounter := 1;
+	    end
+	    
+	    int vps_numProfileCounter;
+	    
+	    read_VPS_Extensions.se_idx_8_loop: action ==>
+	    guard
+	    	se_idx = 8 and isFifoFull(fifo), vps_numProfileCounter < vps_num_profile_tier_level
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name(  1, fifo, res, "vps_profile_present_flag                ");
+			if res[0] = 0 then
+				vld_u_name(  6, fifo, res, "profile_ref                             ");
+				profile_ref[vps_numProfileCounter] := res[0]+1;
+				//TODO: memcpy(&vps->PTLExt[i], &vps->PTLExt[vps->profile_ref[i]], sizeof(PTL));
+			end	    	
+	    	//start parse_ptl()
+	    	se_idx := 81;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_81: action ==>
+	    guard
+	    	se_idx = 81 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	// start decode_profile_tier_level()
+        	vld_u_name(2, fifo, res,
+        	"XXX_profile_space[]                     ");
+        	vld_u_name(1, fifo, res,
+        	"XXX_tier_flag[]                         ");
+        	vld_u_name(5, fifo, res,
+        	"XXX_profile_idc[]                       ");
+        	foreach int i in 0 .. 31 do
+        		vld_u_name(1, fifo, res,
+        		"XXX_profile_compatibility_flag[][j]     ");
+        	end
+        	vld_u_name(1, fifo, res,
+        	"general_progressive_source_flag         ");
+        	vld_u_name(1, fifo, res,
+        	"general_interlaced_source_flag          ");
+        	vld_u_name(1, fifo, res,
+        	"general_non_packed_constraint_flag      ");
+        	vld_u_name(1, fifo, res,
+        	"general_frame_only_constraint_flag      ");
+        	
+            se_idx := 82;
+	    end
+	    
+	    uint(size=1) vpsExt_sub_layer_profile_present_flag[MAX_VPS_NUM_PROFILE_TIER_LEVEL];
+	    uint(size=1) vpsExt_sub_layer_level_present_flag[MAX_VPS_NUM_PROFILE_TIER_LEVEL];
+	    
+	    read_VPS_Extensions.se_idx_82: action ==>
+	    guard
+	    	se_idx = 82 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
+            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
+            vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	       
+	        // end of decode_profile_tier_level()
+	        vld_u_name(  8, fifo, res, "general_level_idc                       ");
+	        	        
+            se_idx := 83;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_83: action ==>
+	    guard
+	    	se_idx = 83 and isFifoFull(fifo)
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	    	foreach int i in 0 .. vps_max_sub_layers_minus1 - 1 do
+		        vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
+		        vpsExt_sub_layer_profile_present_flag[vps_numProfileCounter] := res[0];
+		        vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
+		        vpsExt_sub_layer_level_present_flag[vps_numProfileCounter]   := res[0];
+			end
+			if vps_max_sub_layers_minus1 > 0 then
+		        foreach int i in vps_max_sub_layers_minus1 .. 7 do
+		        	vld_u_name( 2, fifo, res, "reserved_zero_2bits                     ");
+		        end
+		    end
+		    cnt_i  := 0;
+		    se_idx := 84;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_84_loop: action ==>
+	    guard
+	    	se_idx = 84 and isFifoFull(fifo),
+	    	cnt_i < vps_max_sub_layers_minus1
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	        if vpsExt_sub_layer_profile_present_flag[vps_numProfileCounter] = 1 then
+	        	// start decode_profile_tier_level()
+	        	vld_u_name(2, fifo, res,
+	        	"XXX_profile_space[]                     ");
+	        	vld_u_name(1, fifo, res,
+	        	"XXX_tier_flag[]                         ");
+	        	vld_u_name(5, fifo, res,
+	        	"XXX_profile_idc[]                       ");
+	        	foreach int i in 0 .. 31 do
+	        		vld_u_name(1, fifo, res,
+	        		"XXX_profile_compatibility_flag[][j]     ");
+	        	end
+	        	vld_u_name(1, fifo, res,
+	        	"general_progressive_source_flag         ");
+	        	vld_u_name(1, fifo, res,
+	        	"general_interlaced_source_flag          ");
+	        	vld_u_name(1, fifo, res,
+	        	"general_non_packed_constraint_flag      ");
+	        	vld_u_name(1, fifo, res,
+	        	"general_frame_only_constraint_flag      ");
+	        end
+	        	se_idx := 85;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_85: action ==>
+	    guard
+	    	se_idx = 85 and isFifoFull(fifo)
+	    var
+	    	uint(size = 32) res[1]
+	    do
+	    	if vpsExt_sub_layer_profile_present_flag[vps_numProfileCounter] = 1 then
+	    		vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
+            	vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
+            	vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	       	end
+	        // end of decode_profile_tier_level()
+	        if vpsExt_sub_layer_level_present_flag[vps_numProfileCounter] = 1 then
+           		vld_u_name( 8, fifo, res, "sub_layer_level_idc                     ");
+           	end
+        	se_idx := 84;
+        	cnt_i := cnt_i + 1;
+	    end
+	    
+	    int numOutputLayerSets;
+	    
+	    read_VPS_Extensions.se_idx_84_endLoop: action ==>
+	    guard
+	    	se_idx = 84 and isFifoFull(fifo),
+	    	cnt_i = vps_max_sub_layers_minus1
+	    do
+	    	// end parse_ptl
+	        cnt_i := 0;
+	        vps_numProfileCounter := vps_numProfileCounter + 1;
+	        se_idx := 8;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_8_endLoop: action ==>
+	    guard
+	    	se_idx = 8 and isFifoFull(fifo), vps_numProfileCounter = vps_num_profile_tier_level
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vps_numProfileCounter := 0;
+	    	
+	    	vld_u_name( 1, fifo, res, "more_output_layer_sets_than_default_flag");
+	    	numOutputLayerSets := 0;
+	    	if res[0] = 0 then
+	    		numOutputLayerSets := vps_num_layer_sets_minus1 + 1;
+	    	else
+	    		vld_u_name( 10, fifo, res, "num_add_output_layer_sets               ");
+	    		numOutputLayerSets := vps_num_layer_sets_minus1 + 1 + res[0];
+	    	end
+	    	if numOutputLayerSets > 1 then
+		    	vld_u_name( 1, fifo, res, "default_one_target_output_layer_flag    ");
+		    	vps_default_one_target_output_layer_flag := res[0];
+		    end
+	    	vps_m_numOutputLayerSets := numOutputLayerSets;
+	    	cnt_i := 1;
+	    	se_idx := 9;
+	    end
+	    
+	    int lsIdx;
+	    
+	    read_VPS_Extensions.se_idx_9_loop: action ==>
+	    guard
+	    	se_idx = 9 and isFifoFull(fifo), cnt_i < numOutputLayerSets
+	    var
+	    	uint(size=32) res[1],
+	    	int numBits := 1
+	    do
+	    	lsIdx := 0;
+	    	if cnt_i > vps_num_layer_sets_minus1 then
+	    		while ((1 << numBits) < (vps_num_layer_sets_minus1))  do
+                	numBits := numBits + 1;
+            	end
+            	vld_u_name( numBits, fifo, res, "output_layer_set_idx_minus1             ");
+            	vps_m_outputLayerSetIdx := res[0];
+            	lsIdx := res[0] + 1;
+            	loop1Counter := 0;
+            	se_idx := 91;// go to for loop numLayerInIdList
+	    	else
+	    		se_idx := 92;
+	    	end
+	    end
+	    
+	    read_VPS_Extensions.se_idx_91_loop: action ==>
+	    guard
+	    	se_idx = 91 and isFifoFull(fifo), loop1Counter < (vps_m_numLayerInIdList[lsIdx]-1)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "output_layer_flag				       ");
+	    	vps_m_outputLayerFlag[cnt_i][loop1Counter] := res[0];
+	    	loop1Counter := loop1Counter + 1;
+	    end
+		
+		read_VPS_Extensions.se_idx_91_endLoop: action ==>
+	    guard
+	    	se_idx = 91 and isFifoFull(fifo), loop1Counter = (vps_m_numLayerInIdList[lsIdx]-1)
+	    do
+	    	loop1Counter := 0;
+	    	se_idx := 93;
+	    end
+		
+		read_VPS_Extensions.se_idx_92: action ==>
+	    guard
+	    	se_idx = 92 and isFifoFull(fifo)
+	    do
+	    	// TODO: check vps_m_outputLayerSetIdx[cnt_i] := cnt_i;
+	    	vps_m_outputLayerSetIdx := cnt_i;
+            lsIdx := cnt_i;
+            if vps_default_one_target_output_layer_flag != 0  then
+                foreach int j in 0 .. vps_m_numLayerInIdList[lsIdx] - 1 do
+                    vps_m_outputLayerFlag[cnt_i][j] := if j = vps_m_numLayerInIdList[lsIdx]-1 then 1 else 0 end;
+                end
+            else
+                foreach int j in 0 .. vps_m_numLayerInIdList[lsIdx] - 1 do
+                    vps_m_outputLayerFlag[cnt_i][j] := 1;
+                end
+            end
+            se_idx := 93;
+	    end
 
-	read_VPS_Header.se_idx_4.loop2End : action ==>
-	guard
-		se_idx = 41 ,
-		cnt_i = vps_max_sub_layers_minus1
-	do
-		se_idx := 42;
-		cnt_i := 0;
-	end
+		read_VPS_Extensions.se_idx_93: action ==>
+	    guard
+	    	se_idx = 93 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int numBits := 1
+	    do
+	    	while ((1 << numBits) < (vps_num_profile_tier_level))  do
+            	numBits := numBits + 1;
+        	end
+        	vld_u_name( numBits, fifo, res, "profile_level_tier_idx                  ");
+        	//vps_profile_level_tier_idx[i] := get_bits(gb, numBits);
+        	cnt_i := cnt_i + 1;
+        	se_idx := 9;
+	    end
 
-	read_VPS_Header.se_idx_4.decodeInfoPresentFlag : action ==>
-	guard
-		se_idx = 42 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		vld_u_name(  1, fifo, res, "vps_sub_layer_ordering_info_present_flag");
-		if res[0] = 1 then
-			cnt_i  := 0;
-		else
-			cnt_i  := vps_max_sub_layers_minus1;
-		end
-		se_idx := 5;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_5
-	 *************************************************************************/
-	read_VPS_Header.se_idx_5.loop11 : action ==>
-	guard
-		se_idx = 5 and isFifoFull(fifo),
-		cnt_i < vps_max_sub_layers_minus1 +1
-	var
-		int(size=32) res[1]
-	do
-		vld_ue_name(    fifo, res, "vps_max_dec_pic_buffering[i]            ");
-		vld_ue_name(    fifo, res, "vps_num_reorder_pics[i]                 ");
-		vld_ue_name(    fifo, res, "vps_max_latency_increase[i]             ");
-		cnt_i := cnt_i + 1;
-	end
-	read_VPS_Header.se_idx_5.loopEnd : action ==>
-	guard
-		se_idx = 5 and isFifoFull(fifo),
-		cnt_i = vps_max_sub_layers_minus1 + 1
-	var
-		uint(size=32) res[1]
-	do
-		vld_u_name(  6, fifo, res, "vps_max_nuh_reserved_zero_layer_id      ");
-		vps_max_nuh_reserved_zero_layer_id := res[0];
-		vld_ue_name(    fifo, res, "vps_max_op_sets_minus1                  ");
-		vps_num_op_sets_minus1 := res[0];
-		cnt_i  := 1;
-		cnt_i  := vps_num_op_sets_minus1 + 1; // TODO : bypass layer_id_included_flag()
-		se_idx := 6;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_6
-	 *************************************************************************/
-	read_VPS_Header.se_idx_6.loop : action ==>
-	guard
-		se_idx = 6 and isFifoFull(fifo),
-		cnt_i <= vps_num_op_sets_minus1
-	var
-		uint(size=32) res[1]
-	do
-		foreach int(size=8) i in 0 .. vps_max_nuh_reserved_zero_layer_id - 1 do
-			vld_u_name(  1, fifo, res, "layer_id_included_flag[][i]             ");
-		end
-		cnt_i := cnt_i + 1;
-	end
-	read_VPS_Header.se_idx_6.loopEnd : action ==>
-	guard
-		se_idx = 6 and isFifoFull(fifo),
-		cnt_i = vps_num_op_sets_minus1 + 1
-	var
-		uint(size=32) res[1]
-	do
-		vld_u_name(  1, fifo, res, "vps_timing_info_present_flag            ");
-		vps_timing_info_present_flag := res[0];
-		if vps_timing_info_present_flag = 1 then
-			se_idx := se_idx + 1;
-		else
+		read_VPS_Extensions.se_idx_9_endLoop: action ==>
+	    guard
+	    	se_idx = 9 and isFifoFull(fifo), cnt_i = numOutputLayerSets
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	cnt_i := 0;
+	    	if vps_max_layers > 1 then
+	    		vld_u_name( 1, fifo, res, "alt_output_layer_flag                   ");
+        		//vps_m_altOutputLayerFlag := get_bits1(gb);
+    		end
+    			vld_u_name( 1, fifo, res, "vps_m_repFormatIdxPresentFlag	          ");
+    		    vps_m_repFormatIdxPresentFlag := res[0];
+			    if vps_m_repFormatIdxPresentFlag != 0 then
+			    	vld_u_name( 8, fifo, res, "vps_num_rep_formats_minus1   	          ");
+			        vps_m_vpsNumRepFormats := res[0] + 1;
+			    else
+			        vps_m_vpsNumRepFormats := vps_max_layers;
+			    end
 			se_idx := 10;
-		end
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_7
-	 *************************************************************************/
-	read_VPS_Header.se_idx_7 : action ==>
-	guard
-		se_idx = 7 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		vld_u_name( 32, fifo, res, "vps_num_units_in_tick                   ");
-		vld_u_name( 32, fifo, res, "vps_time_scale                          ");
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_8
-	 *************************************************************************/
-	read_VPS_Header.se_idx_8 : action ==>
-	guard
-		se_idx = 8 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		vld_u_name(  1, fifo, res, "vps_poc_proportional_to_timing_flag     ");
-		if res[0] = 1 then
-			vld_ue_name(    fifo, res, "vps_num_ticks_poc_diff_one_minus1       ");
-		end
-		vld_ue_name(    fifo, res, "vps_num_hrd_parameters                  ");
-		vps_num_hrd_parameters := res[0];
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_VPS_Header.se_idx_9
-	 *************************************************************************/
-	read_VPS_Header.se_idx_9.loop : action ==>
-	guard
-		se_idx = 9 and isFifoFull(fifo),
-		cnt_i < vps_num_hrd_parameters
-	var
-		uint(size=32) res[1],
-		uint(size= 1) cprms_present_flag := 0
-	do
-		vld_ue_name(    fifo, res, "hrd_op_set_idx[i]                       ");
-		if cnt_i > 0 then
-			vld_u_name(  1, fifo, res, "cprms_present_flag[i]                   ");
-			cprms_present_flag := res[0];
-		end
-		if cprms_present_flag = 1 then
-			println("not support for vps_num_hrd_parameters != 0");
-		end
-		cnt_i := cnt_i + 1;
-	end
-	read_VPS_Header.se_idx_9.loopEnd : action ==>
-	guard
-		se_idx = 9,
-		cnt_i = vps_num_hrd_parameters
-	do
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_VPS_Header_done
-	 *************************************************************************/
-	read_VPS_Header_done : action ==>
-	guard
-		se_idx = 10 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-			vld_u_name(1, fifo, res,
-			"vps_extension_flag                      ");
-		if res[0] = 1 then
-			println("not support for vps_extension_flag != 0");
-		end
-	end
+	    end
+		
+		read_VPS_Extensions.se_idx_10_loop: action ==>
+	    guard
+	    	se_idx = 10 and isFifoFull(fifo), cnt_i < vps_m_vpsNumRepFormats
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size=1) m_chromaAndBitDepthVpsPresentFlag
+	    do
+	    	vld_u_name( 1, fifo, res, "m_chromaAndBitDepthVpsPresentFlag       ");
+		    m_chromaAndBitDepthVpsPresentFlag := res[0];
+		    vld_u_name( 16, fifo, res, "pic_width_in_luma_samples               ");
+		    vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              ");
+		    if m_chromaAndBitDepthVpsPresentFlag != 0 then
+		    	vld_u_name( 2, fifo, res, "chroma_format_idc                       ");
+		        if res[0] = 3 then
+		        	vld_u_name( 1, fifo, res, "separate_colour_plane_flag              ");
+		        end
+				
+				vld_u_name( 4, fifo, res, "bit_depth_luma_minus8                   ");
+				vld_u_name( 4, fifo, res, "bit_depth_chroma_minus8                 ");
+			end
+			cnt_i := cnt_i + 1;
+	    end
+		
+		read_VPS_Extensions.se_idx_10_endLoop: action ==>
+	    guard
+	    	se_idx = 10 and isFifoFull(fifo), cnt_i = vps_m_vpsNumRepFormats
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	 cnt_i := 0;// end parseRepFormat()
+	    	
+	    	vps_m_vpsRepFormatIdx[0] := 0;
+		    if vps_m_repFormatIdxPresentFlag = 0 then
+		    	foreach int i in 1 .. vps_max_layers - 1 do
+		            vps_m_vpsRepFormatIdx[i] := i;
+		        end
+		        vld_u_name( 1, fifo, res, "max_one_active_ref_layer_flag           ");
+	    		vps_max_one_active_ref_layer_flag := res[0];
+		        se_idx := 11;
+	    	else
+		        se_idx := 101;
+		        cnt_i  := 1;
+			end
+	    	
+	    end
+	    
+	    read_VPS_Extensions.se_idx_100_loop: action ==>
+	    guard
+	    	se_idx = 101 and isFifoFull(fifo), cnt_i < vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	if vps_m_vpsNumRepFormats > 1 then
+	    		vld_u_name( 8, fifo, res, "vps_rep_format_idx                      ");
+	            vps_m_vpsRepFormatIdx[cnt_i] := res[0];
+	        else
+	            vps_m_vpsRepFormatIdx[cnt_i] := 0;
+	        end
+	    	cnt_i := cnt_i + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_100_endLoop: action ==>
+	    guard
+	    	se_idx = 101 and isFifoFull(fifo), cnt_i = vps_max_layers
+	   	var
+	    	uint(size=32) res[1]
+	    do
+	    	cnt_i  := 0; // endLoop
+	    	vld_u_name( 1, fifo, res, "max_one_active_ref_layer_flag           ");
+	    	vps_max_one_active_ref_layer_flag := res[0];
+	    	se_idx := 11;
+	    	cnt_i  := 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_11_loop: action ==>
+	    guard
+	    	se_idx = 11 and isFifoFull(fifo), cnt_i < vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+			if(vps_m_numDirectRefLayers[vps_layer_id_in_nuh[cnt_i]] = 0) then
+				vld_u_name( 1, fifo, res, "poc_lsb_not_present_flag                ");
+        	end
+        	cnt_i := cnt_i + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_11_endLoop: action ==>
+	    guard
+	    	se_idx = 11 and isFifoFull(fifo), cnt_i = vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+        	cnt_i := 0; // endLoop
+        	vld_u_name( 1, fifo, res, "cross_layer_phase_alignment_flag        ");
+        	// deriveNumberOfSubDpbs()
+        	vps_m_numSubDpbs[0] := 1;
+
+    		foreach int i in 1 .. vps_m_numOutputLayerSets - 1 do
+    			//TODO: check vps_m_numSubDpbs[i] := vps_m_numLayerInIdList[ vps_m_outputLayerSetIdx[i]];
+       	 		vps_m_numSubDpbs[i] := vps_m_numLayerInIdList[vps_m_outputLayerSetIdx];
+    		end
+    		se_idx := 12;
+    		cnt_i := 1; 
+	    end
+	    
+	    read_VPS_Extensions.se_idx_12_loop: action ==>
+	    guard
+	    	se_idx = 12 and isFifoFull(fifo), cnt_i < vps_m_numOutputLayerSets
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "sub_layer_flag_info_present_flag        ");
+	    	vps_m_subLayerFlagInfoPresentFlag[cnt_i] := res[0];
+	    	se_idx := 121;
+	    	loop1Counter := 0;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_121_loop: action ==>
+	    guard
+	    	se_idx = 121 and isFifoFull(fifo), loop1Counter < (vps_max_sub_layers_minus1 + 1)
+	    var
+	    	uint(size=32) res[1],
+	    	uint    vps_m_subLayerDpbInfoPresentFlag  [MAX_VPS_OP_LAYER_SETS_PLUS1][MAX_LAYERS]
+	    do
+	    	if loop1Counter > 0 && (vps_m_subLayerFlagInfoPresentFlag[cnt_i] != 0) then
+	    		
+	    		vld_u_name( 1, fifo, res, "sub_layer_dpb_info_present_flag         ");
+                vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] := res[0];
+            else
+                if loop1Counter =0 then // Always signal for the first sub-layer
+                    vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] := 1;
+                else // if (j != 0) && !vps->getSubLayerFlagInfoPresentFlag(i)
+                    vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] := 0;
+                end
+            end
+            if vps_m_subLayerDpbInfoPresentFlag[cnt_i][loop1Counter] != 0 then
+            	se_idx := 122;
+            	loop2Counter := 0;
+            else
+            	loop1Counter := loop1Counter + 1;
+            end
+	    end
+	    
+	    read_VPS_Extensions.se_idx_122_loop: action ==>
+	    guard
+	    	se_idx = 122 and isFifoFull(fifo), loop2Counter < vps_m_numSubDpbs[cnt_i]
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_ue_name(fifo, res, "max_vps_dec_pic_buffering_minus1        ");
+	    	loop2Counter := loop2Counter + 1;
+	    end
+
+		read_VPS_Extensions.se_idx_122_endLoop: action ==>
+	    guard
+	    	se_idx = 122 and isFifoFull(fifo), loop2Counter = vps_m_numSubDpbs[cnt_i]
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_ue_name(fifo, res, "max_vps_num_reorder_pics                ");
+	    	vld_ue_name(fifo, res, "max_vps_latency_increase_plus1          ");
+	    	loop2Counter := 0;
+	    	loop1Counter := loop1Counter + 1;
+	    	se_idx := 121;
+	    end
+		
+		read_VPS_Extensions.se_idx_121_endLoop: action ==>
+	    guard
+	    	se_idx = 121 and isFifoFull(fifo), loop1Counter = (vps_max_sub_layers_minus1 + 1)
+	    do
+	    	loop1Counter := 0;
+	    	cnt_i := cnt_i + 1;
+	    	se_idx := 12;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_12_endLoop: action ==>
+	    guard
+	    	se_idx = 12 and isFifoFull(fifo), cnt_i = vps_m_numOutputLayerSets
+	    var
+	    	uint(size=32) res[1],
+	    	int vps_m_directDepTypeLen,
+	    	int vps_m_defaultDirectDependencyType
+	    do
+	    	cnt_i := 0;
+	    	vld_ue_name(fifo, res, "direct_dep_type_len_minus2              ");
+	    	vps_m_directDepTypeLen := res[0] + 2;
+	    	vld_u_name( 1, fifo, res, "default_direct_dependency_type_flag     ");
+		    vps_m_defaultDirectDependencyTypeFlag := res[0];
+		    if vps_m_defaultDirectDependencyTypeFlag != 0 then
+		    	vld_u_name( vps_m_directDepTypeLen, fifo, res, "default_direct_dependency_type          ");
+		        vps_m_defaultDirectDependencyType := res[0];
+		    end
+		    foreach int i in 1 .. vps_max_layers - 1 do
+		        foreach int j in 0 ..i - 1 do
+		            if vps_m_directDependencyFlag[i][j] != 0  then
+		                if vps_m_defaultDirectDependencyTypeFlag != 0 then
+		                    // TODO: vps_m_directDependencyType[i][j] :=  vps_m_defaultDirectDependencyType;
+		                else
+		                	vld_u_name( 1, fifo, res, "direct_dependency_type                  ");
+		                end
+		            end
+		        end
+		    end
+		    se_idx := 13;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_13: action ==>
+	    guard
+	    	se_idx = 13 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	int iNuhLId,
+	    	int refLayerId,
+	    	int currLayerId := 0
+	    do
+	    	//TODO: check standard
+//	    	foreach int k in 1 .. vps_max_layers - 1 do //setNumRefLayers();
+//    		//   printf("setNumRefLayers \n");
+//			    foreach int i in 0 .. vps_max_layers - 1 do
+//			        iNuhLId := vps_m_layerIdInNuh[i];
+//			        //setRefLayersFlags();
+//				    foreach int l in 0 .. vps_m_numDirectRefLayers[currLayerId] - 1 do
+//				        refLayerId := vps_m_refLayerId[currLayerId][l]; 
+//				        //vps_m_recursiveRefLayerFlag[currLayerId][refLayerId] := 1;
+//				        foreach int m in 0 ..  MAX_NUM_LAYER_IDS - 1 do
+//				            //vps_m_recursiveRefLayerFlag[currLayerId][m] := (vps_m_recursiveRefLayerFlag[currLayerId][m] | vps_m_recursiveRefLayerFlag[refLayerId][m]);
+//				        end
+//				    end
+//			        
+//			        
+//			        foreach int j in 0 .. MAX_NUM_LAYER_IDS - 1 do
+//			            //vps_m_numberRefLayers[iNuhLId] := vps_m_numberRefLayers[iNuhLId] + (if vps_m_recursiveRefLayerFlag[iNuhLId][j] = 1 then 1 else 0 end);
+//			        end
+//			    end
+//        	end
+        	vld_u_name( 1, fifo, res, "single_layer_for_non_irap_flag          ");
+        	vld_u_name( 1, fifo, res, "higher_layer_irap_skip_flag             ");
+        	
+        	vld_u_name( 1, fifo, res, "parse_vps_vui                           ");
+        	if res[0] = 1 then
+        		byte_align(fifo);
+        		//parseVPSVUI();
+        		se_idx := 15;
+    		else
+    			se_idx := 14;
+    		end
+	    end
+	    
+	    uint(size=1) vps_parseFlag;
+	    uint(size=1) vps_m_bitRatePresentVpsFlag;
+	    uint(size=1) vps_m_picRatePresentVpsFlag;
+	    uint 		 layerIdx;
+    	uint(size=1) vps_refCode;
+    	uint(size= 1) vps_m_tilesNotInUseFlag;
+	    uint          vps_m_tilesInUseFlag[MAX_VPS_LAYER_ID_PLUS1];
+	    uint       	  vps_m_loopFilterNotAcrossTilesFlag[MAX_VPS_LAYER_ID_PLUS1];
+	  	uint          vps_m_tileBoundariesAlignedFlag[MAX_VPS_LAYER_ID_PLUS1][MAX_VPS_LAYER_ID_PLUS1];
+	  	uint(size=1)  vps_m_vidSigPresentVpsFlag;
+	  	int 		  vps_m_vpsVidSigInfo;
+	    
+	    read_VPS_Extensions.se_idx_15: action ==>
+	    guard
+	    	se_idx = 15 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "cross_layer_pic_type_aligned_flag       ");
+	    	//vps->m_crossLayerPictureTypeAlignFlag = get_bits1(gb);
+	    	if res[0] = 0 then
+	    		vld_u_name( 1, fifo, res, "cross_layer_irap_aligned_flag           ");
+	    	else
+	    		//vps->m_crossLayerPictureTypeAlignFlag = 1;
+	    	end
+	    	vps_parseFlag := 0;
+	    	vld_u_name( 1, fifo, res, "bit_rate_present_vps_flag               ");
+	    	vps_m_bitRatePresentVpsFlag := res[0];
+	    	vld_u_name( 1, fifo, res, "pic_rate_present_vps_flag               ");
+	    	vps_m_picRatePresentVpsFlag := res[0];
+		    vps_parseFlag := vps_m_bitRatePresentVpsFlag | vps_m_picRatePresentVpsFlag;
+		    
+		    se_idx := 16;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_16_loop: action ==>
+	    guard
+	    	se_idx = 16 and isFifoFull(fifo), cnt_i < (vps_num_layer_sets_minus1 + 1)
+	    do
+	    	se_idx := 161;
+	    	loop1Counter := 0;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_161_loop: action ==>
+	    guard
+	    	se_idx = 161 and isFifoFull(fifo), loop1Counter < (vps_max_sub_layers_minus1 + 1)
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size=1)  vps_m_bitRatePresentFlag[MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_avgBitRate        [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_maxBitRate        [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_picRatePresentFlag[MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+	    	uint(size=8)  vps_m_constPicRateIdc   [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER],
+            uint(size=8)  vps_m_avgPicRate        [MAX_VPS_LAYER_SETS_PLUS1][MAX_TLAYER]
+	    do
+	    	if (vps_parseFlag & vps_m_bitRatePresentVpsFlag) != 0 then
+	    		vld_u_name( 1, fifo, res, "bit_rate_present_vps_flag               ");
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := 0;
+            end
+            if (vps_parseFlag & vps_m_picRatePresentVpsFlag) != 0 then
+            	vld_u_name( 1, fifo, res, "pic_rate_present_vps_flag               ");
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_bitRatePresentFlag[cnt_i][loop1Counter] := 0;
+            end
+            if (vps_parseFlag & vps_m_bitRatePresentFlag[cnt_i][loop1Counter]) != 0 then
+            	vld_u_name( 16, fifo, res, "avg_bit_rate                            ");
+            	vps_m_avgBitRate[cnt_i][loop1Counter] := res[0];
+            	vld_u_name( 16, fifo, res, "max_bit_rate                            ");
+                vps_m_maxBitRate[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_avgBitRate[cnt_i][loop1Counter] := 0;
+                vps_m_maxBitRate[cnt_i][loop1Counter] := 0;
+            end
+            if( vps_parseFlag & vps_m_picRatePresentFlag[cnt_i][loop1Counter]) != 0 then
+            	vld_u_name( 2, fifo, res, "constant_pic_rate_idc                   ");
+                vps_m_constPicRateIdc[cnt_i][loop1Counter] := res[0];
+                vld_u_name( 16, fifo, res, "avg_pic_rate                            ");
+                vps_m_avgPicRate[cnt_i][loop1Counter] := res[0];
+            else
+                vps_m_constPicRateIdc[cnt_i][loop1Counter] := 0;
+                vps_m_avgPicRate[cnt_i][loop1Counter]      := 0;
+            end
+            loop1Counter := loop1Counter + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_161_endLoop: action ==>
+	    guard
+	    	se_idx = 161 and isFifoFull(fifo), loop1Counter = (vps_max_sub_layers_minus1 + 1)
+	    do
+	    	loop1Counter := 0;
+	    	cnt_i := cnt_i + 1;
+	    	se_idx := 16;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_16_endLoop: action ==>
+	    guard
+	    	se_idx = 16 and isFifoFull(fifo), cnt_i = (vps_num_layer_sets_minus1 + 1)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	cnt_i := 0;
+	    	
+	    	vld_u_name( 1, fifo, res, "tiles_not_in_use_flag                   ");
+	    	vps_refCode := res[0];
+	    	//start setTilesNotInUseFlag()
+	    	vps_m_tilesNotInUseFlag := vps_refCode;
+	    	//TODO: check standard
+//		    if vps_m_tilesNotInUseFlag != 0 then
+//		        foreach int i in 0 .. vps_max_layers - 1 do
+//		            vps_m_tilesInUseFlag[i] := if vps_m_loopFilterNotAcrossTilesFlag[i] = vps_m_tilesNotInUseFlag then 1 else 0 end;
+//		        end
+//		    end
+//		    if vps_m_tilesNotInUseFlag != 0 then
+//		        foreach int i in 1 .. vps_max_layers - 1 do
+//		            foreach int j in 0 .. vps_m_numDirectRefLayers[vps_m_layerIdInNuh[i]] - 1 do
+//		                //vps_m_tileBoundariesAlignedFlag[i][j]  := vps_m_tilesNotInUseFlag;
+//		            end
+//		        end
+//		    end
+	    	//end setTilesNotInUseFlag()
+	    	if vps_refCode = 1 then	
+	    		se_idx := 19;
+	    	else
+	    		se_idx := 17;
+	    		cnt_i := 0;
+	    	end
+	    end
+	    
+	    read_VPS_Extensions.se_idx_17_loop: action ==>
+	    guard
+	    	se_idx = 17 and isFifoFull(fifo), cnt_i < vps_max_layers
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "tiles_in_use_flag                       ");
+	    	vps_refCode := res[0];
+            vps_m_tilesInUseFlag[cnt_i] := vps_refCode;
+            if vps_refCode != 0 then
+            	vld_u_name( 1, fifo, res, "loop_filter_not_across_tiles_flag       ");
+                vps_m_loopFilterNotAcrossTilesFlag[cnt_i] := res[0];
+            else
+                vps_m_loopFilterNotAcrossTilesFlag[cnt_i] := 0;
+            end
+            cnt_i := cnt_i + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_17_endLoop: action ==>
+	    guard
+	    	se_idx = 17 and isFifoFull(fifo), cnt_i = vps_max_layers
+	    do
+	    	cnt_i := 0;
+	    	se_idx := 18;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_18_loop: action ==> // TILE_BOUNDARY_ALIGNED_FLAG
+	    guard
+	    	se_idx = 18 and isFifoFull(fifo), cnt_i < vps_max_layers
+	    do
+	    	se_idx := 181;
+	    	loop1Counter := 0;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_181_loop: action ==> // VPS_VUI_TILES_NOT_IN_USE__FLAG
+	    guard
+	    	se_idx = 181 and isFifoFull(fifo), loop1Counter < vps_m_numDirectRefLayers[vps_m_layerIdInNuh[cnt_i]]
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	layerIdx := vps_m_layerIdInVps[vps_m_refLayerId[vps_m_layerIdInNuh[cnt_i]][loop1Counter]];
+            if (vps_m_tilesInUseFlag[cnt_i] & vps_m_tilesInUseFlag[layerIdx]) != 0 then
+                vld_u_name( 1, fifo, res, "tile_boundaries_aligned_flag            ");
+	    		vps_refCode := res[0];
+            	vps_m_tileBoundariesAlignedFlag[cnt_i][loop1Counter] := vps_refCode;
+            end
+            loop1Counter := loop1Counter + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_181_endLoop: action ==>
+	    guard
+	    	se_idx = 181 and isFifoFull(fifo), loop1Counter = vps_m_numDirectRefLayers[vps_m_layerIdInNuh[cnt_i]]
+	    do
+	    	loop1Counter := 0;
+	    	cnt_i := cnt_i + 1;
+	    	se_idx := 18;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_18_endLoop: action ==>
+	    guard
+	    	se_idx = 18 and isFifoFull(fifo), cnt_i = vps_max_layers
+	    do
+	    	se_idx := 19;
+	    	cnt_i  := 0;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_19: action ==>
+	    guard
+	    	se_idx = 19 and isFifoFull(fifo)
+	     var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "wpp_not_in_use_flag                     ");
+	    	vps_refCode := res[0];
+    		//vps_m_wppNotInUseFlag := vps_refCode;
+    		if res[0] = 0 then
+        		foreach int i in 0 .. vps_max_layers - 1 do
+	        		vld_u_name( 1, fifo, res, "wpp_in_use_flag                         ");
+        		end
+    		end
+	    	se_idx := 20;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_20: action ==>
+	    guard
+	    	se_idx = 20 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "num_ilp_restricted_ref_layers           ");
+	    	if res[0] != 0 then
+	    		se_idx := 21;
+	    		cnt_i := 0;
+	    	else
+	    		se_idx := 22;
+	    	end
+	    end
+	    
+	    read_VPS_Extensions.se_idx_21_loop: action ==>
+	    guard
+	    	se_idx = 21 and isFifoFull(fifo), cnt_i < vps_max_layers 
+	    do
+	    	se_idx := 211;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_211_loop: action ==>
+	    guard
+	    	se_idx = 211 and isFifoFull(fifo), loop1Counter < vps_m_numDirectRefLayers[vps_m_layerIdInNuh[cnt_i]] 
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_ue_name(fifo, res, "min_spatial_segment_offset_plus1        ");
+	    	
+            if( res[0] > 0 ) then
+            	vld_u_name( 1, fifo, res, "ctu_based_offset_enabled_flag           ");
+                if res[0] != 0 then
+                	vld_ue_name(fifo, res, "min_horizontal_ctu_offset_plus1         ");
+                end
+            end
+            loop1Counter := loop1Counter + 1;
+	    end
+	    
+		read_VPS_Extensions.se_idx_211_endLoop: action ==>
+	    guard
+	    	se_idx = 211 and isFifoFull(fifo), loop1Counter = vps_m_numDirectRefLayers[vps_m_layerIdInNuh[cnt_i]] 
+	    var
+	    	uint(size=32) res[1]
+	    do
+            loop1Counter := 0;
+            se_idx := 21;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_21_endLoop: action ==>
+	    guard
+	    	se_idx = 21 and isFifoFull(fifo), cnt_i = vps_max_layers 
+	    do
+	    	se_idx := 22;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_22: action ==>
+	    guard
+	    	se_idx = 22 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 1, fifo, res, "video_signal_info_idx_present_flag      ");
+	    	vps_m_vidSigPresentVpsFlag := res[0];
+		    if vps_m_vidSigPresentVpsFlag != 0 then
+		    	vld_u_name( 4, fifo, res, "vps_num_video_signal_info_minus1        ");
+		        vps_m_vpsVidSigInfo := res[0] + 1;
+    		else
+        		vps_m_vpsVidSigInfo := vps_max_layers;
+	    	end
+	    	cnt_i := 0;
+	    	se_idx := 23;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_23_loop: action ==>
+	    guard
+	    	se_idx = 23 and isFifoFull(fifo), cnt_i < vps_m_vpsVidSigInfo
+	    var
+	    	uint(size=32) res[1]
+	    do
+	    	vld_u_name( 3, fifo, res, "video_vps_format                        ");
+	    	vld_u_name( 1, fifo, res, "video_full_range_vps_flag               ");
+	    	vld_u_name( 8, fifo, res, "color_primaries_vps                     ");
+	    	vld_u_name( 8, fifo, res, "transfer_characteristics_vps            ");
+	    	vld_u_name( 8, fifo, res, "matrix_coeffs_vps                       ");
+	        cnt_i := cnt_i + 1;
+	    end
+	    
+	    read_VPS_Extensions.se_idx_23_endLoop: action ==>
+	    guard
+	    	se_idx = 23 and isFifoFull(fifo), cnt_i = vps_m_vpsVidSigInfo
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        cnt_i := 0;
+	        if vps_m_vidSigPresentVpsFlag = 0 then
+	        	foreach int i in 0 .. vps_max_layers - 1 do
+            		//vps_m_vpsVidSigIdx[i] := i;
+            	end
+	        else
+	        	//vps_m_vpsVidSigIdx[0] := 0;
+		        if (vps_m_vpsVidSigInfo > 1 ) then
+		            foreach int i in 1 .. vps_max_layers - 1 do
+		            	vld_u_name( 4, fifo, res, "vps_video_signal_info_idx               ");
+		                //vps_m_vpsVidSigIdx[i] := res[0];
+		            end
+		        else
+		            foreach int i in 1 .. vps_max_layers - 1 do
+		                //vps_m_vpsVidSigIdx[i] := 0;
+		            end
+		        end
+	        end
+	        se_idx := 14;
+	    end
+	    
+	    
+	    read_VPS_Extensions_done: action ==>
+	    guard
+	    	se_idx = 14 and isFifoFull(fifo)  	
+	    end
 	/**************************************************************************
 	 **************************************************************************
 	 ********        SEI message                          *********************
@@ -755,624 +1952,661 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		vld_u_name(  8, fifo, res, "rbsp_trailing_bits");
 	end
 
-	/**************************************************************************
-	 **************************************************************************
-	 ********        Sequence Parameter Set HEADER        *********************
-	 **************************************************************************
-	 *************************************************************************/
-	bool sps_id_decoded[16] := [false : for int i in 0 .. 15];
-
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_1
-	 *************************************************************************/
-	uint(size= 4) sps_max_sub_layers_minus1[NB_MAX_SPS];
-	uint(size=16) sps_pic_width_in_luma_samples[NB_MAX_SPS];
-	uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
-	uint(size= 1) sps_separate_colour_plane_flag[NB_MAX_SPS];
-	uint(size= 2) sps_chroma_format_idc[NB_MAX_SPS];
-
-	read_SPS_Header.se_idx_1 : action ==>
-	guard
-		se_idx = 1 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-			vld_u_name(4, fifo, res,
-			"sps_video_parameter_set_id              ");
-			vld_u_name(3, fifo, res,
-			"sps_max_sub_layers_minus1               ");
-		sps_max_sub_layers_minus1[sps_id] := res[0];
-			vld_u_name(1, fifo, res,
-			"sps_temporal_id_nesting_flag            ");
-		se_idx := 20;
-	end
+	    /**************************************************************************
+	     **************************************************************************
+	     ********        Sequence Parameter Set HEADER        *********************
+	     **************************************************************************
+	     *************************************************************************/
+		bool sps_id_decoded[16] := [false : for int i in 0 .. 15];
+	
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_1
+	     *************************************************************************/
+	    uint(size= 4) sps_max_sub_layers_minus1[NB_MAX_SPS];
+	    uint(size=16) sps_pic_width_in_luma_samples[NB_MAX_SPS];
+		uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
+		uint(size= 1) sps_separate_colour_plane_flag[NB_MAX_SPS];
+	    uint(size= 2) sps_chroma_format_idc[NB_MAX_SPS];
+	    uint(size= 1) sps_m_bTemporalIdNestingFlag[NB_MAX_PPS];
+	    uint(size= 1) sps_m_updateRepFormatFlag[NB_MAX_PPS];
+	    int sps_chroma_array_type[NB_MAX_PPS];
+	    int sps_m_updateRepFormatIndex[NB_MAX_PPS];
+	
+	    read_SPS_Header.se_idx_1 : action ==>
+	    guard
+	    	se_idx = 1 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_u_name(4, fifo, res,
+	        "sps_video_parameter_set_id              ");
+	        if nuh_layer_id = 0 then
+		        vld_u_name(3, fifo, res,
+		        "sps_max_sub_layers_minus1               ");
+		        sps_max_sub_layers_minus1[sps_id] := res[0];
+		        vld_u_name(1, fifo, res,
+		        "sps_temporal_id_nesting_flag            ");
+		        sps_m_bTemporalIdNestingFlag[sps_id] := res[0];
+		        
+			else
+				sps_max_sub_layers_minus1[sps_id]:= vps_max_sub_layers_minus1;
+        		sps_m_bTemporalIdNestingFlag[sps_id] := vps_temporal_id_nesting_flag;
+			end
+			if nuh_layer_id = 0 then
+				se_idx := 20;
+			else
+				se_idx := 11;
+			end
+	    end
 	/**************************************************************************
 	 * read_SPS_Header.se_idx_20
 	 *************************************************************************/
-	read_SPS_Header.se_idx_20 : action ==>
-	guard
-		se_idx = 20 and isFifoFull(fifo)
-   var
-		bool profile_present_flag = true,
-		uint(size = 32) res[1]
-	do
-		if (profile_present_flag) then
-			vld_u_name(  2, fifo, res, "XXX_profile_space[]                     ");
-			vld_u_name(  1, fifo, res, "XXX_tier_flag[]                         ");
-			vld_u_name(  5, fifo, res, "XXX_profile_idc[]                       ");
-			foreach int i in 0 .. 31 do
-					vld_u_name(1, fifo, res,
-					"XXX_profile_compatibility_flag[][j]     ");
-			end
-			vld_u_name(  1, fifo, res, "general_progressive_source_flag         ");
-			vld_u_name(  1, fifo, res, "general_interlaced_source_flag          ");
-			vld_u_name(  1, fifo, res, "general_non_packed_constraint_flag      ");
-			vld_u_name(  1, fifo, res, "general_frame_only_constraint_flag      ");
+		read_SPS_Header.se_idx_20 : action ==>
+		guard
+	    	se_idx = 20 and isFifoFull(fifo)
+		var
+	        bool profile_present_flag = true,
+	        uint(size = 32) res[1]
+	    do
+	        if (profile_present_flag) then
+	        	vld_u_name(2, fifo, res, "XXX_profile_space[]                     ");
+	        	vld_u_name(1, fifo, res, "XXX_tier_flag[]                         ");
+	        	vld_u_name(5, fifo, res, "XXX_profile_idc[]                       ");
+	        	foreach int i in 0 .. 31 do
+	        		vld_u_name(1, fifo, res,
+	        		"XXX_profile_compatibility_flag[][j]     ");
+	        	end
+	        	vld_u_name(1, fifo, res, "general_progressive_source_flag         ");
+	        	vld_u_name(1, fifo, res, "general_interlaced_source_flag          ");
+	        	vld_u_name(1, fifo, res, "general_non_packed_constraint_flag      ");
+	        	vld_u_name(1, fifo, res, "general_frame_only_constraint_flag      ");
+	        end
+	        se_idx := se_idx + 1;
+	    end
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_20
+	     *************************************************************************/
+	    read_SPS_Header.se_idx_21 : action ==>
+	    guard
+	        se_idx = 21 and isFifoFull(fifo)
+	   	var
+	        bool profile_present_flag = true,
+	        uint(size = 32) res[1]
+	    do
+	        if (profile_present_flag) then
+	            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
+	            vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
+	            vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	        end
+	        vld_u_name(  8, fifo, res, "general_level_idc                       ");
+	        cnt_i  := 0;
+	        se_idx := se_idx + 1;
+	    end
+	        /**************************************************************************
+	         * read_SPS_Header.se_idx_22
+	         *************************************************************************/
+	    bool sps_sub_layer_level_present_flag := false;
+	    bool sps_profile_present_flag := true;
+	    bool sps_sub_layer_profile_present_flag := false;
+	
+	    read_SPS_Header.se_idx_22.loop1 : action ==>
+	    guard
+	    	se_idx = 22 and isFifoFull(fifo),
+	    	cnt_i < sps_max_sub_layers_minus1[sps_id]
+	    var
+	    	uint(size = 32) res[1]
+	    do
+		    res[0] := 0;
+		    if sps_profile_present_flag then
+		    	vld_u_name(1, fifo, res, "sub_layer_profile_present_flag[i]       ");
+		    end
+		    sps_sub_layer_profile_present_flag := (res[0] = 1);
+		    vld_u_name(1, fifo, res, "sub_layer_level_present_flag[i]         ");
+		    sps_sub_layer_level_present_flag := (res[0] = 1);
+		    cnt_i := cnt_i + 1;
 		end
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_20
-	 *************************************************************************/
-	read_SPS_Header.se_idx_21 : action ==>
-	guard
-		se_idx = 21 and isFifoFull(fifo)
-	   var
-		bool profile_present_flag = true,
-		uint(size = 32) res[1]
-	do
-		if (profile_present_flag) then
-			vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[0..15]         ");
-			vld_u_name( 16, fifo, res, "XXX_reserved_zero_44bits[16..31]        ");
-			vld_u_name( 12, fifo, res, "XXX_reserved_zero_44bits[32..43]        ");
+	
+	    read_SPS_Header.se_idx_22.loopEnd1 : action ==>
+	    guard
+	        se_idx = 22 and isFifoFull(fifo),
+	        cnt_i = sps_max_sub_layers_minus1[sps_id]
+	    do
+	    	cnt_i := 0;
+	        se_idx := 221;
+	    end
+	
+	    read_SPS_Header.se_idx_22.indertedCond : action ==>
+	    guard
+	    	se_idx = 221 and isFifoFull(fifo)
+	    do
+	        if sps_max_sub_layers_minus1[sps_id] > 0 then
+	        	foreach int i in sps_max_sub_layers_minus1[sps_id] .. 7 do
+	        		flushBits_name(2, fifo,
+	        		"reserved_zero_2bits[i]                    ");
+	        	end
+	        end
+	        se_idx := 222;
+	    end
+	
+	    read_SPS_Header.se_idx_22.loop2 : action ==>
+	    guard
+	    	se_idx = 222 and isFifoFull(fifo),
+	    	cnt_i < sps_max_sub_layers_minus1[sps_id]
+	    var
+	    	uint(size = 32) res[1]
+	    do
+		    if (sps_profile_present_flag and sps_sub_layer_profile_present_flag) then
+		        vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
+		        vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
+		        vld_u_name(  5, fifo, res, "sub_layer_profile_idc[i]                ");
+		        foreach int j in 0 .. 31 do
+		            vld_u_name(  1, fifo, res, "sub_layer_profile_compatibility_flags[i][j]");
+		        end
+		        flushBits_name(16, fifo,    "sub_layer_reserved_zero_16bits[i]         ");
+		    end
+		    if (sps_sub_layer_level_present_flag) then
+		        vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
+		    end
+		    cnt_i := cnt_i + 1;
+	    end
+	    read_SPS_Header.se_idx_22.loopEnd : action ==>
+	    guard
+	        se_idx = 222 and isFifoFull(fifo),
+	        cnt_i = sps_max_sub_layers_minus1[sps_id]
+	    do
+	    	se_idx := 11;
 		end
-		vld_u_name(  8, fifo, res, "general_level_idc                       ");
-		cnt_i  := 0;
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_22
-	 *************************************************************************/
-	bool sps_sub_layer_level_present_flag := false;
-	bool sps_profile_present_flag := true;
-	bool sps_sub_layer_profile_present_flag := false;
-
-	read_SPS_Header.se_idx_22.loop1 : action ==>
-	guard
-		se_idx = 22 and isFifoFull(fifo),
-		cnt_i < sps_max_sub_layers_minus1[sps_id]
-	var
-		uint(size = 32) res[1]
-	do
-		res[0] := 0;
-		if sps_profile_present_flag then
-			vld_u_name(  1, fifo, res, "sub_layer_profile_present_flag[i]       ");
-		end
-		sps_sub_layer_profile_present_flag := (res[0] = 1);
-		vld_u_name(  1, fifo, res, "sub_layer_level_present_flag[i]         ");
-		sps_sub_layer_level_present_flag := (res[0] = 1);
-		cnt_i := cnt_i + 1;
-	end
-
-	read_SPS_Header.se_idx_22.loopEnd1 : action ==>
-	guard
-		se_idx = 22 and isFifoFull(fifo),
-		cnt_i = sps_max_sub_layers_minus1[sps_id]
-	do
-		cnt_i := 0;
-		se_idx := 221;
-	end
-
-	read_SPS_Header.se_idx_22.indertedCond : action ==>
-	guard
-		se_idx = 221 and isFifoFull(fifo)
-	do
-		if sps_max_sub_layers_minus1[sps_id] > 0 then
-			foreach int i in sps_max_sub_layers_minus1[sps_id] .. 7 do
-					flushBits_name(2, fifo,
-					"reserved_zero_2bits[i]                    ");
-			end
-		end
-		se_idx := 222;
-	end
-
-	read_SPS_Header.se_idx_22.loop2 : action ==>
-	guard
-		se_idx = 222 and isFifoFull(fifo),
-		cnt_i < sps_max_sub_layers_minus1[sps_id]
-	var
-		uint(size = 32) res[1]
-	do
-		if (sps_profile_present_flag and sps_sub_layer_profile_present_flag) then
-			vld_u_name(  2, fifo, res, "sub_layer_profile_space[i]              ");
-			vld_u_name(  1, fifo, res, "sub_layer_tier_flag[i]                  ");
-			vld_u_name(  5, fifo, res, "sub_layer_profile_idc[i]                ");
-			foreach int j in 0 .. 31 do
-				vld_u_name(  1, fifo, res, "sub_layer_profile_compatibility_flags[i][j]");
-			end
-			flushBits_name(16, fifo,    "sub_layer_reserved_zero_16bits[i]         ");
-		end
-		if (sps_sub_layer_level_present_flag) then
-			vld_u_name(  1, fifo, res, "sub_layer_level_idc[i]                  ");
-		end
-		cnt_i := cnt_i + 1;
-	end
-	read_SPS_Header.se_idx_22.loopEnd : action ==>
-	guard
-		se_idx = 222 and isFifoFull(fifo),
-		cnt_i = sps_max_sub_layers_minus1[sps_id]
-	do
-		se_idx := 11;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_1_1
-	 *************************************************************************/
-	read_SPS_Header.se_idx_1_1 : action ==>
-	guard
-		se_idx = 11 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		vld_ue_name(    fifo, res, "sps_seq_parameter_set_id                ");
-		sps_id := res[0];
-        sps_id_decoded[sps_id] := true;
-			vld_ue_name(fifo, res,
-			"chroma_format_idc                       ");
-		sps_chroma_format_idc[sps_id] := res[0];
-		if res[0] = 3 then
-				vld_u_name(1, fifo, res,
-				"separate_colour_plane_flag              ");
-			sps_separate_colour_plane_flag[sps_id] := res[0];
-		end
-			vld_ue_name(fifo, res,
-			"pic_width_in_luma_samples               ");
-		sps_pic_width_in_luma_samples[sps_id] := res[0];
-			vld_ue_name(fifo, res,
-			"pic_height_in_luma_samples              ");
-		sps_pic_height_in_luma_samples[sps_id] := res[0];
-		se_idx := 2;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_2
-	 *************************************************************************/
-	uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
-	uint(size=32) max_poc_lsb[NB_MAX_SPS];
-	int sps_bit_depth_luma_minus8[NB_MAX_SPS];
-	int sps_bit_depth_chroma_minus8[NB_MAX_SPS];
-
-	read_SPS_Header.se_idx_2 : action ==>
-	guard
-		se_idx = 2 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1],
-		uint(size=1)  conformance_window_flag
-	do
-		vld_u_name(  1, fifo, res, "conformance_window_flag                 ");
-		conformance_window_flag := res[0];
-		if conformance_window_flag = 1 then
-				vld_ue_name(fifo, res,
-				"conf_win_left_offset                    ");
-				vld_ue_name(fifo, res,
-				"conf_win_right_offset                   ");
-				vld_ue_name(fifo, res,
-				"conf_win_top_offset                     ");
-				vld_ue_name(fifo, res,
-				"conf_win_bottom_offset                  ");
-		end
-			vld_ue_name(fifo, res,
-			"sps_bit_depth_luma_minus8                   ");
-		sps_bit_depth_luma_minus8[sps_id] := res[0];
-			vld_ue_name(fifo, res,
-			"sps_bit_depth_chroma_minus8                 ");
-		sps_bit_depth_chroma_minus8[sps_id] := res[0];
-			vld_ue_name(fifo, res,
-			"log2_max_pic_order_cnt_lsb_minus4       ");
-		sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
-			max_poc_lsb[sps_id] := 1 <<
-			(sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4);
-			vld_u_name(1, fifo, res,
-			"sps_sub_layer_ordering_info_present_flag");
-		if res[0] = 1 then
-			cnt_i  := 0;
-		else
-			cnt_i  := sps_max_sub_layers_minus1[sps_id];
-		end
-		se_idx := se_idx + 1;
-	end
-
-	/**************************************************************************
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_1_1
+	     *************************************************************************/
+	    read_SPS_Header.se_idx_1_1 : action ==>
+	    guard
+	    	se_idx = 11 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_ue_name(fifo, res, "sps_seq_parameter_set_id                ");
+	        sps_id := res[0];
+	        sps_id_decoded[sps_id] := true;
+	        if nuh_layer_id > 0 then
+	        	vld_u_name(  1, fifo, res, "sps_m_updateRepFormatFlag               ");
+		        sps_m_updateRepFormatFlag[sps_id] := res[0];
+		    else
+		        sps_m_updateRepFormatFlag[sps_id] := 1;
+		    end
+		    if nuh_layer_id = 0 then
+		        vld_ue_name(fifo, res,
+		        "chroma_format_idc                       ");
+		        sps_chroma_format_idc[sps_id] := res[0];
+		        if res[0] = 3 then
+		        	vld_u_name(1, fifo, res,
+		        	"separate_colour_plane_flag              ");
+		        	sps_separate_colour_plane_flag[sps_id] := res[0];
+		        end
+		        if sps_separate_colour_plane_flag[sps_id] = 1 then
+		        	sps_chroma_array_type[sps_id] := 0;
+		       	else
+		       		sps_chroma_array_type[sps_id] := sps_chroma_format_idc[sps_id];
+		       	end
+		        
+		        vld_ue_name(fifo, res,
+		        "pic_width_in_luma_samples               ");
+		        sps_pic_width_in_luma_samples[sps_id] := res[0];
+		        vld_ue_name(fifo, res,
+		        "pic_height_in_luma_samples              ");
+		        sps_pic_height_in_luma_samples[sps_id] := res[0];
+		    else
+		    	if sps_m_updateRepFormatFlag[sps_id] = 1 then
+		    		sps_chroma_array_type[sps_id] := if sps_chroma_format_idc[sps_id] = 0 then 1 else 0 end;
+		    		vld_u_name(  8, fifo, res, "sps_m_updateRepFormatIndex              ");
+        			sps_m_updateRepFormatIndex[sps_id] := res[0];
+		    	end
+		    end
+	        se_idx := 2;
+	    end
+	        /**************************************************************************
+	         * read_SPS_Header.se_idx_2
+	         *************************************************************************/
+	    uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
+	    uint(size=32) max_poc_lsb[NB_MAX_SPS];
+	    int sps_bit_depth_luma_minus8[NB_MAX_SPS];
+	    int sps_bit_depth_chroma_minus8[NB_MAX_SPS];
+	
+	    read_SPS_Header.se_idx_2 : action ==>
+	    guard
+	    	se_idx = 2 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size=1)  conformance_window_flag
+	    do
+	    	vld_u_name(  1, fifo, res, "conformance_window_flag                 ");
+	        conformance_window_flag := res[0];
+	        if conformance_window_flag = 1 then
+	        	vld_ue_name(fifo, res,
+	        	"conf_win_left_offset                    ");
+	        	vld_ue_name(fifo, res,
+	        	"conf_win_right_offset                   ");
+	        	vld_ue_name(fifo, res,
+	        	"conf_win_top_offset                     ");
+	        	vld_ue_name(fifo, res,
+	        	"conf_win_bottom_offset                  ");
+	        end
+	        if nuh_layer_id = 0 then
+		        vld_ue_name(fifo, res,
+		        "sps_bit_depth_luma_minus8                   ");
+		        sps_bit_depth_luma_minus8[sps_id] := res[0];
+		        vld_ue_name(fifo, res,
+		        "sps_bit_depth_chroma_minus8                 ");
+		        sps_bit_depth_chroma_minus8[sps_id] := res[0];
+		    end
+	        vld_ue_name(fifo, res,
+	        "log2_max_pic_order_cnt_lsb_minus4       ");
+	        sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
+	        max_poc_lsb[sps_id] := 1 <<
+	        (sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4);
+	        vld_u_name(1, fifo, res,
+	        "sps_sub_layer_ordering_info_present_flag");
+	        if res[0] = 1 then
+	        	cnt_i := 0;
+	        else
+	        	cnt_i := sps_max_sub_layers_minus1[sps_id];
+	        end
+	        se_idx := se_idx + 1;
+	    end
+	
+	       /**************************************************************************
 	 * read_SPS_Header.se_idx_3
 	 *************************************************************************/
-	uint sps_num_reorder_pics[NB_MAX_SPS];
+		uint sps_num_reorder_pics[NB_MAX_SPS];
+		
+		read_SPS_Header.se_idx_3.loop : action ==>
+		guard
+			se_idx = 3 and isFifoFull(fifo),
+			cnt_i <= sps_max_sub_layers_minus1[sps_id]
+		var
+			uint(size=32) res[1]
+		do
+			vld_ue_name(    fifo, res, "sps_max_dec_pic_buffering               ");
+			vld_ue_name(    fifo, res, "sps_num_reorder_pics                    ");
+			sps_num_reorder_pics[sps_id] := res[0];
+			vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
+			cnt_i := cnt_i + 1;
+		end
 	
-	read_SPS_Header.se_idx_3.loop : action ==>
-	guard
-		se_idx = 3 and isFifoFull(fifo),
-		cnt_i <= sps_max_sub_layers_minus1[sps_id]
-	var
-		uint(size=32) res[1]
-	do
-		vld_ue_name(    fifo, res, "sps_max_dec_pic_buffering               ");
-		vld_ue_name(    fifo, res, "sps_num_reorder_pics                    ");
-		sps_num_reorder_pics[sps_id] := res[0];
-		vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
-		cnt_i := cnt_i + 1;
-	end
-
-	read_SPS_Header.se_idx_3.loopEnd : action ==>
-	guard
-		se_idx = 3,
-		cnt_i = sps_max_sub_layers_minus1[sps_id] + 1
-	do
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_4
-	 *************************************************************************/
-		uint(size= 8) sps_log2_min_coding_block_size[NB_MAX_SPS];
+		read_SPS_Header.se_idx_3.loopEnd : action ==>
+		guard
+			se_idx = 3,
+			cnt_i = sps_max_sub_layers_minus1[sps_id] + 1
+		do
+			se_idx := se_idx + 1;
+		end
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_4
+	     *************************************************************************/
+	    uint(size= 8) sps_log2_min_coding_block_size[NB_MAX_SPS];
 	    uint(size= 8) sps_log2_min_pu_size[NB_MAX_SPS];
 	    uint(size= 8) sps_min_pu_width[NB_MAX_SPS];
-	uint(size= 8) sps_log2_diff_max_min_coding_block_size[NB_MAX_SPS];
-		uint(size= 8) sps_log2_min_transform_block_size[NB_MAX_SPS];
-	uint(size= 8) sps_log2_diff_max_min_transform_block_size[NB_MAX_SPS];
-	uint(size=16) sps_maxCUWidth[NB_MAX_SPS];
-	uint(size=16) sps_addCUDepth[NB_MAX_SPS];
-
-	read_SPS_Header.se_idx_4 : action ==>
-	guard
-		se_idx = 4 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		vld_ue_name(    fifo, res, "log2_min_coding_block_size_minus3       ");
-				sps_log2_min_coding_block_size[sps_id] := res[0] + 3;
-			vld_ue_name(fifo, res,
-			"log2_diff_max_min_coding_block_size     ");
-		sps_log2_diff_max_min_coding_block_size[sps_id] := res[0];
-			vld_ue_name(fifo, res,
-			"log2_min_transform_block_size_minus2    ");
-		sps_log2_min_transform_block_size[sps_id] := res[0] + 2;
-			vld_ue_name(fifo, res,
-			"log2_diff_max_min_transform_block_size  ");
-		sps_log2_diff_max_min_transform_block_size[sps_id] := res[0];
-			sps_maxCUWidth[sps_id] := 1 << (Log2MinCbSize +
-			sps_log2_diff_max_min_coding_block_size[sps_id]);
-		sps_addCUDepth[sps_id] := 0;
-			while ((sps_maxCUWidth[sps_id] >>
-			sps_log2_diff_max_min_coding_block_size[sps_id]) > (1 <<
-			(sps_log2_min_transform_block_size[sps_id] +
-			sps_log2_diff_max_min_coding_block_size[sps_id]))) do
-			sps_addCUDepth[sps_id] := sps_addCUDepth[sps_id] + 1;
-		end
+	    uint(size= 8) sps_log2_diff_max_min_coding_block_size[NB_MAX_SPS];
+	    uint(size= 8) sps_log2_min_transform_block_size[NB_MAX_SPS];
+	    uint(size= 8) sps_log2_diff_max_min_transform_block_size[NB_MAX_SPS];
+	    uint(size=16) sps_maxCUWidth[NB_MAX_SPS];
+	    uint(size=16) sps_addCUDepth[NB_MAX_SPS];
+	
+	    read_SPS_Header.se_idx_4 : action ==>
+	    guard
+	    	se_idx = 4 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_ue_name(fifo, res, "log2_min_coding_block_size_minus3       ");
+	        sps_log2_min_coding_block_size[sps_id] := res[0] + 3;
+	        vld_ue_name(fifo, res,
+	        "log2_diff_max_min_coding_block_size     ");
+	        sps_log2_diff_max_min_coding_block_size[sps_id] := res[0];
+	        vld_ue_name(fifo, res,
+	        "log2_min_transform_block_size_minus2    ");
+	        sps_log2_min_transform_block_size[sps_id] := res[0] + 2;
+	        vld_ue_name(fifo, res,
+	        "log2_diff_max_min_transform_block_size  ");
+	        sps_log2_diff_max_min_transform_block_size[sps_id] := res[0];
+	        sps_maxCUWidth[sps_id] := 1 << (Log2MinCbSize +
+	        sps_log2_diff_max_min_coding_block_size[sps_id]);
+	        sps_addCUDepth[sps_id] := 0;
+	        while ((sps_maxCUWidth[sps_id] >>
+	        sps_log2_diff_max_min_coding_block_size[sps_id]) > (1 <<
+	        (sps_log2_min_transform_block_size[sps_id] +
+	        sps_log2_diff_max_min_coding_block_size[sps_id]))) do
+	        	sps_addCUDepth[sps_id] := sps_addCUDepth[sps_id] + 1;
+	        end
 	        sps_log2_min_pu_size[sps_id] := sps_log2_min_coding_block_size[sps_id] - 1;
 	        sps_min_pu_width[sps_id] := sps_pic_width_in_luma_samples[sps_id]  >> sps_log2_min_pu_size[sps_id];
-		se_idx := se_idx + 1;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_5
-	 *************************************************************************/
-	uint(size= 8) sps_max_transform_hierarchy_depth_inter[NB_MAX_SPS];
-	uint(size= 8) sps_max_transform_hierarchy_depth_intra[NB_MAX_SPS];
-	uint(size= 1) sps_scaling_list_enabled_flag[NB_MAX_SPS];
-	uint(size=16) sps_ctb_width[NB_MAX_SPS];
+	        se_idx := se_idx + 1;
+	    end
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_5
+	     *************************************************************************/
+	    uint(size= 8) sps_max_transform_hierarchy_depth_inter[NB_MAX_SPS];
+	    uint(size= 8) sps_max_transform_hierarchy_depth_intra[NB_MAX_SPS];
+	    uint(size= 1) sps_scaling_list_enabled_flag[NB_MAX_SPS];
+	    uint(size=16) sps_ctb_width[NB_MAX_SPS];
 	    uint(size=16) sps_ctb_height[NB_MAX_SPS];
-	uint(size=16) sps_log2_ctb_size[NB_MAX_SPS];
-	int(size=32) min_cb_width;
-
-
-	read_SPS_Header.se_idx_5 : action ==>
-	guard
-		se_idx = 5 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-		vld_ue_name(    fifo, res, "max_transform_hierarchy_depth_inter     ");
-		sps_max_transform_hierarchy_depth_inter[sps_id] := res[0];
-			vld_ue_name(fifo, res,
-			"max_transform_hierarchy_depth_intra     ");
-		sps_max_transform_hierarchy_depth_intra[sps_id] := res[0];
-			vld_u_name(1, fifo, res,
-			"sps_scaling_list_enabled_flag           ");
-		sps_scaling_list_enabled_flag[sps_id] := res[0];
+	    uint(size=16) sps_log2_ctb_size[NB_MAX_SPS];
+	    int(size=32) min_cb_width;
+	    
+	
+	    read_SPS_Header.se_idx_5 : action ==>
+	    guard
+	    	se_idx = 5 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_ue_name(fifo, res, "max_transform_hierarchy_depth_inter     ");
+	        sps_max_transform_hierarchy_depth_inter[sps_id] := res[0];
+	        vld_ue_name(fifo, res,
+	        "max_transform_hierarchy_depth_intra     ");
+	        sps_max_transform_hierarchy_depth_intra[sps_id] := res[0];
+	        vld_u_name(1, fifo, res,
+	        "sps_scaling_list_enabled_flag           ");
+	        sps_scaling_list_enabled_flag[sps_id] := res[0];
 	        
-		min_cb_width := sps_pic_width_in_luma_samples[sps_id] >> sps_log2_min_coding_block_size[sps_id];
-		sps_log2_ctb_size[sps_id] := sps_log2_min_coding_block_size[sps_id] + sps_log2_diff_max_min_coding_block_size[sps_id];
-		sps_ctb_width[sps_id] := (sps_pic_width_in_luma_samples[sps_id]  + (1 << sps_log2_ctb_size[sps_id]) - 1) >> sps_log2_ctb_size[sps_id];
+	        min_cb_width := sps_pic_width_in_luma_samples[sps_id] >> sps_log2_min_coding_block_size[sps_id];
+	        sps_log2_ctb_size[sps_id] := sps_log2_min_coding_block_size[sps_id] + sps_log2_diff_max_min_coding_block_size[sps_id];
+	        sps_ctb_width[sps_id] := (sps_pic_width_in_luma_samples[sps_id]  + (1 << sps_log2_ctb_size[sps_id]) - 1) >> sps_log2_ctb_size[sps_id];
 	        sps_ctb_height[sps_id] := (sps_pic_height_in_luma_samples[sps_id]  + (1 << sps_log2_ctb_size[sps_id]) - 1) >> sps_log2_ctb_size[sps_id];
-
-		if sps_scaling_list_enabled_flag[sps_id] = 1 then
-			se_idx := 60;
-		else
-			se_idx := 6;
+	        
+	        if sps_scaling_list_enabled_flag[sps_id] = 1 then
+	        	se_idx := 60;
+	        else
+	        	se_idx := 6;
+	        end
+	    end
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_6
+	     *************************************************************************/
+	    uint(size= 1) sps_sample_adaptive_offset_enabled_flag[NB_MAX_SPS];
+	    uint(size= 8) sps_num_short_term_ref_pic_sets[NB_MAX_SPS];
+	    uint(size= 1) sps_pcm_enabled_flag[NB_MAX_SPS];
+	    uint(size= 1) amp_enabled_flag;
+	    uint(size= 8) sps_sl[NB_MAX_SPS][4][6][64];
+	    uint(size= 8) sps_sl_dc[NB_MAX_SPS][2][6];
+	    int sps_size_id := 0;
+	    int sps_size_id_matrixCase;
+	    int sps_matrix_id := 0;
+	    int sps_coef_num :=0;
+	    int sps_pos;
+	    int sps_scaling_list_delta_coef;
+	    int sps_next_coef;
+	
+	    read_SPS_Header.se_idx_60 : action ==>
+	    guard
+	    	se_idx = 60 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1],
+	    	uint(size= 1) sps_scaling_list_data_present_flag
+	    do
+	        foreach int matrixId in 0 .. 5 do // 4x4 default is 16
+	        	foreach int i in 0 .. 15 do
+	        		sps_sl[sps_id][0][matrixId][i] := 16;
+	        	end
+	        	sps_sl_dc[sps_id][0][matrixId] := 16; // default for 16x16
+	        	sps_sl_dc[sps_id][1][matrixId] := 16; // default for 32x32
+	        end
+	        foreach int i in 0 .. 63 do
+	        	sps_sl[sps_id][1][0][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][1][1][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][1][2][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][1][3][i] := default_scaling_list_inter[i];
+	        	sps_sl[sps_id][1][4][i] := default_scaling_list_inter[i];
+	        	sps_sl[sps_id][1][5][i] := default_scaling_list_inter[i];
+	        	sps_sl[sps_id][2][0][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][2][1][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][2][2][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][2][3][i] := default_scaling_list_inter[i];
+	        	sps_sl[sps_id][2][4][i] := default_scaling_list_inter[i];
+	        	sps_sl[sps_id][2][5][i] := default_scaling_list_inter[i];
+	        	sps_sl[sps_id][3][0][i] := default_scaling_list_intra[i];
+	        	sps_sl[sps_id][3][1][i] := default_scaling_list_inter[i];
+	        end
+	        vld_u_name(1, fifo, res, "sps_scaling_list_data_present_flag      ");
+	        sps_scaling_list_data_present_flag := res[0];
+	        if sps_scaling_list_data_present_flag = 1 then
+	        	se_idx := 61;
+	        else
+	        	se_idx := 6;
+	        end
+	    end
+	
+	    read_SPS_Header.se_idx_61_loopSize_id : action ==>
+	    guard
+	    	se_idx = 61 and isFifoFull(fifo) , sps_size_id < 4
+	    do
+	    	if sps_size_id = 3 then sps_size_id_matrixCase := 2; else sps_size_id_matrixCase := 6; end
+	    	se_idx := 62;
 		end
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_6
-	 *************************************************************************/
-	uint(size= 1) sps_sample_adaptive_offset_enabled_flag[NB_MAX_SPS];
-	uint(size= 8) sps_num_short_term_ref_pic_sets[NB_MAX_SPS];
-	uint(size= 1) sps_pcm_enabled_flag[NB_MAX_SPS];
-	uint(size= 1) amp_enabled_flag;
-	uint(size= 8) sps_sl[NB_MAX_SPS][4][6][64];
-	uint(size= 8) sps_sl_dc[NB_MAX_SPS][2][6];
-	int sps_size_id := 0;
-	int sps_size_id_matrixCase;
-	int sps_matrix_id := 0;
-	int sps_coef_num :=0;
-	int sps_pos;
-	int sps_scaling_list_delta_coef;
-	int sps_next_coef;
-
-	read_SPS_Header.se_idx_60 : action ==>
-	guard
-		se_idx = 60 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1],
-		uint(size= 1) sps_scaling_list_data_present_flag
-	do
-			foreach int matrixId in 0 .. 5 do // 4x4 default is 16
-			foreach int i in 0 .. 15 do
-				sps_sl[sps_id][0][matrixId][i] := 16;
-			end
-			sps_sl_dc[sps_id][0][matrixId] := 16; // default for 16x16
-			sps_sl_dc[sps_id][1][matrixId] := 16; // default for 32x32
+	
+	    read_SPS_Header.se_idx_61_loopMatrix_id : action ==>
+	    guard
+	            se_idx = 62 and isFifoFull(fifo) , sps_matrix_id < sps_size_id_matrixCase
+	    var
+	            uint(size=32) res[1],
+	            int delta,
+	            int size_id_memcpyCase,
+	        uint(size= 8) sps_scaling_list_pred_mode_flag[4][6],
+	    uint(size= 32) sps_scaling_list_dc_coef[2][6]
+	    do
+		    vld_u_name(1, fifo, res, "scaling_list_pred_mode_flag             ");
+		    sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] := res[0];
+		    if sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] = 0 then
+		    	vld_ue_name(fifo, res, "delta                                   ");
+		    	delta := res[0]; // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
+		    	if delta != 0 then // Copy from previous array.
+		    		if (sps_matrix_id - delta < 0) then
+		    			println("Invalid delta in scaling list data");
+		    		end
+		    		if sps_size_id > 0 then
+		    			size_id_memcpyCase := 64;
+		    		else
+		    			size_id_memcpyCase := 16;
+		    		end
+		    		foreach int k in 0 .. size_id_memcpyCase - 1 do
+		    			sps_sl[sps_id][sps_size_id][sps_matrix_id][k] :=
+		    			sps_sl[sps_id][sps_size_id][sps_matrix_id - delta][k];
+		    		end
+		    		if (sps_size_id > 1) then
+		    			sps_sl_dc[sps_id][sps_size_id - 2][sps_matrix_id] :=
+		    			sps_sl_dc[sps_id][sps_size_id - 2][sps_matrix_id - delta];
+		    		end
+		    	end
+		    	sps_matrix_id := sps_matrix_id + 1;
+		    else
+		    	sps_next_coef := 8;
+		    	sps_coef_num := min(64, (1 << (4 + (sps_size_id << 1))));
+		    	if (sps_size_id > 1) then
+		    		vld_se_name(fifo, res, "scaling_list_dc_coef                    ");
+		    		sps_scaling_list_dc_coef[sps_size_id - 2][sps_matrix_id] := res[0] + 8;
+		    		sps_next_coef := sps_scaling_list_dc_coef[sps_size_id -
+		    		2][sps_matrix_id];
+		    		sps_sl_dc[sps_id][sps_size_id - 2][sps_matrix_id] := sps_next_coef;
+		    	end
+		    	se_idx := 63;
+		    	cnt_i := 0;
+		    end
+	    end
+	
+	    read_SPS_Header.se_idx_63_loopNumCoef : action ==>
+	    guard
+	    	se_idx = 63 and isFifoFull(fifo), cnt_i < sps_coef_num
+	    var
+	    	uint(size=32) res[1]
+	    do
+		    if (sps_size_id = 0) then
+		        sps_pos := 4 * hevc_diag_scan4x4_y[cnt_i] + hevc_diag_scan4x4_x[cnt_i];
+		    else
+		        sps_pos := 8 * hevc_diag_scan8x8_y[cnt_i] + hevc_diag_scan8x8_x[cnt_i];
+		    end
+		    vld_se_name(    fifo, res, "scaling_list_delta_coef                 ");
+		    sps_scaling_list_delta_coef := res[0];
+		    sps_next_coef := (sps_next_coef + sps_scaling_list_delta_coef + 256) mod 256;
+		    sps_sl[sps_id][sps_size_id][sps_matrix_id][sps_pos] := sps_next_coef;
+		    cnt_i := cnt_i +1;
 		end
-		foreach int i in 0 .. 63 do
-			sps_sl[sps_id][1][0][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][1][1][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][1][2][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][1][3][i] := default_scaling_list_inter[i];
-			sps_sl[sps_id][1][4][i] := default_scaling_list_inter[i];
-			sps_sl[sps_id][1][5][i] := default_scaling_list_inter[i];
-			sps_sl[sps_id][2][0][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][2][1][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][2][2][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][2][3][i] := default_scaling_list_inter[i];
-			sps_sl[sps_id][2][4][i] := default_scaling_list_inter[i];
-			sps_sl[sps_id][2][5][i] := default_scaling_list_inter[i];
-			sps_sl[sps_id][3][0][i] := default_scaling_list_intra[i];
-			sps_sl[sps_id][3][1][i] := default_scaling_list_inter[i];
-		end
-		vld_u_name(  1, fifo, res, "sps_scaling_list_data_present_flag      ");
-		sps_scaling_list_data_present_flag := res[0];
-		if sps_scaling_list_data_present_flag = 1 then
-			se_idx := 61;
-		else
-			se_idx := 6;
-		end
-	end
-
-	read_SPS_Header.se_idx_61_loopSize_id : action ==>
-	guard
-		se_idx = 61 and isFifoFull(fifo) , sps_size_id < 4
-	do
-		if sps_size_id = 3 then sps_size_id_matrixCase := 2; else sps_size_id_matrixCase := 6; end
-		se_idx := 62;
-	end
-
-	read_SPS_Header.se_idx_61_loopMatrix_id : action ==>
-	guard
-		se_idx = 62 and isFifoFull(fifo) , sps_matrix_id < sps_size_id_matrixCase
-	var
-		uint(size=32) res[1],
-		int delta,
-		int size_id_memcpyCase,
-		uint(size= 8) sps_scaling_list_pred_mode_flag[4][6],
-		uint(size= 32) sps_scaling_list_dc_coef[2][6]
-	do
-		vld_u_name(  1, fifo, res, "scaling_list_pred_mode_flag             ");
-		sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] := res[0];
-		if sps_scaling_list_pred_mode_flag[sps_size_id][sps_matrix_id] = 0 then
-			vld_ue_name(    fifo, res, "delta                                   ");
-				delta := res[0]; // Only need to handle non-zero delta. Zero means default, which should already be in the arrays.
-				if delta != 0 then // Copy from previous array.
-				if (sps_matrix_id - delta < 0) then
-					println("Invalid delta in scaling list data");
-				end
-					if sps_size_id > 0 then
-						size_id_memcpyCase := 64;
-					else
-						size_id_memcpyCase := 16;
-					end
-				foreach int k in 0 .. size_id_memcpyCase - 1 do
-						sps_sl[sps_id][sps_size_id][sps_matrix_id][k] :=
-						sps_sl[sps_id][sps_size_id][sps_matrix_id - delta][k];
-				end
-				if (sps_size_id > 1) then
-						sps_sl_dc[sps_id][sps_size_id - 2][sps_matrix_id] :=
-						sps_sl_dc[sps_id][sps_size_id - 2][sps_matrix_id - delta];
-				end
-			end
-			sps_matrix_id := sps_matrix_id + 1;
-		else
-			sps_next_coef := 8;
-			sps_coef_num := min(64, (1  <<  (4 + (sps_size_id  <<  1))));
-			if (sps_size_id > 1) then
-				vld_se_name(    fifo, res, "scaling_list_dc_coef                    ");
-				sps_scaling_list_dc_coef[sps_size_id - 2][sps_matrix_id] := res[0] + 8;
-					sps_next_coef := sps_scaling_list_dc_coef[sps_size_id -
-					2][sps_matrix_id];
-				sps_sl_dc[sps_id][sps_size_id - 2][sps_matrix_id] := sps_next_coef;
-			end
-			se_idx := 63;
-			cnt_i := 0;
-		end
-	end
-
-	read_SPS_Header.se_idx_63_loopNumCoef : action ==>
-	guard
-		se_idx = 63 and isFifoFull(fifo), cnt_i < sps_coef_num
-	var
-		uint(size=32) res[1]
-	do
-		if (sps_size_id = 0) then
-			sps_pos := 4 * hevc_diag_scan4x4_y[cnt_i] + hevc_diag_scan4x4_x[cnt_i];
-		else
-			sps_pos := 8 * hevc_diag_scan8x8_y[cnt_i] + hevc_diag_scan8x8_x[cnt_i];
-		end
-		vld_se_name(    fifo, res, "scaling_list_delta_coef                 ");
-		sps_scaling_list_delta_coef := res[0];
-		sps_next_coef := (sps_next_coef + sps_scaling_list_delta_coef + 256) mod 256;
-		sps_sl[sps_id][sps_size_id][sps_matrix_id][sps_pos] := sps_next_coef;
-		cnt_i := cnt_i +1;
-	end
-
-	read_SPS_Header.se_idx_63_loopNumCoefEnd : action ==>
-	guard
-		se_idx = 63 and isFifoFull(fifo), cnt_i = sps_coef_num
-	do
-		cnt_i := 0;
-		sps_matrix_id := sps_matrix_id + 1;
-		se_idx := 62;
-	end
-
-
-	read_SPS_Header.se_idx_62_loopMatrix_id_End : action ==>
-	guard
-		se_idx = 62 and isFifoFull(fifo) , sps_matrix_id = sps_size_id_matrixCase
-	do
-		sps_size_id := sps_size_id + 1;
-		sps_matrix_id := 0;
-		se_idx := 61;
-	end
-
-	read_SPS_Header.se_idx_61_size_id_loopEnd : action ==>
-	guard
-		se_idx = 61 and isFifoFull(fifo) , sps_size_id = 4
-	do
-		sps_size_id := 0;
-		se_idx := 6;
-	end
-
+	
+	    read_SPS_Header.se_idx_63_loopNumCoefEnd : action ==>
+	    guard
+	    	se_idx = 63 and isFifoFull(fifo), cnt_i = sps_coef_num
+	    do
+	        cnt_i := 0;
+	        sps_matrix_id := sps_matrix_id + 1;
+	        se_idx := 62;
+	    end
+	
+	
+	    read_SPS_Header.se_idx_62_loopMatrix_id_End : action ==>
+	    guard
+	    	se_idx = 62 and isFifoFull(fifo) , sps_matrix_id = sps_size_id_matrixCase
+	    do
+	        sps_size_id := sps_size_id + 1;
+	        sps_matrix_id := 0;
+	        se_idx := 61;
+	    end
+	
+	    read_SPS_Header.se_idx_61_size_id_loopEnd : action ==>
+	    guard
+	            se_idx = 61 and isFifoFull(fifo) , sps_size_id = 4
+	    do
+	            sps_size_id := 0;
+	            se_idx := 6;
+	    end
+	
 		uint log2_min_pcm_cb_size[NB_MAX_SPS];
 		uint log2_max_pcm_cb_size[NB_MAX_SPS];
 		uint pcm_bit_depth[NB_MAX_SPS];
 		uint pcm_bit_depth_chroma[NB_MAX_SPS];
 		uint pcm_loop_filter_disable_flag[NB_MAX_SPS];
 		
-
-	read_SPS_Header.se_idx_6 : action ==>
-	guard
-		se_idx = 6 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-			vld_u_name(1, fifo, res,
-			"amp_enabled_flag                        ");
-		amp_enabled_flag := res[0];
-			vld_u_name(1, fifo, res,
-			"sample_adaptive_offset_enabled_flag     ");
-		sps_sample_adaptive_offset_enabled_flag[sps_id] := res[0];
-			vld_u_name(1, fifo, res,
-			"pcm_enabled_flag                        ");
-		sps_pcm_enabled_flag[sps_id] := res[0];
-		if sps_pcm_enabled_flag[sps_id] = 1 then
-				vld_u_name(4, fifo, res,
-				"pcm_sample_bit_depth_luma_minus1        ");
+		
+		read_SPS_Header.se_idx_6 : action ==>
+	    guard
+	    	se_idx = 6 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_u_name(1, fifo, res,
+	        "amp_enabled_flag                        ");
+	        amp_enabled_flag := res[0];
+	        vld_u_name(1, fifo, res,
+	        "sample_adaptive_offset_enabled_flag     ");
+	        sps_sample_adaptive_offset_enabled_flag[sps_id] := res[0];
+	        vld_u_name(1, fifo, res,
+	        "pcm_enabled_flag                        ");
+	        sps_pcm_enabled_flag[sps_id] := res[0];
+	        if sps_pcm_enabled_flag[sps_id] = 1 then
+	        	vld_u_name(4, fifo, res,
+	        	"pcm_sample_bit_depth_luma_minus1        ");
 	        	pcm_bit_depth[sps_id] := res[0] + 1;
-				vld_u_name(4, fifo, res,
-				"pcm_sample_bit_depth_chroma_minus1      ");
+	        	vld_u_name(4, fifo, res,
+	        	"pcm_sample_bit_depth_chroma_minus1      ");
 	        	pcm_bit_depth_chroma[sps_id] := res[0] + 1;
-				vld_ue_name(fifo, res,
-				"log2_min_pcm_luma_coding_block_size_minus3");
-				log2_min_pcm_cb_size[sps_id] := res[0] + 3;
-				vld_ue_name(fifo, res,
-				"log2_diff_max_min_pcm_luma_coding_block_size");
-				log2_max_pcm_cb_size[sps_id] := log2_min_pcm_cb_size[sps_id] +
-				res[0];
-				vld_u_name(1, fifo, res,
-				"pcm_loop_filter_disable_flag            ");
+	        	vld_ue_name(fifo, res,
+	        	"log2_min_pcm_luma_coding_block_size_minus3");
+	        	log2_min_pcm_cb_size[sps_id] := res[0] + 3;
+	        	vld_ue_name(fifo, res,
+	        	"log2_diff_max_min_pcm_luma_coding_block_size");
+	        	log2_max_pcm_cb_size[sps_id] := log2_min_pcm_cb_size[sps_id] +
+	        	res[0];
+	        	vld_u_name(1, fifo, res,
+	        	"pcm_loop_filter_disable_flag            ");
 	        	pcm_loop_filter_disable_flag[sps_id] := res[0];
-		end
-			vld_ue_name(fifo, res,
-			"num_short_term_ref_pic_sets             ");
-		sps_num_short_term_ref_pic_sets[sps_id] := res[0];
-		se_idx := se_idx + 1;
-		cnt_i  := 0;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_7
-	 *************************************************************************/
-	int(size=8) pcRPS[NB_MAX_SPS][NB_MAX_PICS+1][PC_RPS_STRUCT_SIZE];
-
-	read_SPS_Header.se_idx_7.loop : action ==>
-	guard
-		se_idx = 7 and isFifoFull(fifo),
-		cnt_i < sps_num_short_term_ref_pic_sets[sps_id]
-	do
-		parseShortTermRefPicSet(sps_id, cnt_i, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
-		cnt_i := cnt_i + 1;
-	end
-	read_SPS_Header.se_idx_7.loopEnd : action ==>
-	guard
-		se_idx = 7,
-		cnt_i = sps_num_short_term_ref_pic_sets[sps_id]
-	do
-		se_idx := se_idx + 1;
-		cnt_i  := 0;
-	end
-	/**************************************************************************
-	 * read_SPS_Header.se_idx_8
-	 *************************************************************************/
-	uint(size= 1) sps_long_term_ref_pics_present_flag[NB_MAX_SPS];
-	uint(size= 1) sps_temporal_mvp_enable_flag[NB_MAX_SPS];
-	bool          sps_strong_intra_smoothing_enable_flag[NB_MAX_SPS];
-	uint(size= 6) sps_num_long_term_ref_pics_sps[NB_MAX_SPS];
-	uint(size=16) lt_ref_pic_poc_lsb_sps[32];
-	uint(size= 8) used_by_curr_pic_lt_sps_flag[32];
-
-	read_SPS_Header.se_idx_8 : action ==>
-	guard
-		se_idx = 8 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-			vld_u_name(1, fifo, res,
-			"long_term_ref_pics_present_flag         ");
-		sps_long_term_ref_pics_present_flag[sps_id] := res[0];
-		if res[0] = 1 then
-				vld_ue_name(fifo, res,
-				"num_long_term_ref_pics_sps              ");
-			sps_num_long_term_ref_pics_sps[sps_id] := res[0];
-				foreach int i in 0 .. sps_num_long_term_ref_pics_sps[sps_id] - 1
-				do
-					vld_u_name(sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4,
-					fifo, res, "lt_ref_pic_poc_lsb_sps                  ");
-				lt_ref_pic_poc_lsb_sps[i] := res[0];
-					vld_u_name(1, fifo, res,
-					"used_by_curr_pic_lt_sps_flag            ");
-				used_by_curr_pic_lt_sps_flag[i] := res[0];
-			end
-		end
-			vld_u_name(1, fifo, res,
-			"sps_temporal_mvp_enable_flag            ");
-		sps_temporal_mvp_enable_flag[sps_id] := res[0];
-			vld_u_name(1, fifo, res,
-			"sps_strong_intra_smoothing_enable_flag  ");
-		sps_strong_intra_smoothing_enable_flag[sps_id] := res[0] = 1;
-			vld_u_name(1, fifo, res,
-			"vui_parameters_present_flag             ");
-		if res[0] = 1 then
-			println("not support for vui_parameters_present_flag != 0");
-		end
-		se_idx := se_idx + 1;
-	end
-
-	/**************************************************************************
-	 * read_SPS_Header_done
-	 *************************************************************************/
-	read_SPS_Header_done : action ==>
-	guard
-		se_idx = 9 and isFifoFull(fifo)
-	var
-		uint(size=32) res[1]
-	do
-			vld_u_name(1, fifo, res,
-			"sps_extension_flag                      ");
-		if res[0] = 1 then
-			println("not support for sps_extension_flag != 0");
-		end
-	end
+	        end
+	        vld_ue_name(fifo, res,
+	        "num_short_term_ref_pic_sets             ");
+	        sps_num_short_term_ref_pic_sets[sps_id] := res[0];
+	        se_idx := se_idx + 1;
+	        cnt_i := 0;
+	    end
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_7
+	     *************************************************************************/
+	    int(size=8) pcRPS[NB_MAX_SPS][NB_MAX_PICS+1][PC_RPS_STRUCT_SIZE];
+	
+	    read_SPS_Header.se_idx_7.loop : action ==>
+	    guard
+	    	se_idx = 7 and isFifoFull(fifo),
+	    	cnt_i < sps_num_short_term_ref_pic_sets[sps_id]
+	    do
+	    	parseShortTermRefPicSet(sps_id, cnt_i, sps_num_short_term_ref_pic_sets[sps_id], fifo, pcRPS);
+	    	cnt_i := cnt_i + 1;
+	    end
+	    read_SPS_Header.se_idx_7.loopEnd : action ==>
+	    guard
+	    	se_idx = 7,
+	    	cnt_i = sps_num_short_term_ref_pic_sets[sps_id]
+	    do
+	        se_idx := se_idx + 1;
+	        cnt_i  := 0;
+	    end
+	    /**************************************************************************
+	     * read_SPS_Header.se_idx_8
+	     *************************************************************************/
+	    uint(size= 1) sps_long_term_ref_pics_present_flag[NB_MAX_SPS];
+	    uint(size= 1) sps_temporal_mvp_enable_flag[NB_MAX_SPS];
+	    bool          sps_strong_intra_smoothing_enable_flag[NB_MAX_SPS];
+	    uint(size= 6) sps_num_long_term_ref_pics_sps[NB_MAX_SPS];
+	    uint(size=16) lt_ref_pic_poc_lsb_sps[32];
+	    uint(size= 8) used_by_curr_pic_lt_sps_flag[32];
+	
+	    read_SPS_Header.se_idx_8 : action ==>
+	    guard
+	    	se_idx = 8 and isFifoFull(fifo)
+	    var
+	    	uint(size=32) res[1]
+	    do
+	        vld_u_name(1, fifo, res,
+	        "long_term_ref_pics_present_flag         ");
+	        sps_long_term_ref_pics_present_flag[sps_id] := res[0];
+	        if res[0] = 1 then
+	        	vld_ue_name(fifo, res,
+	        	"num_long_term_ref_pics_sps              ");
+	        	sps_num_long_term_ref_pics_sps[sps_id] := res[0];
+	        	foreach int i in 0 .. sps_num_long_term_ref_pics_sps[sps_id] - 1
+	        	do
+	        		vld_u_name(sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4,
+	        		fifo, res, "lt_ref_pic_poc_lsb_sps                  ");
+	        		lt_ref_pic_poc_lsb_sps[i] := res[0];
+	        		vld_u_name(1, fifo, res,
+	        		"used_by_curr_pic_lt_sps_flag            ");
+	        		used_by_curr_pic_lt_sps_flag[i] := res[0];
+	        	end
+	        end
+	        vld_u_name(1, fifo, res,
+	        "sps_temporal_mvp_enable_flag            ");
+	        sps_temporal_mvp_enable_flag[sps_id] := res[0];
+	        vld_u_name(1, fifo, res,
+	        "sps_strong_intra_smoothing_enable_flag  ");
+	        sps_strong_intra_smoothing_enable_flag[sps_id] := res[0] = 1;
+	        vld_u_name(1, fifo, res,
+	        "vui_parameters_present_flag             ");
+	        if res[0] = 1 then
+	        	println("not support for vui_parameters_present_flag != 0");
+	        end
+	        se_idx := se_idx + 1;
+	    end
+	
+	    /**************************************************************************
+	     * read_SPS_Header_done
+	     *************************************************************************/
+	    read_SPS_Header_done : action ==>
+	    guard
+	        se_idx = 9 and isFifoFull(fifo)
+	    var
+	        uint(size=32) res[1]
+	    do
+	        vld_u_name(1, fifo, res,
+	        "sps_extension_flag                      ");
+	        if res[0] = 1 then
+	        	println("not support for sps_extension_flag != 0");
+	        end
+	    end
 	/**************************************************************************
 	 **************************************************************************
 	 ********        Picture Parameter Set HEADER         *********************
@@ -5724,20 +6958,25 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 *************************************************************************/
 	schedule fsm start_code:
 		// byte align
-		byte_align          			( byte_align_a						) --> start_code;
-		// search start code
-		start_code          			( start_code.search					) --> start_code;
-		start_code			            ( start_code.done					) --> read_Nal_unit_header;
-		// read Nal Unit header
-		read_Nal_unit_header			( read_nal_unit_header				) --> find_header;
-		find_header	  					( look_for.VPS_header	  			) --> read_VPS_Header;
-		find_header	  					( look_for.SEI_header	  			) --> read_SEI_Header;
-		find_header	  					( look_for.SPS_header	  			) --> read_SPS_Header;
-		find_header	  					( look_for.PPS_header	  			) --> read_PPS_Header;
-		find_header	  					( look_for.Slice_header	  			) --> read_SliceHeader;
-		// read VPS header
-		read_VPS_Header	  				( read_VPS_Header	    			) --> read_VPS_Header;
-		read_VPS_Header	  				( read_VPS_Header_done    			) --> byte_align;
+		byte_align                  ( byte_align_a                                  ) --> start_code;
+        // search start code
+        start_code                  ( start_code.search                             ) --> start_code;
+        start_code                  ( start_code.done                               ) --> read_Nal_unit_header;
+        // read Nal Unit header
+        read_Nal_unit_header        ( read_nal_unit_header                          ) --> checkNAL;
+        checkNAL					(checkNAL.decode								) --> find_header;
+        checkNAL					(checkNAL.bypass								) --> byte_align;
+        find_header                 ( look_for.VPS_header                           ) --> read_VPS_Header;
+        find_header                 ( look_for.SEI_header                           ) --> read_SEI_Header;
+        find_header                 ( look_for.SPS_header                           ) --> read_SPS_Header;
+        find_header                 ( look_for.PPS_header                           ) --> read_PPS_Header;
+        find_header                 ( look_for.Slice_header                         ) --> read_SliceHeader;
+        // read VPS header
+        read_VPS_Header             ( read_VPS_Header                               ) --> read_VPS_Header;
+        read_VPS_Header             ( read_VPS_Header_done                          ) --> byte_align;
+        read_VPS_Header             ( read_VPS_Header_scalableExtensions			) --> read_VPS_Extensions;
+        read_VPS_Extensions			( read_VPS_Extensions							) --> read_VPS_Extensions;
+        read_VPS_Extensions			( read_VPS_Extensions_done                      ) --> byte_align;
 		// read SEI header
 		read_SEI_Header	  				( read_SEI_Header	    			) --> read_SEI_Header;
 		read_SEI_Header	  				( read_SEI_Header_done    			) --> byte_align;
