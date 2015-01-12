@@ -1,0 +1,125 @@
+package org.ietr.mpegh.part2.main.upSampling;
+import std.util.Math.*;
+import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
+
+
+/*
+ * int addXLum;		0
+    int addYLum;	1
+    int scaleXLum;	2
+    int scaleYLum;	3
+    int addXCr;		4
+    int addYCr;		5
+    int scaleXCr;	6
+    int scaleYCr;	7
+    int idx;		8
+ */
+actor UpSamplingLuma () uint(size=8) RefBlk, 
+						uint(size=9) BL_PicSize, 
+						uint(size=9) EL_PicSize, 
+						int Up_filter_inf, 
+						uint(size=8) LcuSizeMax,
+						int BlkCorrds,
+						int NuhLayerID
+						==> 
+						uint(size=8) UpBlk:
+	
+	int up_filter_inf[9];
+	int ctb_size;
+    int el_width;
+    int el_height;
+    int bl_width;
+    int bl_height;
+    int bl_stride;
+    int el_stride ;
+    int ePbW;
+    int ePbH;
+    int sps_pic_conf_win_left_offset;
+    int sps_pic_conf_win_top_offset;
+    int x0;
+    int y0;
+    int nuhLayerID;
+    
+    procedure emulated_edge_up_h (uint(size=8) src[39*39], int linesize,
+                                    int Enhscal,
+                                    int block_w, int block_h, int bl_edge_left, int bl_edge_right, int shift)
+    var
+	    uint(size=8) src_tmp[39*39]
+	begin
+	    foreach int i in 0 .. (39*39) - 1 do
+	    	src_tmp[i] := src[i];
+	    end
+	    
+	    if(bl_edge_left < shift) then
+	        foreach int i in 0 .. block_h - 1 do
+//	            memset(src_tmp-(shift), src_tmp[0], shift);
+//	            src_tmp += linesize;
+	        end
+	    end
+	    
+	    if(bl_edge_right<(shift+1)) then
+	        //printf("------------  bl_edge_right %d \n", bl_edge_right);
+	        foreach int i in 0 .. block_h - 1 do
+//	            memset(src_tmp+block_w, src_tmp[block_w-1], shift+1);
+//	            src_tmp += linesize;
+	        end
+	    end
+	end
+    
+	
+	init: action BL_PicSize:[bl_picSize] repeat 2, EL_PicSize:[el_picSize] repeat 2, LcuSizeMax:[log2_lcuSz],  
+				Up_filter_inf:[up_filter_inf_input] repeat 9, BlkCorrds:[x,y], NuhLayerID:[nuhLayerId] ==>
+	do
+		nuhLayerID := nuhLayerId;
+		x0 := x;
+		y0 := y;
+		ctb_size  := 1<<log2_lcuSz;
+	    el_width  := el_picSize[0];
+	    el_height := el_picSize[1];
+	    bl_width  := bl_picSize[0];
+	    bl_height := bl_picSize[1];
+	    bl_stride := bl_picSize[0]; // TODO: FIXME
+	    el_stride := el_picSize[0]; // TODO: FIXME
+	    ePbW := if (x0 + ctb_size > el_width)  then el_width  - x0 else ctb_size end;
+	    ePbH := if (y0 + ctb_size > el_height) then el_height - y0 else ctb_size end;
+		foreach int i in 0 .. 8 do
+			up_filter_inf[i] := up_filter_inf_input[i];
+		end
+	end
+
+	readBlk.SNR: action RefBlk:[refBlk] repeat 4096 ==> UpBlk:[refBlk] repeat 4096
+	guard up_filter_inf[8] = SNR
+	end
+	
+	readBlk.notSNR: action RefBlk:[refBlk] repeat 39*39 ==> UpBlk:[upBlk] repeat 64*64
+	guard 
+		up_filter_inf[8] != SNR
+	var
+		uint(size=8) upBlk[64*64],
+		int bl_edge_bottom, 
+		int bl_edge_right,
+		int ret,
+        int bPbW := ((( ePbW + 1 )*up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4, /*    FIXME: check if this method is correct  */
+        int bPbH := ((( ePbH + 2 ) *up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
+
+        int bl_x = (( (x0  - sps_pic_conf_win_left_offset) * up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4,
+        int bl_y = (( (y0  - sps_pic_conf_win_top_offset)  * up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
+        int bl_edge_left   = if (MAX_EDGE - 1 - bl_x ) > 0 then  0 else MAX_EDGE - 1 end,
+        int bl_edge_top    = if (MAX_EDGE - 1 - bl_y ) > 0 then  0 else MAX_EDGE - 1 end,
+        int ref_layer_id = nuhLayerID
+        //int(size=16) tmp0;
+	do
+		if(bl_x+bPbW > bl_width) then
+            bPbW := bl_width -bl_x;
+		end
+        if(bl_y+bPbH > bl_height) then
+            bPbH := bl_height-bl_y;
+        end
+
+        bl_edge_right  := if (MAX_EDGE > (bl_width  - bl_x - bPbW)) then bl_width  - bl_x - bPbW else MAX_EDGE end;
+        bl_edge_bottom := if (MAX_EDGE > (bl_height - bl_y - bPbH)) then bl_height - bl_y - bPbH else MAX_EDGE end;
+		
+	end
+	
+end
