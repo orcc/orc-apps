@@ -3,7 +3,10 @@ import std.util.Math.*;
 import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
 unit UpSamplingFunctions :
-
+	
+	int N_SHIFT  = 20-8;
+	int I_OFFSET = (1 << (N_SHIFT - 1));
+	
 	int(size=8) up_sample_filter_chroma[16][4]=
 	[
     [  0,  64,   0,  0],
@@ -102,15 +105,15 @@ unit UpSamplingFunctions :
 		(pel[-3 + offset]*coeff[0] + pel[-2 + offset]*coeff[1] + pel[-1 + offset]*coeff[2] + pel[0 + offset]*coeff[3] + pel[1 + offset]*coeff[4] + pel[2 + offset]*coeff[5] + pel[3 + offset]*coeff[6] + pel[4 + offset]*coeff[7])
 	end
 	
-	function CroHor_FILTER_Block(uint(size=8) pel [64*64], uint (size=8) coeff[4]) --> int(size=16) :
-		(pel[-1]*coeff[0] + pel[0]*coeff[1] + pel[1]*coeff[2] + pel[2]*coeff[3])
+	function CroHor_FILTER_Block(uint(size=8) pel [64*64], uint (size=8) coeff[4], int offset) --> int(size=16) :
+		(pel[-1 + offset]*coeff[0] + pel[0 + offset]*coeff[1] + pel[1 + offset]*coeff[2] + pel[2 + offset]*coeff[3])
 	end
 	
-	function LumVer_FILTER_Block(uint(size=8) pel [64*64], uint (size=8) coeff[8], int width) --> int(size=16) :
-		(pel[-3*width]*coeff[0] + pel[-2*width]*coeff[1] + pel[-width]*coeff[2] + pel[0]*coeff[3] + pel[width]*coeff[4] + pel[2*width]*coeff[5] + pel[3*width]*coeff[6] + pel[4*width]*coeff[7])
+	function LumVer_FILTER_Block(uint(size=8) pel [64*64], uint (size=8) coeff[8], int width, int offset) --> int(size=16) :
+		(pel[-3*width + offset]*coeff[0] + pel[-2*width + offset]*coeff[1] + pel[-width + offset]*coeff[2] + pel[0 + offset]*coeff[3] + pel[width + offset]*coeff[4] + pel[2*width + offset]*coeff[5] + pel[3*width + offset]*coeff[6] + pel[4*width + offset]*coeff[7])
 	end
 	
-	function CroVer_FILTER_Block(uint(size=8) pel [64*64], uint (size=8) coeff[4], int width) --> int(size=16) :
+	function CroVer_FILTER_Block(uint(size=8) pel [64*64], uint (size=8) coeff[4], int width, int offset) --> int(size=16) :
 		(pel[-width]*coeff[0] + pel[0]*coeff[1] + pel[width]*coeff[2] + pel[2*width]*coeff[3])
 	end
 	
@@ -213,11 +216,93 @@ unit UpSamplingFunctions :
 	        foreach int k in 0 .. 7 do
 	        	coeff[k]    := up_sample_filter_luma_x2[x&0x01][k];
 	        end
-	        offset := offset + ((x-leftStartL)>>1); // FIXME: to be checked
+	        offset := ((x-leftStartL)>>1); // FIXME: to be checked
 	        foreach int j in 0 .. block_h - 1 do
 	            dst[i + j * _dststride] := LumHor_FILTER_Block(src, coeff, offset+3);
 	            offset := offset + j * _srcstride;
 	        end
 	    end
 	end
+	
+	procedure upsample_filter_block_cr_h_x2 ( int(size=16) dst[32*16], int _dststride, uint(size=8) src[19*16], int _srcstride,
+                                                  int x_EL, int x_BL, int block_w, int block_h, int widthEL,
+                                                  int Enhscal[4], int up_info[9]) 
+    var
+	    int leftStartC := Enhscal[0]>>1,
+	    int rightEndC  := widthEL - (Enhscal[1]>>1),
+	    int x,
+	    int(size=8) coeff[4],
+	    int offset := 0
+	begin 
+	    foreach int i in 0 .. block_w - 1 do
+	        x        := clip_i32(i+x_EL, leftStartC, rightEndC);
+	        foreach int k in 0 .. 3 do
+	        	coeff[k]    := up_sample_filter_chroma_x2[x&0x01][k];
+	        end
+	        offset := (x>>1); // FIXME: to be checked
+	        foreach int j in 0 .. block_h - 1 do
+	        	dst[i + j * _dststride] := CroHor_FILTER_Block(src, coeff, offset+1);
+	            offset := offset + j * _srcstride;
+	        end
+	    end
+	end
+	
+	procedure upsample_filter_block_luma_v_x2( uint(size=8) dst[64*64], int _dststride, int(size=16) src[64*39], int _srcstride,
+                                                  int y_BL, int x_EL, int y_EL, int block_w, int block_h, int widthEL, int heightEL,
+                                                  int Enhscal[4], int up_info[9])
+    var
+	    int topStartL  := Enhscal[2],
+	    int bottomEndL := heightEL - Enhscal[3],
+	    int rightEndL  := widthEL - Enhscal[1],
+	    int leftStartL := Enhscal[0],
+	    int y,
+	    int(size=8) coeff[8],
+    	int offset := 0
+	begin
+	    foreach int j in 0 .. block_h - 1 do
+	    	y        := clip_i32(y_EL+j, topStartL, bottomEndL-1);
+	        foreach int k in 0 .. 3 do
+	        	coeff[k] := up_sample_filter_luma_x2[(y-topStartL)&0x01][k];
+	        end	
+	        offset  := (((y-topStartL)>>1)-y_BL)  * _srcstride;
+	        foreach int i in 0 .. block_w - 1 do
+	            dst[j*_dststride + i] := clip_i32( (LumVer_FILTER_Block(src, coeff, _srcstride, offset + 3 * _srcstride) + I_OFFSET) >> (N_SHIFT), 0, 255);
+	            if( ((x_EL+i) >= leftStartL) && ((x_EL+i) <= rightEndL-2) ) then
+	                offset := offset + 1;
+	            end   
+	        end
+	    end
+	end
+	
+	procedure upsample_filter_block_cr_v_x2 (uint(size=8) dst[32*32], int dststride, int(size=16) src[32*19], int srcstride,
+                                                  int y_BL, int x_EL, int y_EL, int block_w, int block_h, int widthEL, int heightEL,
+                                                  int Enhscal[4], int up_info[9])
+	var
+	    int leftStartC := Enhscal[0]>>1,
+	    int rightEndC  := widthEL - (Enhscal[1]>>1),
+	    int topStartC  := Enhscal[2]>>1,
+	    int bottomEndC := heightEL - (Enhscal[3]>>1),
+	    int y,
+	    int refPos16, 
+	    int refPos,
+	    int(size=8) coeff[4],
+	    int offset := 0
+	    //int16_t *   src_tmp;
+	    //pixel *dst_tmp, *dst    = (pixel *)_dst;
+	begin
+	    foreach int j in 0 .. block_h -1 do
+	        y        :=   clip_i32(y_EL+j, topStartC, bottomEndC-1);
+	        refPos16 := ((( y - topStartC )* up_info[7] + up_info[5]) >> 12) - 4;
+	        coeff    := up_sample_filter_chroma_x2_v[y&0x01];
+	        refPos   := (refPos16>>4) - y_BL;
+	        offset   := refPos  * srcstride;
+	        foreach int i in 0 .. block_w - 1 do
+	            dst[i + y* dststride + x_EL] := clip_i32( (CroVer_FILTER_Block(src, coeff, srcstride, offset + srcstride) + I_OFFSET) >> (N_SHIFT), 0, 255);
+	            if( ((x_EL+i) >= leftStartC) && ((x_EL+i) <= rightEndC-2) ) then
+	                offset := offset + 1; 
+	            end
+	        end
+	    end
+	end
+	
 end
