@@ -43,6 +43,8 @@ ENDCOPYRIGHT
 
 package com.xilinx.mpeg4.part2.sp;
 
+import org.sc29.wg11.mpeg4.part2.Constants.*;
+
 actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(size=32) RD :
 
 	//bool _CAL_tokenMonitor := true;
@@ -53,104 +55,97 @@ actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(siz
 */
 // Frame buffer organization:
 
-	//int MEMSIZE         = (1 << MEMBITS);
-	int MEMSIZE = (1 << 22);
 
 	//int BURSTSIZE       = COMPONENTS * BLOCKSIZE / PIXELS_PER_WORD;
 	int BURSTSIZE = 96;
 
 	List(type: uint(size=32), size=MEMSIZE) buf;
 
-	int address_t := 0;
+	 int address := 0;
+  int burstSize := 0;
+  bool preferRead := true;
+  
+  select.read.prefer: action RA:[a] ==>
+    guard preferRead
+    do
+      address := a;
+      burstSize := BURSTSIZE;
+      preferRead := false;
+  end
 
-	int burstSize := 0;
+  select.write.prefer: action WA:[a] ==>
+    guard not preferRead
+    do
+      address := a;
+      burstSize := BURSTSIZE;
+      preferRead := true;
+  end
 
-	bool preferRead := true;
+  select.read.low: action RA:[a] ==>
+    guard not preferRead
+    do
+      address := a;
+      burstSize := BURSTSIZE;
+      preferRead := false;
+  end
 
-	select.read.prefer: action RA:[ a ] ==>
-	guard
-		preferRead
-	do
-		// println("select.read.prefer RA " + a);
-		address_t := a;
-		burstSize := BURSTSIZE;
-		preferRead := false;
-	end
+  select.write.low: action WA:[a] ==>
+    guard preferRead
+    do
+      address := a;
+      burstSize := BURSTSIZE;
+      preferRead := true;
+  end
 
-	select.write.prefer: action WA:[ a ] ==>
-	guard
-		not preferRead
-	do
-		// println("select.write.prefer WA " + a);
-		address_t := a;
-		burstSize := BURSTSIZE;
-		preferRead := true;
-	end
+  data.read: action ==> RD:[ dat ]
+    guard
+      burstSize > 0
+    var
+      int dat
+    do
+      dat := buf[address];
+      address := address + 1;
+      burstSize := burstSize - 1;
+  end
 
-	select.read.low: action RA:[ a ] ==>
-	guard
-		not preferRead
-	do
-		// println("select.read.low RA" + a);
-		address_t := a;
-		burstSize := BURSTSIZE;
-		preferRead := false;
-	end
+  data.write: action WD:[ dat ] ==>
+    guard
+      burstSize > 0
+    var
+      int wa := address
+    do
+      burstSize := burstSize - 1;
+      address := address + 1;
+      buf[wa] := dat;
+  end
+  
+  data.done: action ==>
+    guard burstSize = 0
+  end
 
-	select.write.low: action WA:[ a ] ==>
-	guard
-		preferRead
-	do
-		// println("select.write.low WA" + a);
-		address_t := a;
-		burstSize := BURSTSIZE;
-		preferRead := true;
-	end
 
-	data.read: action ==> RD:[ dat ]
-	guard
-		burstSize > 0
-	var
-		uint dat
-	do
-		dat := buf[address_t];
-		address_t := address_t + 1;
-		burstSize := burstSize - 1;
-	end
+      
+  schedule fsm getAddr :
 
-	data.write: action WD:[ dat ] ==>
-	guard
-		burstSize > 0
-	var
-		uint wa_t
-	do
-		wa_t := address_t;
-		burstSize := burstSize - 1;
-		address_t := address_t + 1;
-		buf[wa_t] := dat;
-	end
+    getAddr ( select.read ) --> doDataRead;
+    getAddr ( select.write ) --> doDataWrite;
 
-	data.done: action ==>
-	guard
-		burstSize = 0
-	end
+    doDataRead ( data.read ) --> doDataRead;
+    doDataRead ( data.done ) --> getAddr;
+    
+    doDataWrite ( data.write ) --> doDataWrite;
+    doDataWrite ( data.done ) --> getAddr;
+    
+  end
 
-	schedule fsm getAddr :
-		getAddr ( select.read ) --> doDataRead;
-		getAddr ( select.write ) --> doDataWrite;
-		doDataRead ( data.read ) --> doDataRead;
-		doDataRead ( data.done ) --> getAddr;
-		doDataWrite ( data.write ) --> doDataWrite;
-		doDataWrite ( data.done ) --> getAddr;
-	end
+  priority
+    select.read.prefer > select.read.low;
+    select.read.prefer > select.write.low;
 
-	priority
-		select.read.prefer > select.read.low;
-		select.read.prefer > select.write.low;
-		select.write.prefer > select.read.low;
-		select.write.prefer > select.write.low;
-		data.read > data.done;
-		data.write > data.done;
-	end
+    select.write.prefer > select.read.low;
+    select.write.prefer > select.write.low;
 
+    data.read > data.done;
+    data.write > data.done;
+  end
 end
