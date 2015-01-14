@@ -1,6 +1,107 @@
 package org.ietr.mpegh.part2.main.upSampling;
 import std.util.Math.*;
 import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
+import org.ietr.mpegh.part2.main.upSampling.UpSamplingFunctions.*;
 
-actor UpSamplingChroma ()==>:
+actor UpSamplingChroma ()uint(size=8) RefBlk, 
+						uint(size=9) BL_PicSize, 
+						uint(size=9) EL_PicSize, 
+						int Up_filter_inf, 
+						uint(size=8) LcuSizeMax,
+						int BlkCorrds,
+						int NuhLayerID,
+						int Enhscal
+						==> 
+						uint(size=8) UpBlk:
+	int up_filter_inf[9];
+	int enhscal[4];
+	int ctb_size;
+    int el_width;
+    int el_height;
+    int bl_width;
+    int bl_height;
+    int ePbW;
+    int ePbH;
+    int sps_pic_conf_win_left_offset; // TODO: get them from parser
+    int sps_pic_conf_win_top_offset;
+    int x0;
+    int y0;
+    int nuhLayerID;
+    int(size=16) edge_emu_buffer_up_v[MAX_EDGE_BUFFER_SIZE];
+    int(size=16) tmp      [MAX_EDGE_BUFFER_SIZE];
+    int(size=16) tmp0      [MAX_EDGE_BUFFER_SIZE];
+    int bl_edge_top0;
+	
+	init: action BL_PicSize:[bl_picSize] repeat 2, EL_PicSize:[el_picSize] repeat 2, LcuSizeMax:[log2_lcuSz],  
+				 Up_filter_inf:[up_filter_inf_input] repeat 9, BlkCorrds:[x,y], NuhLayerID:[nuhLayerId], Enhscal:[enh_scal] repeat 4 ==>
+	do
+		nuhLayerID := nuhLayerId;
+		x0 := x;
+		y0 := y;
+		ctb_size  := 1<<log2_lcuSz;
+	    el_width  := el_picSize[0]>>1;
+	    el_height := el_picSize[1]>>1;
+	    bl_width  := bl_picSize[0]>>1;
+	    bl_height := if bl_picSize[1] > el_height then bl_picSize[1]>>1 else el_height>>1 end;
+	    
+	    ePbW := if (x0 + ctb_size > el_width)  then el_width  - x0 else ctb_size end;
+	    ePbH := if (y0 + ctb_size > el_height) then el_height - y0 else ctb_size end;
+		foreach int i in 0 .. 8 do
+			up_filter_inf[i] := up_filter_inf_input[i];
+		end
+		
+		foreach int i in 0 .. 3 do
+			enhscal[i] := enh_scal[i];
+		end
+	end
+	
+	readBlk.SNR: action RefBlk:[refBlk] repeat 32*32 ==> UpBlk:[refBlk] repeat 32*32
+	guard up_filter_inf[8] = SNR
+	do
+		// TODO: isupsampled
+	end		
+		
+	readBlk.notSNR: action RefBlk:[refBlk] repeat 39*32 ==> UpBlk:[upBlk] repeat 64*64
+	guard 
+		up_filter_inf[8] != SNR
+	var
+		uint(size=8) upBlk[64*64],
+		int bl_edge_bottom, 
+		int bl_edge_right,
+		int ret,
+        int bPbW := ((( ePbW + 1 )*up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4, /*    FIXME: check if this method is correct  */
+        int bPbH := ((( ePbH + 2 ) *up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
+
+        int bl_x = ((  (x0  - (sps_pic_conf_win_left_offset>>1)) * up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4,
+        int bl_y = ((( (y0  - (sps_pic_conf_win_top_offset >>1))  * up_filter_inf[3] + up_filter_inf[1]) >> 12)-4) >> 4,
+        int bl_edge_left   = if (MAX_EDGE_CR - 1 - bl_x ) > 0 then  0 else MAX_EDGE_CR - 1 end,
+        int bl_edge_top    = if (MAX_EDGE_CR - 1 - bl_y ) > 0 then  0 else MAX_EDGE_CR - 1 end,
+        int ref_layer_id = nuhLayerID        //int(size=16) tmp0;
+	do
+		bPbW := if bl_x+bPbW > bl_width  then bl_width -bl_x else bPbW end;
+        bPbH := if bl_y+bPbH > bl_height then bl_height-bl_y else bPbH end;
+        bl_edge_top0 := if bl_y < 0 then bl_y else 0 end;
+
+        bl_edge_right  := if MAX_EDGE_CR < (bl_width -  bl_x - bPbW) then MAX_EDGE_CR else bl_width  - bl_x - bPbW end;
+        bl_edge_bottom := if MAX_EDGE_CR < (bl_height - bl_y - bPbH) then MAX_EDGE_CR else bl_height - bl_y - bPbH end;
+        
+        emulated_edge_up_h (refBlk, 39, enhscal, bPbW + bl_edge_left + bl_edge_right, bPbH + bl_edge_top + bl_edge_bottom,
+        					bl_edge_left, bl_edge_right, MAX_EDGE_CR-1);
+		upsample_filter_block_luma_h_x2(tmp, MAX_EDGE_BUFFER_STRIDE, refBlk, /*bl_stride*/ 19, x0, bl_x,
+                                        ePbW, bPbH + bl_edge_top + bl_edge_bottom, el_width, enhscal, up_filter_inf);
+      // fill tmp0 with emulation result tmp with offset
+		foreach int i in 0 .. 31 do // lines
+			foreach int j in 0 .. 38 do
+				tmp0[((MAX_EDGE_CR - 1) * MAX_EDGE_BUFFER_STRIDE) + j + i * MAX_EDGE_BUFFER_STRIDE] := tmp[j + i * MAX_EDGE_BUFFER_STRIDE];
+			end
+		end
+        emulated_edge_up_v(tmp0, MAX_EDGE_BUFFER_STRIDE, enhscal, ePbW, bPbH + bl_edge_top + bl_edge_bottom, x0, bl_edge_top ,
+                           bl_edge_bottom, el_width, MAX_EDGE_CR - 1);
+		                           
+        upsample_filter_block_luma_v_x2(upBlk , /*ref0->frame->linesize[0]*/ 32, tmp0 , MAX_EDGE_BUFFER_STRIDE, bl_y ,
+         								x0, y0, ePbW, ePbH, el_width, el_height, enhscal, up_filter_inf);                  
+        // TODO: isupsampled
+	end
+	
 end
