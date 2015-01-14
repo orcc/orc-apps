@@ -4,8 +4,9 @@ import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 
 unit UpSamplingFunctions :
 	
-	int N_SHIFT  = 20-8;
-	int I_OFFSET = (1 << (N_SHIFT - 1));
+	int N_SHIFT  			= 20-8;
+	int I_OFFSET 			= (1 << (N_SHIFT - 1));
+	int MAX_EDGE_CR 		= 2;
 	
 	int(size=8) up_sample_filter_chroma[16][4]=
 	[
@@ -125,61 +126,58 @@ unit UpSamplingFunctions :
 		(pel[0]*coeff[0] + pel[1]*coeff[1] + pel[2]*coeff[2] + pel[3]*coeff[3])
 	end
 	
-	procedure emulated_edge_up_h (uint(size=8) src[39*39], int linesize,
+	procedure emulated_edge_up_h (uint(size=8) src[39*32], int linesize,
                                     int Enhscal[4],
                                     int block_w, int block_h, int bl_edge_left, int bl_edge_right, int shift)
-    var
-	    uint(size=8) src_tmp[39*39]
-	begin
-	    foreach int i in 0 .. (39*39) - 1 do
-	    	src_tmp[i] := src[i];
-	    end
-	    
+  	begin
 	    if(bl_edge_left < shift) then
 	        foreach int i in 0 .. block_h - 1 do
-//	            memset(src_tmp-(shift), src_tmp[0], shift);
-//	            src_tmp += linesize;
+	        	foreach int j in 0 .. shift - 1 do
+	            	src[j + i * linesize] := src[shift + i * linesize];
+	            end
 	        end
 	    end
 	    
 	    if(bl_edge_right<(shift+1)) then
 	        foreach int i in 0 .. block_h - 1 do
-//	            memset(src_tmp+block_w, src_tmp[block_w-1], shift+1);
-//	            src_tmp += linesize;
+	        	foreach int j in 0 .. shift do
+	            	src[block_w + shift + j + i * linesize] := src[block_w -1 + shift + i * linesize]; // linesize = 39
+	            end
 	        end
 	    end
 	end
 	
-//	procedure upsample_filter_block_luma_h_all( int(size=16) dst[64*64], int _dststride, uint(size=8) src, int _srcstride,
-//                                        int x_EL, int x_BL, int block_w, int block_h, int widthEL,
-//                                        int enhscal[4], int up_info[9]/*, int y_BL, short * buffer_frame*/)
-//    var
-//	    int rightEndL  = widthEL - enhscal[1],
-//	    int leftStartL = enhscal[0],
-//	    int x := 0,
-//	    int phase := 0, 
-//	    int refPos16 := 0, 
-//	    int refPos := 0,
-//	    int(size=16) dst_tmp[64*64], //FIXME: check size
-//	    //pixel*   src_tmp,
-//	    //pixel*   *src = (pixel *) _src,
-//	    int(size=8) coeff[64*64] // FIXME: check size
-//    begin
-//	    foreach int i in 0 .. block_w - 1 do
-//	        x        := clip_i32(i+x_EL, leftStartL, rightEndL);
-//	        refPos16 := (((x - leftStartL)*up_info[2] +up_info[0]) >> 12);
-//	        phase    := refPos16 & 15;
-//	        //coeff    := 0; //FIXME: up_sample_filter_luma[phase];
-//	        refPos   := (refPos16 >> 4) - x_BL;
-//	        //dst_tmp  := _dst  + i;//FIXME:
-//	        //src_tmp  := src   + refPos;//FIXME:
-//	        foreach int j in 0 .. block_h - 1 do
-//	            //*dst_tmp  := LumHor_FILTER_Block(src_tmp, coeff);
-//	            //src_tmp  := src_tmp + _srcstride; //FIXME
-//	            //dst_tmp  := dst_tmp + _dststride; //FIXME
-//	        end
-//	    end
-//	end
+	procedure emulated_edge_up_v(int(size=16) src[64*39], int linesize, int Enhscal[4], int block_w, 
+								 int block_h, int src_x, int bl_edge_up, int bl_edge_bottom, int wEL, int shift)
+	var
+	    int rightEndL  := wEL - (Enhscal[1] >> (if(shift=(MAX_EDGE_CR-1)) then 1 else 0 end)),
+	    int leftStartL := (Enhscal[0]>> (if shift=(MAX_EDGE_CR-1) then 1 else 0 end)),
+	    int src_offset := shift * linesize,
+	    int dst_offset := shift * linesize  
+    begin
+	    if(bl_edge_up < shift)  then
+	        foreach int i in 0 .. block_w - 1 do
+	            foreach int j in bl_edge_up .. shift - 1 do
+	                src[(-j-1)*linesize + dst_offset] := src[-bl_edge_up*linesize + src_offset];
+	            end   
+	            if( ((src_x+i) >= leftStartL) && ((src_x+i) <= rightEndL-2) ) then
+	                src_offset := src_offset + 1;
+	            end
+	            dst_offset := dst_offset + 1;
+	        end
+	    
+	    elsif(bl_edge_bottom < (shift+1) )    then
+	        foreach int i in 0 .. block_w - 1 do
+	            foreach int j in 0 .. shift+1 - 1 do
+	                src[(block_h+j)*linesize + dst_offset] := src[(block_h-1)*linesize + src_offset];
+	            end
+	            if( ((src_x+i) >= leftStartL) && ((src_x+i) <= rightEndL-2) ) then
+	                src_offset := src_offset + 1;
+	            end
+	            dst_offset := dst_offset + 1;
+	        end
+	    end
+	end
 
 /*up_info{
  * int addXLum;		0
