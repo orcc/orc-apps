@@ -306,12 +306,12 @@ unit UpSamplingFunctions :
 	    end
 	end
 	
-	procedure upscale_mv_block (int(size=16) mv_dst [17][PICT_WIDTH/4][PICT_HEIGHT/4][2][2],int(size=16) mv_src [17][PICT_WIDTH/4][PICT_HEIGHT/4][2][2],
+	procedure upscale_mv_block (int(size=16) dst_mv [17][PICT_WIDTH/4][PICT_HEIGHT/4][2][2],int(size=16) src_mv [17][PICT_WIDTH/4][PICT_HEIGHT/4][2][2],
 								int dst_pred_flag[17][PICT_WIDTH/4][PICT_HEIGHT/4],int src_pred_flag[17][PICT_WIDTH/4][PICT_HEIGHT/4], 
-								int(size=4) refIdxRef[17][PICT_WIDTH/4][PICT_HEIGHT/4][2], /*TODO: add poc table, !!*/ int currentFrame,
+								int src_refIdxRef[17][PICT_WIDTH/4][PICT_HEIGHT/4][2], int(size=4) dst_refIdxRef[17][PICT_WIDTH/4][PICT_HEIGHT/4][2],
+								int(size=16) src_pocRefList[17][MAX_NUM_SLICES][2][16],int(size=16)  dst_pocRefList[17][MAX_NUM_SLICES][2][16], int currentFrame, int currentSlice,
 								int ctb_x, int ctb_y, int sps_width, int sps_height, int log2_min_pu_size, int bl_width, int bl_height, int log2_ctb_size,
-								 int sliceType, int sps_pic_conf_win_left_offset, int sps_pic_conf_win_top_offset,int up_info[9]
-								) 
+								 int sliceType, int sps_pic_conf_win_left_offset, int sps_pic_conf_win_top_offset,int up_info[9], int nuh_layer_id, int ScalingFactor[2][2] ) 
 	var
 	    int xEL := ctb_x,
 	    int yEL := ctb_y,
@@ -325,8 +325,6 @@ unit UpSamplingFunctions :
 	    int pic_width_in_min_puBL = bl_width   >> log2_min_pu_size,
 	    int ctb_size = 1 << log2_ctb_size,
 	    int nb_list = if (sliceType=B_SLICE) then 2 else 1 end
-	    //HEVCFrame *refBL = s->BL_frame;
-	    //HEVCFrame *refEL = s->inter_layer_ref;
 	begin
 	    while (yEL < ctb_y+ctb_size && yEL<sps_height) do
 	        while(xEL < ctb_x+ctb_size && xEL<sps_width) do
@@ -342,36 +340,71 @@ unit UpSamplingFunctions :
 	                if src_pred_flag[currentFrame][xBL][yBL] != 0 then
 	                    if (up_info[8] = SNR) then
 	                        //memcpy(&refEL->tab_mvf[pre_unit], &refBL->tab_mvf[Ref_pre_unit], sizeof(MvField));
-	                        // TODO: copy 4 elements on MVField
+	                        // copy 4 elements of MVField
+	                        dst_mv [currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)]       := [[src_mv [currentFrame][xBL][yBL][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1];
+	                        dst_pred_flag[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := src_pred_flag[currentFrame][xBL][yBL];
+	                        dst_refIdxRef[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := [src_refIdxRef[currentFrame][xBL][yBL][i]: for int i in 0 .. 1];
+	                        dst_pocRefList[currentFrame][currentSlice]    := [[src_pocRefList[currentFrame][currentSlice][j][i]: for int i in 0 .. 15]: for int j in 0 .. 1]; // TODO: fix [16] reference list
+	                        //dst_pocRefList[currentFrame][currentSlice] TODO: FIXME   := [[src_pocRefList[currentFrame][currentSlice][j][src_refIdxRef[currentFrame][xEL][yEL][i]]:for int i in 0 .. 1]: for int j in 0 .. 1];
 	                    else
-	
 	                        foreach int list in 0 .. nb_list - 1 do
-//	                            refEL->tab_mvf[pre_unit].mv[list].x := clip_i32( (s->sh.ScalingFactor[s->nuh_layer_id][0] * refBL->tab_mvf[Ref_pre_unit].mv[list].x + 127 + (s->sh.ScalingFactor[s->nuh_layer_id][0] * refBL->tab_mvf[Ref_pre_unit].mv[list].x < 0)) >> 8 , -32768, 32767);
-//	                            refEL->tab_mvf[pre_unit].mv[list].y := clip_i32( (s->sh.ScalingFactor[s->nuh_layer_id][1] * refBL->tab_mvf[Ref_pre_unit].mv[list].y + 127 + (s->sh.ScalingFactor[s->nuh_layer_id][1] * refBL->tab_mvf[Ref_pre_unit].mv[list].y < 0)) >> 8, -32768, 32767);
-//	                            refEL->tab_mvf[pre_unit].ref_idx[list] = refBL->tab_mvf[Ref_pre_unit].ref_idx[list];
-//	                            refEL->tab_mvf[pre_unit].poc[list] = refBL->tab_mvf[Ref_pre_unit].poc[list];
-//	                            refEL->tab_mvf[pre_unit].pred_flag = refBL->tab_mvf[Ref_pre_unit].pred_flag;
+	                            dst_mv [currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)][list][0] := clip_i32( (ScalingFactor[nuh_layer_id][0] * src_mv [currentFrame][xBL][yBL][list][0] + 127 + (if (ScalingFactor[nuh_layer_id][0] * src_mv [currentFrame][xBL][yBL][list][0] < 0) then 1 else 0 end)) >> 8 , -32768, 32767);
+	                            dst_mv [currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)][list][1] := clip_i32( (ScalingFactor[nuh_layer_id][1] * src_mv [currentFrame][xBL][yBL][list][1] + 127 + (if (ScalingFactor[nuh_layer_id][1] * src_mv [currentFrame][xBL][yBL][list][1] < 0) then 1 else 0 end)) >> 8, -32768, 32767);
+	                            dst_refIdxRef[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)][list] := src_refIdxRef[currentFrame][xEL][yEL][list];
+		                        dst_pocRefList[currentFrame][currentSlice][list] := [src_pocRefList[currentFrame][currentSlice][list][i]: for int i in 0 .. 15 ]; // TODO: fix [16] reference list
+	                            dst_pred_flag[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := src_pred_flag[currentFrame][xEL][yEL];
+	                            //dst_pocRefList[currentFrame][currentSlice]    := [[src_pocRefList[currentFrame][currentSlice][j][src_refIdxRef[currentFrame][xEL][yEL][i]]:for int i in 0 .. 1]: for int j in 0 .. 1];
 	                        end
 	                    end
 	                else
-	                    //memset(&refEL->tab_mvf[pre_unit], 0, sizeof(MvField));
+	                    dst_mv [currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)]       := [[0: for int j in 0 .. 1]: for int i in 0 .. 1];
+                        dst_pred_flag[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := 0;
+                        dst_refIdxRef[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := [0: for int i in 0 .. 1];
+	                        // TODO: missing poc 
 					end
-	
 	            else
-	                //memset(&refEL->tab_mvf[pre_unit], 0, sizeof(MvField));
+	                dst_mv [currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)]       := [[0: for int j in 0 .. 1]: for int i in 0 .. 1];
+                    dst_pred_flag[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := 0;
+                    dst_refIdxRef[currentFrame][(xEL>>log2_min_pu_size)][(yEL>>log2_min_pu_size)] := [0: for int i in 0 .. 1];
+                        // TODO: missing poc 
 	            end
 	
 	            if( ((xEL+1)>>log2_min_pu_size) < pic_width_in_min_pu && ((yEL+1)>>log2_min_pu_size) < pic_height_in_min_pu) then
-	                pre_unit_col := (((yEL+1)>>log2_min_pu_size)*pic_width_in_min_pu) + ((xEL+1)>>log2_min_pu_size);
-//	                memcpy(&refEL->tab_mvf[pre_unit_col], &refEL->tab_mvf[pre_unit], sizeof(MvField));
+	                //pre_unit_col := (((yEL+1)>>log2_min_pu_size)*pic_width_in_min_pu) + ((xEL+1)>>log2_min_pu_size);
+	                dst_mv [currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)]       := 
+	                [[src_mv [currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1];
+	                
+                    dst_pred_flag[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)] := 
+                    src_pred_flag[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)];
+                    
+                    dst_refIdxRef[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)] := 
+                    [src_refIdxRef[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)][i]: for int i in 0 .. 1];
+	                        // TODO: missing poc 
 	            end
 	            if( ((xEL+1)>>log2_min_pu_size) < pic_width_in_min_pu) then
-	                pre_unit_col := ((yEL>>log2_min_pu_size)*pic_width_in_min_pu) + ((xEL+1)>>log2_min_pu_size);
-//	                memcpy(&refEL->tab_mvf[pre_unit_col], &refEL->tab_mvf[pre_unit], sizeof(MvField));
+	                //pre_unit_col := ((yEL>>log2_min_pu_size)*pic_width_in_min_pu) + ((xEL+1)>>log2_min_pu_size);
+	                dst_mv [currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL)>>log2_min_pu_size)]       := 
+	                [[src_mv [currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL)>>log2_min_pu_size)][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1];
+	                
+                    dst_pred_flag[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL)>>log2_min_pu_size)] := 
+                    src_pred_flag[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL)>>log2_min_pu_size)];
+                    
+                    dst_refIdxRef[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL)>>log2_min_pu_size)] := 
+                    [src_refIdxRef[currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL)>>log2_min_pu_size)][i]: for int i in 0 .. 1];
+                    
+                    // TODO: missing poc
 	            end
 	            if( ((yEL+1)>>log2_min_pu_size) < pic_height_in_min_pu) then
-	                pre_unit_col := (((yEL+1)>>log2_min_pu_size)*pic_width_in_min_pu) + ((xEL)>>log2_min_pu_size);
-//	                memcpy(&refEL->tab_mvf[pre_unit_col], &refEL->tab_mvf[pre_unit], sizeof(MvField));
+	                //pre_unit_col := (((yEL+1)>>log2_min_pu_size)*pic_width_in_min_pu) + ((xEL)>>log2_min_pu_size);
+	                dst_mv [currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)]       := 
+	                [[src_mv [currentFrame][((xEL+1)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)][i][j]: for int j in 0 .. 1]: for int i in 0 .. 1];
+	                
+                    dst_pred_flag[currentFrame][((xEL)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)] := 
+                    src_pred_flag[currentFrame][((xEL)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)];
+                    
+                    dst_refIdxRef[currentFrame][((xEL)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)] := 
+                    [src_refIdxRef[currentFrame][((xEL)>>log2_min_pu_size)][((yEL+1)>>log2_min_pu_size)][i]: for int i in 0 .. 1];
+                    // TODO: missing poc
 	            end
 	        	xEL :=xEL + 16;
 	        end
