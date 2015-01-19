@@ -1,0 +1,98 @@
+package org.ietr.mpegh.part2.main.upSampling;
+import std.util.Math.*;
+import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
+import org.ietr.mpegh.part2.main.upSampling.UpSamplingFunctions.*;
+
+
+/*up_info{
+ * int addXLum;		0
+    int addYLum;	1
+    int scaleXLum;	2
+    int scaleYLum;	3
+    int addXCr;		4
+    int addYCr;		5
+    int scaleXCr;	6
+    int scaleYCr;	7
+    int idx;		8}
+ */
+ /* 
+ 	Enhscal {
+	    int left_offset;	0
+	    int right_offset;	1
+	    int top_offset;		2
+	    int bottom_offset;	3
+	} HEVCWindow;
+	* */
+
+actor GenUpFilt () 		int UpFiltInfo,
+						int BL_Info
+						==> 
+						int UpInfo,
+						int Scaling_Factor:
+
+	skipGenUpFilt : action UpFiltInfo:[info] repeat 4, BL_Info:[BL_info] repeat 3 ==>
+	guard
+		info[0] = 0
+	end
+	
+	genUpFilt : action UpFiltInfo:[genUpFilt, phaseAlignFlag, width_EL, height_EL, nuh_layer_id] , BL_Info:[WidthBL, HeightBL, BL_sps]  ==>
+					   UpInfo:[up_filter_inf] repeat 9, Scaling_Factor:[ScalingFactor[0][0], ScalingFactor[0][1], ScalingFactor[1][0], ScalingFactor[1][1]]
+	guard
+		genUpFilt = 1
+	var
+		int heightBL,
+		int widthBL,
+		int heightEL,
+		int widthEL,
+        int phaseXC = 0,
+        int phaseYC = 1,
+        int phaseX = phaseAlignFlag   << 1,
+        int phaseY = phaseAlignFlag   << 1,
+        int bl_sps = BL_sps,
+        int ScalingFactor[2][2],
+        int up_filter_inf[9]
+	do
+		if(bl_sps != 0) then
+            heightBL := HeightBL; // - bl_sps->output_window.bottom_offset - bl_sps->output_window.top_offset;
+            widthBL  := WidthBL;  //  - bl_sps->output_window.left_offset - bl_sps->output_window.right_offset;
+        end
+        
+        //FIXME:scaled_ref_layer_window = s->sps->scaled_ref_layer_window[((HEVCVPS*)s->vps_list[s->sps->vps_id]->data)->m_refLayerId[s->nuh_layer_id][0]]; // m_phaseAlignFlag;
+
+        heightEL := height_EL ;// - scaled_ref_layer_window.bottom_offset   - scaled_ref_layer_window.top_offset;
+        widthEL  := width_EL  ;//- scaled_ref_layer_window.left_offset     - scaled_ref_layer_window.right_offset;
+
+        ScalingFactor[nuh_layer_id][0]   := clip_i32(((widthEL  << 8) + (widthBL  >> 1)) / widthBL,  -4096, 4095 );
+        ScalingFactor[nuh_layer_id][1]   := clip_i32(((heightEL << 8) + (heightBL >> 1)) / heightBL, -4096, 4095 );
+        up_filter_inf[2] := ( ( widthBL << 16 )  + ( widthEL >> 1 ) ) / widthEL ;
+        up_filter_inf[3] := ( ( heightBL << 16 ) + ( heightEL >> 1 ) ) / heightEL;
+
+        up_filter_inf[0]   := (( phaseX * up_filter_inf[2] + 2 ) >> 2 )+ ( 1 << 11 );
+        up_filter_inf[1]   := (( phaseY * up_filter_inf[3] + 2 ) >> 2 )+ ( 1 << 11 );
+
+        widthBL  := widthBL  >> 1;
+        heightBL := heightBL >> 1;
+
+        up_filter_inf[4]   := ( ((phaseXC+phaseAlignFlag) * up_filter_inf[2] + 2) >> 2) + ( 1 << 11 );
+        up_filter_inf[5]   := ( ((phaseYC+phaseAlignFlag) * up_filter_inf[3] + 2) >> 2) + ( 1 << 11 );
+        up_filter_inf[6]   := up_filter_inf[2];
+        up_filter_inf[7]   := up_filter_inf[3];
+
+        if(up_filter_inf[2] = 65536 && up_filter_inf[3] = 65536) then
+            up_filter_inf[8] := SNR;
+        else
+            if(up_filter_inf[2] = 32768 && up_filter_inf[3] = 32768) then
+                up_filter_inf[8] := X2;
+            else
+                if(up_filter_inf[2] = 43691 && up_filter_inf[3] = 43691) then
+                    up_filter_inf[8] := X1_5;
+                else 
+                    up_filter_inf[8] := DEFAULT;
+                    //av_log(s->avctx, AV_LOG_INFO, "DEFAULT mode: SSE optimizations are not implemented for spatial scalability with a ratio different from x2 and x1.5 widthBL %d heightBL %d \n", widthBL<<1, heightBL<<1);
+                end
+    		end
+    	end
+	end
+	
+end
