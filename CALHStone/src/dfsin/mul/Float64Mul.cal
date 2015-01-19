@@ -1,0 +1,276 @@
+/*
+ * Copyright (c) 2014, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+package dfsin.mul;
+
+import dfsin.Constants.*;
+
+actor Float64Mul() int Ready,
+				   uint(size = 64) A_In, 
+				   int A_NumSign, 
+				   uint(size = 64) A_NumSig, 
+				   uint A_NumExp, 
+				   int B_NumSign, 
+				   uint(size = 64) B_NumSig, 
+				   uint B_NumExp, 
+				   uint(size = 64) B_In 
+				   	==> 
+				   		uint(size = 64) Nan_A, 
+				   		uint(size = 64) Nan_B, 
+				   		uint ZSign, 
+				   		uint ZExp, 
+				   		uint(size = 64) ZSig, 
+				   		uint Round,
+				   		uint(size = 64)Num_Out, 
+				   		uint Flag :
+	
+	uint(size = 64) nan_a; 
+	uint(size = 64) nan_b; 
+	uint rounded; 
+	uint zsign_round; 
+	uint zexp_round; 
+	uint(size = 64) zsig_round;
+	uint flag;
+	uint(size = 64) num_out;
+	bool Result_A := false;
+	bool Nan := false;
+	bool Round := false;
+	uint shiftCount;
+	uint aHigh;
+	uint aLow;
+	uint bHigh; 
+	uint bLow;
+  	uint(size = 64) z0; 
+  	uint(size = 64) zMiddleA;
+  	uint(size = 64) zMiddleB; 
+  	uint(size = 64) z1;
+	uint(size = 64) ret[6];
+	int ret_norm_exp = 0;
+	int ret_norm_sig = 1;
+	int ret_mul_0 = 2;
+	int ret_mul_1 = 3;
+	int ret_count64 = 4;
+	int ret_count32 = 5;
+
+	procedure countLeadingZeros32(uint a) begin
+		ret[ret_count32] := 0;
+		if a < 0x10000 then
+			ret[ret_count32] := ret[ret_count32] + 16;
+			a := a << 16;
+		end
+		if a < 0x1000000 then 
+			ret[ret_count32] := ret[ret_count32] + 8;
+			a := a << 8;
+		end
+		ret[ret_count32] := ret[ret_count32] + countLeadingZerosHigh[a >> 24];
+	end
+	procedure countLeadingZeros64(uint(size = 64) a) begin
+		ret[ret_count64] := 0;
+		if a < (1 << 32) then
+			ret[ret_count64] := ret[ret_count64] + 32;
+		else
+			a := a >> 32;
+		end
+		countLeadingZeros32 (a);
+		ret[ret_count64] := ret[ret_count64] + ret[ret_count32];
+	end
+	procedure normalizeFloat64Subnormal(uint(size = 64) aSig) begin
+		countLeadingZeros64 (aSig);
+		shiftCount := ret[ret_count64] - 11;
+		ret[ret_norm_sig] := aSig << shiftCount;
+		ret[ret_norm_exp] := 1 - shiftCount;
+	end
+	procedure mul64To128(uint(size = 64) a, uint(size = 64) b) begin
+		aLow := a;
+		aHigh := a >> 32;
+		bLow := b;
+		bHigh := b >> 32;
+		z1 := aLow * bLow;
+		zMiddleA := aLow * bHigh;
+		zMiddleB := aHigh * bLow;
+		z0 := aHigh * bHigh;
+		zMiddleA := zMiddleA + zMiddleB;
+		if zMiddleA < zMiddleB then
+			z0 := z0 + (1 << 32) + (zMiddleA >> 32);
+		else
+			z0 := z0 + (zMiddleA >> 32);
+		end
+		zMiddleA := zMiddleA << 32;
+		z1 := z1 + zMiddleA;
+		if z1 < zMiddleA then
+			z0 := z0 + 1;
+		end
+		ret[ret_mul_1] := z1;
+		ret[ret_mul_0] := z0;
+	end
+
+	Ready_check: action Ready:[r] ==>
+	end
+	
+	Input: action A_In:[a], 
+				  A_NumSign:[aSign], 
+				  A_NumSig:[aSig], 
+				  A_NumExp:[aExp], 
+				  B_NumSign:[bSign], 
+				  B_NumSig:[bSig], 
+				  B_NumExp:[bExp], 
+				  B_In:[b]
+				  	==>
+	var
+  		uint zSign,
+  		uint zExp,
+  		uint(size = 64) zSig0,
+  		uint(size = 64) zSig1
+	do
+		flag := 0;
+		zSign := aSign ^ bSign;
+		if aExp = 0x7FF then
+			if (aSig != 0) || ((bExp = 0x7FF) && (bSig != 0)) then
+				Nan := true;
+				nan_a := a;
+				nan_b := b;
+			else
+				if (bExp | bSig) = 0 then
+					flag := flag | float_flag_invalid;
+					Result_A := true;
+					num_out := float64_default_nan;
+				else
+					Round := true;
+					zsign_round := zSign;
+					zexp_round := 0x7FF;
+					zsig_round := 0;
+					rounded := 0;
+				end
+			end
+		end
+		if (Round = false) && (Nan = false) && (Result_A = false) then
+			if bExp = 0x7FF then
+				if bSig != 0 then
+					Nan := true;
+					nan_a := a;
+					nan_b := b;
+				else
+					if (aExp | aSig) = 0 then
+						flag := flag | float_flag_invalid;
+						Result_A := true;
+						num_out := float64_default_nan;
+					else
+						Round := true;
+						zsign_round := zSign;
+						zexp_round := 0x7FF;
+						zsig_round := 0;
+						rounded := 0;
+					end
+				end
+			end
+			if aExp = 0 then
+				if aSig = 0 then
+					if (Round = false) && (Nan = false) && (Result_A = false) then
+						Round := true;
+						zsign_round := zSign;
+						zexp_round := 0;
+						zsig_round := 0;
+						rounded := 0;
+					end
+				else
+					normalizeFloat64Subnormal (aSig);
+					aExp := ret[ret_norm_exp];
+					aSig := ret[ret_norm_exp];
+				end
+			end
+			if bExp = 0 then
+				if bSig = 0 then
+					if (Round = false) && (Nan = false) && (Result_A = false) then
+						Round := true;
+						zsign_round := zSign;
+						zexp_round := 0;
+						zsig_round := 0;
+						rounded := 0;
+					end
+				else
+					normalizeFloat64Subnormal (aSig);
+					bExp := ret[ret_norm_exp];
+					bSig := ret[ret_norm_exp];
+				end
+			end
+			if (Round = false) && (Nan = false) && (Result_A = false) then
+				zExp := aExp + bExp - 0x3FF;
+				aSig := (aSig | 0x0010000000000000) << 10;
+				bSig := (bSig | 0x0010000000000000) << 11;
+				mul64To128 (aSig, bSig);
+				zSig0 := ret[ret_mul_0]; 
+				zSig1 := ret[ret_mul_1];
+				if zSig1 != 0 then
+					zSig0 := zSig0 | 1;
+				end
+				if (zSig0 >> 62) = 0 then
+					zSig0 := zSig0 << 1;
+					zExp := zExp - 1;
+				end
+				Round := true;
+				zsign_round := zSign;
+				zexp_round := zExp;
+				zsig_round := zSig0;
+				rounded := 1;
+			end
+		end
+	end
+
+	Flag_out: action ==> Flag:[flag]
+	end
+		
+	Output.nan: action ==> Nan_A:[nan_a], Nan_B:[nan_b]
+	guard
+		Nan = true
+	do
+	Nan := false;
+	end
+	
+	Output.a_out: action ==> Num_Out:[num_out]
+	guard
+		Result_A = true
+	do
+		Result_A := false;
+	end
+	
+	Output.round: action ==> ZSign:[zsign_round], ZExp:[zexp_round], ZSig:[zsig_round], Round:[rounded]
+	guard
+		Round = true
+	do
+		Round := false;
+	end
+	
+	schedule fsm first:
+		first(Input) --> write;
+		init(Ready_check) --> read;
+		read(Input) --> write;
+		write(Output) --> flagout;
+		flagout (Flag_out) --> init;
+	end
+end

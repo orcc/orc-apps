@@ -1,0 +1,207 @@
+/*
+ * Copyright (c) 2014, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+package dfadd.addfloat;
+
+actor AddFloat64Sigs() int ASign_In, 
+					   uint(size = 64) NumSig, 
+					   uint NumExp, 
+					   int ExpDiff,
+					   uint(size = 64) A_In,
+					   uint(size = 64) B_In 
+					   	==> 
+					   		uint(size = 64) Nan_A, 
+					   		uint(size = 64) Nan_B, 
+					   		uint(size = 64) A_Out, 
+					   		uint ZSign_round, 
+					   		uint ZExp_round,
+					   		uint(size = 64) ZSig_round, 
+					   		uint Round :
+
+	uint(size = 64) nan_a; 
+	uint(size = 64) nan_b; 
+	uint(size = 64) a_out; 
+	uint zsign_round; 
+	uint zexp_round; 
+	uint(size = 64) zsig_round;
+	uint rounded;
+	bool Result_A := false;
+	bool Nan := false;
+	bool Round := false;
+	
+	function shift64RightJamming (uint(size = 64) a, uint count) --> uint(size = 64) :
+		if count = 0 then
+			a
+		else 
+			if count < 64 then
+				if (a << ((-count) & 63)) != 0 then
+					(a >> count) | 1
+				else
+					(a >> count)
+				end
+			else
+				if a != 0 then
+					a
+				else
+					0
+				end
+			end
+		end
+	end
+	
+	Input: action ASign_In:[zSign], 
+				  NumSig:[sig] repeat 2, 
+				  NumExp:[exp] repeat 2, 
+				  ExpDiff:[expDiff],
+				  A_In:[a],
+				  B_In:[b]
+				  	==>
+	var
+		uint aExp,
+		uint bExp, 
+		uint zExp := 0,
+		uint(size = 64) aSig, 
+		uint(size = 64) bSig, 
+		uint(size = 64) zSig
+	do
+		aExp := exp[0];
+		bExp := exp[1]; 
+		aSig := sig[0]; 
+		bSig := sig[1];
+		if 0 < expDiff then
+			if aExp = 0x7FF then
+				if aSig != 0 then
+					Nan := true;
+					nan_a := a;
+					nan_b := b;
+				else
+					Result_A := true;
+					a_out := a;
+				end
+			end
+			if bExp = 0 then
+				expDiff := expDiff - 1;
+			else
+				bSig := bSig | 0x2000000000000000;
+			end
+				bSig := shift64RightJamming (bSig, expDiff);
+				zExp := aExp;
+		else 
+			if expDiff < 0 then
+				if bExp = 0x7FF then
+					if bSig != 0 then
+						Nan := true;
+						nan_a := a;
+						nan_b := b;
+					else
+						Round := true;
+						zsign_round := zSign;
+						zexp_round := 0x7FF;
+						zsig_round := 0;
+						rounded := 0;	    
+					end
+				end
+				if aExp = 0 then
+					expDiff := expDiff + 1;
+				else
+					aSig := aSig | 0x2000000000000000;
+				end
+				aSig := shift64RightJamming (aSig, -expDiff);
+				zExp := bExp;
+			else
+				if aExp = 0x7FF then
+					if (aSig != 0) || (bSig != 0) then
+						Nan := true;
+						nan_a := a;
+						nan_b := b;
+					else
+						Result_A := true;
+						a_out := a;
+					end
+				end
+				if aExp = 0 then
+					Round := true;
+					zsign_round := zSign;
+					zexp_round := 0;
+					zsig_round := (aSig + bSig) >> 9;
+					rounded := 0;
+				else
+					zSig := 0x4000000000000000 + aSig + bSig;
+					zExp := aExp;
+					Round := true;
+					zsign_round := zSign;
+					zexp_round := zExp;
+					zsig_round := zSig;
+					rounded := 1;
+				end
+			end
+		end
+		
+		aSig := aSig | 0x2000000000000000;
+		zSig := (aSig + bSig) << 1;
+		zExp := zExp -1 ;
+		if zSig < 0 then
+			zSig := aSig + bSig;
+			zExp := zExp;
+		end
+		if (Nan = false) && (Round = false) && (Result_A = false) then
+			Round := true;
+			zsign_round := zSign;
+			zexp_round := zExp;
+			zsig_round := zSig;
+			rounded := 1;
+		end
+	end
+
+	Output.nan: action ==> Nan_A:[nan_a], Nan_B:[nan_b]
+	guard
+		Nan = true
+	do
+		Nan := false;
+	end
+	
+	Output.a_out: action ==> A_Out:[a_out]
+	guard
+		Result_A = true
+	do
+		Result_A := false;
+	end
+	
+	Output.round: action ==> ZSign_round:[zsign_round], ZExp_round:[zexp_round], ZSig_round:[zsig_round], Round:[rounded]
+	guard
+		Round = true
+	do
+		Round := false;
+	end
+	
+	schedule fsm read:
+		read(Input) --> write;
+		write(Output) --> read;
+	end
+end

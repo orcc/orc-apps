@@ -1,0 +1,168 @@
+/*
+ * Copyright (c) 2014, EPFL
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+package dfadd.common;
+
+import dfadd.Constants.*;
+
+actor RoundAndPack() uint ZSign_In, 
+					 uint ZExp_In, 
+					 uint(size = 64) ZSig_In,
+					 uint Round_In 
+					 	==> 
+					 		uint ZSign_Out, 
+					 		uint ZExp_Out, 
+					 		uint(size = 64) ZSig_Out,
+					 		uint Round_Out,
+					 		uint Flag :
+
+	function shift64RightJamming (uint(size = 64) a, uint count) --> uint(size = 64) :
+		if count = 0 then
+			a
+		else 
+			if count < 64 then
+				if (a << ((-count) & 63)) != 0 then
+					(a >> count) | (a << ((-count) & 63))
+				else
+					0
+				end
+			else
+				if a != 0 then
+					a
+				else
+					0
+				end
+			end
+		end
+	end
+	
+	process: action ZSign_In:[zSign], 
+				    ZExp_In:[zExp], 
+				    ZSig_In:[zSig],
+				    Round_In:[r] 
+				   		==> 
+							ZSign_Out:[zSign_out], 
+							ZExp_Out:[zExp_out], 
+							ZSig_Out:[zSig_out],
+							Flag:[flag],
+							Round_Out:[round]
+	guard
+		r != 0			
+	var
+		uint zSign_out := 0,
+		uint zExp_out := 0,
+		uint(size = 64) zSig_out := 0,
+		uint roundingMode,
+  		bool roundNearestEven, 
+  		bool isTiny,
+  		uint roundIncrement, 
+  		uint roundBits,
+  		uint flag := 0,
+  		uint round := 0,
+  		bool packfloat_sent := false
+	do
+		roundingMode := float_rounding_mode;
+		roundNearestEven := (roundingMode = float_round_nearest_even);
+		roundIncrement := 0x200;
+		if roundNearestEven = false then
+			if roundingMode = float_round_to_zero then
+				roundIncrement := 0;
+			else
+				roundIncrement := 0x3FF;
+				if zSign != 0 then
+					if roundingMode = float_round_up then
+						roundIncrement := 0;
+					end
+				else
+					if roundingMode = float_round_down then
+						roundIncrement := 0;
+					end
+				end
+			end
+		end
+		
+		roundBits := zSig & 0x3FF;
+		if 0x7FD <= zExp then
+			if (0x7FD < zExp) || ((zExp = 0x7FD) && ((zSig + roundIncrement) < 0)) then
+				flag := flag | float_flag_overflow | float_flag_inexact;
+				zSign_out := zSign;
+				zExp_out := 0x7FF; 
+				zSig := 0; 
+				if roundIncrement = 0 then
+					round := 1;
+				end
+				packfloat_sent := true;
+			end
+			if zExp < 0 then
+				isTiny := (float_detect_tininess = float_tininess_before_rounding)
+				|| (zExp < -1)
+				|| (zSig + roundIncrement < 0x8000000000000000);
+				zSig := shift64RightJamming (zSig, -zExp);
+				zExp := 0;
+				roundBits := zSig & 0x3FF;
+				if isTiny && (roundBits != 0) then
+					flag := flag | float_flag_underflow;
+				end
+			end
+		end
+    
+    
+		if roundBits != 0 then
+			flag := flag | float_flag_inexact;
+		end
+		zSig := (zSig + roundIncrement) >> 10;
+		if (((roundBits ^ 0x200) = 0) && roundNearestEven) then
+			zSig := zSig * 0;
+		else
+			zSig := zSig * 1;
+		end
+		if zSig = 0 then
+			zExp := 0;
+		end
+		if packfloat_sent = false then
+			zSign_out := zSign;
+			zExp_out := zExp;
+			zSig_out := zSig;
+		end
+	end
+
+	bypass: action ZSign_In:[zSign], 
+				    ZExp_In:[zExp], 
+				    ZSig_In:[zSig],
+				    Round_In:[r] 
+				   		==> 
+							ZSign_Out:[zSign], 
+							ZExp_Out:[zExp], 
+							ZSig_Out:[zSig],
+							Flag:[0],
+							Round_Out:[0]
+	guard
+		r = 0
+	end
+end
