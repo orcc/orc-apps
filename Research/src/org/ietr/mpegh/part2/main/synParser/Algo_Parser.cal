@@ -52,7 +52,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				uint(size=16) TileSize,
 				uint(size=16) TileCUInfo,
 				uint(size=8)  ReorderPics,
-				 int(size= 8) Qp
+				 int(size= 8) Qp,
+				 int		  UpFiltInfo
 
 :
 	uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -67,7 +68,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	//uint(size=8) curr_Tile := TilesInfo[1];
 	bool byPassFlag := false;
 	uint(size=8) TilesInfo[2];
-	uint (size=1) DEC_ID = 0;
+	uint (size=1) DECODER_ID = 0;
 
 
 	/**************************************************************************
@@ -149,49 +150,49 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	 * read_nal_unit_header
 	 *************************************************************************/
 	uint temporal_id := 0;
-    uint(size= 8) nal_unit_type;
-    uint(size= 8) nuh_layer_id;
-    bool vps_bypass := false;
-
+	uint(size= 8) nal_unit_type;
+	uint(size= 8) nuh_layer_id;
+	bool nal_bypass := false;
+	
 	read_nal_unit_header : action ==>
-        guard
-        	isFifoFull(fifo)
-        var
-        	uint(size=32) res[1]
-        do
-        	flushBits_name(1, fifo,
-        	"forbidden_zero_bit                      ");
-        	vld_u_name(6, fifo, res,
-        	"nal_unit_type                           ");
-        	nal_unit_type := res[0];
-        	vld_u_name(6, fifo, res,
-        	"nuh_layer_id                            ");
-        	nuh_layer_id := res[0];
-        	vld_u_name(3, fifo, res,
-        	"nuh_temporal_id_plus1                   ");
-          
-            se_idx := 1;
-            if nal_unit_type != NAL_VPS then
-	            if nuh_layer_id != DEC_ID then
-	            	vps_bypass := true;
-            	end
-            end
+    guard
+    	isFifoFull(fifo)
+    var
+    	uint(size=32) res[1]
+    do
+    	flushBits_name(1, fifo,
+    	"forbidden_zero_bit                      ");
+    	vld_u_name(6, fifo, res,
+    	"nal_unit_type                           ");
+    	nal_unit_type := res[0];
+    	vld_u_name(6, fifo, res,
+    	"nuh_layer_id                            ");
+    	nuh_layer_id := res[0];
+    	vld_u_name(3, fifo, res,
+    	"nuh_temporal_id_plus1                   ");
+      
+        se_idx := 1;
+        if nal_unit_type != NAL_VPS then
+            if nuh_layer_id != DECODER_ID then
+            	nal_bypass := true;
+        	end
         end
-        /**************************************************************************
-         * checkNAL
-         *************************************************************************/
-        
-        checkNAL.decode: action ==>
-        guard
-        	vps_bypass = false
-        end
-        
-        checkNAL.bypass: action ==>
-        guard
-        	vps_bypass = true
-        do
-        	vps_bypass := false;
-        end
+    end
+    /**************************************************************************
+     * checkNAL
+     *************************************************************************/
+    
+    checkNAL.decode: action ==>
+    guard
+    	nal_bypass = false
+    end
+    
+    checkNAL.bypass: action ==>
+    guard
+    	nal_bypass = true
+    do
+    	nal_bypass := false;
+    end
 	/**************************************************************************
 	 * look_for.VPS_header
 	 *************************************************************************/
@@ -663,6 +664,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    int     	 vps_m_numSubDpbs[MAX_VPS_OP_LAYER_SETS_PLUS1];
 	    uint(size=1) vps_m_subLayerFlagInfoPresentFlag[MAX_VPS_OP_LAYER_SETS_PLUS1];
 	    uint(size=1) vps_m_defaultDirectDependencyTypeFlag;
+	    int 		 vps_m_phaseAlignFlag;
 	    
 	    read_VPS_Header_scalableExtensions : action ==>
 	    guard
@@ -1277,6 +1279,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    do
         	cnt_i := 0; // endLoop
         	vld_u_name( 1, fifo, res, "cross_layer_phase_alignment_flag        ");
+        	vps_m_phaseAlignFlag := res[0];
         	// deriveNumberOfSubDpbs()
         	vps_m_numSubDpbs[0] := 1;
 
@@ -3039,6 +3042,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint(size= 3) slice_type;
 	uint(size=32) slice_segment_address;
 	uint(size= 1) slice_sample_adaptive_offset_flag[4];
+	int ScalingFactor[MAX_LAYERS][2];
 
 	procedure compute_POC(int pic_order_cnt_lsb)
 	var
@@ -3092,10 +3096,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	uint no_output_of_prior_pics_flag;
 	uint pic_output_flag;
 	uint(size= 4) part_mode;
+	uint(size=10) last_sps_id := 0;
+	uint(size= 1) genUpFilt := 0;
 
 	bool skipCurrentNal := false;
 
-	read_SliceHeader.se_idx_1 : action ==>
+	read_SliceHeader.se_idx_1 : action ==> UpFiltInfo:[genUpFilt, vps_m_phaseAlignFlag, sps_pic_width_in_luma_samples[sps_id], sps_pic_height_in_luma_samples[sps_id], nuh_layer_id]
 
 	guard
 			se_idx = 1 and idx = 0 and isFifoFull(fifo)
@@ -3119,6 +3125,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
 			no_output_of_prior_pics_flag := res[0];
 		end
+		
 //		if nal_unit_type = NAL_CRA_NUT and last_eos = 1 then
 //			no_output_of_prior_pics_flag := 1;
 //		end
@@ -3131,7 +3138,17 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         		md5_needed := need_md5;
         		need_md5 := true;
         	end
+        	last_sps_id := sps_id;
 			sps_id := pps_sps_id[pps_id];
+			//TODO: check condition !
+			genUpFilt := if (last_sps_id != sps_id) and (DECODER_ID = 1) then 1 else 0 end;
+//			if (last_sps_id != sps_id) then
+//				//ff_hevc_clear_refs() / FIXME
+//				//set_sps()
+//				if (DECODER_ID = 1) then
+//				end
+//					
+//			end
 			dependent_slice_segment_flag := 0;
 	
 			if first_slice_segment_in_pic_flag = 0 then
@@ -5395,8 +5412,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		bool leftFlag,
 		bool upFlag
 	do
-        	qp_block_mask    := (1<<(sps_log2_ctb_size[sps_id] - pps_diff_cu_qp_delta_depth[pps_id])) - 1;
-			pcm_flag := 0;
+        qp_block_mask    := (1<<(sps_log2_ctb_size[sps_id] - pps_diff_cu_qp_delta_depth[pps_id])) - 1;
+		pcm_flag := 0;
 		leftFlag := ctb_left_flag or (x0b > 0);
 		upFlag := ctb_up_flag or (y0b > 0);
 		skip_flag  := 0;
@@ -5419,20 +5436,20 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			cu_transquant_bypass_flag := 0;
 		end
 		if slice_type != I_SLICE then
-				get_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res,
+			get_SKIP_FLAG(codIRange, codIOffset, ctxTable, fifo, res,
 				skip_flag_tab, x_cb, y_cb, leftFlag, upFlag);
 			skip_flag := res[0];
 			predMode := SKIP;
-				predMode := if skip_flag = 1 then
-					SKIP
-				else
-					INTER
-				end;
+			predMode := if skip_flag = 1 then
+				SKIP
+			else
+				INTER
+			end;
 			foreach uint i  in 0 .. length-1 do
 				skip_flag_tab[x_cb+i][0] := skip_flag;
 				skip_flag_tab[y_cb+i][1] := skip_flag;
 			end
-				counterfillSkip := counterfillSkip + 1;
+			counterfillSkip := counterfillSkip + 1;
 		end
 		cu_nCbS			:= ( 1 << cu_log2CbSize );
 		partMode		:= PART_2Nx2N;
@@ -5949,7 +5966,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 					mergeIdx := 0;
 			end
 			pu_idx := 7;
-			else
+		else
 
 			/* MODE_INTER */
 			get_MERGE_FLAG(codIRange, codIOffset, ctxTable, fifo, res);
@@ -5959,7 +5976,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 						get_MERGE_IDX(codIRange, codIOffset, ctxTable, fifo, res,
 						MaxNumMergeCand);
 					mergeIdx := res[0];
-					else
+				else
 						mergeIdx := 0;
 				end
 				pu_idx := 7;
@@ -5975,7 +5992,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 							get_REF_IDX_LX(codIRange, codIOffset, ctxTable, fifo, res,
 							num_ref_idx_l0_active - 1);
 						ref_idx_lx[0] := res[0];
-						end // goto mvd_coding
+					end // goto mvd_coding
 					pu_idx := 3;
 				else
 					pu_idx := 4;
