@@ -17,11 +17,20 @@ import org.ietr.trackImg.TrackConstants.*;
 		 * |-----------------------------------------
 		 * */
 
-actor tracker () uint(size=8)  Red,
+actor tracker () 
+	uint(size=8)  Red,
 	uint(size=8)  Green,
 	uint(size=8)  Blue,
 	int SelectedObjCoords,
-	int PictSize  ==> :
+	int PictSize
+	==>
+	int RectCoords
+	:
+
+	int Rect_x1;
+	int Rect_y1;
+	int Rect_x2;
+	int Rect_y2;
 	
 	int Rect_h;
 	int Rect_w;
@@ -40,6 +49,7 @@ actor tracker () uint(size=8)  Red,
 	uint(size=8)  blue [WIDTH/4 * HEIGHT/4];
 	int (size=32) pictureSizeInMb;
 	int (size=32) picture_width;
+	int (size=32) picture_height;
 	int (size=32) nbBlockGot;
 	
 	uint(size=8) Tar_fea1 [SEL_OBJ_MAX_SZ * 3];
@@ -52,6 +62,7 @@ actor tracker () uint(size=8)  Red,
 	getPictureSize: action PictSize:[width, height] ==>
 	do
 		picture_width  := width;
+		picture_height  := height;
 		pictureSizeInMb   := width * height / MB_SIZE_IN_PIX;
 		nbBlockGot := 0;
 	end
@@ -59,8 +70,7 @@ actor tracker () uint(size=8)  Red,
 	getBlocks: action Red :[red] repeat MB_SIZE_IN_PIX, Green :[green] repeat MB_SIZE_IN_PIX, Blue :[blue] repeat MB_SIZE_IN_PIX ==>
 	guard
 		nbBlockGot < pictureSizeInMb
-	do
-		
+	do	
 		foreach int i in 0 .. MB_SIZE_IN_PIX - 1 do
 			pictureBufferR[i + MB_SIZE_IN_PIX * nbBlockGot] := red[i];
 			pictureBufferG[i + MB_SIZE_IN_PIX * nbBlockGot] := green[i];
@@ -69,45 +79,48 @@ actor tracker () uint(size=8)  Red,
 		nbBlockGot := nbBlockGot + 1;
 	end
 	
-	getBlocks_done: action ==>
+	sendFirstRectSize: action SelectedObjCoords:[x1,y1,x2,y2] ==> RectCoords:[Rect_x1, Rect_y1, Rect_x2, Rect_y2]
 	guard
 		nbBlockGot = pictureSizeInMb
 	do
-		nbBlockGot := 0;
-	end
-	
-	
-	getFirstRectSize: action SelectedObjCoords:[Rect_x1, Rect_y1, Rect_x2, Rect_y2] ==> 
-	guard
-		nbBlockGot = pictureSizeInMb
-	do
-		Rect_w := if Rect_x1 >= Rect_x2 then Rect_x1-Rect_x2 else  Rect_x2-Rect_x1 end;
-		Rect_h := if Rect_y1 >= Rect_y2 then Rect_y1-Rect_y2 else  Rect_y2-Rect_y1 end;
+
+		Rect_x1 := x1;
+		Rect_y1 := y1;
+		Rect_x2 := x2;
+		Rect_y2 := y2;
 		
-		foreach int i in 0 .. Rect_w * Rect_h - 1 do
-			red[i]   := pictureBufferR[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
-			green[i] := pictureBufferG[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
-			blue[i]  := pictureBufferB[(Rect_x1+Rect_y1*picture_width) + index_x + index_y * picture_width];
-		
-			if index_x = Rect_w then 
-				index_x := 0;
-				index_y := index_y + 1;
-			else
-				index_x := index_x + 1;
-			end
-		end
+		initTracking(pictureBufferR, pictureBufferG, pictureBufferB, [picture_width, picture_height], [x1,y1,x2,y2]);
+
 		index_x := 0;
 		index_y := 0;
 		nbBlockGot := 0;
 	end
 	
+	sendRectSize: action ==> RectCoords:[Rect_x1, Rect_y1, Rect_x2, Rect_y2]
+	guard
+		nbBlockGot = pictureSizeInMb
+	var
+		int newCoords[4] := [Rect_x1, Rect_y1, Rect_x2, Rect_y2]
+	do
+		startTracking(pictureBufferR, pictureBufferG, pictureBufferB, [picture_width, picture_height], newCoords);
+
+		Rect_x1 := newCoords[0];
+		Rect_y1 := newCoords[1];
+		Rect_x2 := newCoords[2];
+		Rect_y2 := newCoords[3];
+
+		index_x := 0;
+		index_y := 0;
+		nbBlockGot := 0;
+	end
+
 	schedule fsm GetFirstPictureSize:
 		GetFirstPictureSize 		(getPictureSize			)--> GetFirstBlocks;
 		GetFirstBlocks      		(getBlocks  			)--> GetFirstBlocks;
-		GetFirstBlocks      		(getFirstRectSize   	)--> GetPictureSize;
+		GetFirstBlocks      		(sendFirstRectSize   	)--> GetPictureSize;
 		
 		GetPictureSize    			(getPictureSize   		)--> GetBlocks;
 		GetBlocks					(getBlocks				)--> GetBlocks;
-		GetBlocks					(getBlocks_done			)--> GetPictureSize;
+		GetBlocks					(sendRectSize			)--> GetPictureSize;	
 	end
 end
