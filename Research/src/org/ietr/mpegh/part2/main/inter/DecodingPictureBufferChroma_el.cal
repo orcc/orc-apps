@@ -90,8 +90,8 @@ actor DecodingPictureBufferChroma_el ()
 	int(size=8)  lastIdx := -1;
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
-	uint(size=6)  xIdx;
-	uint(size=6)  yIdx;
+	uint(size=6)  xIdx := 0;
+	uint(size=6)  yIdx := 0;
 	uint          pictNum;
 	int           numReorderPic;
 	int           numAvailablePic := 0;
@@ -123,7 +123,7 @@ actor DecodingPictureBufferChroma_el ()
   	      uint(size=16) width,
 		  uint(size=16) height)
     begin
-      foreach int y in 0 .. sideMax - 1
+      	foreach int y in 0 .. sideMax - 1
 		do
 			foreach int x in 0 .. sideMax - 1
 			do
@@ -168,7 +168,7 @@ actor DecodingPictureBufferChroma_el ()
 		currIdx := 0;
 		while isRef[currIdx] or not isSent[currIdx] do
 			currIdx := currIdx + 1;
-			if currIdx = DPB_SIZE then currIdx := 0; end
+			if currIdx = DPB_SIZE - 1 then currIdx := 0; end // FIXME: see luma 
 		end
 		
 		readingPoc := poc;
@@ -615,20 +615,59 @@ actor DecodingPictureBufferChroma_el ()
 			end
 		end
 	end
+	
+	get_BL.x64: action BlkToEL:[blk] repeat 32*32 ==> // TODO: add other CU sizes
+	guard
+		yIdx < 9 // FIXME
+	do
+		copy_cu_dpb_chroma_x64_cal(
+          blk,
+  	      pictureBuffer,
+  	      BORDER_SIZE_CHR + xIdx*32,
+  	      BORDER_SIZE_CHR + yIdx*32,
+  	      DPB_SIZE - 1,
+  	      DPB_CHR_WIDTH,
+  	      DPB_CHR_HEIGHT);
+		
+		xIdx := xIdx + 1;
+		if(xIdx = 15) then // FIXME
+			xIdx := 0;
+			yIdx := yIdx + 1;
+		end
+	end
+	
+	get_BL_done: action ==>
+	guard
+		yIdx = 9 // FIXME
+	do
+		/* Fill in chroma border */
+		fillBorder_chroma_cal( // FIXME: is this function necessary
+			pictureBuffer,
+			DPB_SIZE - 1,
+			picSize[0] / 2,
+			picSize[1] / 2,
+			BORDER_SIZE_CHR);
+		
+//		pocDone[readingPoc & 31] := true;
+//		numAvailablePic := numAvailablePic + 1;
+		yIdx := 0;
+	end
 
-	schedule fsm IsNewPict:
+	schedule fsm get_BL:
+		get_BL    (get_BL			 )--> get_BL;
+		get_BL	  (get_BL_done		 )--> IsNewPict;
 		IsNewPict (isNewPict         )--> GetRps;
 		IsNewPict (isNewPict_lastPict)--> GetRps;
-		ManageCu (isNewSlice        )--> GetRps;
-		ManageCu (getCuPix.launch   )--> ManageCu;
-		ManageCu (getCuPix.done     )--> IsNewPict;
-		ManageCu (sendCuPix         )--> ManageCu;
-		ManageCu (getMvInfo         )--> ManageCu;
+		ManageCu  (isNewSlice        )--> GetRps;
+		ManageCu  (getCuPix.launch   )--> ManageCu;
+		ManageCu  (getCuPix.done     )--> IsNewPict;
+		ManageCu  (sendCuPix         )--> ManageCu;
+		ManageCu  (getMvInfo         )--> ManageCu;
 		
-		GetRps (getRps.launch )--> GetRpsPoc;
-		GetRps (getRps.done   )--> ManageCu;
-		GetRpsPoc (getRpsPoc.launch )--> GetRpsPoc;
-		GetRpsPoc (getRpsPoc.done   )--> GetRps;
+		GetRps    (getRps.launch     )--> GetRpsPoc;
+		GetRps    (getRps.done       )--> ManageCu;
+		GetRpsPoc (getRpsPoc.launch  )--> GetRpsPoc;
+		GetRpsPoc (getRpsPoc.done    )--> GetRps;
 	end
 	
 	priority 

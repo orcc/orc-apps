@@ -81,7 +81,8 @@ actor DecodingPictureBufferLuma_bl ()
 		==>
 	uint(size=8)  RefSample,
 	uint(size=8)  BlkToEL,
-	uint(size=8)  VID
+	uint(size=8)  VID,
+	uint(size=8)  VID_BL
 		:
 		
 	bool DEBUG_DPB := false;
@@ -424,6 +425,33 @@ actor DecodingPictureBufferLuma_bl ()
 		end
 	end
 	
+	sendBL.x64: action ==> VID_BL:[cu] repeat 64*64 //TODO: add other CU sizes 
+	guard
+		sendy < picSizeInCu[1]
+	var
+		uint (size=8) cu[64*64]
+	do
+		foreach int i in 0 .. 63 do	
+			foreach int j in 0 .. 63 do
+				cu[i*64 + j] := pictureBuffer[pocIndex[readingPoc & 31]][BORDER_SIZE_LUM + sendy * 64 + i ][BORDER_SIZE_LUM + sendx * 64 + j];
+			end
+		end
+			
+		sendx := sendx + 1;
+		if(sendx = picSizeInCu[0]) then
+			sendx := 0;
+			sendy := sendy + 1;
+		end
+	end
+	
+	sendBL_done: action ==>
+	guard
+		sendy = picSizeInCu[1]
+	do
+		sendx := 0;
+		sendy := 0;
+	end
+	
 	sendCuPix.launch.x64: action ==> VID:[cu] repeat 64*64
 	guard
 		sendy < picSizeInCu[1],
@@ -661,70 +689,72 @@ actor DecodingPictureBufferLuma_bl ()
 		end
 	end
 	
-	sendToEL: action NeedUpsampleCoords :[x,y] ==> BlkToEL:[buffer] repeat 39*32
-	var
-		uint(size=8) buffer[39*32],
-		uint block_h = 32,
-		uint block_w = 32,
-		uint linesize = 39
-//		,
-//		int bl_edge_bottom, 
-//		int bl_edge_right,
-//        int bPbW := ((( ePbW + 1 )*up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4, /*    FIXME: check if this method is correct  */
-//        int bPbH := ((( ePbH + 2 ) *up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
-//
-//        int bl_x = (( (x0  - sps_pic_conf_win_left_offset) * up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4,
-//        int bl_y = (( (y0  - sps_pic_conf_win_top_offset)  * up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
-//        int bl_edge_left   = if (MAX_EDGE - 1 - bl_x ) > 0 then  0 else MAX_EDGE - 1 end,
-//        int bl_edge_top    = if (MAX_EDGE - 1 - bl_y ) > 0 then  0 else MAX_EDGE - 1 end,
-//        int ref_layer_id = nuhLayerID        //int(size=16) tmp0;
-	do
-		// fill refBlock
-		if x >= MAX_EDGE - 1 and (x + MAX_EDGE + block_w) <= picSize[0] then // no neighbours to generate => copy all from frame
-			foreach int i in y .. y+block_w - 1 do
-				foreach int j in (x-3) .. (x+block_w+4) - 1 do
-					buffer[(i-y) * linesize + j - (x-3)]:= pictureBuffer[pocIndex[readingPoc & 31]][i][j];
-				end
-			end
-		else //fill ref block only with block before emulation to fill neighbours
-			foreach int i in y .. y+block_w - 1 do
-				foreach int j in x .. x+block_w - 1 do
-					buffer[(i-y) * linesize + (j - x) + 3]:= pictureBuffer[pocIndex[readingPoc & 31]][i][j];
-				end
-			end
-		// emulate edgeup_h
-			if x < MAX_EDGE - 1 then
-		        foreach int i in 0 .. block_h - 1 do
-		        	foreach int j in 0 .. MAX_EDGE-1 - 1 do
-		            	buffer[j + i * linesize] := buffer[MAX_EDGE-1 + i * linesize];
-		            end
-		        end
-		    end
-		    
-		    if (x + MAX_EDGE + block_w) > picSize[0] then
-		        foreach int i in 0 .. block_h - 1 do
-		        	foreach int j in 0 .. MAX_EDGE-1 do
-		            	buffer[block_w + MAX_EDGE-1 + j + i * linesize] := buffer[block_w -1 + MAX_EDGE-1 + i * linesize]; // linesize = 39, block_w = 32, block_h = 32
-		            end
-		        end
-		    end
-		end
-	end
+//	sendToEL: action NeedUpsampleCoords :[x,y] ==> BlkToEL:[buffer] repeat 39*32
+//	var
+//		uint(size=8) buffer[39*32],
+//		uint block_h = 32,
+//		uint block_w = 32,
+//		uint linesize = 39
+////		,
+////		int bl_edge_bottom, 
+////		int bl_edge_right,
+////        int bPbW := ((( ePbW + 1 )*up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4, /*    FIXME: check if this method is correct  */
+////        int bPbH := ((( ePbH + 2 ) *up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
+////
+////        int bl_x = (( (x0  - sps_pic_conf_win_left_offset) * up_filter_inf[2] + up_filter_inf[0]) >> 12) >> 4,
+////        int bl_y = (( (y0  - sps_pic_conf_win_top_offset)  * up_filter_inf[3] + up_filter_inf[1]) >> 12) >> 4,
+////        int bl_edge_left   = if (MAX_EDGE - 1 - bl_x ) > 0 then  0 else MAX_EDGE - 1 end,
+////        int bl_edge_top    = if (MAX_EDGE - 1 - bl_y ) > 0 then  0 else MAX_EDGE - 1 end,
+////        int ref_layer_id = nuhLayerID        //int(size=16) tmp0;
+//	do
+//		// fill refBlock
+//		if x >= MAX_EDGE - 1 and (x + MAX_EDGE + block_w) <= picSize[0] then // no neighbours to generate => copy all from frame
+//			foreach int i in y .. y+block_w - 1 do
+//				foreach int j in (x-3) .. (x+block_w+4) - 1 do
+//					buffer[(i-y) * linesize + j - (x-3)]:= pictureBuffer[pocIndex[readingPoc & 31]][i][j];
+//				end
+//			end
+//		else //fill ref block only with block before emulation to fill neighbours
+//			foreach int i in y .. y+block_w - 1 do
+//				foreach int j in x .. x+block_w - 1 do
+//					buffer[(i-y) * linesize + (j - x) + 3]:= pictureBuffer[pocIndex[readingPoc & 31]][i][j];
+//				end
+//			end
+//		// emulate edgeup_h
+//			if x < MAX_EDGE - 1 then
+//		        foreach int i in 0 .. block_h - 1 do
+//		        	foreach int j in 0 .. MAX_EDGE-1 - 1 do
+//		            	buffer[j + i * linesize] := buffer[MAX_EDGE-1 + i * linesize];
+//		            end
+//		        end
+//		    end
+//		    
+//		    if (x + MAX_EDGE + block_w) > picSize[0] then
+//		        foreach int i in 0 .. block_h - 1 do
+//		        	foreach int j in 0 .. MAX_EDGE-1 do
+//		            	buffer[block_w + MAX_EDGE-1 + j + i * linesize] := buffer[block_w -1 + MAX_EDGE-1 + i * linesize]; // linesize = 39, block_w = 32, block_h = 32
+//		            end
+//		        end
+//		    end
+//		end
+//	end
 
 	schedule fsm IsNewPict:
 		IsNewPict (isNewPict         )--> GetRps;
 		IsNewPict (isNewPict_lastPict)--> GetRps;
 		ManageCu  (isNewSlice        )--> GetRps;
 		ManageCu  (getCuPix.launch   )--> ManageCu;
-		ManageCu  (getCuPix.done     )--> IsNewPict;
+		ManageCu  (getCuPix.done     )--> sendBL;
+		sendBL    (sendBL			 )--> sendBL;
+		sendBL    (sendBL_done       )--> IsNewPict;
 		ManageCu  (sendCuPix         )--> ManageCu;
 		ManageCu  (getMvInfo         )--> ManageCu;
-		ManageCu  (sendToEL          )--> ManageCu;
+		//ManageCu  (sendToEL          )--> ManageCu;
 		
-		GetRps    (getRps.launch     )--> GetRpsPoc;
-		GetRps    (getRps.done       )--> ManageCu;
-		GetRpsPoc (getRpsPoc.launch  )--> GetRpsPoc;
-		GetRpsPoc (getRpsPoc.done    )--> GetRps;
+		GetRps    (getRps.launch    )--> GetRpsPoc;
+		GetRps    (getRps.done      )--> ManageCu;
+		GetRpsPoc (getRpsPoc.launch )--> GetRpsPoc;
+		GetRpsPoc (getRpsPoc.done   )--> GetRps;
 	end
 	
 	priority 
