@@ -1183,6 +1183,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 			    end
 			se_idx := 10;
 	    end
+	    
+		uint(size=16) vps_pic_width_in_luma_samples;
+		uint(size=16) vps_pic_height_in_luma_samples;
 		
 		read_VPS_Extensions.se_idx_10_loop: action ==>
 	    guard
@@ -1194,7 +1197,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	    	vld_u_name( 1, fifo, res, "m_chromaAndBitDepthVpsPresentFlag       ");
 		    m_chromaAndBitDepthVpsPresentFlag := res[0];
 		    vld_u_name( 16, fifo, res, "pic_width_in_luma_samples               ");
+		    vps_pic_width_in_luma_samples := res[0];
 		    vld_u_name( 16, fifo, res, "pic_height_in_luma_samples              ");
+		    vps_pic_height_in_luma_samples := res[0];
 		    if m_chromaAndBitDepthVpsPresentFlag != 0 then
 		    	vld_u_name( 2, fifo, res, "chroma_format_idc                       ");
 		        if res[0] = 3 then
@@ -1258,6 +1263,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	    	cnt_i  := 1;
 	    end
 	    
+	    uint (size=1) vps_m_pocLsbNotPresentFlag[MAX_VPS_LAYER_SETS_PLUS1];
+	    
 	    read_VPS_Extensions.se_idx_11_loop: action ==>
 	    guard
 	    	se_idx = 11 and isFifoFull(fifo), cnt_i < vps_max_layers
@@ -1266,6 +1273,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	    do
 			if(vps_m_numDirectRefLayers[vps_layer_id_in_nuh[cnt_i]] = 0) then
 				vld_u_name( 1, fifo, res, "poc_lsb_not_present_flag                ");
+				vps_m_pocLsbNotPresentFlag[cnt_i] := res[0];
         	end
         	cnt_i := cnt_i + 1;
 	    end
@@ -2200,6 +2208,25 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		        "sps_bit_depth_chroma_minus8                 ");
 		        sps_bit_depth_chroma_minus8[sps_id] := res[0];
 		    end
+		    
+		    if(nuh_layer_id != 0) then
+		        //RepFormat Rep;
+		        if(sps_m_updateRepFormatFlag[sps_id] != 0) then
+		            //Rep = vps->m_vpsRepFormat[sps->m_updateRepFormatIndex];
+		        else 
+		            if(vps_m_vpsNumRepFormats > 1 )   then
+		                //Rep = vps->m_vpsRepFormat[vps->m_vpsRepFormatIdx[s->nuh_layer_id]];
+		            else
+		                //Rep = vps->m_vpsRepFormat[0];
+		            end
+		        end
+		        sps_pic_width_in_luma_samples[sps_id]  := vps_pic_width_in_luma_samples; //Rep.m_picWidthVpsInLumaSamples;
+		        sps_pic_height_in_luma_samples[sps_id] := vps_pic_height_in_luma_samples; //Rep.m_picHeightVpsInLumaSamples;
+		        //sps_bit_depth_luma_minus8[sps_id]   := //Rep.m_bitDepthVpsLuma;
+			end
+        
+        
+        
 	        vld_ue_name(fifo, res,
 	        "log2_max_pic_order_cnt_lsb_minus4       ");
 	        sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
@@ -2774,7 +2801,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	 *************************************************************************/
 	uint(size=16) pps_row_height[NB_MAX_PPS][PICT_HEIGHT / MIN_CTB_SIZE_Y];
 	uint(size= 1) pps_scaling_list_data_present_flag[NB_MAX_PPS];
-	    int sum := 0;
+	uint(size= 1) pps_m_inferScalingListFlag[NB_MAX_PPS];
+	int sum := 0;
 
 	read_PPS_Header.se_idx_4.loop : action ==>
 	guard
@@ -2829,13 +2857,26 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 				pps_tc_offset[pps_id] := res[0] << 1;
 			end
 		end
-		vld_u_name(  1, fifo, res, "pps_scaling_list_data_present_flag      ");
-		pps_scaling_list_data_present_flag[pps_id] := res[0];
-		if pps_scaling_list_data_present_flag[pps_id] = 0 then
-			se_idx := 52;
-		else
-			se_idx := 50;
-		end
+		
+		pps_m_inferScalingListFlag[pps_id] := 0;
+		if nuh_layer_id > 0 then
+        	vld_u_name(  1, fifo, res, "pps_m_inferScalingListFlag              ");
+        	pps_m_inferScalingListFlag[pps_id] := res[0];
+    	end
+    	if pps_m_inferScalingListFlag[pps_id] != 0 then
+	        vld_ue_name( fifo, res, "pps_scaling_list_ref_layer_id           ");
+	        pps_scaling_list_data_present_flag[pps_id] := 0;
+	        se_idx := 52;
+    	else
+    		vld_u_name(  1, fifo, res, "pps_scaling_list_data_present_flag      ");
+			pps_scaling_list_data_present_flag[pps_id] := res[0];
+			if pps_scaling_list_data_present_flag[pps_id] = 0 then
+				se_idx := 52;
+			else
+				se_idx := 50;
+			end
+    	end
+		
 	end
 
 	/**************************************************************************
@@ -3070,7 +3111,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 				iPOCmsb := 0;
 		end
 
-		poc:= iPOCmsb+iPOClsb;
+		tmp_poc:= iPOCmsb+iPOClsb;
 	end
 
 	uint(size= 1) first_slice_segment_in_pic_flag := 1;
@@ -3204,6 +3245,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		end
 	end
 
+		int (size=32) tmp_poc := 0;
+		
 	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
 		guard
 				se_idx = 200 and isFifoFull(fifo)
@@ -3227,16 +3270,26 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 			if sps_separate_colour_plane_flag[sps_id] = 1 then
 				vld_u_name(  2, fifo, res, "colour_plane_id                         ");
 			end
-
+			if (( nuh_layer_id > 0 && vps_m_pocLsbNotPresentFlag[vps_m_layerIdInVps[nuh_layer_id]] = 0)
+            || (not(nal_unit_type = NAL_IDR_W_DLP or nal_unit_type = NAL_IDR_N_LP))) then
+				tmp_poc := 0;
+				vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       ");
+				pic_order_cnt_lsb := res[0];
+				//compute the number of POC
+				compute_POC(res[0]);
+	            if (first_slice_segment_in_pic_flag = 0 && tmp_poc != poc) then
+	                println("Ignoring POC change between slices");
+	                tmp_poc := poc;
+	            end
+	            poc := tmp_poc;
+        	end
+        	//TODO: check if tmp_poc is correctly passed between function and procedure !
 			if nal_unit_type = NAL_IDR_W_DLP or nal_unit_type = NAL_IDR_N_LP then
 				poc := 0;
 	        	se_idx := 302;
 				//sps_num_short_term_ref_pic_sets[sps_id] := 0;
 			else
-				vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifo, res, "pic_order_cnt_lsb                       ");
-				pic_order_cnt_lsb := res[0];
-				//compute the number of POC
-				compute_POC(res[0]);
+				
 				vld_u_name(  1, fifo, res, "short_term_ref_pic_set_sps_flag         ");
 	            short_term_ref_pic_set_sps_flag := res[0];
 	            if short_term_ref_pic_set_sps_flag != 0 then
@@ -3438,7 +3491,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 				end
 	        se_idx := 302;
 			end
-
+		
+		int (size=32) pocTid0;
+		int (size=32) active_num_ILR_ref_idx;
+		int (size=32) inter_layer_pred_layer_idc[MAX_LAYERS];
+		//TODO: check table lenght if it is MAX_LAYERS
+		
 		read_SliceHeader.se_idx_14 : action  ==> 
 		guard
 			se_idx = 302 and isFifoFull(fifo)
@@ -3448,7 +3506,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		    uint(size=16) row_height[PICT_HEIGHT / MIN_CTB_SIZE_Y]  = [pps_row_height[pps_id][ i ] : for int i in 0 .. (PICT_HEIGHT / MIN_CTB_SIZE_Y)-1],
 		    uint(size= 8) num_tile_columns_minus1           = pps_num_tile_columns_minus1[pps_id],
 		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
-		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id]
+		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id],
+		    int numBits,
+		    int NumILRRefIdx
 		do
 			if (temporal_id = 0 and nal_unit_type != NAL_TRAIL_N and
 				nal_unit_type != NAL_TSA_N   and
@@ -3456,9 +3516,38 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 				nal_unit_type != NAL_RADL_N  and
 				nal_unit_type != NAL_RADL_R  and
 				nal_unit_type != NAL_RASL_N  and
-				nal_unit_type != NAL_RASL_R) then
+				nal_unit_type != NAL_RASL_R) 
+			then
+				pocTid0 := poc;
 			end
-
+			
+			active_num_ILR_ref_idx := 0;
+	        NumILRRefIdx := vps_m_numDirectRefLayers[nuh_layer_id];
+	        if (nuh_layer_id > 0  && NumILRRefIdx > 0) then
+	            vld_u_name(  1, fifo, res, "inter_layer_pred_enabled_flag           ");
+	            if (res[0] != 0) then
+	                if (NumILRRefIdx>1)  then
+	                    numBits := 1;
+	                    while ((1 << numBits) < NumILRRefIdx) do
+	                        numBits := numBits + 1;
+	                    end
+	                    if (vps_max_one_active_ref_layer_flag = 0) then
+	                        vld_u_name(  numBits, fifo, res, "num_inter_layer_ref_pics_minus1         ");
+	                        active_num_ILR_ref_idx := res[0] + 1;
+	                    else
+	                        active_num_ILR_ref_idx := 1;
+	                    end
+	                    foreach int i in 0 .. active_num_ILR_ref_idx - 1 do
+	                    	vld_u_name(  numBits, fifo, res, "inter_layer_pred_layer_idc              ");
+	                        inter_layer_pred_layer_idc[i] := res[0];
+	                    end
+	                else 
+	                    active_num_ILR_ref_idx := 1;
+	                    inter_layer_pred_layer_idc[0] := 0;
+	                end
+	            end
+	        end
+			
 			if( sps_sample_adaptive_offset_enabled_flag[sps_id] = 1) then
 				vld_u_name(  1, fifo, res, "slice_sao_luma_flag                     ");
 				slice_sample_adaptive_offset_flag[0] := res[0];
