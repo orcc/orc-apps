@@ -2582,6 +2582,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	    uint(size= 6) sps_num_long_term_ref_pics_sps[NB_MAX_SPS];
 	    uint(size=16) lt_ref_pic_poc_lsb_sps[32];
 	    uint(size= 8) used_by_curr_pic_lt_sps_flag[32];
+	    uint(size= 1)sps_set_mfm_enabled_flag[NB_MAX_SPS];
 	
 	    read_SPS_Header.se_idx_8 : action ==>
 	    guard
@@ -2609,6 +2610,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	        vld_u_name(1, fifo, res,
 	        "sps_temporal_mvp_enable_flag            ");
 	        sps_temporal_mvp_enable_flag[sps_id] := res[0];
+	        if(nuh_layer_id > 0) then
+        		sps_set_mfm_enabled_flag[sps_id] := 1;
+    		else
+        		sps_set_mfm_enabled_flag[sps_id] := 0;
+        	end
 	        vld_u_name(1, fifo, res,
 	        "sps_strong_intra_smoothing_enable_flag  ");
 	        sps_strong_intra_smoothing_enable_flag[sps_id] := res[0] = 1;
@@ -3722,10 +3728,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	/**************************************************************************
 	 * read_SliceHeader.sendRefPOC
 	 *************************************************************************/
-	int(size=16)  pocTables[5][NB_MAX_PICS];
-	int numPic[5];
+	int(size=16)  pocTables[7][NB_MAX_PICS];
+	int numPic[7];
 	uint(size= 8) idxNumPic;
 	uint(size= 8) idxRefPoc;
+	uint numRefLists;
 
 	procedure setRefTables(int sps_id, int idx, int(size=8) pc_rps[NB_MAX_SPS][NB_MAX_PICS+1][PC_RPS_STRUCT_SIZE], int poc)
 	var
@@ -3736,7 +3743,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		foreach int i in 0 .. pc_rps[sps_id][idx][NUM_NEGATIVE_PICS]-1
 		do
 			if(pc_rps[sps_id][idx][USED+i]=1) then
-	            		pocTables[ST_CURR_BEF][j] := poc + pc_rps[sps_id][idx][DELTAPOC + i];
+	            pocTables[ST_CURR_BEF][j] := poc + pc_rps[sps_id][idx][DELTAPOC + i];
 				j := j + 1;
 	            		
 			else
@@ -3763,8 +3770,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		numPic[ST_FOLL] := k;
 		j := 0;
 		k := 0;
-		foreach int i in 0 .. (num_long_term_sps +
-				num_long_term_pics) - 1 do
+		foreach int i in 0 .. (num_long_term_sps + num_long_term_pics) - 1 do
 			pocLt := poc_lsb_lt[i];
 			if delta_poc_msb_present_flag[i] = 1 then
 				pocLt := pocLt + poc - DeltaPocMsbCycleLt[i] * max_poc_lsb[sps_id] - pic_order_cnt_lsb;
@@ -3779,13 +3785,43 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		end
 		numPic[LT_CURR] := j;
 		numPic[LT_FOLL] := k;
+		
 	end
 
 	read_SliceHeader.sendRefPOC.init : action ==> NumRefIdxLxActive:[num_ref_idx_l0_active, num_ref_idx_l1_active]
 	guard
 		se_idx = 10
+	var
+		int j := 0,
+		int k := 0
 	do
+//		if(nuh_layer_id = 0 || not(nal_unit_type >= NAL_BLA_W_LP and nal_unit_type <= NAL_CRA_NUT and (sps_set_mfm_enabled_flag[sps_id] != 0))) then
+//			//numRefLists := 5;
+//			setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
+//		else
+//			//numRefLists := 7;
+//			
+//		end
 		setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
+		if(nuh_layer_id != 0) then
+		// add candidate ref
+	        foreach int i in 0 .. vps_max_one_active_ref_layer_flag do
+	
+                if((vps_m_viewIdVal[nuh_layer_id] <= vps_m_viewIdVal[0]) && 
+                (vps_m_viewIdVal[nuh_layer_id] <= vps_m_viewIdVal[vps_m_refLayerId[nuh_layer_id][inter_layer_pred_layer_idc[i]]]))then
+                //IL_REF0 , IL_REF1
+                    //ret = add_candidate_ref(s, &rps[IL_REF0], s->poc, HEVC_FRAME_FLAG_LONG_REF);
+                    pocTables[IL_REF0][j] := poc;
+					j := j + 1;
+                else
+                    //ret = add_candidate_ref(s, &rps[IL_REF1], s->poc, HEVC_FRAME_FLAG_LONG_REF);
+                    pocTables[IL_REF1][k] := poc;
+					k := k + 1;
+                end
+	        end
+	        numPic[IL_REF0] := j;
+			numPic[IL_REF1] := k;
+	    end
 		idxNumPic := 0;
 		se_idx    := 101;
 	end
@@ -3851,11 +3887,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	guard
 		se_idx = 11
 	var
-				int(size=16) refPocSize = numPic[idxNumPic]
+		int(size=16) refPocSize = numPic[idxNumPic]
 	do
 		if numPic[idxNumPic] = 0 then
 			idxNumPic := idxNumPic + 1;
-			if idxNumPic = 5 then
+			if idxNumPic = 7 then
 				se_idx := 3;
 			end
 		else
@@ -3873,7 +3909,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 		idxRefPoc := idxRefPoc + 1;
 		if idxRefPoc = numPic[idxNumPic] then
 			idxNumPic := idxNumPic + 1;
-			if idxNumPic = 5 then
+			if idxNumPic = 7 then
 				se_idx := 3;
 			else
 				se_idx := 11;
@@ -3888,8 +3924,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE, uint DECODER_ID)
 	 int(size= 8) slice_cr_qp_offset;
 	uint(size=16) MaxNumMergeCand;
 	uint(size= 1) cabac_init_flag;
-		uint(size= 1) collocated_from_lX := 0;
-		uint(size= 3) collocated_ref_idx := 0;
+	uint(size= 1) collocated_from_lX := 0;
+	uint(size= 3) collocated_ref_idx := 0;
 
 	read_SliceHeader.se_idx_3 : action ==> WeightedPredLuma:[weighted_pred_flag], WeightedPredChroma:[weighted_pred_flag]
 	guard
