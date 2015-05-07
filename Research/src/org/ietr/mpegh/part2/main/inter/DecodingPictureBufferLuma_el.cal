@@ -64,7 +64,7 @@ import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
 import org.ietr.mpegh.part2.main.upSampling.UpSamplingFunctions.*;
 
-//@DEBUG
+@DEBUG
 actor DecodingPictureBufferLuma_el ()
 	uint(size=2)  IsPicSlc,
 	uint(size=8)  LcuSizeMax,
@@ -130,6 +130,24 @@ actor DecodingPictureBufferLuma_el ()
 			foreach int x in 0 .. sideMax - 1
 			do
 				RefCu[x+y*(sideMax)] := pictureBuffer[idx][y+yOffset][x+xOffset];
+			end
+		end
+    end
+    
+    procedure EL_getmvinfo_dpb_luma_cal(
+  	      uint(size= 8) pictureBufferTmp[DPB_LUM_HEIGHT*DPB_LUM_WIDTH],
+  	      uint(size= 8) RefCu[(64 + 7) * (64 + 7)],
+  	      uint(size= 8) sideMax, 
+  	      int (size=32) xOffset,
+  	      int (size=32) yOffset,
+  	      uint(size=16) width,
+		  uint(size=16) height)
+    begin
+      foreach int y in 0 .. sideMax - 1
+	  	do
+			foreach int x in 0 .. sideMax - 1
+			do
+				RefCu[x+y*(sideMax)] := pictureBufferTmp[(y+yOffset)*DPB_LUM_WIDTH + (x+xOffset)];
 			end
 		end
     end
@@ -289,14 +307,14 @@ actor DecodingPictureBufferLuma_el ()
 	 **/
 	getRps.launch: action RpsPoc:[numPic]==>
 	guard
-		nbList < 5
+		nbList < 7
 	do
 		sizeOfList := numPic;
 	end
 	
 	getRps.done: action ==>
 	guard
-		nbList = 5
+		nbList = 7
 	do
 		isRef[currIdx]:= true;
 		
@@ -448,7 +466,7 @@ actor DecodingPictureBufferLuma_el ()
 	sendCuPix.launch.x32: action ==> VID:[cu] repeat 32*32
 	guard
 		sendy < picSizeInCu[1],
-		(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
+		//(pocDone[sendingPoc & 31]) or (sendingPoc = 0 and (seqIdDecode > 1)),
 		numAvailablePic >= numReorderPic || seqIdDecode != seqIdOutput,
 		lcuSizeMax = 32
 	var
@@ -545,6 +563,7 @@ actor DecodingPictureBufferLuma_el ()
 		uint(size=7)  sideMax = 64,
 		uint(size=8)  refCu[(64+7)*(64+7)]
 	do
+		println("normal case");
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 
 		getmvinfo_dpb_luma_cal(
@@ -572,12 +591,12 @@ actor DecodingPictureBufferLuma_el ()
 		uint(size=7)  sideMax = 64,
 		uint(size=8)  refCu[(64+7)*(64+7)]
 	do
+		
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
-
-		getmvinfo_dpb_luma_cal(
-  	      pictureBuffer,
+		
+		EL_getmvinfo_dpb_luma_cal(
+  	      enhLayer,
   	      refCu,
-  	      pocIndex[poc & 31], 
   	      sideMax + 7, 
   	      mvOffset[0],
   	      mvOffset[1],
@@ -592,12 +611,14 @@ actor DecodingPictureBufferLuma_el ()
 	guard
 		isRead = 1,
 		predCuSize = 32,
-		pocDone[poc & 31]
+		readingPoc != poc
+		//,pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
 		uint(size=7)  sideMax = 32,
 		uint(size=8)  refCu[(32+7)*(32+7)]
-	do
+	do	
+		println("enhancement case");
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 		
 		getmvinfo_dpb_luma_cal(
@@ -605,6 +626,33 @@ actor DecodingPictureBufferLuma_el ()
   	      refCu,
   	      pocIndex[poc & 31],
   	      sideMax + 7,
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+	end
+	
+	getMvInfo.is32UpSample: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+		==> 
+		RefSample:[refCu] repeat (32+7)*(32+7)
+	guard
+		isRead = 1,
+		predCuSize = 32,
+		readingPoc = poc
+		//,pocDone[poc & 31]
+	var
+		int (size=32) mvOffset[2],
+		uint(size=7)  sideMax = 32,
+		uint(size=8)  refCu[(32+7)*(32+7)]
+	do
+		
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		
+		EL_getmvinfo_dpb_luma_cal(
+  	      enhLayer,
+  	      refCu,
+  	      sideMax + 7, 
   	      mvOffset[0],
   	      mvOffset[1],
   	      DPB_LUM_WIDTH,
@@ -624,6 +672,7 @@ actor DecodingPictureBufferLuma_el ()
 		uint(size=7)  sideMax = 16,
 		uint(size=8)  refCu[(16+7)*(16+7)]
 	do
+		println("enhancement case");
 		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
 		
 		getmvinfo_dpb_luma_cal(
@@ -724,9 +773,9 @@ actor DecodingPictureBufferLuma_el ()
 		println("upSampleLumaDone");
 		foreach int j in 0 .. DPB_LUM_HEIGHT do
 			foreach int i in 0 .. DPB_LUM_WIDTH do
-				print(enhLayer[i + j * DPB_LUM_WIDTH] + " ");
+				//print(enhLayer[i + j * DPB_LUM_WIDTH] + " ");
 			end
-			println(" ");
+			//println(" ");
 		end
 		//upsample_base_layer_frame_Lum();
 		/* Fill in chroma border */ // TODO: check if this border is necessary
@@ -761,7 +810,7 @@ actor DecodingPictureBufferLuma_el ()
 	end
 	
 	priority 
-		sendCuPix > getCuPix > getMvInfo > isNewSlice;
+		//sendCuPix > getCuPix > getMvInfo > isNewSlice;
 		sendCuPix.skip > sendCuPix.launch > sendCuPix.done;
 		isNewPict > isNewPict_lastPict;
 	end
