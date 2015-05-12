@@ -174,17 +174,12 @@ actor DecodingPictureBufferLuma_el ()
 		isPicSlc = 0
 	do
 		lcuSizeMax := 1 << log2LcuSize;
-		println("cuSizeMax = " + lcuSizeMax);
 //		println("Dpb ; Pict num "+pictNum);
 		pictNum := pictNum + 1;
 		picSizeInCu[0] := (picWidthInPix+lcuSizeMax-1) >> log2LcuSize;
 		picSizeInCu[1] := (picHeightInPix+lcuSizeMax-1) >> log2LcuSize;
 		picSize[0] := picWidthInPix;
 		picSize[1] := picHeightInPix;
-		println("picSizeInCu[0] = " + picSizeInCu[0]);
-		println("picSizeInCu[1] = " + picSizeInCu[1]);
-		println("picSize[0] = " + picSize[0]);
-		println("picSize[1] = " + picSize[1]);
 		xIdx := 0;
 		yIdx := 0;
 		
@@ -375,10 +370,8 @@ actor DecodingPictureBufferLuma_el ()
 		
 		xIdx := xIdx + 1;
 		if(xIdx = picSizeInCu[0]) then
-			println("endOfLine x= " + xIdx);
 			xIdx := 0;
 			yIdx := yIdx + 1;
-			println("y = " + yIdx);
 		end
 	end
 	
@@ -440,13 +433,11 @@ actor DecodingPictureBufferLuma_el ()
 		numAvailablePic := numAvailablePic + 1;
 		
 		if DEBUG_DPB then
-			print("isSent = ");
 			foreach int i in 0 .. DPB_SIZE-1 do
 				print(isSent[i]);
 			end
 			println();
 		end
-		println("getPix64done");
 	end
 	
 	sendCuPix.launch.x64: action ==> VID:[cu] repeat 64*64
@@ -469,7 +460,6 @@ actor DecodingPictureBufferLuma_el ()
 			sendx := 0;
 			sendy := sendy + 1;
 		end
-		println("sendPix64");
 	end
 	
 	sendCuPix.launch.x32: action ==> VID:[cu] repeat 32*32
@@ -523,7 +513,6 @@ actor DecodingPictureBufferLuma_el ()
 	do
 		sendx := 0;
 		sendy := 0;
-		println("sendPix64done");
 		if DEBUG_DPB then 
 			println("Dpb ; sent " + sendingPoc + " (" + pocIndex[sendingPoc & 31] + ")");
 		end
@@ -672,7 +661,8 @@ actor DecodingPictureBufferLuma_el ()
 		RefSample:[refCu] repeat (16+7)*(16+7)
 	guard
 		isRead = 1,
-		predCuSize = 16
+		predCuSize = 16,
+		readingPoc != poc
 		//,pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -693,13 +683,41 @@ actor DecodingPictureBufferLuma_el ()
   	      DPB_LUM_HEIGHT);
 	end
 	
+	getMvInfo.is16UpSample: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+		==> 
+		RefSample:[refCu] repeat (16+7)*(16+7)
+	guard
+		isRead = 1,
+		predCuSize = 16,
+		readingPoc = poc
+		//,pocDone[poc & 31]
+	var
+		int (size=32) mvOffset[2],
+		uint(size=7)  sideMax = 16,
+		uint(size=8)  refCu[(16+7)*(16+7)]
+	do
+		//println("enhancement case");
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		
+		EL_getmvinfo_dpb_luma_cal(
+  	      enhLayer,
+  	      refCu,
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+	end
+	
 	getMvInfo.is8: action 
 		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSample:[refCu] repeat (8+7)*(8+7)
 	guard
 		isRead = 1,
-		predCuSize = 8
+		predCuSize = 8,
+		readingPoc != poc
 		//,pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -719,13 +737,40 @@ actor DecodingPictureBufferLuma_el ()
   	      DPB_LUM_HEIGHT);
 	end
 	
+	getMvInfo.is8UpSample: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+		==> 
+		RefSample:[refCu] repeat (8+7)*(8+7)
+	guard
+		isRead = 1,
+		predCuSize = 8,
+		readingPoc = poc
+		//,pocDone[poc & 31]
+	var
+		int (size=32) mvOffset[2],
+		uint(size=7)  sideMax = 8,
+		uint(size=8)  refCu[(8+7)*(8+7)]
+	do
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+
+		EL_getmvinfo_dpb_luma_cal(
+  	      enhLayer,
+  	      refCu,
+  	      sideMax + 7, 
+  	      mvOffset[0],
+  	      mvOffset[1],
+  	      DPB_LUM_WIDTH,
+  	      DPB_LUM_HEIGHT);
+	end
+	
 	getMvInfo.is4: action 
 		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
 		==> 
 		RefSample:[refCu] repeat (4+7)*(4+7)
 	guard
 		isRead = 1,
-		predCuSize = 4
+		predCuSize = 4,
+		readingPoc != poc
 		//,pocDone[poc & 31]
 	var
 		int (size=32) mvOffset[2],
@@ -740,6 +785,32 @@ actor DecodingPictureBufferLuma_el ()
 			do
 				refCu[x+y*(sideMax+7)] := 
 					pictureBuffer[pocIndex[poc & 31]][y+mvOffset[1]][x+mvOffset[0]];
+			end
+		end
+	end
+	
+	getMvInfo.is4UpSample: action 
+		IsReadOrNewSlice:[isRead], PocRef:[poc], PredCuSize:[predCuSize], Mv:[mv] repeat 2 
+		==> 
+		RefSample:[refCu] repeat (4+7)*(4+7)
+	guard
+		isRead = 1,
+		predCuSize = 4,
+		readingPoc = poc
+		//,pocDone[poc & 31]
+	var
+		int (size=32) mvOffset[2],
+		uint(size=7)  sideMax = 4,
+		uint(size=8)  refCu[(4+7)*(4+7)]
+	do
+		computeMvOffsetLuma(mvOffset, mv, picSize, sideMax);
+		
+		foreach int y in 0 .. sideMax+7 -1
+		do
+			foreach int x in 0 .. sideMax+7 -1
+			do
+				refCu[x+y*(sideMax+7)] := 
+					enhLayer[(y+mvOffset[1]) * DPB_LUM_WIDTH + (x+mvOffset[0])];
 			end
 		end
 	end
@@ -777,7 +848,7 @@ actor DecodingPictureBufferLuma_el ()
 //		end
 		
 		upsample_base_layer_frame_Lum(enhLayer, baseLayer, tempBuff);
-		println("upSampleLumaDone");
+//		println("upSampleLumaDone");
 		foreach int j in 0 .. DPB_LUM_HEIGHT do
 			foreach int i in 0 .. DPB_LUM_WIDTH do
 				//print(enhLayer[i + j * DPB_LUM_WIDTH] + " ");
