@@ -1,7 +1,7 @@
 /********************************************************************************
 
 This software module was originally developed by 
-khaled JERBI (IETR/INSA of Rennes)
+khaled JERBI (IETR/INSA of Rennes), 
 in the course of development of the ISO/IEC 23002-5 (Video Tool Library) 
 for reference purposes and its performance may not have been optimized. 
 This software module is an implementation of one or more tools as 
@@ -123,6 +123,25 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         uint(size=8) TilesInfo[2];
 
 
+
+		function updateDecoderTid(uint(size=6) nal_unit_type) --> uint(size=3)
+		:
+			if(targetTID <= decoderTID) then
+				targetTID
+			else
+				if(nal_unit_type = NAL_IDR_W_RADL || nal_unit_type = NAL_IDR_N_LP ||
+				   nal_unit_type = NAL_BLA_W_LP   || nal_unit_type = NAL_BLA_W_RADL ||
+				   nal_unit_type = NAL_BLA_N_LP) then
+					targetTID
+				elsif((currentTID <= decoderTID + 1) && (nal_unit_type = NAL_TSA_N || nal_unit_type = NAL_TSA_R)) then
+					targetTID
+				elsif((currentTID = decoderTID + 1) && (nal_unit_type = NAL_STSA_N || nal_unit_type = NAL_STSA_R)) then
+					currentTID
+				else
+					decoderTID
+				end
+			end
+		end
         /**************************************************************************
          **************************************************************************
          ********        Bitstream Reader                     *********************
@@ -189,6 +208,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                     println("start_code.search");
             end
         end
+
         start_code.done: action ==>
         guard
         	IsStartCode(fifo) and isFifoFull(fifo)
@@ -201,7 +221,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         /**************************************************************************
          * read_nal_unit_header
          *************************************************************************/
-        uint temporal_id := 0;
+        uint(size=3) currentTID := 0;
+        uint(size=3) targetTID  := 7;
+        uint(size=3) decoderTID := 7;
+        
         uint(size= 6) nal_unit_type;
 
         read_nal_unit_header : action ==>
@@ -221,13 +244,14 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             	"nuh_reserved_zero_6bits                 ");
             	vld_u_name(3, fifo, res,
             	"nuh_temporal_id_plus1                   ");
+            	currentTID := res[0] - 1;
             else
             	flushBits(1, fifo);
             	vld_u(6, fifo, res);
             	nal_unit_type := res[0];
             	flushBits(6, fifo);
             	vld_u(3, fifo, res);
-            	temporal_id := res[0] - 1;
+            	currentTID := res[0] - 1;
             end
             se_idx := 1;
         end
@@ -278,12 +302,68 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         /**************************************************************************
          * look_for.Slice_header
          *************************************************************************/
+		@native function getLastUserChar() --> uint(size=8) end
+
+		uint(size=8) CHAR_0 = 0x30;
+		uint(size=8) CHAR_7 = 0x37;
+		uint(size=8) CHAR_PLUS = 0x2B;
+		uint(size=8) CHAR_MINUS = 0x2D;
+		procedure updateTargetTid()
+	   var
+	   	uint(size=8) userChar
+		begin
+            userChar := getLastUserChar();
+            //println("Character read : " + userChar);
+            if(userChar >= CHAR_0 && userChar <= CHAR_7) then
+            	targetTID := userChar - CHAR_0;
+            	println("New targetTID : " + targetTID);
+            elsif(userChar = CHAR_PLUS) then
+            	targetTID := targetTID + 1;
+            	if(targetTID > 7) then
+            		targetTID := 7;
+            	end
+            	println("New targetTID : " + targetTID);
+            elsif(userChar = CHAR_MINUS) then
+            	if(targetTID > 0) then
+            		targetTID := targetTID - 1;
+            	end
+            	println("New targetTID : " + targetTID);
+            end
+		end
+
+		bool skipRASL  := true;
+		bool noRaslOutput;
+		bool skipTrailAndRADL := true;
+	
         look_for.Slice_header: action ==>
         guard
 	        isVclNal(nal_unit_type)
         do
             if DEBUG_PARSER then
             	println("=========== Slice ===========");
+           end
+           updateTargetTid();
+            if isIRAP(nal_unit_type) then
+            	//Skip RASL pictures after the first IRAP and after BLA picture.
+            	skipRASL := skipTrailAndRADL || nal_unit_type = NAL_BLA_W_LP;
+            	noRaslOutput := skipRASL;
+            	skipTrailAndRADL := false;
+            	
+            elsif isTrailing(nal_unit_type) then
+				noRaslOutput := false;
+            	skipCurrentNal := skipTrailAndRADL;
+            else
+				noRaslOutput := false;
+            	skipCurrentNal := skipTrailAndRADL ||
+            		(skipRASL && nal_unit_type != NAL_RADL_N && nal_unit_type != NAL_RADL_R);
+            end
+//            printNalUnitType(nal_unit_type);
+//            println("\t\tTid : " + currentTID);
+            if(not skipCurrentNal) then
+	            decoderTID := updateDecoderTid(nal_unit_type);
+	            if(currentTID > decoderTID) then
+	            	skipCurrentNal := true;
+	            end
             end
         end
         /**************************************************************************
@@ -452,7 +532,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	
 	    read_VPS_Header.se_idx_4.loop2End : action ==>
 	    guard
-	        se_idx = 41 ,
+	        se_idx = 41,
 	        cnt_i = vps_max_sub_layers_minus1
 	    do
 	        se_idx := 42;
@@ -796,7 +876,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	     **************************************************************************
 	     *************************************************************************/
 		bool sps_id_decoded[16] := [false : for int i in 0 .. 15];
-	
 	    /**************************************************************************
 	     * read_SPS_Header.se_idx_1
 	     *************************************************************************/
@@ -972,8 +1051,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	         *************************************************************************/
 	    uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
 	    uint(size=32) max_poc_lsb[NB_MAX_SPS];
-	    int sps_bit_depth_luma_minus8[NB_MAX_SPS];
-	    int sps_bit_depth_chroma_minus8[NB_MAX_SPS];
+	    int sps_bit_depth_minus5[NB_MAX_SPS][3];
 	
 	    read_SPS_Header.se_idx_2 : action ==>
 	    guard
@@ -996,10 +1074,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        end
 	        vld_ue_name(fifo, res,
 	        "sps_bit_depth_luma_minus8                   ");
-	        sps_bit_depth_luma_minus8[sps_id] := res[0];
+	        sps_bit_depth_minus5[sps_id][0] := res[0] + 8 - 5;
 	        vld_ue_name(fifo, res,
 	        "sps_bit_depth_chroma_minus8                 ");
-	        sps_bit_depth_chroma_minus8[sps_id] := res[0];
+	        sps_bit_depth_minus5[sps_id][1] := res[0] + 8 - 5;
+	        sps_bit_depth_minus5[sps_id][2] := res[0] + 8 - 5;
 	        vld_ue_name(fifo, res,
 	        "log2_max_pic_order_cnt_lsb_minus4       ");
 	        sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
@@ -1451,8 +1530,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	    bool          pps_constrained_intra_pred_flag[NB_MAX_PPS];
 	    uint(size= 1) pps_cu_qp_delta_enabled_flag[NB_MAX_PPS];
 	    uint(size=16) pps_diff_cu_qp_delta_depth[NB_MAX_PPS];
-	     int(size= 8) pps_cb_qp_offset[NB_MAX_PPS];
-	     int(size= 8) pps_cr_qp_offset[NB_MAX_PPS];
+	     int(size= 8) pps_chroma_qp_offset[NB_MAX_PPS][3];
 	    uint(size= 1) pps_slice_chroma_qp_offsets_present_flag[NB_MAX_PPS];
 	    uint(size= 1) pps_weighted_pred_flag[NB_MAX_PPS];
 		uint(size= 1) pps_weighted_bipred_flag[NB_MAX_PPS];
@@ -1497,9 +1575,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        	pps_diff_cu_qp_delta_depth[pps_id] := 0;
 	        end
 	        vld_se_name(fifo, res, "pps_cb_qp_offset                        ");
-	        pps_cb_qp_offset[pps_id] := res[0];
+	        pps_chroma_qp_offset[pps_id][1] := res[0];
 	        vld_se_name(fifo, res, "pps_cr_qp_offset                        ");
-	        pps_cr_qp_offset[pps_id] := res[0];
+	        pps_chroma_qp_offset[pps_id][2] := res[0];
 	        vld_u_name(1, fifo, res, "pps_slice_chroma_qp_offsets_present_flag");
 	        pps_slice_chroma_qp_offsets_present_flag[pps_id] := res[0];
 	        vld_u_name(1, fifo, res, "weighted_pred_flag                      ");
@@ -2003,7 +2081,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        if sps_separate_colour_plane_flag[sps_id] = 1 then
 	        	vld_u_name(  2, fifo, res, "colour_plane_id                         ");
 	    	end
-	    	if nal_unit_type = NAL_IDR_W_DLP or nal_unit_type = NAL_IDR_N_LP then
+	    	if nal_unit_type = NAL_IDR_W_RADL or nal_unit_type = NAL_IDR_N_LP then
 	        	poc := 0;
 	        	se_idx := 302;
 	        	//sps_num_short_term_ref_pic_sets[sps_id] := 0;
@@ -2225,14 +2303,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
 		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id]
 		do
-	        if (temporal_id = 0 and nal_unit_type != NAL_TRAIL_N and
-	            nal_unit_type != NAL_TSA_N   and
-	            nal_unit_type != NAL_STSA_N  and
-	            nal_unit_type != NAL_RADL_N  and
-	            nal_unit_type != NAL_RADL_R  and
-	            nal_unit_type != NAL_RASL_N  and
-	            nal_unit_type != NAL_RASL_R) then
-		    end
 	        
 	        if( sps_sample_adaptive_offset_enabled_flag[sps_id] = 1) then
 	            vld_u_name(  1, fifo, res, "slice_sao_luma_flag                     ");
@@ -2569,8 +2639,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
          * read_SliceHeader.se_idx_3
          *************************************************************************/
          int(size= 8) slice_qp;
-         int(size= 8) slice_cb_qp_offset;
-         int(size= 8) slice_cr_qp_offset;
+         int(size= 8) slice_chroma_qp_offset[3];
         uint(size=16) MaxNumMergeCand;
         uint(size= 1) cabac_init_flag;
         uint(size= 1) collocated_from_lX := 0;
@@ -2915,7 +2984,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
          * read_SliceHeader.se_idx_5
          *************************************************************************/
         read_SliceHeader.se_idx_5 : action ==> DBFDisable:[slice_disable_deblocking_filter_flag !=0],
-                DbfSe:[betaOff, tcOff, pps_cb_qp_offset[pps_id] + slice_cb_qp_offset, pps_cr_qp_offset[pps_id] + slice_cr_qp_offset]
+                DbfSe:[betaOff, tcOff, pps_chroma_qp_offset[pps_id][1] + slice_chroma_qp_offset[1], pps_chroma_qp_offset[pps_id][2] + slice_chroma_qp_offset[2]]
         guard
                 se_idx = 5 and isFifoFull(fifo)
         var
@@ -2930,8 +2999,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                 end
                 vld_se_name(    fifo, res, "slice_qp_delta                          ");
                 slice_qp := pps_init_qp_minus26[pps_id] + 26 + res[0];
-                slice_cb_qp_offset := 0;
-                slice_cr_qp_offset := 0;
+                slice_chroma_qp_offset := [0, 0, 0];
 //                qp_y := slice_qp;
 //                println("read_SliceHeader qp_y := " + qp_y);
 //                qp_bd_offset_luma           := 6 * sps_bit_depth_luma_minus8[sps_id];
@@ -2940,9 +3008,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 //				end
                 if pps_slice_chroma_qp_offsets_present_flag[pps_id] = 1 then
                         vld_se_name(    fifo, res, "slice_cb_qp_offset                      ");
-                        slice_cb_qp_offset := res[0];
+                        slice_chroma_qp_offset[1] := res[0];
                         vld_se_name(    fifo, res, "slice_cr_qp_offset                      ");
-                        slice_cr_qp_offset := res[0];
+                        slice_chroma_qp_offset[2] := res[0];
                 end
                 if (pps_deblocking_filter_control_present_flag[pps_id] = 1) then
                 	res[0] := 0;
@@ -5229,11 +5297,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
          
 		
         read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
-                                                                                        if rc_cIdx = TEXT_CHROMA_U then
-                                                                                                pps_cb_qp_offset[pps_id] + slice_cb_qp_offset
-                                                                                		else
-                                                                                                pps_cr_qp_offset[pps_id] + slice_cr_qp_offset
-                                                                                        end]
+                            pps_chroma_qp_offset[pps_id][rc_cIdx] + slice_chroma_qp_offset[rc_cIdx]]
         guard
                 isFifoFull(fifo)
         var
@@ -5265,16 +5329,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             end
 
 	         if cu_transquant_bypass_flag = 0 then    
-	            shift := if rc_cIdx = 0 then sps_bit_depth_luma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5
-	                                                      else sps_bit_depth_chroma_minus8[sps_id] + 8 + rc_log2TrafoSize - 5 end;
+				shift := sps_bit_depth_minus5[sps_id][rc_cIdx] + rc_log2TrafoSize;
 	            if rc_cIdx = 0 then
 	        		qp := qp_y + qp_bd_offset_luma;
 	    		else
-	                if rc_cIdx = 1 then
-	                        qp_offset := pps_cb_qp_offset[pps_id] + slice_cb_qp_offset;
-	                else
-	                        qp_offset := pps_cr_qp_offset[pps_id] + slice_cr_qp_offset;
-	                end
+                    qp_offset := pps_chroma_qp_offset[pps_id][rc_cIdx] + slice_chroma_qp_offset[rc_cIdx];
 	        		qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
 	        		if qp_i < 30 then
 	            		qp := qp_i;
