@@ -86,6 +86,8 @@ package org.sc29.wg11.mpegh.part2.main.inter;
 import std.util.Math.*;
 import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+import org.sc29.wg11.mpegh.part2.main.synParser.Algo_ParserUtils.*;
+
 //@DEBUG
 actor DecodingPictureBuffer()
 	uint(size=2)  IsPicSlc,
@@ -103,12 +105,21 @@ actor DecodingPictureBuffer()
 	uint(size=8)  RefSample
 		:
 
+	int(size=32) INT_MIN = -(1<<31);
+	int(size=32) INT_MAX = 0x7FFFFFFF;
+
 	uint(size=8)  pictureBuffer[DPB_SIZE][3][DPB_LUM_HEIGHT][DPB_LUM_WIDTH];
+	uint(size=5)  picLatencyCount[DPB_SIZE];
+	uint(size=3)  picTID[DPB_SIZE];
 	int (size=16) pocRef[DPB_SIZE];
 	bool          isRef[DPB_SIZE];
 	bool          isStillRef[DPB_SIZE];
+	bool          isSent[DPB_SIZE] := [true: for int i in 0 .. DPB_SIZE - 1];
+	bool          isDisplayed[DPB_SIZE] := [true: for int i in 0 .. DPB_SIZE - 1];//!TODO : Delete me!
 
 	int (size=9)  currIdx := -1;
+	int (size=9)  displayIdx := -1;
+	int (size=32) pocToDisp  := INT_MIN;
 	int (size=4)  lastIdx := -1;
 	uint(size=6)  picSizeInCu[2];
 	uint(size=16) picSize[2];
@@ -130,6 +141,13 @@ actor DecodingPictureBuffer()
 	int (size=16) lastPocRef;
 	int (size=32) lastMvRef[2];
 	bool          isNewPicture;
+	bool          displayAllPic;
+	uint(size=8)  numReorderPics;
+	uint(size=8)  maxDecPicBuff;
+	uint(size=8)  maxLatencyPic;
+	uint(size=5)  neededForOutput := 0;
+	uint(size=5)  numPictInDpb := 0;
+	bool dispPictFull;
 
 	procedure fillBorder()
 	var
@@ -405,15 +423,54 @@ actor DecodingPictureBuffer()
 		lastIdx := currIdx;
 		foreach uint i in 0 .. DPB_SIZE - 1
 		do
-			if(not isRef[i]) then
+			if(not isRef[i] && isDisplayed[i]) then
 				currIdx := i;
 			end
 		end
 		isRef[currIdx]  := true;
 		pocRef[currIdx] := poc;
+		isSent[currIdx] := (pic_output_flag = 0);
+		isDisplayed[currIdx] := (pic_output_flag = 0);
+		picTID[currIdx] := pictTID;
+		if(pic_output_flag != 0) then
+			neededForOutput := neededForOutput + 1;
+		end
+		numPictInDpb := numPictInDpb + 1;
 		isNewPicture    := true;
 		nbList          := 0;
 		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
+		numReorderPics := num_reorder_pics;
+		maxDecPicBuff := min(max_dec_pic_buff, DPB_SIZE);
+		maxLatencyPic := min(max_latency_pict, DPB_SIZE);
+		displayAllPic := false;
+		if((no_output_of_prior_pics_flag & NO_RASL_OUTPUT_FLAG) != 0) then
+			if((no_output_of_prior_pics_flag & 1) = 0) then
+				displayAllPic := true;
+			else
+				foreach uint i in 0 .. DPB_SIZE - 1
+				do
+					if(i != currIdx) then
+						isRef[i]  := false;
+						isSent[i] := true;
+						isDisplayed[i] := true;
+					end
+				end
+			end
+			neededForOutput := 1;
+			numPictInDpb := 1;
+		end
+		picLatencyCount[currIdx] := 0;
+		foreach int i in 0 .. DPB_SIZE - 1
+		do
+			if(currIdx != i) then
+				picLatencyCount[i] := picLatencyCount[i] + 1;
+			end
+			//Do not display decoded pictures with TID > decoderTID.
+			if(picTID[i] > decoderTID) then
+				isSent[i] := true;
+				isDisplayed[i] := true;
+			end
+		end
 	end
 
 	/** We get all the references from the 5 lists of the Rps
@@ -435,9 +492,18 @@ actor DecodingPictureBuffer()
 		 */
 		foreach int i in 0 .. DPB_SIZE - 1
 		do
+			if(not isStillRef[i] and isRef[i] and isSent[i]) then
+				numPictInDpb := numPictInDpb - 1;
+			end
 			isRef[i] := isRef[i] and isStillRef[i];
 		end
 		isRef[currIdx] := true;
+
+		dispPictFull   := true;
+		foreach uint i in 0 .. DPB_SIZE - 1
+		do
+			dispPictFull := dispPictFull && (not isDisplayed[i] || isRef[i]);
+		end
 	end
 
 	/** For each we check the index of the reference poc
@@ -469,6 +535,38 @@ actor DecodingPictureBuffer()
 	getCuPix.done: action ==>
 	guard
 		yIdx = picSizeInCu[1]
+	var
+		int(size=32) minPocToDisp := INT_MAX
+	do
+		displayIdx := -1;
+
+		foreach uint i in 0 .. DPB_SIZE - 1
+		do
+			if(not isSent[i] && pocToDisp = pocRef[i]) then
+				displayIdx := i;
+			end
+		end
+		if(displayIdx = -1 &&
+			(numPictInDpb > maxDecPicBuff || displayAllPic || neededForOutput > numReorderPics)) then
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(isSent[i] = false && pocRef[i] <= minPocToDisp &&
+					(not displayAllPic || i != currIdx || numReorderPics = 0)) then
+					displayIdx := i;
+					minPocToDisp := pocRef[i];
+				end
+			end
+		end
+		if(displayIdx = -1  && maxLatencyPic != 0) then
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(isSent[i] = false && pocRef[i] <= minPocToDisp &&
+					picLatencyCount[i] >= maxLatencyPic) then
+					displayIdx := i;
+					minPocToDisp := pocRef[i];
+				end
+			end
+		end
 	end
 
 	getReadAddr: action IsReadOrNewSlc:[isRead], IsBiPredOrLx:[isBiPredOrLx] ==>
@@ -766,6 +864,76 @@ actor DecodingPictureBuffer()
 		not isNewPicture
 	end
 
+	hasNextPicToDisp.isTrue: action ==>
+	guard
+		displayIdx != -1
+	var
+		uint(size=8) pictToDisp = displayIdx,
+		int(size=32) nextPocToDisp := INT_MAX
+	do
+		isSent[displayIdx] := true;
+		pocToDisp := pocRef[displayIdx] + 1;
+		if(not isRef[displayIdx]) then
+			numPictInDpb := numPictInDpb - 1;
+		end
+		neededForOutput := neededForOutput - 1;
+		if(numPictInDpb <= maxDecPicBuff) then
+			displayIdx := -1;
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(not isSent[i] && pocRef[i] = pocToDisp) then
+					displayIdx := i;
+				end
+			end
+			if(displayAllPic) then
+				foreach uint i in 0 .. DPB_SIZE - 1
+				do
+					if(not isSent[i] && pocRef[i] <= nextPocToDisp) then
+						displayIdx := i;
+						nextPocToDisp := pocRef[i];
+					end
+				end
+			end
+		else
+			displayIdx := -1;
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(not isSent[i] && pocRef[i] < nextPocToDisp && pocRef[i] >= pocToDisp) then
+					displayIdx := i;
+					nextPocToDisp := pocRef[i];
+				end
+			end
+			if(displayIdx = -1) then
+				foreach uint i in 0 .. DPB_SIZE - 1
+				do
+					if(not isSent[i] && pocRef[i] <= nextPocToDisp) then
+						displayIdx := i;
+						nextPocToDisp := pocRef[i];
+					end
+				end
+			end
+		end
+		if(displayIdx = -1 && maxLatencyPic != 0) then
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(isSent[i] = false && pocRef[i] <= nextPocToDisp &&
+					picLatencyCount[i] >= maxLatencyPic) then
+					displayIdx := i;
+					nextPocToDisp := pocRef[i];
+				end
+			end
+		end
+		println("pocRef : " + pocRef[displayIdx]);
+		//!TODO : Delete me
+		dispPictFull := dispPictFull && isRef[displayIdx];
+		isDisplayed[displayIdx] := true;
+	end
+	
+	hasNextPicToDisp.isFalse: action ==>
+	guard
+		displayIdx = -1
+	end
+
 	schedule fsm IsFirstNewPic:
 		IsFirstNewPic (isNewPict )--> GetFirstRps;
 
@@ -789,7 +957,7 @@ actor DecodingPictureBuffer()
 		CheckIsNewPict (checkIsNewPict.isFalse )--> IsNewSlice;
 
 		GetCuPix (getPix          )--> GetCuPix;
-		GetCuPix (getCuPix.done   )--> IsNewSlice;
+		GetCuPix (getCuPix.done   )--> HasNextPicToDisp;
 
 		GetMvInfo (getMvInfo.launch )--> CheckLumaWidth;
 		GetMvInfo (getMvInfo.skip   )--> IsNewSlice;
@@ -844,6 +1012,8 @@ actor DecodingPictureBuffer()
 
 		SendCuChroma (sendCu.chroma.launch.is1 )--> SendCuChroma;
 		SendCuChroma (sendCu.chroma.done       )--> GetMvInfo;
+
+		HasNextPicToDisp (hasNextPicToDisp )--> IsNewSlice;
 	end
 	priority
 		getPix > sendCu;
