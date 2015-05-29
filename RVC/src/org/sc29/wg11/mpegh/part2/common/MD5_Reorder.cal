@@ -1,0 +1,313 @@
+/********************************************************************************
+
+This software module was originally developed by 
+EPFL
+in the course of development of the ISO/IEC 23002-5 (Video Tool Library) 
+for reference purposes and its performance may not have been optimized. 
+This software module is an implementation of one or more tools as 
+specified by the ISO/IEC 23002-5.
+
+ISO/IEC gives You a royalty-free, worldwide, non-exclusive, copyright 
+license to copy, distribute, and make derivative works of this software 
+module or modifications thereof for use in implementations of the 
+ISO/IEC 23002-5 in products that satisfy conformance criteria (if any). 
+
+Those intending to use this software module in products are advised that 
+its use may infringe existing patents. ISO/IEC have no liability for use 
+of this software module or modifications thereof.
+
+Copyright is not released for products that do not conform to audiovisual 
+and image-coding related ITU Recommendations and/or ISO/IEC International 
+Standards.
+
+Assurance that the originally developed software module can be used 
+(1) in the ISO/IEC 23002-5 once the ISO/IEC 23002-5 has been adopted; and 
+(2) to develop the ISO/IEC 23002-5: 
+
+EPFL grants ISO/IEC all rights necessary to 
+include the originally developed software module or modifications thereof 
+in the ISO/IEC 23002-5 and to permit ISO/IEC to offer You a royalty-free, 
+worldwide, non-exclusive, copyright license to copy, distribute, and make 
+derivative works for use in implementations of the ISO/IEC 23002-5 in 
+products that satisfy conformance criteria (if any), and to the extent 
+that such originally developed software module or portions of it are 
+included in the ISO/IEC 23002-5.  To the extent that EPFL
+owns patent rights that would be required to make, use, or 
+sell the originally developed software module or portions thereof 
+included in the ISO/IEC 23002-5 in a conforming product, EPFL
+will assure the ISO/IEC that it is willing to 
+negotiate licenses under reasonable and non-discriminatory terms and 
+conditions with applicants throughout the world.
+
+ISO/IEC gives You a free license to this software module or modifications 
+thereof for the sole  purpose of developing theISO/IEC 23002-5
+
+EPFL retains full right to modify and use the 
+code for its own purpose, assign or donate the code to a third party and 
+to inhibit third parties from using the code for products that do not 
+conform to MPEG-related ITU Recommendations and/or ISO/IEC International 
+Standards. 
+
+This copyright notice must be included in all copies or derivative works. 
+Copyright (c) ISO/IEC 2011-2014.
+*****************************************************************************/
+package org.sc29.wg11.mpegh.part2.common;
+
+import std.util.Math.*;
+import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
+import org.sc29.wg11.mpegh.part2.main.inter.DecodingPictureBufferFunctions.*;
+import org.sc29.wg11.mpegh.part2.main.synParser.Algo_ParserUtils.*;
+
+actor MD5_Reorder()
+	uint(size=8)  ReorderPics,
+	int (size=16) Poc,
+	uint(size= 8) Md5_in
+		==>
+	uint(size= 8) Md5_out
+		:
+
+	int(size=32) INT_MIN = -(1<<31);
+	int(size=32) INT_MAX = 0x7FFFFFFF;
+
+	uint(size=5)  picLatencyCount[DPB_SIZE];
+	uint(size=3)  picTID[DPB_SIZE];
+	int (size=16) pocRef[DPB_SIZE];
+	bool          isSent[DPB_SIZE] := [true: for int i in 0 .. DPB_SIZE - 1];
+
+	uint(size=8)  md5Buff[DPB_SIZE][3+16*3];
+	uint(size=8)  numTokenToSend[DPB_SIZE];
+
+	uint(size=8)  tokenIdx := 0;
+
+	int (size=9)  currIdx := -1;
+	int (size=9)  displayIdx := -1;
+	int (size=32) pocToDisp  := INT_MIN;
+	bool          displayAllPic;
+	uint(size=8)  numReorderPics;
+	uint(size=8)  maxDecPicBuff;
+	uint(size=8)  maxLatencyPic;
+	uint(size=5)  neededForOutput := 0;
+	uint(size=5)  numPictInDpb := 0;
+
+	isNewPict: action Poc:[poc],
+						ReorderPics:[no_output_of_prior_pics_flag, pic_output_flag, num_reorder_pics, max_dec_pic_buff, max_latency_pict, pictTID, decoderTID] ==>
+	do
+		foreach uint i in 0 .. DPB_SIZE - 1
+		do
+			if(isSent[i]) then
+				currIdx := i;
+			end
+		end
+		numTokenToSend[currIdx] := 0;
+		pocRef[currIdx] := poc;
+		isSent[currIdx] := (pic_output_flag = 0);
+		picTID[currIdx] := pictTID;
+		if(pic_output_flag != 0) then
+			neededForOutput := neededForOutput + 1;
+		end
+		numPictInDpb := numPictInDpb + 1;
+		numReorderPics := num_reorder_pics;
+		maxDecPicBuff := min(max_dec_pic_buff, DPB_SIZE);
+		maxLatencyPic := min(max_latency_pict, DPB_SIZE);
+		displayAllPic := false;
+		if((no_output_of_prior_pics_flag & NO_RASL_OUTPUT_FLAG) != 0) then
+			if((no_output_of_prior_pics_flag & 1) = 0) then
+				displayAllPic := true;
+			else
+				foreach uint i in 0 .. DPB_SIZE - 1
+				do
+					if(i != currIdx) then
+						isSent[i] := true;
+					end
+				end
+			end
+			neededForOutput := 1;
+			numPictInDpb := 1;
+		end
+		picLatencyCount[currIdx] := 0;
+		foreach int i in 0 .. DPB_SIZE - 1
+		do
+			if(currIdx != i) then
+				picLatencyCount[i] := picLatencyCount[i] + 1;
+			end
+			//Do not display decoded pictures with TID > decoderTID.
+			if(picTID[i] > decoderTID) then
+				isSent[i] := true;
+			end
+		end
+	end
+
+	checkIsNewPict.isTrue: action ==>
+	var
+		int(size=32) minPocToDisp := INT_MAX
+	do
+		displayIdx := -1;
+
+		foreach uint i in 0 .. DPB_SIZE - 1
+		do
+			if(not isSent[i] && pocToDisp = pocRef[i]) then
+				displayIdx := i;
+			end
+		end
+		if(displayIdx = -1 &&
+			(numPictInDpb > maxDecPicBuff || displayAllPic || neededForOutput > numReorderPics)) then
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(isSent[i] = false && pocRef[i] <= minPocToDisp &&
+					(not displayAllPic || i != currIdx || numReorderPics = 0)) then
+					displayIdx := i;
+					minPocToDisp := pocRef[i];
+				end
+			end
+		end
+		if(displayIdx = -1  && maxLatencyPic != 0) then
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(isSent[i] = false && pocRef[i] <= minPocToDisp &&
+					picLatencyCount[i] >= maxLatencyPic) then
+					displayIdx := i;
+					minPocToDisp := pocRef[i];
+				end
+			end
+		end
+	end
+
+	hasNextPicToDisp.isTrue: action ==>
+	guard
+		displayIdx != -1
+	end
+	
+	hasNextPicToDisp.isFalse: action ==>
+	guard
+		displayIdx = -1
+	end
+
+	searchForNextPict: action ==>
+	var
+		int(size=32) nextPocToDisp := INT_MAX
+	do
+		isSent[displayIdx] := true;
+		pocToDisp := pocRef[displayIdx] + 1;
+		numPictInDpb := numPictInDpb - 1;
+		neededForOutput := neededForOutput - 1;
+
+		//Search for next picture to display.
+		if(numPictInDpb <= maxDecPicBuff) then
+			displayIdx := -1;
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(not isSent[i] && pocRef[i] = pocToDisp) then
+					displayIdx := i;
+				end
+			end
+			if(displayAllPic) then
+				foreach uint i in 0 .. DPB_SIZE - 1
+				do
+					if(not isSent[i] && pocRef[i] <= nextPocToDisp) then
+						displayIdx := i;
+						nextPocToDisp := pocRef[i];
+					end
+				end
+			end
+		else
+			displayIdx := -1;
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(not isSent[i] && pocRef[i] < nextPocToDisp && pocRef[i] >= pocToDisp) then
+					displayIdx := i;
+					nextPocToDisp := pocRef[i];
+				end
+			end
+			if(displayIdx = -1) then
+				foreach uint i in 0 .. DPB_SIZE - 1
+				do
+					if(not isSent[i] && pocRef[i] <= nextPocToDisp) then
+						displayIdx := i;
+						nextPocToDisp := pocRef[i];
+					end
+				end
+			end
+		end
+		if(displayIdx = -1 && maxLatencyPic != 0) then
+			foreach uint i in 0 .. DPB_SIZE - 1
+			do
+				if(isSent[i] = false && pocRef[i] <= nextPocToDisp &&
+					picLatencyCount[i] >= maxLatencyPic) then
+					displayIdx := i;
+					nextPocToDisp := pocRef[i];
+				end
+			end
+		end
+	end
+
+	checkMD5Present.isTrue: action Md5_in:[md5Pres] ==>
+	guard
+		md5Pres = 1
+	do
+		md5Buff[currIdx][numTokenToSend[currIdx]] := 1;
+		numTokenToSend[currIdx] := numTokenToSend[currIdx] + 1;
+	end
+
+	checkMD5Present.isFalse: action Md5_in:[md5Pres] ==> 
+	guard
+		md5Pres = 0
+	do
+		md5Buff[currIdx][numTokenToSend[currIdx]] := 0;
+		numTokenToSend[currIdx] := numTokenToSend[currIdx] + 1;
+	end
+
+	getMd5: action Md5_in:[md5In] repeat 16 ==>
+	do
+		foreach int i in 0 .. 15
+		do
+			md5Buff[currIdx][numTokenToSend[currIdx] + i] := md5In[i];
+		end
+		numTokenToSend[currIdx] := numTokenToSend[currIdx] + 16;
+	end
+
+	sendMd5.launch: action ==> Md5_out:[md5Buff[displayIdx][tokenIdx - 1]]
+	guard
+		tokenIdx < numTokenToSend[displayIdx]
+	do
+		tokenIdx := tokenIdx + 1;
+	end
+
+	sendMd5.done: action ==>
+	guard
+		tokenIdx = numTokenToSend[displayIdx]
+	do
+		tokenIdx := 0;
+	end
+
+
+	schedule fsm IsNewSlice:
+		IsNewSlice (isNewPict   )--> CheckMd5Pres_Y;
+
+
+		//Get md5 info for Y component.
+		CheckMd5Pres_Y (checkMD5Present.isTrue  )--> GetMd5_Y;
+		CheckMd5Pres_Y (checkMD5Present.isFalse )--> CheckMd5Pres_U;
+		GetMd5_Y       (getMd5                  )--> CheckMd5Pres_U;
+
+		//Get md5 info for U component.
+		CheckMd5Pres_U (checkMD5Present.isTrue  )--> GetMd5_U;
+		CheckMd5Pres_U (checkMD5Present.isFalse )--> CheckMd5Pres_V;
+		GetMd5_U       (getMd5                  )--> CheckMd5Pres_V;
+
+		//Get md5 info for V component.
+		CheckMd5Pres_V (checkMD5Present.isTrue  )--> GetMd5_V;
+		CheckMd5Pres_V (checkMD5Present.isFalse )--> CheckIsNewPict;
+		GetMd5_V       (getMd5                  )--> CheckIsNewPict;
+
+
+		CheckIsNewPict (checkIsNewPict.isTrue  )--> HasNextPicToDisp;
+
+		HasNextPicToDisp (hasNextPicToDisp.isTrue  )--> SendMd5;
+		HasNextPicToDisp (hasNextPicToDisp.isFalse )--> IsNewSlice;
+
+		SendMd5 (sendMd5.launch )--> SendMd5;
+		SendMd5 (sendMd5.done   )--> SearchForNextPict;
+
+		SearchForNextPict (searchForNextPict )--> HasNextPicToDisp;
+	end
+end
