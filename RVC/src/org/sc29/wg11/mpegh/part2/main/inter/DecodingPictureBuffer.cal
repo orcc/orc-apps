@@ -392,25 +392,23 @@ actor DecodingPictureBuffer()
 		end
 	end
 
-	/** Getting informations from new slice/picture. Updating these informations **/
-	isNewSlice: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix,
-		picHeightInPix], Poc:[poc], IsPicSlc:[isPicSlc] ==>
+	isNewSliceOrPict: action IsReadOrNewSlc:[isRead] ==>
 	guard
-		/* Fix me : We should know when there is a new picture */
-		isPicSlc = 1,
-		isRead = 0 and if currIdx = -1 then false else poc = pocRef[currIdx] end
+		isRead = 0
+	end
+
+	/** Getting informations from new slice/picture. Updating these informations **/
+	isNewSlice: action PicSize:[picWidthInPix,
+		picHeightInPix], Poc:[poc] ==>
 	do
 		isNewPicture := false;
 		nbList := 0;
 		isStillRef := [false: for int i in 0 .. DPB_SIZE - 1];
 	end
 
-	isNewPict: action IsReadOrNewSlc:[isRead], PicSize:[picWidthInPix, picHeightInPix], 
-						Poc:[poc], IsPicSlc:[isPicSlc], 
+	isNewPict: action PicSize:[picWidthInPix, picHeightInPix], Poc:[poc],
 						ReorderPics:[no_output_of_prior_pics_flag, pic_output_flag, num_reorder_pics, max_dec_pic_buff, max_latency_pict, pictTID, decoderTID] ==>
-	guard
-		isPicSlc = 0,
-		isRead = 0 and not(if currIdx = -1 then false else poc = pocRef[currIdx] end)
+
 	do
 		picSizeInCu[0] := (picWidthInPix+15)/16;
 		picSizeInCu[1] := (picHeightInPix+15)/16;
@@ -851,14 +849,14 @@ actor DecodingPictureBuffer()
 		compIdx = 3
 	end
 
-	checkIsNewPict.isTrue: action ==>
+	checkIsNewPict.isTrue: action IsPicSlc:[isPicSlc] ==>
 	guard
-		isNewPicture
+		isPicSlc = 0
 	end
 
-	checkIsNewPict.isFalse: action ==>
+	checkIsNewPict.isFalse: action IsPicSlc:[isPicSlc] ==>
 	guard
-		not isNewPicture
+		isPicSlc = 1
 	end
 
 	hasNextPicToDisp.isTrue: action ==>
@@ -988,18 +986,19 @@ uint prevPocRef := -1;
 
 
 
-	schedule fsm IsFirstNewPic:
-		IsFirstNewPic (isNewPict )--> GetFirstRps;
+	schedule fsm IsFirstNewSliceOrPic:
+		IsFirstNewSliceOrPic (isNewSliceOrPict      )--> CheckFirstNewPict;
+		CheckFirstNewPict    (checkIsNewPict.isTrue )--> IsFirstNewPic;
+		IsFirstNewPic        (isNewPict             )--> GetFirstRps;
 
 		GetFirstRps (getRps.launch )--> GetRpsFirstPoc;
-		GetFirstRps (getRps.done   )--> IsNewSlice;
+		GetFirstRps (getRps.done   )--> CheckReadPicBuf;
 
 		GetRpsFirstPoc (getRpsPoc.launch )--> GetRpsFirstPoc;
 		GetRpsFirstPoc (getRpsPoc.done   )--> GetFirstRps;
 
-		IsNewSlice (isNewPict   )--> GetRps;
-		IsNewSlice (isNewSlice  )--> GetRps;
-		IsNewSlice (getReadAddr )--> GetMvInfo;
+		CheckReadPicBuf (getReadAddr      )--> GetMvInfo;
+		CheckReadPicBuf (isNewSliceOrPict )--> GetRps;
 
 		GetRps (getRps.launch )--> GetRpsPoc;
 		GetRps (getRps.done   )--> CheckIsNewPict;
@@ -1007,15 +1006,18 @@ uint prevPocRef := -1;
 		GetRpsPoc (getRpsPoc.launch )--> GetRpsPoc;
 		GetRpsPoc (getRpsPoc.done   )--> GetRps;
 
-		CheckIsNewPict (checkIsNewPict.isTrue  )--> GetCuPix;
-		CheckIsNewPict (checkIsNewPict.isFalse )--> IsNewSlice;
+		CheckIsNewPict (checkIsNewPict.isTrue  )--> IsNewPic;
+		CheckIsNewPict (checkIsNewPict.isFalse )--> IsNewSlc;
+
+		IsNewPic (isNewPict   )--> GetCuPix;
+		IsNewSlc (isNewSlice  )--> CheckReadPicBuf;
 
 		GetCuPix (getPix          )--> GetCuPix;
 		GetCuPix (getCuPix.done   )--> HasNextPicToDisp;
 
 		GetMvInfo (getMvInfo.launch )--> CheckLumaWidth;
-		GetMvInfo (getMvInfo.skip   )--> IsNewSlice;
-		GetMvInfo (getMvInfo.done   )--> IsNewSlice;
+		GetMvInfo (getMvInfo.skip   )--> CheckReadPicBuf;
+		GetMvInfo (getMvInfo.done   )--> CheckReadPicBuf;
 
 		CheckLumaWidth (lumaWidth.is71    )--> SendCuLuma71;
 		CheckLumaWidth (lumaWidth.is39    )--> SendCuLuma39;
@@ -1068,10 +1070,10 @@ uint prevPocRef := -1;
 		SendCuChroma (sendCu.chroma.done       )--> GetMvInfo;
 
 		HasNextPicToDisp (hasNextPicToDisp.isTrue  )--> SendPix;
-		HasNextPicToDisp (hasNextPicToDisp.isFalse )--> IsNewSlice;
+		HasNextPicToDisp (hasNextPicToDisp.isFalse )--> CheckReadPicBuf;
 
 		SendPix (sendPix.launch )--> SendPix;
-		SendPix (sendPix.done   )--> HasNextPicToDisp;
+		SendPix (sendPix.done   )--> CheckReadPicBuf;
 	end
 	priority
 		getPix > sendCu;
