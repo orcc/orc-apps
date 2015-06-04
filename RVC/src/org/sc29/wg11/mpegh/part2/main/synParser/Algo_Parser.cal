@@ -253,8 +253,12 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             	vld_u(3, fifo, res);
             	currentTID := res[0] - 1;
             end
+            if(isVclNal(nal_unit_type)) then
+	            numPicDecoded := numPicDecoded + 1;
+								end
             se_idx := 1;
         end
+uint numPicDecoded := 0;
         /**************************************************************************
          * look_for.VPS_header
          *************************************************************************/
@@ -356,6 +360,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 				noRaslOutput := false;
             	skipCurrentNal := skipTrailAndRADL ||
             		(skipRASL && nal_unit_type != NAL_RADL_N && nal_unit_type != NAL_RADL_R);
+            	if(skipCurrentNal) then
+										print("skippedNal :\t");
+	            	printNalUnitType(nal_unit_type);
+	            	println("");
+            	end	
             end
 //            printNalUnitType(nal_unit_type);
 //            println("\t\tTid : " + currentTID);
@@ -1111,44 +1120,46 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			uint(size=32) res[1]
 		do
 			vld_ue_name(    fifo, res, "sps_max_dec_pic_buffering               ");
-	            if(not sps_sub_layer_ordering_info_present_flag) then
-		            sps_max_dec_pic_buffering[cnt_i] := res[0] + 1;
-				else
-					foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
-					do
-			            sps_max_dec_pic_buffering[i] := res[0] + 1;
-					end
+			if(sps_sub_layer_ordering_info_present_flag) then
+				sps_max_dec_pic_buffering[cnt_i] := res[0] + 1;
+			else
+				foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
+				do
+					sps_max_dec_pic_buffering[i] := res[0] + 1;
 				end
+			end
+
 			vld_ue_name(    fifo, res, "sps_num_reorder_pics                    ");
-	            if(not sps_sub_layer_ordering_info_present_flag) then
-		            sps_num_reorder_pics[cnt_i] := res[0];
+			if(sps_sub_layer_ordering_info_present_flag) then
+				sps_num_reorder_pics[cnt_i] := res[0];
+			else
+				foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
+				do
+					sps_num_reorder_pics[i] := res[0];
+				end
+			end
+
+			vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
+			if(sps_sub_layer_ordering_info_present_flag) then
+				if(res[0] = 0) then
+					sps_max_latency_pict[cnt_i] := 0;
+				else
+					sps_max_latency_pict[cnt_i] := sps_num_reorder_pics[cnt_i] + res[0] - 1;
+				end
+			else
+				if(res[0] = 0) then
+					foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
+					do
+						sps_max_latency_pict[i] := 0;
+					end
 				else
 					foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
 					do
-			            sps_num_reorder_pics[i] := res[0];
+						sps_max_latency_pict[i] := sps_num_reorder_pics[0] + res[0] - 1;
 					end
 				end
-			vld_ue_name(    fifo, res, "sps_max_latency_increase                ");
-	            if(not sps_sub_layer_ordering_info_present_flag) then
-	            	if(res[0] = 0) then
-	            		sps_max_latency_pict[cnt_i] := 0;
-	            	else
-		            	sps_max_latency_pict[cnt_i] := sps_num_reorder_pics[cnt_i] + res[0] - 1;
-		            end
-				else
-	            	if(res[0] = 0) then
-						foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
-						do
-				            sps_max_latency_pict[i] := 0;
-						end
-	            	else
-						foreach int i in 0 .. sps_max_sub_layers_minus1[sps_id]
-						do
-				            sps_max_latency_pict[i] := sps_num_reorder_pics[0] + res[0] - 1;
-						end
-		            end
-				end
-	            cnt_i := cnt_i + 1;
+			end
+			cnt_i := cnt_i + 1;
 		end
 	
 		read_SPS_Header.se_idx_3.loopEnd : action ==>
@@ -2029,12 +2040,6 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 			if nal_unit_type >= 16 and nal_unit_type <= 23 then
 				vld_u_name(  1, fifo, res, "no_output_of_prior_pics_flag            ");
 				no_output_of_prior_pics_flag := res[0];
-			end
-			//Affects the output of previously-decoded pictures in the decoded picture buffer
-			//after the decoding of an IDR or a BLA picture that is not the first picture
-			//in the bitstream
-			if(noRaslOutput) then
-				no_output_of_prior_pics_flag := no_output_of_prior_pics_flag + NO_RASL_OUTPUT_FLAG;
 			end
 	        vld_ue_name(    fifo, res, "slice_pic_parameter_set_id              ");
 	        pps_id := res[0];
@@ -3264,16 +3269,21 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         								SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
         								, PicSizeInMb:[pictSize] repeat 2, DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1]
         								, LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_tile_enabled_flag[pps_id]<<1)],
-        								ReorderPics:[no_output_of_prior_pics_flag, pic_output_flag, num_reorder_pics, max_dec_pic_buff, max_latency_pict, currentTID, decoderTID],
+        								ReorderPics:[no_output_of_prior_pics, pic_output_flag, num_reorder_pics, max_dec_pic_buff, max_latency_pict, currentTID, decoderTID],
         								 PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2
         guard
                 sliceData_idx = 1 and isFifoFull(fifo),
                 first_slice_segment_in_pic_flag = 1 or prev_pps_id != pps_id
         var
-        
-        		uint(size=8) max_dec_pic_buff = sps_max_dec_pic_buffering[min(decoderTID, sps_max_sub_layers_minus1[sps_id])],
-        		uint(size=8) num_reorder_pics = sps_num_reorder_pics[min(decoderTID, sps_max_sub_layers_minus1[sps_id])],
-        		uint(size=8) max_latency_pict = sps_max_latency_pict[min(decoderTID, sps_max_sub_layers_minus1[sps_id])],
+        		uint(size=8) no_output_of_prior_pics :=
+        			if isIRAP(nal_unit_type) then
+        				no_output_of_prior_pics_flag + NEW_CVS
+        			else
+        				no_output_of_prior_pics_flag
+        			end,
+        		uint(size=8) max_dec_pic_buff = sps_max_dec_pic_buffering[currentTID],
+        		uint(size=8) num_reorder_pics = sps_num_reorder_pics[currentTID],
+        		uint(size=8) max_latency_pict = sps_max_latency_pict[currentTID],
                 uint(size= 8) num_tile_columns_minus1           = pps_num_tile_columns_minus1[pps_id],
                 uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
                 uint(size=16) ColBd[PICT_WIDTH / MIN_CTB_SIZE_Y],
@@ -4247,8 +4257,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf :[false],
                  PartMode:[PART_2Nx2N], SplitTransform:[false]
                  , TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
-                                                                                                                                1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0, //cb
-                                                                                                                                1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
+                          1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0, //cb
+                          1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
                                                                                                                                 
         guard
                 cu_idx = 2,
@@ -4576,8 +4586,8 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         end
 
         read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
-                                                                                                                                1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,     //cb
-                                                                                                                                1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
+                                                                                     1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,     //cb
+                                                                                     1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
                                                                                                                                 Cbf:[false]
         guard
             cu_idx = 11
