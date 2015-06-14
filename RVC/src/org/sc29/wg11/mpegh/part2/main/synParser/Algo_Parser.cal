@@ -3472,6 +3472,10 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	        se_idx := 302;
 		end
 		
+		int active_num_ILR_ref_idx;
+		uint(size = 1) inter_layer_pred_enabled_flag;
+		int inter_layer_pred_layer_idc[3];
+		
 		read_SliceHeader.se_idx_14 : action  ==> 
 		guard
 			se_idx = 302 and isFifoFull(fifo)
@@ -3481,7 +3485,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 		    uint(size=16) row_height[PICT_HEIGHT / MIN_CTB_SIZE_Y]  = [pps_row_height[pps_id][ i ] : for int i in 0 .. (PICT_HEIGHT / MIN_CTB_SIZE_Y)-1],
 		    uint(size= 8) num_tile_columns_minus1           = pps_num_tile_columns_minus1[pps_id],
 		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
-		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id]
+		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id],
+		    int NumILRRefIdx,
+		    int numBits
 		do
 	        if (temporal_id = 0 and nal_unit_type != NAL_TRAIL_N and
 	            nal_unit_type != NAL_TSA_N   and
@@ -3491,6 +3497,34 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 	            nal_unit_type != NAL_RASL_N  and
 	            nal_unit_type != NAL_RASL_R) then
 		    end
+		    
+		    active_num_ILR_ref_idx := 0;
+        	NumILRRefIdx := vps_m_numDirectRefLayers[nuh_layer_id];
+        	if (nuh_layer_id > 0 && NumILRRefIdx>0) then
+	        	vld_u_name(  1, fifo, res, "inter_layer_pred_enabled_flag           ");
+	            inter_layer_pred_enabled_flag := res[0];
+	            if (inter_layer_pred_enabled_flag != 0) then
+	                if (NumILRRefIdx>1)  then
+	                    numBits := 1;
+	                    while ((1 << numBits) < NumILRRefIdx) do
+	                        numBits := numBits + 1;
+	                    end
+	                    if (vps_max_one_active_ref_layer_flag = 0) then
+	                    	vld_u_name(  numBits, fifo, res, "num_inter_layer_ref_pics_minus1         ");
+	                        active_num_ILR_ref_idx := res[0];
+	                    else
+	                        active_num_ILR_ref_idx := 1;
+	                    end
+	                    foreach int i in 0 .. active_num_ILR_ref_idx - 1 do
+	                    	vld_u_name(  numBits, fifo, res, "inter_layer_pred_layer_idc              ");
+	                        inter_layer_pred_layer_idc[i] :=  res[0];
+	                    end
+	               	else
+	                    active_num_ILR_ref_idx := 1;
+	                    inter_layer_pred_layer_idc[0] := 0;
+	                end
+	            end
+        	end
 	        
 	        if( sps_sample_adaptive_offset_enabled_flag[sps_id] = 1) then
 	            vld_u_name(  1, fifo, res, "slice_sao_luma_flag                     ");
@@ -3614,26 +3648,37 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
 
                 ref_pic_list_modification_flag_lx[0] := 0;
                 ref_pic_list_modification_flag_lx[1] := 0;
-
-                foreach int i in 0 ..
-                pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]- 1 do
-                	if
-                	(pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED + i] = 1) then
-                		NumPocTotalCurr := NumPocTotalCurr + 1;
-                	end
-                end
-
-                foreach int i in pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] .. pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]-1 do
-                    if (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+i] = 1) then
-                        NumPocTotalCurr := NumPocTotalCurr + 1;
-                    end
-                end
-
-                foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
-                    if ( UsedByCurrPicLt[i] = 1) then
-                        NumPocTotalCurr := NumPocTotalCurr + 1;
-                    end
-                end
+				
+				if nuh_layer_id > 0 && nal_unit_type >= NAL_BLA_W_LP && nal_unit_type <= NAL_CRA_NUT then
+					NumPocTotalCurr := active_num_ILR_ref_idx;
+				else	  
+				
+	                foreach int i in 0 ..
+	                pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]- 1 do
+	                	if
+	                	(pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED + i] = 1) then
+	                		NumPocTotalCurr := NumPocTotalCurr + 1;
+	                	end
+	                end
+	
+	                foreach int i in pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] .. pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]-1 do
+	                    if (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+i] = 1) then
+	                        NumPocTotalCurr := NumPocTotalCurr + 1;
+	                    end
+	                end
+	
+	                foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
+	                    if ( UsedByCurrPicLt[i] = 1) then
+	                        NumPocTotalCurr := NumPocTotalCurr + 1;
+	                    end
+	                end
+	                
+				    if nuh_layer_id != 0 then
+				        foreach int i in 0 .. vps_max_one_active_ref_layer_flag - 1 do
+				        	NumPocTotalCurr := NumPocTotalCurr + 1;
+				        end
+				    end
+	            end
 
                 if pps_lists_modification_present_flag[pps_id] = 1 and NumPocTotalCurr > 1 then
                     vld_u_name(  1, fifo, res, "ref_pic_list_modification_flag_l0       ");
