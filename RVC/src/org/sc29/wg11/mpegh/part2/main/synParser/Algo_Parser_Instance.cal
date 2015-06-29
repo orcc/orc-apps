@@ -54,6 +54,7 @@ Copyright (c) ISO/IEC 2011-2014.
 
 *****************************************************************************/
 // Modified by Damien de Saint Jorre (EPFL)
+// Modified by Junaid Jameel Ahmad (EPFL)
 package org.sc29.wg11.mpegh.part2.main.synParser;
 
 import  std.util.Math.*;
@@ -81,15 +82,12 @@ actor Algo_Parser_Instance (uint(size=8) PARSER_ID, uint(size=8) TOTAL_PARSERS)
                                 uint(size=16) RealTilesCoord,
                                 uint(size= 8) LcuSizeMax,
                                 uint(size= 4) PartMode,
-                                uint(size= 4) PartModeSH,
                					uint(size= 2) IsPicSlcLcu,
-               					uint(size= 2) IsPicSlcLcuSH,
                					uint(size= 2) IsPicSlc,
                 				uint(size= 2) LFAcrossSlcTile,
                                 uint(size=16) PictSize,
                                  int(size=16) Poc,
                                  int(size= 9) SaoSe,
-                                 int(size= 9) SaoSeSH,
                                 uint(size= 8) SEI_MD5,
                                 uint(size= 2) SliceType,
                                 bool          SplitTransform,
@@ -102,7 +100,6 @@ actor Algo_Parser_Instance (uint(size=8) PARSER_ID, uint(size=8) TOTAL_PARSERS)
                                 uint(size= 4) RefPicListModif,
                                  int(size=16) RefPoc,
                                  int(size=16) MvPredSyntaxElem,
-                                 int(size=16) MvPredSyntaxElemSH,
                                 bool		  Cbf,
                                 bool		  DBFDisable,
                                  int(size= 8) DbfSe,
@@ -124,47 +121,39 @@ actor Algo_Parser_Instance (uint(size=8) PARSER_ID, uint(size=8) TOTAL_PARSERS)
         uint(size= 8) localizeAEB := 0;
         uint NUM_ENTRY_MAX = 64;
         uint entryOffsetsTab[NUM_ENTRY_MAX];
-        //uint(size=8) curr_Tile := TilesInfo[1];
         bool byPassFlag := false;
-        //JJ uint(size=8) TilesInfo[2];
-        uint(size=8) PARSER_INFO[2] := [0, 1];
         
-        bool DEBUG_MULTI_PARSER_HEADER := false;
-        bool DEBUG_MULTI_PARSER_DATA := false;
-        bool DEBUG_MULTI_CT_DATA := false;
-        bool DEBUG_MULTI_CQT_DATA := false;
-        bool DEBUG_MULTI_CU_DATA := false;
-        bool DEBUG_MULTI_PU_DATA := false;
-        bool DEBUG_MULTI_RQT_DATA := false;
-        bool DEBUG_MULTI_TU_DATA := false;
+bool DEBUG_MULTI_PARSER_HEADER := false;
+bool DEBUG_MULTI_PARSER_DATA := false;
+bool DEBUG_MULTI_CT_DATA := false;
+bool DEBUG_MULTI_CQT_DATA := false;
+bool DEBUG_MULTI_CU_DATA := false;
+bool DEBUG_MULTI_RQT_DATA := false;
 
+        // Multi-Parser
+        uint(size=8) PARSER_INFO[2] := [0, 1];
+        uint nbUnitsToSkip := PARSER_INFO[0];
+        int(size=64) nbTilesProcessed := 0;
+        
         // For each Slice Header (SH).
         uint(size=16) nbTokensPerSH[25] := [0: for int i in 0 .. 24];
         // For each CTU.
-        uint(size=16) NbTokens[12] := [0: for int i in 0 .. 11];
+        uint(size=16) NbTokensPerCTU[12] := [0: for int i in 0 .. 11];
         
         procedure resetNbTokensPerSH()
         begin
 	        nbTokensPerSH := [0: for int i in 0 .. 24];        
         end
 
-        procedure resetNbTokens()
+        procedure resetNbTokensPerCTU()
         begin
-	        NbTokens := [0: for int i in 0 .. 11];        
+	        NbTokensPerCTU := [0: for int i in 0 .. 11];
         end
-                
+
         initialize ==>
         do
         	nbUnitsToSkip := PARSER_ID;
         	PARSER_INFO := [PARSER_ID, TOTAL_PARSERS];
-println("Initialize: PARSER_ID "+PARSER_INFO[0]+" TOTAL_PARSERS "+PARSER_INFO[1]+" nbUnitsToSkip= "+nbUnitsToSkip);
-/*			
-			if(PARSER_ID = 1) then
-		        DEBUG_MULTI_CQT_DATA := true;
-		        DEBUG_MULTI_CU_DATA := true;
-		        DEBUG_MULTI_RQT_DATA := true;			
-			end*/
-			
         end
 
 		function updateDecoderTid(uint(size=6) nal_unit_type) --> uint(size=3)
@@ -1716,7 +1705,6 @@ uint numPicDecoded := 0;
 	    do
 	        vld_ue_name(    fifo, res, "column_width[ ]                         ");
 	        pps_column_width[pps_id][cnt_i] := res[0] + 1;
-println("Parser:"+PARSER_ID+" pps_column_width["+pps_id+"]["+cnt_i+"] = "+pps_column_width[pps_id][cnt_i]);
 	        sum := sum + pps_column_width[pps_id][cnt_i];
 	        if cnt_i >= (PICT_WIDTH / MIN_CTB_SIZE_Y) then
 	                println("Error read_PPS_Header.se_idx_3.loop : "+cnt_i+" >= "+(PICT_WIDTH / MIN_CTB_SIZE_Y));
@@ -1756,7 +1744,6 @@ println("Parser:"+PARSER_ID+" pps_column_width["+pps_id+"]["+cnt_i+"] = "+pps_co
 	    do
 	        vld_ue_name(    fifo, res, "row_height[ ]                           ");
 	        pps_row_height[pps_id][cnt_i] := res[0] + 1;
-println("Parser:"+PARSER_ID+" pps_row_height["+pps_id+"]["+cnt_i+"] = "+pps_row_height[pps_id][cnt_i]);
 	        sum := sum + pps_row_height[pps_id][cnt_i];
 	        if cnt_i >= (PICT_HEIGHT / MIN_CTB_SIZE_Y) then
 	        	println("Error read_PPS_Header.se_idx_4.loop : "+cnt_i+" >= "+(PICT_HEIGHT / MIN_CTB_SIZE_Y));
@@ -2089,8 +2076,6 @@ end
 	        PicWidthInCtbsY   := ( sps_pic_width_in_luma_samples[sps_id]  + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
 	        PicHeightInCtbsY  := ( sps_pic_height_in_luma_samples[sps_id] + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
 	        PicSizeInCtbsY    := PicWidthInCtbsY * PicHeightInCtbsY;
-	        
-	        //JJ TilesInfo := [TILE_SPLIT_ENABLE, TILE_INDEX];
 
 	        vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
 	        first_slice_segment_in_pic_flag := res[0];
@@ -2145,7 +2130,7 @@ println("Parser:"+PARSER_ID+" read_SliceHeader.se_idx_1 "+se_idx);
 end			
 	    end
 
-		read_SliceHeader.sendMD5.launch: action ==> SEI_MD5:[0, 0, 0], PartModeSH:[part_mode]
+		read_SliceHeader.sendMD5.launch: action ==> SEI_MD5:[0, 0, 0], PartMode:[part_mode]
 		guard
 			se_idx = 400 and first_slice_segment_in_pic_flag = 1 and
 			md5_needed
@@ -2164,7 +2149,7 @@ println("Parser:"+PARSER_ID+" read_SliceHeader.sendMD5.launch "+se_idx);
 end	        
 		end
 
-		read_SliceHeader.sendMD5.skip: action ==> PartModeSH:[part_mode]
+		read_SliceHeader.sendMD5.skip: action ==> PartMode:[part_mode]
 		guard
 			se_idx = 400 and (first_slice_segment_in_pic_flag = 0 or
 			not md5_needed)
@@ -2523,22 +2508,6 @@ end
 
             pictOrTileSize[0] := pictSize[0];	// Replacement to following code block.
             pictOrTileSize[1] := pictSize[1];	// Replacement to following code block.
-	        /*JJ if TILE_SPLIT_ENABLE = 0 then // no tiles split : send image size
-	            pictOrTileSize[0] := pictSize[0];
-	            pictOrTileSize[1] := pictSize[1];
-	        else // tiles split : send current tile size
-	            colIndex := TilesInfo[1]  mod (num_tile_columns_minus1+1);
-	            rowIndex := TilesInfo[1]  div (num_tile_columns_minus1+1);
-	
-	            pictOrTileSize[0] := colTileInPix[colIndex + 1] - colTileInPix[colIndex];
-	            pictOrTileSize[1] := rowTileInPix[rowIndex + 1] - rowTileInPix[rowIndex];
-	            if TilesInfo[1] != 0 then
-	                prevColIndex := (TilesInfo[1] - 1)  mod (num_tile_rows_minus1+1);
-	        		prevRowIndex := (TilesInfo[1] - 1)  div (num_tile_columns_minus1+1);
-	                prevTileCoord[0] := colTileInPix[prevColIndex + 1];
-	                prevTileCoord[1] := rowTileInPix[prevRowIndex + 1];
-	            end
-	        end*/
 	        se_idx := 2;
 if(DEBUG_MULTI_PARSER_HEADER) then	        
 println("Parser:"+PARSER_ID+" read_SliceHeader.se_idx_14");
@@ -2704,8 +2673,8 @@ end
                 idxNumPic := 0;
                 se_idx    := 101;
                 
-	        // Tokens Count
-	        nbTokensPerSH[16] := nbTokensPerSH[16] + 2; // NumRefIdxLxActive
+		        // Tokens Count
+		        nbTokensPerSH[16] := nbTokensPerSH[16] + 2; // NumRefIdxLxActive
 if(DEBUG_MULTI_PARSER_HEADER) then                
 println("Parser:"+PARSER_ID+" read_SliceHeader.sendRefPOC.init");
 end                
@@ -2721,8 +2690,8 @@ end
                         se_idx := 102;
                 end
                 
-	        // Tokens Count
-	        nbTokensPerSH[17] := nbTokensPerSH[17] + 1; // RefPicListModif
+		        // Tokens Count
+		        nbTokensPerSH[17] := nbTokensPerSH[17] + 1; // RefPicListModif
 if(DEBUG_MULTI_PARSER_HEADER) then                
 println("Parser:"+PARSER_ID+" read_SliceHeader.sendListEntryL0Flag");
 end                
@@ -2735,8 +2704,8 @@ end
         do
                 cnt_i := cnt_i + 1;
                 
-	        // Tokens Count
-	        nbTokensPerSH[17] := nbTokensPerSH[17] + 1;  // RefPicListModif              
+		        // Tokens Count
+		        nbTokensPerSH[17] := nbTokensPerSH[17] + 1;  // RefPicListModif              
 if(DEBUG_MULTI_PARSER_HEADER) then                
 println("Parser:"+PARSER_ID+" read_SliceHeader.sendListEntryL0Loop "+cnt_i);
 end                
@@ -2813,8 +2782,8 @@ end
                         se_idx    := 12;
                 end
                 
-	        // Tokens Count
-	        nbTokensPerSH[18] := nbTokensPerSH[18] + 1; // RefPoc                
+		        // Tokens Count
+		        nbTokensPerSH[18] := nbTokensPerSH[18] + 1; // RefPoc                
 if(DEBUG_MULTI_PARSER_HEADER) then                
 println("Parser:"+PARSER_ID+" read_SliceHeader.sendRefPOC.sendSize");
 end                
@@ -2835,8 +2804,8 @@ end
                         end
                 end
 
-	        // Tokens Count
-	        nbTokensPerSH[18] := nbTokensPerSH[18] + 1; // RefPoc
+		        // Tokens Count
+		        nbTokensPerSH[18] := nbTokensPerSH[18] + 1; // RefPoc
 if(DEBUG_MULTI_PARSER_HEADER) then                
 println("Parser:"+PARSER_ID+" read_SliceHeader.sendRefPOC.sendRefPoc");
 end                
@@ -2890,8 +2859,8 @@ end
                         end
                 end
                 
-	        // Tokens Count
-	        nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred
+		        // Tokens Count
+		        nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred
 if(DEBUG_MULTI_PARSER_HEADER) then                
 println("Parser:"+PARSER_ID+" read_SliceHeader.se_idx_3 "+se_idx);
 end                
@@ -3350,14 +3319,6 @@ end
         	end
 
         	num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) * (pps_num_tile_rows_minus1[pps_id] + 1); // Replacement to following block of code.
-	        /*JJ
-	        if TILE_SPLIT_ENABLE != 0 then	//JJ Should it be if TILE_SPLIT_ENABLE == 0?
-	        	num_entry_offsets := 1;
-	        else
-	        	num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) *
-	        	(pps_num_tile_rows_minus1[pps_id] + 1);
-	        end
-	        */
 if(DEBUG_MULTI_PARSER_HEADER) then            	
 println("Parser:"+PARSER_ID+" num_entry_point_offsets = "+num_entry_point_offsets);
 println("Parser:"+PARSER_ID+" offset_len = "+offset_len);
@@ -3455,17 +3416,6 @@ end
         	//println("read_SliceHeader qp_y = " + qp_y);
         	
             sliceData_idx := 1;
-            /* JJ
-            totalByPass := 0;
-            if num_entry_point_offsets > 0 and TILE_SPLIT_ENABLE != 0 then //bypass
-                if TilesInfo[1] != 0 then
-                    byPassFlag := true;
-                    byte_align(fifo);
-                    foreach int k in 0 .. TilesInfo[1] - 1 do
-                        totalByPass := totalByPass + entryOffsetsTab[k];
-                    end
-                end
-            end*/
             
 	        // Tokens Count
 	        nbTokensPerSH[13] := nbTokensPerSH[13] + 2; // StrongIntraSmoothing
@@ -3501,14 +3451,13 @@ end
         uint(size=16) nbCtbPerTile[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
         uint(size=16) colTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
         uint(size=16) rowTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
-        uint tile_idx := 0;
         uint(size= 1) skip_flag_tab[PICT_WIDTH][2];
         uint(size= 8) intraPredMode[PICT_WIDTH][2];
         uint(size=16) colWidth[NB_MAX_PPS][PICT_WIDTH / MIN_CTB_SIZE_Y];
         uint(size=16) rowHeight[NB_MAX_PPS][PICT_HEIGHT / MIN_CTB_SIZE_Y];
 
-        read_SliceData.init: action ==> IsPicSlcLcuSH:[0], IsPicSlc:[0], MvPredSyntaxElemSH:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
-        								SaoSeSH:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
+        read_SliceData.init: action ==> IsPicSlcLcu:[0], IsPicSlc:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
+        								SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
         								, PicSizeInMb:[pictSize] repeat 2, DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1]
         								, LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_tile_enabled_flag[pps_id]<<1)],
         								ReorderPics:[no_output_of_prior_pics, pic_output_flag, num_reorder_pics, max_dec_pic_buff, max_latency_pict, currentTID, decoderTID],
@@ -3688,8 +3637,9 @@ end
                         y0 := 0;
                         y1 := pictOrTileSize[1];
                 end*/
+                
                 // Tokens Count
-                nbTokensPerSH[1] := nbTokensPerSH[1] + 4; // TilesCoord               
+                nbTokensPerSH[1] := nbTokensPerSH[1] + 4; // TilesCoord
 if(DEBUG_MULTI_PARSER_DATA) then                
 //println("Parser:"+PARSER_ID+" SliceData.sendInfoTilesLoop: "+cnt_i);
 end
@@ -3717,7 +3667,7 @@ end
                 cnt_i := cnt_i + 1;
                 
                 // Tokens Count
-                nbTokensPerSH[2] := nbTokensPerSH[2] + 4; // RealTilesCoord               
+                nbTokensPerSH[2] := nbTokensPerSH[2] + 4; // RealTilesCoord
 if(DEBUG_MULTI_PARSER_DATA) then
 println("Parser:"+PARSER_ID+" read_SliceData.sendRealInfoTilesLoop: "+cnt_i+" x0 = "+x0+" y0 = "+y0+" x1 = "+x1+" y1 = "+y1);
 end
@@ -3749,7 +3699,7 @@ println("Parser:"+PARSER_ID+" SliceData.senRealInfoTilesEnd");
 end                
         end
 
-        read_SliceData.noInit: action ==> MvPredSyntaxElemSH:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag]
+        read_SliceData.noInit: action ==> MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag]
         guard
                 sliceData_idx = 1,
                 first_slice_segment_in_pic_flag = 0 and dependent_slice_segment_flag = 1 and prev_pps_id = pps_id
@@ -3763,8 +3713,8 @@ println("Parser:"+PARSER_ID+" SliceData.noInit");
 end                
         end
         
-        read_SliceData.noInit_isSlc: action ==> MvPredSyntaxElemSH:[pps_log2_parallel_merge_level[pps_id],slice_temporal_mvp_enable_flag, collocated_from_lX , collocated_ref_idx],
-        										IsPicSlcLcuSH:[1], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets],
+        read_SliceData.noInit_isSlc: action ==> MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id],slice_temporal_mvp_enable_flag, collocated_from_lX , collocated_ref_idx],
+        										IsPicSlcLcu:[1], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets],
         										LFAcrossSlcTile:[pps_loop_filter_across_slice_enabled_flag[pps_id] + (pps_loop_filter_across_tile_enabled_flag[pps_id]<<1)],
         										PictSize:[pictSize] repeat 2, TileSize:[pictOrTileSize] repeat 2, IsPicSlc:[1]
         guard
@@ -3791,9 +3741,6 @@ println("Parser:"+PARSER_ID+" SliceData.noInit_isSlc");
 end
         end
 
-        int(size=64) nbTilesProcessed := 0;
-        uint nbUnitsToSkip := PARSER_INFO[0];
-        //uint nbCTBsToSkip := 0;
         /**************************************************************************
          * read_SliceData.start
          *************************************************************************/
@@ -3822,7 +3769,7 @@ if(DEBUG_MULTI_PARSER_DATA) then
 end
 				sliceData_idx := 3;
 				// Reset tokens count.
-				resetNbTokens();
+				resetNbTokensPerCTU();
 
 				// Initialize: scenario 1: When there are multiple tiles per slice.
 				nbTilesProcessed := 0;
@@ -3986,7 +3933,7 @@ if(DEBUG_MULTI_PARSER_DATA) then
 //println("Parser:"+PARSER_ID+" read_SliceData.retCodingTree ctbCounter = "+ctbCounter+" nbTilesProcessed = "+nbTilesProcessed);
 end				
 				// Reset tokens count.
-				resetNbTokens();
+				resetNbTokensPerCTU();
 				ctbCounter := ctbCounter + 1;
 				if(ctbCounter = nbCtbPerTile[nbTilesProcessed]) then
 	                ctbCounter := 0;
@@ -4049,15 +3996,14 @@ if(DEBUG_MULTI_PARSER_DATA) then
 println("Parser:"+PARSER_ID+" read_SliceData_tileEnd counter="+ctbCounter);
 end                
         end
-
         /**************************************************************************
          * read_SliceData_end
          *************************************************************************/
         read_SliceData_end: action ==> 
         guard
                 sliceData_idx = 5
-do
-	resetNbTokensPerSH();
+		do
+			resetNbTokensPerSH();
 if(DEBUG_MULTI_PARSER_DATA) then
 println("Parser:"+PARSER_ID+" startData_end counter="+ctbCounter);
 end                
@@ -4264,12 +4210,12 @@ end
                 ctStack[0][CT_ctDepth]          := 0;
                 
                 // Tokens count
-                NbTokens[3] := NbTokens[3] + 1;
+                NbTokensPerCTU[3] := NbTokensPerCTU[3] + 1;
         end
         /**************************************************************************
          * read_CodingTree_end
          *************************************************************************/
-        read_CodingTree_end : action ==> NbTokens:[NbTokens] repeat 12
+        read_CodingTree_end : action ==> NbTokens:[NbTokensPerCTU] repeat 12
         guard
                 codingTree_idx = 4
         end
@@ -4320,7 +4266,7 @@ end
             end
             
             // Tokens count
-            NbTokens[4] := NbTokens[4] + 1;
+            NbTokensPerCTU[4] := NbTokensPerCTU[4] + 1;
         end
         /**************************************************************************
          * read_SaoParam.loop
@@ -4347,7 +4293,7 @@ end
 	        end
 	        
             // Tokens count
-            NbTokens[4] := NbTokens[4] + 1;	        
+            NbTokensPerCTU[4] := NbTokensPerCTU[4] + 1;	        
 	    end
 	    
         read_SaoParam.loop2 : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo]
@@ -4386,7 +4332,7 @@ end
 	        sao_idx := 2;
 	        
             // Tokens count
-            NbTokens[4] := NbTokens[4] + 5;	        
+            NbTokensPerCTU[4] := NbTokensPerCTU[4] + 5;	        
         end
         read_SaoParam.nextLoop : action ==>
         guard
@@ -4559,9 +4505,9 @@ if(DEBUG_MULTI_CQT_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingQuadTree.noCase2");
 end
                 // Tokens count.
-                NbTokens[0] := NbTokens[0] + 5;
-                NbTokens[10] := NbTokens[10] + 5;
-                NbTokens[2] := NbTokens[2] + 1;
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
         /**************************************************************************
          * read_CodingQuadTree.case3
@@ -4606,9 +4552,9 @@ if(DEBUG_MULTI_CQT_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingQuadTree.noCase3");
 end
                 // Tokens count.
-                NbTokens[0] := NbTokens[0] + 5;
-                NbTokens[10] := NbTokens[10] + 5;
-                NbTokens[2] := NbTokens[2] + 1;                
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
         /**************************************************************************
          * read_CodingQuadTree.case4
@@ -4655,9 +4601,9 @@ if(DEBUG_MULTI_CQT_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingQuadTree.noCase4");
 end
                 // Tokens count.
-                NbTokens[0] := NbTokens[0] + 5;
-                NbTokens[10] := NbTokens[10] + 5;
-                NbTokens[2] := NbTokens[2] + 1;                
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
         /**************************************************************************
          * read_CodingQuadTree_gotoCodingUnit
@@ -4832,12 +4778,12 @@ if(DEBUG_MULTI_CU_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingUnit_gotoPredictionUnit.goto1");
 end
                 // Tokens count.
-                NbTokens[0] := NbTokens[0] + 5;
-                NbTokens[10] := NbTokens[10] + 5;
-                NbTokens[9] := NbTokens[9] + 1;
-                NbTokens[2] := NbTokens[2] + 1;
-                NbTokens[5] := NbTokens[5] + 1;
-                NbTokens[6] := NbTokens[6] + (7*3);
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
+                NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
+                NbTokensPerCTU[6] := NbTokensPerCTU[6] + (7*3);
         end
         /**************************************************************************
          * read_CodingUnit.noGoto1
@@ -4925,7 +4871,7 @@ if(DEBUG_MULTI_CU_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingUnit_noGoto1");
 end
                 // Tokens Count
-                NbTokens[2] := NbTokens[2] + 1;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
 
         sendIntraPredMode.skip: action ==>
@@ -4965,9 +4911,9 @@ end
                 end
                 
                 // Tokens count.
-                NbTokens[1] := NbTokens[1] + 2;
-                NbTokens[0] := NbTokens[0] + 5;
-                NbTokens[10] := NbTokens[10] + 5;
+                NbTokensPerCTU[1] := NbTokensPerCTU[1] + 2;
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
         end
 
         sendIntraPredMode.partNxN: action ==> IntraPredMode:[intraPredMode] repeat 8, CUInfo:[cuInfo] repeat 20, TileCUInfo:[tilecuInfo] repeat 20
@@ -5012,9 +4958,9 @@ end
                 end
                 
                 // Tokens count.
-                NbTokens[1] := NbTokens[1] + 8;
-                NbTokens[0] := NbTokens[0] + 20;
-                NbTokens[10] := NbTokens[10] + 20;
+                NbTokensPerCTU[1] := NbTokensPerCTU[1] + 8;
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 20;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 20;
         end
 
         /**************************************************************************
@@ -5140,8 +5086,8 @@ if(DEBUG_MULTI_CU_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingUnit_gotoPredictionUnit.goto2");
 end
                 // Tokens count.
-                NbTokens[0] := NbTokens[0] + 5;
-                NbTokens[10] := NbTokens[10] + 5;                
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;                
         end
         /**************************************************************************
          * read_CodingUnit.endFunction
@@ -5190,9 +5136,9 @@ if(DEBUG_MULTI_CU_DATA) then
 println("Parser:"+PARSER_ID+" read_CodingUnit.endFunctionSend");
 end
         	// Tokens count
-        	NbTokens[5] := NbTokens[5] + 1;
-        	NbTokens[6] := NbTokens[6] + (7*3);
-        	NbTokens[9] := NbTokens[9] + 1;
+        	NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
+        	NbTokensPerCTU[6] := NbTokensPerCTU[6] + (7*3);
+        	NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
         end
 
         /**************************************************************************
@@ -5299,7 +5245,7 @@ end
 	        end
 	        
 	        // Tokens count
-	        NbTokens[11] := NbTokens[11] + 2;
+	        NbTokensPerCTU[11] := NbTokensPerCTU[11] + 2;
         end
 
         /**************************************************************************
@@ -5445,7 +5391,7 @@ end
                 pu_idx = 7, mergeIdx = -1
         do
         	// Tokens count
-        	NbTokens[8] := NbTokens[8] + 9;
+        	NbTokensPerCTU[8] := NbTokensPerCTU[8] + 9;
         end
         read_PredictionUnit_end.mergeIdx_notEq_min1 : action ==> MvPredSyntaxElem:[mergeIdx,
                 mvd[0], mvd[1], mvd[2], mvd[3]]
@@ -5453,7 +5399,7 @@ end
                 pu_idx = 7, mergeIdx != -1
         do
         	// Tokens count
-        	NbTokens[8] := NbTokens[8] + 5;
+        	NbTokensPerCTU[8] := NbTokensPerCTU[8] + 5;
         end
         /**************************************************************************
          **************************************************************************
@@ -5730,7 +5676,7 @@ if(DEBUG_MULTI_RQT_DATA) then
 println("Parser:"+PARSER_ID+" read_TransformTree.start_nonPartNxN");
 end
         	// Tokens Count
-        	NbTokens[5] := NbTokens[5] + 1;
+        	NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
         end
         /**************************************************************************
          * read_TransformTree_gotoTransformUnit
@@ -5753,7 +5699,7 @@ if(DEBUG_MULTI_RQT_DATA) then
 println("Parser:"+PARSER_ID+" read_TransformTree_gotoTransformUnit");
 end
                 // Tokens count
-                NbTokens[9] := NbTokens[9] + 1;
+                NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
         end
         /**************************************************************************
          * read_TransformTree.gotoTransformTree
@@ -5966,7 +5912,7 @@ end
                 end
                 
                 // Tokens Count
-                NbTokens[6] := NbTokens[6] + 7;
+                NbTokensPerCTU[6] := NbTokensPerCTU[6] + 7;
         end
         
         /**************************************************************************
@@ -6167,7 +6113,7 @@ end
 	        end
 	        
 	        // Tokens count
-	        NbTokens[6] := NbTokens[6] + 7;
+	        NbTokensPerCTU[6] := NbTokensPerCTU[6] + 7;
         end
         
         /**************************************************************************
@@ -6241,7 +6187,7 @@ end
                 end
                 
                 // Tokens Count
-                NbTokens[7] := NbTokens[7] + (4*4);
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (4*4);
         end
 
         read_ResidualCoding_end.xIT8 : action ==>
@@ -6255,7 +6201,7 @@ end
                 end
 
                 // Tokens Count
-                NbTokens[7] := NbTokens[7] + (8*8);
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (8*8);
         end
 
         read_ResidualCoding_end.xIT16 : action ==>
@@ -6269,7 +6215,7 @@ end
                 end
                 
                 // Tokens Count
-                NbTokens[7] := NbTokens[7] + (16*16);
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (16*16);
         end
 
         read_ResidualCoding_end.xIT32 : action ==>
@@ -6283,7 +6229,7 @@ end
                 end
                 
                 // Tokens Count
-                NbTokens[7] := NbTokens[7] + (32*32);               
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (32*32);
         end
         /**************************************************************************
          * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
