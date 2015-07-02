@@ -1980,11 +1980,10 @@ uint numPicDecoded := 0;
 	        se_idx = 6
 do
 if(DEBUG_MULTI_PARSER_HEADER) then	        
+	println("Parser:"+PARSER_ID+" pps_entropy_coding_sync_enabled_flag["+pps_id+"] = "+pps_entropy_coding_sync_enabled_flag[pps_id]);
 	println("Parser:"+PARSER_ID+" pps_tiles_enabled_flag["+pps_id+"] = "+pps_tiles_enabled_flag[pps_id]);
 	println("Parser:"+PARSER_ID+" pps_num_tile_columns_minus1["+pps_id+"] = "+pps_num_tile_columns_minus1[pps_id]);
 	println("Parser:"+PARSER_ID+" pps_num_tile_rows_minus1["+pps_id+"] = "+pps_num_tile_rows_minus1[pps_id]);
-	println("Parser:"+PARSER_ID+" pps_uniform_spacing_flag["+pps_id+"] = "+pps_uniform_spacing_flag[pps_id]);
-	println("Parser:"+PARSER_ID+" pps_loop_filter_across_tile_enabled_flag["+pps_id+"] = "+pps_loop_filter_across_tile_enabled_flag[pps_id]);
 end
 	    end
 	
@@ -3455,6 +3454,9 @@ end
         uint(size= 8) intraPredMode[PICT_WIDTH][2];
         uint(size=16) colWidth[NB_MAX_PPS][PICT_WIDTH / MIN_CTB_SIZE_Y];
         uint(size=16) rowHeight[NB_MAX_PPS][PICT_HEIGHT / MIN_CTB_SIZE_Y];
+        
+        uint(size=2) sliceSegmentType := 0;
+        bool sliceSegmentSkipStart := false;
 
         read_SliceData.init: action ==> IsPicSlcLcu:[0], IsPicSlc:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
         								SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
@@ -3576,6 +3578,7 @@ end
                         sliceData_idx := 21;
                 end
                 
+                sliceSegmentType := 1;
 				// Tokens Count
 				nbTokensPerSH[5] := nbTokensPerSH[5] + 1;    // IsPicSlcLcuSH
 				nbTokensPerSH[6] := nbTokensPerSH[6] + 1;    // IsPicSlc            
@@ -3669,7 +3672,7 @@ end
                 // Tokens Count
                 nbTokensPerSH[2] := nbTokensPerSH[2] + 4; // RealTilesCoord
 if(DEBUG_MULTI_PARSER_DATA) then
-println("Parser:"+PARSER_ID+" read_SliceData.sendRealInfoTilesLoop: "+cnt_i+" x0 = "+x0+" y0 = "+y0+" x1 = "+x1+" y1 = "+y1);
+//println("Parser:"+PARSER_ID+" read_SliceData.sendRealInfoTilesLoop: "+cnt_i+" x0 = "+x0+" y0 = "+y0+" x1 = "+x1+" y1 = "+y1);
 end
         end
 
@@ -3695,7 +3698,7 @@ end
                 cnt_i    := 0;
                 sliceData_idx := 2;
 if(DEBUG_MULTI_PARSER_DATA) then                
-println("Parser:"+PARSER_ID+" SliceData.senRealInfoTilesEnd");
+//println("Parser:"+PARSER_ID+" SliceData.senRealInfoTilesEnd");
 end                
         end
 
@@ -3706,6 +3709,7 @@ end
         do
                 sliceData_idx := 2;
                 
+        		sliceSegmentType := 2;
                 // Tokens count
                 nbTokensPerSH[19] := nbTokensPerSH[19] + 2; // MvPredSyntaxElemSH
 if(DEBUG_MULTI_PARSER_DATA) then                
@@ -3727,6 +3731,7 @@ end
                         sliceData_idx := 21;
                 end
                 
+        		sliceSegmentType := 3;                
 				// Tokens Count
 				nbTokensPerSH[19] := nbTokensPerSH[19] + 4; // MvPredSyntaxElemSH
 				nbTokensPerSH[5] := nbTokensPerSH[5] + 1;   // IsPicSlcLcuSH
@@ -3782,7 +3787,7 @@ end
 					//elsif(nbUnitsToSkip = 0) then	
 						byPassFlag := false;
 						nbUnitsToSkip := 0;	// Nothing to skip. Process first tile in this slice segment.
-						sliceData_idx := 31;// Go to process 1st tile in the slice segment.
+						sliceData_idx := 3;// Go to process 1st tile in the slice segment.
 						hc := 1;			// Process slice header and 1st tile data.
 					else
 						// Skip nbUnitsToSkip and then process in (nbUnitsToSkip+1)th tile in this slice segment.
@@ -3791,18 +3796,30 @@ end
 						byte_alignment(fifo); // Eat 1-bit and align, when skipping first tile. 
 					end
 				elsif pps_tiles_enabled_flag[pps_id] != 0 then // and PARSER_INFO[1] = 1
-					sliceData_idx := 31;// Go to process 1st tile in the slice segment.
-				elsif pps_tiles_enabled_flag[pps_id] = 0 then // (For either one or multi-parsers).
+					sliceData_idx := 3;// Go to process 1st tile in the slice-segment.
+				elsif pps_tiles_enabled_flag[pps_id] = 0 and PARSER_INFO[1] > 1 then
 					byPassFlag := false;	// Turn off tile-bypass.
-					if(nbUnitsToSkip > 0) then
-						nbUnitsToSkip := nbUnitsToSkip - 1;
-						sliceData_idx := 5;	// Go to end of slice and skip whole slice segment.
-						hc := 4;			// Eat slice header, and wait for next header control.
-					elsif(nbUnitsToSkip = 0) then
-						nbUnitsToSkip := 0;	// Nothing to skip. Process first in this slice segment.
-						sliceData_idx := 31;// Go to process the current slice segment.
-						hc := 1;			// Process slice header.
-					end					
+					if(sliceSegmentType = 1) then
+						if(nbUnitsToSkip > 0) then
+							sliceSegmentSkipStart := true;
+							nbUnitsToSkip := nbUnitsToSkip - 1;
+							hc := 5;			// Eat independent slice-segment header, and wait for next header control from parser processing this independent slice.
+							sliceData_idx := 5;	// Skip independent slice-segment.
+						else //if(nbUnitsToSkip = 0) then
+							sliceSegmentSkipStart := false;
+							nbUnitsToSkip := PARSER_INFO[1] - 1; // Mark the number slices (each may consists of n slice-segments) to skip after all dependent slice segments are processed. 
+							sliceData_idx := 3; // Go to process the independent slice-segment.
+							hc := 1;			// Process independent slice-segment header.
+						end
+					else
+						if(sliceSegmentSkipStart) then
+							hc := 5;			// Eat dependent slice-segment header, and wait for next header control from parser processing this dependent slice.
+							sliceData_idx := 5;	// Skip dependent slice-segment.
+						else
+							sliceData_idx := 3; // Go to process the dependent slice-segment.
+							hc := 1;			// Process dependent slice-segment header.														
+						end
+					end
 				end
 				
 				// Tokens Count
@@ -3815,13 +3832,14 @@ end
         /**************************************************************************
          * read_SliceData_gotoCodingTree
          *************************************************************************/
+/*
         read_SliceData_gotoCodingTree.start_1stTile : action ==> NbTokens:[nbCtbPerTile[nbTilesProcessed]] // Number of CTUs in the tile.
         guard
                 sliceData_idx = 31, byPassFlag = false
         do
                 sliceData_idx  := 4;
                 codingTree_idx := 1;
-        end
+        end*/
 
         read_SliceData_gotoCodingTree.start : action ==> 
         guard
@@ -3866,7 +3884,7 @@ println("Parser:"+PARSER_ID+" read_CodingTree.byPassBeforeTileLoop "+cnt_i);
 end
         end
 
-        read_CodingTree.byPassBeforeTileEnd: action ==> NbTokens:[nbCtbPerTile[nbTilesProcessed]] // Number of CTUs in the tile.
+        read_CodingTree.byPassBeforeTileEnd: action ==> //NbTokens:[nbCtbPerTile[nbTilesProcessed]] // Number of CTUs in the tile.
         guard
                 codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass
         do
@@ -3890,15 +3908,17 @@ end
 
         int ctbCounter := 0;
 
-        read_SliceData.retCodingTree : action ==>
+        read_SliceData.retCodingTree : action ==> HeaderControl:[end_of_unit]
         guard
                 sliceData_idx = 4 and isFifoFull(fifo)
         var
                 uint(size=32) res[1] := [0],
-                int(size=64) nbUnitsRemaining := 0
+                int(size=64) nbUnitsRemaining := 0,
+                uint(size=8) end_of_unit := 0
         do
                 get_END_OF_SLICE_FLAG(codIRange, codIOffset, fifo, res);
                 end_of_slice_flag := res[0];
+                end_of_unit := if(end_of_slice_flag != 0) then 1 else 0 end;
                 CtbAddrTS := CtbAddrTS + 1;
                 CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
                 if pps_entropy_coding_sync_enabled_flag[pps_id] != 0 and 
@@ -3906,7 +3926,7 @@ end
                 	//println("saveStates ctbaddrts = " + CtbAddrTS);
                     ctxTableWPP := [[ctxTable[i][j]     : for int j in 0 .. NB_MAX_NUM_CTX-1] : for int i in 0 .. NB_MAX_SE-1];
                 end
-
+/*
                 if end_of_slice_flag = 0 then                    
                     sliceData_idx := 3;
                     /*
@@ -3918,7 +3938,7 @@ end
                             sliceData_idx := 5;
                         end
                     end*/
-                else
+/*                else
                     //println("endOfSlice ################################################### counter = " + counter);
                     //counter := counter + 1;
                     sliceData_idx := 5;
@@ -3927,18 +3947,19 @@ end
                     CtbAddrRS := 0;
                     //numByPassBytes := [0: for int i in 0 .. MAX_NUM_TILES - 1];
                     byPassFlag := false;
-                end
+                end*/
 
 if(DEBUG_MULTI_PARSER_DATA) then
-//println("Parser:"+PARSER_ID+" read_SliceData.retCodingTree ctbCounter = "+ctbCounter+" nbTilesProcessed = "+nbTilesProcessed);
+println("Parser:"+PARSER_ID+" read_SliceData.retCodingTree ctbCounter = "+ctbCounter+" nbTilesProcessed = "+nbTilesProcessed);
 end				
 				// Reset tokens count.
 				resetNbTokensPerCTU();
 				ctbCounter := ctbCounter + 1;
-				if(ctbCounter = nbCtbPerTile[nbTilesProcessed]) then
+				if(pps_tiles_enabled_flag[pps_id] != 0  and ctbCounter = nbCtbPerTile[nbTilesProcessed]) then				
 	                ctbCounter := 0;
-	                if pps_tiles_enabled_flag[pps_id] != 0 and PARSER_INFO[1] > 1 then
-	                	nbTilesProcessed := nbTilesProcessed + 1;
+	                end_of_unit := 1;
+	                nbTilesProcessed := nbTilesProcessed + 1;
+	                if PARSER_INFO[1] > 1 then	                	
 	                	nbUnitsRemaining :=  num_entry_offsets - (nbTilesProcessed + (PARSER_INFO[1] - 1));
 	                	if(nbUnitsRemaining	> 0) then
 	                		nbUnitsToSkip := (PARSER_INFO[1] - 1);
@@ -3951,33 +3972,22 @@ end
 	                		byPassFlag := false;
 	                		sliceData_idx := 5;
 	                	end
-	                elsif pps_tiles_enabled_flag[pps_id] != 0 then
-	                	nbTilesProcessed := nbTilesProcessed + 1;
+	                else
 	            		byPassFlag := false;
 	            		if((num_entry_offsets - nbTilesProcessed) > 0) then
-	            			sliceData_idx := 6;
+	            			sliceData_idx := 3;
 	            		else
 	            			sliceData_idx := 5;
 	            		end
-/*
-						if(nbTilesProcessed = 1) then
-							DEBUG_MULTI_CQT_DATA := true;
-							DEBUG_MULTI_CU_DATA := true;
-							DEBUG_MULTI_RQT_DATA := true;
-						else
-							DEBUG_MULTI_CQT_DATA := false;
-							DEBUG_MULTI_CU_DATA := false;
-							DEBUG_MULTI_RQT_DATA := false;
-						end	*/
-					elsif pps_tiles_enabled_flag[pps_id] = 0 then
-						nbUnitsToSkip := (PARSER_INFO[1] - 1);
-						byPassFlag := false;
-						sliceData_idx := 5;
-	                end
+	            	end	
+				elsif(end_of_slice_flag = 1) then
+					sliceData_idx := 5;
+	            else
+	            	sliceData_idx := 3;    
 				end                
 if(DEBUG_MULTI_PARSER_DATA) then                
-//println("Parser:"+PARSER_ID+" read_SliceData.retCodingTree counter = "+ctbCounter+" nbTilesProcessed = "+nbTilesProcessed+" end_of_slice_flag = "+end_of_slice_flag+
-//		" CtbAddrTS = "+CtbAddrTS+" CtbAddrRS = "+CtbAddrRS+" byPassFlag = "+byPassFlag+" sliceData_idx = "+sliceData_idx);
+println("Parser:"+PARSER_ID+" read_SliceData.retCodingTree counter = "+ctbCounter+" nbTilesProcessed = "+nbTilesProcessed+" end_of_slice_flag = "+end_of_slice_flag+
+		" CtbAddrTS = "+CtbAddrTS+" CtbAddrRS = "+CtbAddrRS+" byPassFlag = "+byPassFlag+" sliceData_idx = "+sliceData_idx);
 end                
         end
         /**************************************************************************
@@ -3986,12 +3996,12 @@ end
         read_SliceData.gotoNextTile: action ==> HeaderControl:[3] // 3= no header for next tile data.
         guard
                 sliceData_idx = 6
-		do
+		do/*
 			if(PARSER_INFO[1] = 1) then
 				sliceData_idx := 31;
-			else
+			else*/
 				sliceData_idx := 3;
-			end	
+			//end	
 if(DEBUG_MULTI_PARSER_DATA) then
 println("Parser:"+PARSER_ID+" read_SliceData_tileEnd counter="+ctbCounter);
 end                
@@ -4868,7 +4878,7 @@ end
                 end
 
 if(DEBUG_MULTI_CU_DATA) then
-println("Parser:"+PARSER_ID+" read_CodingUnit_noGoto1");
+println("Parser:"+PARSER_ID+" read_CodingUnit_noGoto1 ");
 end
                 // Tokens Count
                 NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
