@@ -20,9 +20,11 @@ Hammerstein digital predistortion filter with 5 FIR filter
 branches, each with 5 taps.
 The 'lib'-folder contains native function bodies, which
 are required when the filter is realized as C code and
-compiled for a Linux workstation.
-The same folder has also an input sample sequence and
-a reference output signal.
+compiled for a Linux workstation. Native functions are provided
+in two files: linux.c and linuxbin.c of which the first reads
+and writes text files and the latter binary files.
+The 'lib' folder has also an input sample sequence and
+a reference output signal both in text and binary format.
 The FIR filter and the local oscillator
 leakage compensation coefficients are hardcoded into the
 RVC-CAL sources in this implementation.
@@ -31,50 +33,38 @@ lowlevel_dpd is a hardware-friendly low-level implementation
 whereas filter_dpd is a software-friendly version.
 
 Compilation:
-Standard GCC compilation with the following
-- headers:      <output_folder>/libs/orcc/include
-                <output_folder>/libs/roxml/include
-- source files: <orc-apps-folder>/Predistortion/lib/native/linux.c
-				<output_folder>/libs/orcc/src/util.c 
-				<output_folder>/libs/orcc/src/serialize.c 
-				<output_folder>/libs/orcc/src/dataflow.c 
-				<output_folder>/libs/orcc/src/scheduler.c 
-				<output_folder>/libs/roxml/src/roxml.c 
-				<output_folder>/libs/roxml/src/roxml-parse-engine.c
-				<output_folder>/libs/roxml/src/roxml-internal.c
-				<output_folder>/libs/orcc/src/mapping.c
-- libraries:    pthread
+1. Generate Top_DPD.xdf with the Orcc C backend to a folder of
+   preference that we will call <C_output_dir>
+   * if you use small input files, such is the ones given in 'lib'
+     remember to make the network FIFO size small (< 64) in order
+     to see some output
+2. Copy either linux.c or linuxbin.c to <C_output_dir>/src and add the
+   file name to the filenames list in <C_output_dir>/src/CMakeLists.txt
+3. If linuxbin.c is used, add the following entry to
+   <C_output_dir>/CMakeLists.txt after "set(extra_libraries)":
+   set(CMAKE_C_FLAGS "-O3 -DLENGTH=1000 -DFIFO_SIZE=32")
+   where LENGTH gives the number of input samples in the binary input file and
+   FIFO_SIZE indicates the FIFO size that was used in Orcc code generation
+4. Compile:
+   $ (in <C_output_dir>) cd build && cmake .. && make && cd ..
+5. Copy either binary of textual input data files from
+   orc-apps/Predistortion/lib/input_signals to <C_output_dir>
+6. Run (in <C_output_dir>):
+   bin/Top_DPD
+   * Optionally the filter can be mapped to multiple cores with the -c or -m
+   flags. See the detailed instructions by bin/Top_DPD -help
 
-To compile and execute:
-
-1. Generate the C Orcc backend for Top_DPD.xdf
-
-2. Run:
-$ cd <C_output_dir> && cd build && cmake .. && cd ..
-
-3. Run:
-$ gcc -o bin/dpd src/*.c libs/orcc-native/src/framerate.c libs/orcc-runtime/src/profiling.c \
-libs/orcc-native/src/native.c libs/orcc-runtime/src/trace.c libs/orcc-runtime/src/options.c \
-libs/orcc-runtime/src/util.c libs/orcc-runtime/src/serialize.c libs/orcc-runtime/src/dataflow.c \
--Ilibs/orcc/include -lpthread -I/usr/include/SDL libs/orcc-runtime/src/scheduler.c -Ibuild/libs/ \
--Ilibs/orcc-runtime/include/ -Ilibs/orcc-native/include/ -I libs/roxml/include/ libs/roxml/src/roxml.c \
-libs/roxml/src/roxml-parse-engine.c libs/roxml/src/roxml-internal.c libs/orcc-runtime/src/mapping.c \
- ../lib/native/linux.c -O3
-
-4. Run:
-$ cd bin && cp <Predistortion_root>/lib/input_signals/in_*.txt .
-
-5. Run:
-./dpd
-
+More information:
+* In the folder orc-apps/Predistortion/lib/tools there are two software tools
+  bindiff.c and fgen.c that can be used to generate random binary floating
+  point data and compare two binary floating point files for differences
 
 Changelog:
 - initial version 16/12/2013
+- new compilation instructions 14/07/2015
 
 Known issues:
 - the lowlevel_dpd implementation has some structural illogicalities
   (ports of Polynomial network) due to limitations of the Orcc compiler
 - lowlevel_dpd produces output that very slightly differs from the
   reference output. This is due to differences in rounding.
-
-

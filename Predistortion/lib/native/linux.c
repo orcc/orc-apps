@@ -84,13 +84,13 @@ void file_write(FILE *file, float value)
 	fprintf(file, "%f\n", value);		
 }
 
-void consume_i(float value)
+void sink_consume_i(float value)
 {
 	file_write(output_i, value);
 	count ++;
 }
 
-void consume_q(float value)
+void sink_consume_q(float value)
 {
 	file_write(output_q, value);
 }
