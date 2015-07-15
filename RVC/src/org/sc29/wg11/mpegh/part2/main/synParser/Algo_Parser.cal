@@ -54,6 +54,8 @@ Copyright (c) ISO/IEC 2011-2014.
 
 *****************************************************************************/
 // Modified by Damien de Saint Jorre (EPFL)
+// Modified by Daniele Renzi (EPFL)
+// Modified by Junaid Jameel Ahmad (EPFL)
 package org.sc29.wg11.mpegh.part2.main.synParser;
 
 import  std.util.Math.*;
@@ -68,7 +70,7 @@ import  org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
 import  org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
 import  org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
 
-actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
+actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 // TilesInfo[0]: number of tiles to decode
 // TilesInfo[i>0]: increasing indexes of tiles
                                 uint(size= 8) byte
@@ -79,11 +81,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                                 uint(size=16) SliceAddr,
                                 uint(size=16) TilesCoord,
                                 uint(size=16) RealTilesCoord,
-                                uint(size=8)  LcuSizeMax,
+                                uint(size= 8) LcuSizeMax,
                                 uint(size= 4) PartMode,
-               					uint(size=2)  IsPicSlcLcu,
-               					uint(size=2)  IsPicSlc,
-                				uint(size=2)  LFAcrossSlcTile,
+               					uint(size= 2) IsPicSlcLcu,
+               					uint(size= 2) IsPicSlc,
+                				uint(size= 2) LFAcrossSlcTile,
                                 uint(size=16) PictSize,
                                  int(size=16) Poc,
                                  int(size= 9) SaoSe,
@@ -92,21 +94,23 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                                 bool          SplitTransform,
                                  int(size= 8) TUSize,
                                  int(size=16) Coeff,
-                                bool              StrongIntraSmoothing,
+                                bool          StrongIntraSmoothing,
                                 uint(size=14) DispCoord,
-                                uint(size=9)  PicSizeInMb,
+                                uint(size= 9) PicSizeInMb,
                                 uint(size= 5) NumRefIdxLxActive,
                                 uint(size= 4) RefPicListModif,
                                  int(size=16) RefPoc,
                                  int(size=16) MvPredSyntaxElem,
-                                bool Cbf,
-                                bool DBFDisable,
-                                 int(size= 8)  DbfSe,
+                                bool		  Cbf,
+                                bool		  DBFDisable,
+                                 int(size= 8) DbfSe,
                                 uint(size= 8) ReorderPics,
                                  int(size=16) WeightedPred,
                                 uint(size=16) TileSize,
                                 uint(size=16) TileCUInfo,
-                                 int(size= 8) Qp
+                                 int(size= 8) Qp,
+                                 int(size= 8) HeaderControl,
+                                uint(size=16) NbTokens
 
 :
         uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -115,14 +119,35 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         uint(size=32) cnt_i;
         uint(size=10) sps_id;
         uint(size=10) pps_id;
-        uint(size= 8) localizeAEB := 0;
         uint NUM_ENTRY_MAX = 64;
         uint entryOffsetsTab[NUM_ENTRY_MAX];
-        //uint(size=8) curr_Tile := TilesInfo[1];
         bool byPassFlag := false;
-        uint(size=8) TilesInfo[2];
 
+        // Multi-Parser
+        uint(size=8) PARSER_INFO[2] := [0, 1];
+        uint nbUnitsToSkip := PARSER_INFO[0];
+        int(size=64) nbTilesProcessed := 0;
+        
+        // For each Slice Header (SH).
+        uint(size=16) nbTokensPerSH[25] := [0: for int i in 0 .. 24];
+        // For each CTU.
+        uint(size=16) NbTokensPerCTU[12] := [0: for int i in 0 .. 11];
+        
+        procedure resetNbTokensPerSH()
+        begin
+	        nbTokensPerSH := [0: for int i in 0 .. 24];        
+        end
 
+        procedure resetNbTokensPerCTU()
+        begin
+	        NbTokensPerCTU := [0: for int i in 0 .. 11];
+        end
+
+        initialize ==>
+        do
+        	nbUnitsToSkip := PARSER_ID;
+        	PARSER_INFO := [PARSER_ID, TOTAL_PARSERS];
+        end
 
 		function updateDecoderTid(uint(size=6) nal_unit_type) --> uint(size=3)
 		:
@@ -151,14 +176,13 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         /**************************************************************************
          * search_start_code or getByte
          *************************************************************************/
-        uint counterByte := 0;
+        int countAEB := 0;
         action byte:[ b ] ==>
         guard
         	not isFifoFull(fifo)
         var
         	uint(size=4) fifo_idx  =  fifo[FIFO_IDX]
         do
-            counterByte := counterByte + 1; //localizeAEB := localizeAEB >> 1;
             if b != EPR_VALUE or zeroByte != 3 then
             	if b = START_CODE_VALUE and zeroByte = 3 then
             		fifo[fifo_idx] := b + START_CODE_FLAG;
@@ -172,8 +196,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             	fifo[FIFO_IDX] := (fifo_idx + 1) & (FIFO_SIZE - 1);
             else
             	if b = EPR_VALUE then //println("AntiEmulationByte");
-            	//localizeAEB := localizeAEB + 128;
-            	//println("localize AEB = " + localizeAEB);
+            	countAEB := countAEB + 1;
             	end
             end
             if b = 0 then
@@ -194,7 +217,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         guard
         	isFifoFull(fifo)
         do
-        	byte_align(fifo); //localizeAEB := localizeAEB >> 1;
+        	byte_align(fifo);
         end
         /**************************************************************************
          * search_start_code
@@ -693,8 +716,7 @@ uint numPicDecoded := 0;
 	        "vps_extension_flag                      ");
 	        if res[0] = 1 then
 	        	println("not support for vps_extension_flag != 0");
-	        end
-println("Parser: VPS_Header_done");	        
+	        end        
 	    end
 	        /**************************************************************************
 	         **************************************************************************
@@ -798,6 +820,9 @@ println("Parser: VPS_Header_done");
 		sei_hash_type = 0
 	do
 		sei_i := 1;
+		
+		// Tokens Count
+		nbTokensPerSH[11] := nbTokensPerSH[11] + 1; // SEI_MD5
 	end
 
 	read_SEI_Header.decoded_picture_hash.loop : action ==> SEI_MD5:[res[0]]
@@ -820,6 +845,9 @@ println("Parser: VPS_Header_done");
 				need_md5 := false;
 			end
 		end
+		
+		// Tokens Count
+		nbTokensPerSH[11] := nbTokensPerSH[11] + 1;	 // SEI_MD5	
 	end
 	
 	read_SEI_Header.decoded_picture_hash.skip : action ==> 
@@ -877,8 +905,7 @@ println("Parser: VPS_Header_done");
 		var
 	    	uint(size=32) res[1]
 	    do
-	        vld_u_name(  8, fifo, res, "rbsp_trailing_bits");
-println("Parser: SEI_Header_done");	        
+	        vld_u_name(  8, fifo, res, "rbsp_trailing_bits");        
 	    end
 	
 	    /**************************************************************************
@@ -1106,7 +1133,7 @@ println("Parser: SEI_Header_done");
 	        se_idx := se_idx + 1;
 	    end
 	
-	       /**************************************************************************
+	/**************************************************************************
 	 * read_SPS_Header.se_idx_3
 	 *************************************************************************/
 		bool sps_sub_layer_ordering_info_present_flag;
@@ -1530,8 +1557,7 @@ println("Parser: SEI_Header_done");
 	        "sps_extension_flag                      ");
 	        if res[0] = 1 then
 	        	println("not support for sps_extension_flag != 0");
-	        end
-println("Parser: SPS_Header_done");	        
+	        end	        
 	    end
 	    /**************************************************************************
 	     **************************************************************************
@@ -1640,7 +1666,6 @@ println("Parser: SPS_Header_done");
 	        pps_transquant_bypass_enable_flag[pps_id] := res[0];
 	        vld_u_name(1, fifo, res, "tiles_enabled_flag                      ");
 	        pps_tiles_enabled_flag[pps_id] := res[0];
-println("Parser: pps_tiles_enabled_flag["+pps_id+"] = "+pps_tiles_enabled_flag[pps_id]);	        
 	        vld_u_name(1, fifo, res, "entropy_coding_sync_enabled_flag        ");
 	        pps_entropy_coding_sync_enabled_flag[pps_id] := res[0];
 	        pps_num_tile_columns_minus1[pps_id] := 0;
@@ -1653,9 +1678,6 @@ println("Parser: pps_tiles_enabled_flag["+pps_id+"] = "+pps_tiles_enabled_flag[p
 	        	pps_num_tile_rows_minus1[pps_id] := res[0];
 	        	vld_u_name(1, fifo, res, "uniform_spacing_flag                    ");
 	        	pps_uniform_spacing_flag[pps_id] := res[0];
-println("Parser: pps_num_tile_columns_minus1["+pps_id+"] = "+pps_num_tile_columns_minus1[pps_id]);
-println("Parser: pps_num_tile_rows_minus1["+pps_id+"] = "+pps_num_tile_rows_minus1[pps_id]);
-println("Parser: pps_uniform_spacing_flag["+pps_id+"] = "+pps_uniform_spacing_flag[pps_id]);	        	
 	        end
 	        se_idx := se_idx + 1;
 	        cnt_i := 0;
@@ -1674,7 +1696,6 @@ println("Parser: pps_uniform_spacing_flag["+pps_id+"] = "+pps_uniform_spacing_fl
 	    do
 	        vld_ue_name(    fifo, res, "column_width[ ]                         ");
 	        pps_column_width[pps_id][cnt_i] := res[0] + 1;
-println("Parser: pps_column_width["+pps_id+"]["+cnt_i+"] = "+pps_column_width[pps_id][cnt_i]);
 	        sum := sum + pps_column_width[pps_id][cnt_i];
 	        if cnt_i >= (PICT_WIDTH / MIN_CTB_SIZE_Y) then
 	                println("Error read_PPS_Header.se_idx_3.loop : "+cnt_i+" >= "+(PICT_WIDTH / MIN_CTB_SIZE_Y));
@@ -1714,7 +1735,6 @@ println("Parser: pps_column_width["+pps_id+"]["+cnt_i+"] = "+pps_column_width[pp
 	    do
 	        vld_ue_name(    fifo, res, "row_height[ ]                           ");
 	        pps_row_height[pps_id][cnt_i] := res[0] + 1;
-println("Parser: pps_row_height["+pps_id+"]["+cnt_i+"] = "+pps_row_height[pps_id][cnt_i]);
 	        sum := sum + pps_row_height[pps_id][cnt_i];
 	        if cnt_i >= (PICT_HEIGHT / MIN_CTB_SIZE_Y) then
 	        	println("Error read_PPS_Header.se_idx_4.loop : "+cnt_i+" >= "+(PICT_HEIGHT / MIN_CTB_SIZE_Y));
@@ -1740,8 +1760,7 @@ println("Parser: pps_row_height["+pps_id+"]["+cnt_i+"] = "+pps_row_height[pps_id
 	    do
 	        if (pps_tiles_enabled_flag[pps_id] = 1) then
 	                vld_u_name(  1, fifo, res, "loop_filter_across_tiles_enabled_flag   ");
-	                pps_loop_filter_across_tile_enabled_flag[pps_id] := res[0];
-println("Parser: pps_loop_filter_across_tile_enabled_flag["+pps_id+"] = "+pps_loop_filter_across_tile_enabled_flag[pps_id]);	                
+	                pps_loop_filter_across_tile_enabled_flag[pps_id] := res[0];	                
 	        end
 	        vld_u_name(  1, fifo, res, "loop_filter_across_slices_enabled_flag  ");
 	        pps_loop_filter_across_slice_enabled_flag[pps_id] := res[0];
@@ -1950,8 +1969,6 @@ println("Parser: pps_loop_filter_across_tile_enabled_flag["+pps_id+"] = "+pps_lo
 	    read_PPS_Header_done : action ==>
 	    guard
 	        se_idx = 6
-do
-println("Parser: PPS_Header_done");	        
 	    end
 	
 	        /**************************************************************************
@@ -2002,7 +2019,7 @@ println("Parser: PPS_Header_done");
 	        	iPOCmsb := 0;
 	       	end
 	        
-		    poc:= iPOCmsb+iPOClsb;
+		    poc := iPOCmsb+iPOClsb;
 		end
 	
 	    uint(size= 1) first_slice_segment_in_pic_flag := 1;
@@ -2042,9 +2059,7 @@ println("Parser: PPS_Header_done");
 	        PicWidthInCtbsY   := ( sps_pic_width_in_luma_samples[sps_id]  + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
 	        PicHeightInCtbsY  := ( sps_pic_height_in_luma_samples[sps_id] + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
 	        PicSizeInCtbsY    := PicWidthInCtbsY * PicHeightInCtbsY;
-	        
-	        TilesInfo := [TILE_SPLIT_ENABLE, TILE_INDEX];
-	
+
 	        vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
 	        first_slice_segment_in_pic_flag := res[0];
 	
@@ -2093,7 +2108,6 @@ println("Parser: PPS_Header_done");
 		        end
 		        se_idx := 400;
 			end
-println("Parser: read_SliceHeader.se_idx_1");			
 	    end
 
 		read_SliceHeader.sendMD5.launch: action ==> SEI_MD5:[0, 0, 0], PartMode:[part_mode]
@@ -2106,7 +2120,10 @@ println("Parser: read_SliceHeader.se_idx_1");
 	        else
 	        	se_idx := 6;
 	        end
-println("Parser: read_SliceHeader.sendMD5.launch");	        
+	        
+	        // Tokens Count
+	        nbTokensPerSH[11] := nbTokensPerSH[11] + 3; // SEI_MD5
+	        nbTokensPerSH[4] := nbTokensPerSH[4] + 1;	// PartModeSH       
 		end
 
 		read_SliceHeader.sendMD5.skip: action ==> PartMode:[part_mode]
@@ -2119,7 +2136,9 @@ println("Parser: read_SliceHeader.sendMD5.launch");
 	        else
 	        	se_idx := 6;
 	        end
-println("Parser: read_SliceHeader.sendMD5.skip");	        
+
+	        // Tokens Count
+	        nbTokensPerSH[4] := nbTokensPerSH[4] + 1;	// PartModeSH        
 		end
         
 	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
@@ -2170,7 +2189,11 @@ println("Parser: read_SliceHeader.sendMD5.skip");
 	    			se_idx := 300;
 	    		end
 	    	end
-println("Parser: read_SliceHeader.se_idx_11");	    	
+
+            // Tokens Count
+	        nbTokensPerSH[9] := nbTokensPerSH[9] + 1;   // Poc
+	        nbTokensPerSH[12] := nbTokensPerSH[12] + 1; // SliceType
+            nbTokensPerSH[3] := nbTokensPerSH[3] + 1;   // LcuSizeMax
 		end
 		
 		uint(size=1) short_term_ref_pic_set_sps_flag;
@@ -2248,7 +2271,6 @@ println("Parser: read_SliceHeader.se_idx_11");
 					end
 	    		end
 	    	end
-println("Parser: read_SliceHeader.se_idx_12");	    	
 	    end
 	    
 	    read_SliceHeader.se_idx_12_loop1: action ==> 
@@ -2264,7 +2286,6 @@ println("Parser: read_SliceHeader.se_idx_12");
 			vld_u_name(  1, fifo, res, "used_by_curr_pic_s0_flag                ");
 			pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+cnt_i]       := res[0];
 			cnt_i := cnt_i + 1;
-println("Parser: read_SliceHeader.se_idx_12_loop1 "+cnt_i);			
 		end
 		
 		read_SliceHeader.se_idx_12_end_loop1: action ==> 
@@ -2279,7 +2300,6 @@ println("Parser: read_SliceHeader.se_idx_12_loop1 "+cnt_i);
 	    		se_idx := 301;
 	    		cnt_i := 0;
 	    	end
-println("Parser: read_SliceHeader.se_idx_12_end_loop1");	    	
 	    end
 	    
 	    read_SliceHeader.se_idx_12_loop2: action ==> 
@@ -2295,7 +2315,6 @@ println("Parser: read_SliceHeader.se_idx_12_end_loop1");
 			vld_u_name(  1, fifo, res, "used_by_curr_pic_s1_flag                ");
 			pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+cnt_i]       := res[0];
 			cnt_i := cnt_i + 1;
-println("Parser: read_SliceHeader.se_idx_12_loop2 "+cnt_i);			
 		end
 		
 		read_SliceHeader.se_idx_12_end_loop2: action ==> 
@@ -2304,7 +2323,6 @@ println("Parser: read_SliceHeader.se_idx_12_loop2 "+cnt_i);
 	    do
     		se_idx := 301;
     		cnt_i := 0;
-println("Parser: read_SliceHeader.se_idx_12_end_loop2");    		
 	    end
 		
 		read_SliceHeader.se_idx_13 : action ==> 
@@ -2360,7 +2378,6 @@ println("Parser: read_SliceHeader.se_idx_12_end_loop2");
 	            	slice_temporal_mvp_enable_flag := 0;
 	   			end        
 	        se_idx := 302;
-println("Parser: read_SliceHeader.se_idx_13");	        
 		end
 		
 		read_SliceHeader.se_idx_14 : action  ==> 
@@ -2414,7 +2431,7 @@ println("Parser: read_SliceHeader.se_idx_13");
 		            end
 		    	end
 	        end
-	        
+
 	        if num_tile_rows_minus1 >= (PICT_HEIGHT / MIN_CTB_SIZE_Y) then
 	            println("Error read_SliceData.init : RowHeight : "+num_tile_rows_minus1+" >= "+(PICT_HEIGHT / MIN_CTB_SIZE_Y));
 	        end
@@ -2441,24 +2458,10 @@ println("Parser: read_SliceHeader.se_idx_13");
 		            end
 		    	end
 	        end
-	        if TILE_SPLIT_ENABLE = 0 then // no tiles split : send image size
-	            pictOrTileSize[0] := pictSize[0];
-	            pictOrTileSize[1] := pictSize[1];
-	        else // tiles split : send current tile size
-	            colIndex := TilesInfo[1]  mod (num_tile_columns_minus1+1);
-	            rowIndex := TilesInfo[1]  div (num_tile_columns_minus1+1);
-	
-	            pictOrTileSize[0] := colTileInPix[colIndex + 1] - colTileInPix[colIndex];
-	            pictOrTileSize[1] := rowTileInPix[rowIndex + 1] - rowTileInPix[rowIndex];
-	            if TilesInfo[1] != 0 then
-	                prevColIndex := (TilesInfo[1] - 1)  mod (num_tile_rows_minus1+1);
-	        		prevRowIndex := (TilesInfo[1] - 1)  div (num_tile_columns_minus1+1);
-	                prevTileCoord[0] := colTileInPix[prevColIndex + 1];
-	                prevTileCoord[1] := rowTileInPix[prevRowIndex + 1];
-	            end
-	        end
+
+            pictOrTileSize[0] := pictSize[0];
+            pictOrTileSize[1] := pictSize[1];
 	        se_idx := 2;
-println("Parser: read_SliceHeader.se_idx_14");	        
 	    end
 
 
@@ -2546,7 +2549,6 @@ println("Parser: read_SliceHeader.se_idx_14");
                	end
             end
                 se_idx := 10;
-println("Parser: read_SliceHeader.se_idx_2");                
         end
         /**************************************************************************
          * read_SliceHeader.sendRefPOC
@@ -2617,7 +2619,9 @@ println("Parser: read_SliceHeader.se_idx_2");
                 setRefTables(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS, poc);
                 idxNumPic := 0;
                 se_idx    := 101;
-println("Parser: read_SliceHeader.sendRefPOC.init");                
+                
+		        // Tokens Count
+		        nbTokensPerSH[16] := nbTokensPerSH[16] + 2; // NumRefIdxLxActive
         end
 
         read_SliceHeader.sendListEntryL0Flag : action ==> RefPicListModif:[ref_pic_list_modification_flag_lx[0]]
@@ -2629,7 +2633,9 @@ println("Parser: read_SliceHeader.sendRefPOC.init");
                 else
                         se_idx := 102;
                 end
-println("Parser: read_SliceHeader.sendListEntryL0Flag");                
+                
+		        // Tokens Count
+		        nbTokensPerSH[17] := nbTokensPerSH[17] + 1; // RefPicListModif
         end
 
         read_SliceHeader.sendListEntryL0Loop : action ==> RefPicListModif:[list_entry_lx[0][cnt_i - 1]]
@@ -2638,7 +2644,9 @@ println("Parser: read_SliceHeader.sendListEntryL0Flag");
                 cnt_i < num_ref_idx_l0_active
         do
                 cnt_i := cnt_i + 1;
-println("Parser: read_SliceHeader.sendListEntryL0Loop "+cnt_i);                
+                
+		        // Tokens Count
+		        nbTokensPerSH[17] := nbTokensPerSH[17] + 1;  // RefPicListModif              
         end
 
         read_SliceHeader.sendListEntryL0End : action ==>
@@ -2648,7 +2656,6 @@ println("Parser: read_SliceHeader.sendListEntryL0Loop "+cnt_i);
         do
                 cnt_i := 0;
                 se_idx := 201;
-println("Parser: read_SliceHeader.sendListEntryL0End");
         end
 
         read_SliceHeader.sendListEntryL1Flag : action ==> RefPicListModif:[ref_pic_list_modification_flag_lx[1]]
@@ -2660,7 +2667,9 @@ println("Parser: read_SliceHeader.sendListEntryL0End");
                 else
                         se_idx := 202;
                 end
-println("Parser: read_SliceHeader.sendListEntryL1Flag");                
+                
+	        // Tokens Count
+	        nbTokensPerSH[17] := nbTokensPerSH[17] + 1;   // RefPicListModif             
         end
 
         read_SliceHeader.sendListEntryL1Loop : action ==> RefPicListModif:[list_entry_lx[1][cnt_i - 1]]
@@ -2669,7 +2678,9 @@ println("Parser: read_SliceHeader.sendListEntryL1Flag");
                 cnt_i < num_ref_idx_l1_active
         do
                 cnt_i := cnt_i + 1;
-println("Parser: read_SliceHeader.sendListEntryL1Loop "+cnt_i);                
+                
+	        // Tokens Count
+	        nbTokensPerSH[17] := nbTokensPerSH[17] + 1;  // RefPicListModif              
         end
 
         read_SliceHeader.sendListEntryL1End : action ==>
@@ -2679,7 +2690,6 @@ println("Parser: read_SliceHeader.sendListEntryL1Loop "+cnt_i);
         do
                 cnt_i := 0;
                 se_idx    := 11;
-println("Parser: read_SliceHeader.sendListEntryL1End");                
         end
         
         read_SliceHeader.sendRefPOC.sendSize : action ==> RefPoc:[refPocSize]
@@ -2697,7 +2707,9 @@ println("Parser: read_SliceHeader.sendListEntryL1End");
                         idxRefPoc := 0;
                         se_idx    := 12;
                 end
-println("Parser: read_SliceHeader.sendRefPOC.sendSize");                
+                
+		        // Tokens Count
+		        nbTokensPerSH[18] := nbTokensPerSH[18] + 1; // RefPoc                
         end
         read_SliceHeader.sendRefPOC.sendRefPoc : action ==> RefPoc:[refPoc]
         guard
@@ -2714,7 +2726,9 @@ println("Parser: read_SliceHeader.sendRefPOC.sendSize");
                                 se_idx := 11;
                         end
                 end
-println("Parser: read_SliceHeader.sendRefPOC.sendRefPoc");                
+
+		        // Tokens Count
+		        nbTokensPerSH[18] := nbTokensPerSH[18] + 1; // RefPoc
         end
         /**************************************************************************
          * read_SliceHeader.se_idx_3
@@ -2764,7 +2778,9 @@ println("Parser: read_SliceHeader.sendRefPOC.sendRefPoc");
                                 se_idx := 4;
                         end
                 end
-println("Parser: read_SliceHeader.se_idx_3");                
+                
+		        // Tokens Count
+		        nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred
         end
         /**************************************************************************
          * read_SliceHeader.se_idx_4
@@ -2803,6 +2819,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                         vld_se_name(    fifo, res, "delta_chroma_log2_weight_denom          ");
                         delta_chroma_log2_weight_denom := res[0];
                 end
+	            
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 2; // WeightedPred                
         end
 
         weighted_luma_l0 : action ==> WeightedPred:[luma_weight_l0_flag[cnt_i - 1]]
@@ -2814,6 +2833,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 vld_u_name(  1, fifo, res, "luma_weight_lX_flag                     ");
                 luma_weight_l0_flag[cnt_i] := res[0];
                 cnt_i := cnt_i +1;
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred                
         end
 
         weighted_end_luma_l0 : action ==>
@@ -2834,6 +2856,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 vld_u_name(  1, fifo, res, "chroma_weight_lX_flag                   ");
                 chroma_weight_l0_flag[cnt_i] := res[0];
                 cnt_i := cnt_i + 1;
+
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred                
         end
 
         weighted_end_chroma_l0 : action ==>
@@ -2886,6 +2911,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 delta_luma_weight_l0 := res[0];
                 vld_se_name(    fifo, res, "luma_offset_lX                          ");
                 luma_offset_l0 := res[0];
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 2; // WeightedPred                
         end
 
         weighted_deltaLuma_l0_skip : action ==>
@@ -2914,6 +2942,9 @@ println("Parser: read_SliceHeader.se_idx_3");
         do
                 vld_se_name(    fifo, res, "delta_chroma_weight_lX                  ");
                 delta_chroma_weight_l00 := res[0];
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred                
         end
 
         weighted_deltaChroma_offset_l0_send : action ==> WeightedPred:[delta_chroma_offset_l00, delta_chroma_weight_l01, delta_chroma_offset_l01]
@@ -2931,6 +2962,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
                 delta_chroma_offset_l01 := res[0];
                 cnt_i := cnt_i + 1;
+
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 3;  // WeightedPred               
         end
 
         weighted_luma_l1 : action ==>  WeightedPred:[luma_weight_l1_flag[cnt_i-1]]
@@ -2943,6 +2977,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 vld_u_name(  1, fifo, res, "luma_weight_lX_flag                     ");
                 luma_weight_l1_flag[cnt_i] := res[0];
                 cnt_i := cnt_i + 1;
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 1;  // WeightedPred               
         end
 
         weighted_end_luma_l1 : action ==>
@@ -2972,6 +3009,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 vld_u_name(  1, fifo, res, "chroma_weight_lX_flag                   ");
                 chroma_weight_l1_flag[cnt_i] := res[0];
                 cnt_i := cnt_i + 1;
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred                
         end
 
         weighted_end_chroma_l1 : action ==>
@@ -3013,6 +3053,9 @@ println("Parser: read_SliceHeader.se_idx_3");
                 delta_luma_weight_l1 := res[0];
                 vld_se_name(    fifo, res, "luma_offset_lX                          ");
                 luma_offset_l1 := res[0];
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 2;  // WeightedPred               
         end
 
         weighted_deltaLuma_l1_skip : action ==>
@@ -3041,6 +3084,9 @@ println("Parser: read_SliceHeader.se_idx_3");
         do
                 vld_se_name(    fifo, res, "delta_chroma_weight_lX                  ");
                 delta_chroma_weight_l10 := res[0];
+                
+	            // Tokens Count
+	            nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred                
         end
 
         weighted_deltaChroma_offset_l1_send : action ==> WeightedPred:[delta_chroma_offset_l10,delta_chroma_weight_l11,delta_chroma_offset_l11]
@@ -3058,8 +3104,10 @@ println("Parser: read_SliceHeader.se_idx_3");
                 vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
                 delta_chroma_offset_l11 := res[0];
                 cnt_i := cnt_i + 1;
-        end   
-  
+
+				// Tokens Count
+				nbTokensPerSH[23] := nbTokensPerSH[23] + 3;  // WeightedPred
+        end  
 		
 		uint(size=16) qp_bd_offset_luma;
         /**************************************************************************
@@ -3122,7 +3170,10 @@ println("Parser: read_SliceHeader.se_idx_3");
                 	"slice_loop_filter_across_slices_enabled_flag");
                 end
                 se_idx := se_idx + 1;
-println("Parser: read_SliceHeader.se_idx_5");                
+                
+	            // Tokens Count
+	            nbTokensPerSH[20] := nbTokensPerSH[20] + 1; // DBFDisable
+	            nbTokensPerSH[21] := nbTokensPerSH[21] + 4; // DbfSe               
         end
         /**************************************************************************
          * read_SliceHeader_done
@@ -3163,7 +3214,7 @@ println("Parser: read_SliceHeader.se_idx_5");
             if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
             	vld_ue_name(fifo, res, "num_entry_point_offsets                 ");
             	num_entry_point_offsets := res[0];
-println("Parser: num_entry_point_offsets = "+num_entry_point_offsets);            	
+
             	if (pps_tiles_enabled_flag[pps_id] = 1 and num_entry_point_offsets > ((pps_num_tile_columns_minus1[pps_id] + 1) * (pps_num_tile_rows_minus1[pps_id] + 1) - 1) ) // Tiles
             		or
             	   (pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and num_entry_point_offsets > (PicHeightInCtbsY - 1)) // WPP 
@@ -3177,18 +3228,11 @@ println("Parser: num_entry_point_offsets = "+num_entry_point_offsets);
             		vld_ue_name(fifo, res,
             		"offset_len_minus1                       ");
             		offset_len := res[0] + 1;
-            		se_idx := 7;
-println("Parser: offset_len = "+offset_len);            		
+            		se_idx := 7;           		
             	end
         	end
 
-	        if TILE_SPLIT_ENABLE != 0 then	//JJ Should it be if TILE_SPLIT_ENABLE == 0?
-	        	num_entry_offsets := 1;
-	        else
-	        	num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) *
-	        	(pps_num_tile_rows_minus1[pps_id] + 1);
-	        end
-println("Parser: read_SliceHeader.se_idx_6");	        
+        	num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) * (pps_num_tile_rows_minus1[pps_id] + 1);
 	    end
 
 	    read_SliceHeader.se_idx_7_loop : action ==>
@@ -3202,9 +3246,7 @@ println("Parser: read_SliceHeader.se_idx_6");
 	            end
 	            vld_u_name(  offset_len, fifo, res, "entry_point_offset_minus1                 ");
 	            entryOffsetsTab[cnt_i] := res[0];
-println("entryOffsetsTab["+cnt_i+"] = "+entryOffsetsTab[cnt_i]);	            
 	            cnt_i := cnt_i + 1;
-println("Parser: read_SliceHeader.se_idx_7_loop "+cnt_i);	            
 	    end
 	
 	    read_SliceHeader.se_idx_7_endLoop : action ==>
@@ -3213,7 +3255,6 @@ println("Parser: read_SliceHeader.se_idx_7_loop "+cnt_i);
 	    do
 	            cnt_i := 0;
 	            se_idx := 8;
-println("Parser: read_SliceHeader.se_idx_7_endloop");	            
 	    end
 	
 	    read_SliceHeader.se_idx_8 : action ==>
@@ -3229,7 +3270,6 @@ println("Parser: read_SliceHeader.se_idx_7_endloop");
 		        se_idx := 9;
 		        cnt_i := 0;
 		    end
-println("Parser: read_SliceHeader.se_idx_8");
 	    end
 	
 	    read_SliceHeader.se_idx_9_loop : action ==>
@@ -3240,7 +3280,6 @@ println("Parser: read_SliceHeader.se_idx_8");
         do
         	vld_u_name(  8, fifo, res, "slice_segment_header_extension_data_byte");
         	cnt_i := cnt_i + 1;
-println("Parser: read_SliceHeader.se_idx_9_loop "+cnt_i);        	
 	    end
 	
 	    read_SliceHeader.se_idx_9_endLoop : action ==>
@@ -3249,11 +3288,8 @@ println("Parser: read_SliceHeader.se_idx_9_loop "+cnt_i);
 	    do
 	        cnt_i := 0;
 	        se_idx := 100;
-println("Parser: read_SliceHeader.se_idx_9_endloop");	        
 	    end
-	
-	    uint totalByPass := 0;
-	
+
 	    read_SliceHeader_done : action ==> StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
 	    guard
         	se_idx = 100
@@ -3270,25 +3306,16 @@ println("Parser: read_SliceHeader.se_idx_9_endloop");
         	//println("read_SliceHeader qp_y = " + qp_y);
         	
             sliceData_idx := 1;
-            totalByPass := 0;
-            if num_entry_point_offsets > 0 and TILE_SPLIT_ENABLE != 0 then //bypass
-                if TilesInfo[1] != 0 then
-                    byPassFlag := true;
-                    byte_align(fifo);
-                    foreach int k in 0 .. TilesInfo[1] - 1 do
-                        totalByPass := totalByPass + entryOffsetsTab[k];
-                    end
-                end
-            end
-println("Parser: Slice_Header_done");            
+            
+	        // Tokens Count
+	        nbTokensPerSH[13] := nbTokensPerSH[13] + 2; // StrongIntraSmoothing
         end
 
         /**************************************************************************
          **************************************************************************
          ********        Slice Data                           *********************
          **************************************************************************
-         *************************************************************************/
-        int countAEB := 0;
+         *************************************************************************/        
         uint(size= 9) codIRange[1];
         uint(size=16) codIOffset[1];
         uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX];
@@ -3307,13 +3334,16 @@ println("Parser: Slice_Header_done");
         uint(size=16) ctbAddrTStoRS[CTB_ADDR_TS_MAX];
         uint(size=16) TileId[CTB_ADDR_TS_MAX];
         uint(size=16) nbCtbTile[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
+        uint(size=16) nbCtbPerTile[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
         uint(size=16) colTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
         uint(size=16) rowTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
-        uint tile_idx := 0;
         uint(size= 1) skip_flag_tab[PICT_WIDTH][2];
         uint(size= 8) intraPredMode[PICT_WIDTH][2];
         uint(size=16) colWidth[NB_MAX_PPS][PICT_WIDTH / MIN_CTB_SIZE_Y];
         uint(size=16) rowHeight[NB_MAX_PPS][PICT_HEIGHT / MIN_CTB_SIZE_Y];
+        
+        uint(size=2) sliceSegmentType := 0;
+        bool sliceSegmentSkipStart := false;
 
         read_SliceData.init: action ==> IsPicSlcLcu:[0], IsPicSlc:[0], MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag ,collocated_from_lX , collocated_ref_idx],
         								SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets], RealTilesCoord:[num_entry_offsets]
@@ -3360,12 +3390,12 @@ println("Parser: Slice_Header_done");
                 sps_log2_diff_max_min_transform_block_size[sps_id];
                 foreach int i in 0 .. num_tile_rows_minus1 do
                 	foreach int j in 0 .. num_tile_columns_minus1 do
+                		nbCtbPerTile[count] := rowHeight[pps_id][i] * colWidth[pps_id][j];
                 		if count = 0 then
                 			nbCtbTile[count] := rowHeight[pps_id][i] * colWidth[pps_id][j];
                 		else
                 			nbCtbTile[count] := nbCtbTile[count - 1] + rowHeight[pps_id][i] * colWidth[pps_id][j];
                 		end
-                		println("nbCtbTile["+count+"] "+nbCtbTile[count]);
 						count := count + 1;
                 	end
                 end
@@ -3431,7 +3461,21 @@ println("Parser: Slice_Header_done");
                 else
                         sliceData_idx := 21;
                 end
-println("Parser: SliceData.init sliceData_idx="+sliceData_idx);                
+
+                sliceSegmentType := 1;
+				// Tokens Count
+				nbTokensPerSH[5] := nbTokensPerSH[5] + 1;    // IsPicSlcLcuSH
+				nbTokensPerSH[6] := nbTokensPerSH[6] + 1;    // IsPicSlc            
+				nbTokensPerSH[19] := nbTokensPerSH[19] + 4;  // MvPredSyntaxElemSH
+				nbTokensPerSH[10] := nbTokensPerSH[10] + 1;  // SaoSeSH              
+				nbTokensPerSH[1] := nbTokensPerSH[1] + 1;    // TilesCoord
+				nbTokensPerSH[2] := nbTokensPerSH[2] + 1;    // RealTilesCoord            
+				nbTokensPerSH[15] := nbTokensPerSH[15] + 2;  // PicSizeInMb
+				nbTokensPerSH[14] := nbTokensPerSH[14] + 4;  // DispCoord              
+				nbTokensPerSH[7] := nbTokensPerSH[7] + 1;    // LFAcrossSlcTile
+				nbTokensPerSH[22] := nbTokensPerSH[22] + 7;  // ReorderPics
+				nbTokensPerSH[8] := nbTokensPerSH[8] + 2;    // PictSize
+				nbTokensPerSH[24] := nbTokensPerSH[24] + 2;  // TileSize
         end
 
         read_SliceData.sendInfoSlice: action ==> TilesCoord:[0 ,0 ,pictSize[0] ,pictSize[1]]
@@ -3439,7 +3483,9 @@ println("Parser: SliceData.init sliceData_idx="+sliceData_idx);
                 sliceData_idx = 21
         do
                 sliceData_idx := 2;
-println("Parser: SliceData.sendInfoSlice");                 
+                
+                // Tokens Count
+                nbTokensPerSH[1] := nbTokensPerSH[1] + 4; // TilesCoord
         end
 
         uint countRow := 0;
@@ -3465,13 +3511,9 @@ println("Parser: SliceData.sendInfoSlice");
                         countRow := countRow + 1;
                 end
                 cnt_i := cnt_i + 1;
-                if TILE_SPLIT_ENABLE = 1 then
-                        x0 := 0;
-                        x1 := pictOrTileSize[0];
-                        y0 := 0;
-                        y1 := pictOrTileSize[1];
-                end
-println("Parser: SliceData.sendInfoTilesLoop: "+cnt_i);
+
+                // Tokens Count
+                nbTokensPerSH[1] := nbTokensPerSH[1] + 4; // TilesCoord
         end
 
         read_SliceData.sendRealInfoTilesLoop: action ==> RealTilesCoord:[x0 ,y0 ,x1 ,y1]
@@ -3494,7 +3536,9 @@ println("Parser: SliceData.sendInfoTilesLoop: "+cnt_i);
                         countRow := countRow + 1;
                 end
                 cnt_i := cnt_i + 1;
-println("Parser: read_SliceData.sendRealInfoTilesLoop: "+cnt_i+" x0 = "+x0+" y0 = "+y0+" x1 = "+x1+" y1 = "+y1);
+
+                // Tokens Count
+                nbTokensPerSH[2] := nbTokensPerSH[2] + 4; // RealTilesCoord
         end
 
         read_SliceData.senInfoTilesEnd: action ==>
@@ -3505,7 +3549,6 @@ println("Parser: read_SliceData.sendRealInfoTilesLoop: "+cnt_i+" x0 = "+x0+" y0 
                 countRow := 0;
                 cnt_i    := 0;
                 sliceData_idx := 22;
-println("Parser: SliceData.senInfoTilesEnd");                
         end
 
         read_SliceData.senRealInfoTilesEnd: action ==>
@@ -3516,7 +3559,6 @@ println("Parser: SliceData.senInfoTilesEnd");
                 countRow := 0;
                 cnt_i    := 0;
                 sliceData_idx := 2;
-println("Parser: SliceData.senRealInfoTilesEnd");                
         end
 
         read_SliceData.noInit: action ==> MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id], slice_temporal_mvp_enable_flag]
@@ -3525,7 +3567,10 @@ println("Parser: SliceData.senRealInfoTilesEnd");
                 first_slice_segment_in_pic_flag = 0 and dependent_slice_segment_flag = 1 and prev_pps_id = pps_id
         do
                 sliceData_idx := 2;
-println("Parser: SliceData.noInit");                
+
+        		sliceSegmentType := 2;
+                // Tokens count
+                nbTokensPerSH[19] := nbTokensPerSH[19] + 2; // MvPredSyntaxElemSH
         end
         
         read_SliceData.noInit_isSlc: action ==> MvPredSyntaxElem:[pps_log2_parallel_merge_level[pps_id],slice_temporal_mvp_enable_flag, collocated_from_lX , collocated_ref_idx],
@@ -3541,8 +3586,19 @@ println("Parser: SliceData.noInit");
                 else
                         sliceData_idx := 21;
                 end
-println("Parser: SliceData.noInit_isSlc");
+
+        		sliceSegmentType := 3;
+				// Tokens Count
+				nbTokensPerSH[19] := nbTokensPerSH[19] + 4; // MvPredSyntaxElemSH
+				nbTokensPerSH[5] := nbTokensPerSH[5] + 1;   // IsPicSlcLcuSH
+				nbTokensPerSH[1] := nbTokensPerSH[1] + 1;   // TilesCoord
+				nbTokensPerSH[2] := nbTokensPerSH[2] + 1;   // RealTilesCoord         
+				nbTokensPerSH[7] := nbTokensPerSH[7] + 1;   // LFAcrossSlcTile
+				nbTokensPerSH[8] := nbTokensPerSH[8] + 2;   // PictSize
+				nbTokensPerSH[24] := nbTokensPerSH[24] + 2; // TileSize								
+				nbTokensPerSH[6] := nbTokensPerSH[6] + 1;   // IsPicSlc
         end
+
         /**************************************************************************
          * read_SliceData.start
          *************************************************************************/
@@ -3551,11 +3607,12 @@ println("Parser: SliceData.noInit_isSlc");
         uint(size=32) CtbAddrTS;
         uint(size=32) end_of_slice_flag;
 
-        read_SliceData.start : action ==> SliceAddr:[xCtb, yCtb] 
+        read_SliceData.start : action ==> SliceAddr:[xCtb, yCtb], HeaderControl:[hc], NbTokens:[nbTokensPerSH] repeat 25
         guard
                 sliceData_idx = 2
         var
-                uint(size=32) CtbSize = 1 << Log2CtbSize
+                uint(size=32) CtbSize = 1 << Log2CtbSize,
+                int(size=8) hc := 1
         do
                 //showBits(8, fifo, res);
                 //println("showbits8Start = " + res[0]);
@@ -3565,10 +3622,61 @@ println("Parser: SliceData.noInit_isSlc");
                 xCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0 ) ;
                 yCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1 ) ;
                 end_of_slice_flag  := 0;
-println("Parser: SliceData.start: CtbSize = "+CtbSize+" xCtb = "+xCtb+", yCtb = "+yCtb);
 
 				sliceData_idx := 3;
-        end
+				// Reset tokens count.
+				resetNbTokensPerCTU();
+
+				// Initialize: 
+				nbTilesProcessed := 0;
+				if(PARSER_INFO[1] > 1) then
+					if(pps_tiles_enabled_flag[pps_id] != 0 and num_entry_point_offsets > 0) then // Scenario 1: Tiles parallelization.
+						if(nbUnitsToSkip >= num_entry_offsets) then
+							nbUnitsToSkip := nbUnitsToSkip - num_entry_offsets;
+							sliceData_idx := 5;	// Go to end of slice and skip whole slice.
+							hc := 4;			// TODO: TOTEST: Eat slice header, and wait for next header control.
+						elsif((nbTilesProcessed+1) mod (nbUnitsToSkip+1) = 0) then
+						//elsif(nbUnitsToSkip = 0) then	
+							byPassFlag := false;
+							nbUnitsToSkip := 0;	// Nothing to skip. Process first tile in this slice segment.
+							sliceData_idx := 3;// Go to process 1st tile in the slice segment.
+							hc := 1;			// Process slice header and 1st tile data.
+						else
+							// Skip nbUnitsToSkip and then process in (nbUnitsToSkip+1)th tile in this slice segment.
+							byPassFlag := true;
+							hc := 2;			  // Eat slice header as the 1st tile will be bypassed.
+							byte_alignment(fifo); // Eat 1-bit and align, when skipping first tile. 
+						end
+					else // Scenario 2: Slice parallelization. 
+						byPassFlag := false;	// Turn off tile-bypass.
+						if(sliceSegmentType = 1) then
+							if(nbUnitsToSkip > 0) then
+								sliceSegmentSkipStart := true;
+								nbUnitsToSkip := nbUnitsToSkip - 1;
+								hc := 5;			// Eat independent slice-segment header, and wait for next header control from parser processing this independent slice.
+								sliceData_idx := 5;	// Skip independent slice-segment.
+							else //if(nbUnitsToSkip = 0) then
+								sliceSegmentSkipStart := false;
+								nbUnitsToSkip := PARSER_INFO[1] - 1; // Mark the number slices (each may consists of n slice-segments) to skip after all dependent slice segments are processed. 
+								sliceData_idx := 3; // Go to process the independent slice-segment.
+								hc := 1;			// Process independent slice-segment header.
+							end
+						else
+							if(sliceSegmentSkipStart) then
+								hc := 5;			// Eat dependent slice-segment header, and wait for next header control from parser processing this dependent slice.
+								sliceData_idx := 5;	// Skip dependent slice-segment.
+							else
+								sliceData_idx := 3; // Go to process the dependent slice-segment.
+								hc := 1;			// Process dependent slice-segment header.														
+							end
+						end
+					end	
+				end
+				
+				// Tokens Count
+				nbTokensPerSH[0] := nbTokensPerSH[0] + 2; // SliceAddr
+        end        
+        
         /**************************************************************************
          * read_SliceData_gotoCodingTree
          *************************************************************************/
@@ -3580,57 +3688,59 @@ println("Parser: SliceData.start: CtbSize = "+CtbSize+" xCtb = "+xCtb+", yCtb = 
                 codingTree_idx := 1;
         end
 
+		uint totalByPass := 0;
         read_SliceData_gotoCodingTree.byPass : action ==>
         guard
                 sliceData_idx = 3, byPassFlag = true
         do
+				totalByPass := 0;
+				cnt_i := 0;
+				if pps_tiles_enabled_flag[pps_id] != 0 then
+	                foreach int k in nbTilesProcessed .. (nbTilesProcessed + nbUnitsToSkip - 1) do
+	                    totalByPass := totalByPass + entryOffsetsTab[k];
+	                end
+	            end
+
+                countAEB := 0;
                 sliceData_idx  := 4;
                 codingTree_idx := 0;
-println("Parser: read_SliceData_gotoCodingTree.byPass");                
         end
 
         read_CodingTree.byPassBeforeTileLoop: action ==>
         guard
-                codingTree_idx = 0 and isFifoFull(fifo), cnt_i < totalByPass + TilesInfo[1]
+                codingTree_idx = 0 and isFifoFull(fifo), cnt_i < (totalByPass - countAEB)
         do
-                if (localizeAEB & 1) = 0 then
-                        flushBits_name(8, fifo, "bypassed");
-                else
-                        countAEB := countAEB + 1;
-                end
-                //println("bypassed " + cnt_i);
+                flushBits_name(8, fifo, "bypassed");
                 cnt_i := cnt_i + 1;
-println("Parser: read_CodingTree.byPassBeforeTileLoop");
         end
 
         read_CodingTree.byPassBeforeTileEnd: action ==>
         guard
-                codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass + TilesInfo[1]
+                codingTree_idx = 0 and isFifoFull(fifo), cnt_i = (totalByPass - countAEB)
         do
-                //println("totalByPass = " +totalByPass);
                 cnt_i := 0;
                 byPassFlag := false;
                 codingTree_idx := 1;
-                //flushBits_name(8, fifo, "bypassed");
-                tile_idx := TilesInfo [1];
-                CtbAddrTS := nbCtbTile[tile_idx - 1];
-                //println("CtbAddrTS" + CtbAddrTS);
+				byte_align(fifo);	// Align at end of current tile.
+				byte_alignment(fifo);	
+                nbTilesProcessed := nbTilesProcessed + nbUnitsToSkip; // Processed by other parser units, skipped by this parser unit.
+                CtbAddrTS := nbCtbTile[nbTilesProcessed-1];
                 CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
-                //println("CtbAddrRS" + CtbAddrRS);
-println("Parser: read_CodingTree.byPassBeforeTileEnd");                
         end
 
-        int counter := 0;
+        int ctbCounter := 0;
 
-        read_SliceData.retCodingTree : action ==>
+        read_SliceData.retCodingTree : action ==> HeaderControl:[end_of_unit]
         guard
                 sliceData_idx = 4 and isFifoFull(fifo)
         var
-                uint(size=32) res[1] := [0]
+                uint(size=32) res[1] := [0],
+                int(size=64) nbUnitsRemaining := 0,
+                uint(size=8) end_of_unit := 0
         do
-                //println("retcodingtree");
                 get_END_OF_SLICE_FLAG(codIRange, codIOffset, fifo, res);
                 end_of_slice_flag := res[0];
+                end_of_unit := if(end_of_slice_flag != 0) then 1 else 0 end;
                 CtbAddrTS := CtbAddrTS + 1;
                 CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
                 if pps_entropy_coding_sync_enabled_flag[pps_id] != 0 and 
@@ -3638,16 +3748,11 @@ println("Parser: read_CodingTree.byPassBeforeTileEnd");
                 	//println("saveStates ctbaddrts = " + CtbAddrTS);
                     ctxTableWPP := [[ctxTable[i][j]     : for int j in 0 .. NB_MAX_NUM_CTX-1] : for int i in 0 .. NB_MAX_SE-1];
                 end
-counter := counter + 1;                
+
                 if end_of_slice_flag = 0 then                    
                     sliceData_idx := 3;
                     if pps_tiles_enabled_flag[pps_id] != 0 and (TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1]) then
                         //println("endOfTile ###################################################");
-                        if TILE_SPLIT_ENABLE = 0 then
-                            sliceData_idx := 3;
-                        else
-                            sliceData_idx := 5;
-                        end
                     end
                 else
                     //println("endOfSlice ################################################### counter = " + counter);
@@ -3659,16 +3764,45 @@ counter := counter + 1;
                     //numByPassBytes := [0: for int i in 0 .. MAX_NUM_TILES - 1];
                     byPassFlag := false;
                 end
-println("Parser: read_SliceData.retCodingTree counter = "+counter+" end_of_slice_flag = "+end_of_slice_flag+" CtbAddrTS = "+CtbAddrTS+" CtbAddrRS = "+CtbAddrRS);                
+
+				// Reset tokens count.
+				resetNbTokensPerCTU();
+				ctbCounter := ctbCounter + 1;
+				if(PARSER_INFO[1] > 1 and pps_tiles_enabled_flag[pps_id] != 0 and num_entry_point_offsets > 0 and ctbCounter = nbCtbPerTile[nbTilesProcessed]) then
+	                ctbCounter := 0;
+	                end_of_unit := 1;
+	                nbTilesProcessed := nbTilesProcessed + 1;
+                	nbUnitsRemaining :=  num_entry_offsets - (nbTilesProcessed + (PARSER_INFO[1] - 1));
+                	if(nbUnitsRemaining	> 0) then
+                		nbUnitsToSkip := (PARSER_INFO[1] - 1);
+                		byPassFlag := true;
+                		sliceData_idx := 6;
+                	else 
+                		nbUnitsToSkip := (PARSER_INFO[1] - 1) - (num_entry_offsets - nbTilesProcessed); // Units To be skipped in the next slice.
+	                    CtbAddrTS := 0;
+	                    CtbAddrRS := 0;                		
+                		byPassFlag := false;
+                		sliceData_idx := 5;
+                	end
+				end
+        end
+        /**************************************************************************
+         * read_SliceData.gotoNextTile
+         *************************************************************************/
+        read_SliceData.gotoNextTile: action ==> HeaderControl:[3] // 3= no header for next tile data.
+        guard
+                sliceData_idx = 6
+		do
+				sliceData_idx := 3;
         end
         /**************************************************************************
          * read_SliceData_end
          *************************************************************************/
-        read_SliceData_end: action ==>
+        read_SliceData_end: action ==> 
         guard
                 sliceData_idx = 5
-do
-println("Parser: startData_end counter="+counter);                
+		do
+			resetNbTokensPerSH();
         end
 
         /**************************************************************************
@@ -3722,7 +3856,6 @@ println("Parser: startData_end counter="+counter);
 //			tab_slice_address[CtbAddrRS] := slice_addr;
             xCtb := InverseRasterScan(CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0);
             yCtb := InverseRasterScan(CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1);
-println("Parser: read_CodingTree.start: xCtb = "+xCtb+", yCtb = "+yCtb);            
             if pps_entropy_coding_sync_enabled_flag[pps_id] != 0 then
             	if (xCtb = 0 and (yCtb & (CtbSize - 1)) = 0) then
             		first_qp_group := 1;
@@ -3769,20 +3902,20 @@ println("Parser: read_CodingTree.start: xCtb = "+xCtb+", yCtb = "+yCtb);
             
             codingTree_idx := 2;
             if CtbAddrTS = ctbAddrRStoTS[slice_segment_address] then 
-                println("codIRangeINITCABACbegin := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+                //println("codIRangeINITCABACbegin := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	decodeStart(codIRange, codIOffset, fifo); 
-            	println("codIRangeINITCABAC1 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            	//println("codIRangeINITCABAC1 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	if (dependent_slice_segment_flag = 0 or
             	(pps_tiles_enabled_flag[pps_id] != 0 and (TileId[CtbAddrTS] != TileId[indexTS]))) then
             		contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-            		println("codIRangeINITCABAC2 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            		//println("codIRangeINITCABAC2 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	end
             	if first_slice_segment_in_pic_flag = 0 and
             	pps_entropy_coding_sync_enabled_flag[pps_id] != 0 then
             		if (CtbAddrTS mod PicWidthInCtbsY) = 0 then
             			if PicWidthInCtbsY = 1 then
             				contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-            				println("codIRangeINITCABAC3 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            				//println("codIRangeINITCABAC3 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             			else
             				if dependent_slice_segment_flag != 0 then
             					ctxTable := [ [ ctxTableWPP[i][j] : for int j in 0 .. NB_MAX_NUM_CTX - 1 ] : for int i in 0 .. NB_MAX_SE - 1 ];
@@ -3794,25 +3927,25 @@ println("Parser: read_CodingTree.start: xCtb = "+xCtb+", yCtb = "+yCtb);
             	if CtbAddrTS = 0 or pps_tiles_enabled_flag[pps_id] != 0 and
             	(TileId[CtbAddrTS] != TileId[indexTS]) then 
             		decodeReInit(codIRange, codIOffset, fifo); 
-            		println("codIRangeINITCABAC4 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            		//println("codIRangeINITCABAC4 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             		contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-            		println("codIRangeINITCABAC5 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            		//println("codIRangeINITCABAC5 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	end
             	if pps_entropy_coding_sync_enabled_flag[pps_id] != 0 then
             		if (CtbAddrTS mod PicWidthInCtbsY) = 0 then
             			get_END_OF_SUB_STREAM_ONE_BIT(codIRange, codIOffset, fifo, res);
             			decodeReInit(codIRange, codIOffset, fifo); 
-            			println("codIRangeINITCABAC6 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            			//println("codIRangeINITCABAC6 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             			if PicWidthInCtbsY = 1 then
             				contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-            				println("codIRangeINITCABAC7 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            				//println("codIRangeINITCABAC7 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             			else
             				ctxTable := [ [ ctxTableWPP[i][j] : for int j in 0 .. NB_MAX_NUM_CTX - 1 ] : for int i in 0 .. NB_MAX_SE - 1 ];
             			end
             		end
             	end
             end
-              println("codIRangeINITCABACfinal := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            //println("codIRangeINITCABACfinal := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
         end
         /**************************************************************************
          * read_CodingTree_gotoSaoParam
@@ -3849,15 +3982,16 @@ println("Parser: read_CodingTree.start: xCtb = "+xCtb+", yCtb = "+yCtb);
                 ctStack[0][CT_y0]                       := yCtb;
                 ctStack[0][CT_log2CbSize]       := Log2CtbSize;
                 ctStack[0][CT_ctDepth]          := 0;
+                
+                // Tokens count
+                NbTokensPerCTU[3] := NbTokensPerCTU[3] + 1;
         end
         /**************************************************************************
          * read_CodingTree_end
          *************************************************************************/
-        read_CodingTree_end : action ==>
+        read_CodingTree_end : action ==> NbTokens:[NbTokensPerCTU] repeat 12
         guard
                 codingTree_idx = 4
-do
-//println("read_CodingTree_end counter="+counter);                
         end
         /**************************************************************************
          **************************************************************************
@@ -3904,6 +4038,9 @@ do
             else
             	sao_cIdx := 3;
             end
+            
+            // Tokens count
+            NbTokensPerCTU[4] := NbTokensPerCTU[4] + 1;
         end
         /**************************************************************************
          * read_SaoParam.loop
@@ -3928,6 +4065,9 @@ do
 	        else
 	            sao_cIdx := sao_cIdx + 1;
 	        end
+	        
+            // Tokens count
+            NbTokensPerCTU[4] := NbTokensPerCTU[4] + 1;	        
 	    end
 	    
         read_SaoParam.loop2 : action ==> SaoSe:[offset[0],offset[1],offset[2],offset[3],sao_eo]
@@ -3964,6 +4104,9 @@ do
 	        end
 	        sao_cIdx := sao_cIdx + 1;
 	        sao_idx := 2;
+	        
+            // Tokens count
+            NbTokensPerCTU[4] := NbTokensPerCTU[4] + 5;	        
         end
         read_SaoParam.nextLoop : action ==>
         guard
@@ -4014,9 +4157,9 @@ do
     	    MinCbAddrZS := ctbAddrRStoTS[CtbAddrRS] << ((Log2CtbSize - Log2MinCbSize) * 2);
 
     	    if DEBUG_CABAC and DEBUG_TRACE1 then
-    	    	println("read_CodingTree.start (" + ct_x0 + ", " + ct_y0 + ", " + (1
+    	    	println("read_CodingQuadTree.start (" + ct_x0 + ", " + ct_y0 + ", " + (1
     	    	<< ct_log2CbSize) + ", " + ctStack[ctStack_idx][CT_ctDepth] + ")");
-    	    	elsif DEBUG_CABAC then println("read_CodingTree.start");
+    	    	elsif DEBUG_CABAC then println("read_CodingQuadTree.start");
     	    end
     	    foreach int i in 0 .. Log2CtbSize - Log2MinCbSize - 1 do
     	    	m := 1 << i;
@@ -4075,7 +4218,7 @@ do
                 uint(size= 8) idx =  ctStack_idx
         do
                 ctStack[ctStack_idx][CT_idx]        := 3;
-                ctStack_idx                                                     := ctStack_idx + 1;
+                ctStack_idx                         := ctStack_idx + 1;
                 ctStack[ctStack_idx][CT_idx]        := 1;
                 ctStack[ctStack_idx][CT_x0]         := ctStack[idx][CT_x0];
                 ctStack[ctStack_idx][CT_y0]         := ctStack[idx][CT_y0];
@@ -4119,6 +4262,11 @@ do
                         1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
         do
                 ctStack[ctStack_idx][CT_idx]        := 4;
+                
+                // Tokens count.
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
         /**************************************************************************
          * read_CodingQuadTree.case3
@@ -4154,6 +4302,11 @@ do
                         1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
         do
                 ctStack[ctStack_idx][CT_idx]        := 5;
+
+                // Tokens count.
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
         /**************************************************************************
          * read_CodingQuadTree.case4
@@ -4191,6 +4344,11 @@ do
                         1<<(ctStack[ctStack_idx][CT_log2CbSize]-1)]
         do
                 ctStack[ctStack_idx][CT_idx]        := 7;
+                
+                // Tokens count.
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
         /**************************************************************************
          * read_CodingQuadTree_gotoCodingUnit
@@ -4324,7 +4482,7 @@ do
         /**************************************************************************
          * read_CodingUnit_gotoPredictionUnit.goto1
          *************************************************************************/
-        read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf :[false],
+        read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf:[false],
                  PartMode:[PART_2Nx2N], SplitTransform:[false]
                  , TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
                           1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0, //cb
@@ -4346,6 +4504,14 @@ do
                 pu_PbW          := cu_nCbS;
                 pu_PbH          := cu_nCbS;
                 intra_prediction_unit_default_value( cu_x0, cu_y0, cu_log2CbSize, partMode, Log2MinCbSize-1, intraPredMode);
+                
+                // Tokens count.
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
+                NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
+                NbTokensPerCTU[6] := NbTokensPerCTU[6] + (7*3);
         end
         /**************************************************************************
          * read_CodingUnit.noGoto1
@@ -4428,6 +4594,9 @@ do
                 else
                         intra_prediction_unit_default_value( cu_x0, cu_y0, cu_log2CbSize, partMode, Log2MinCbSize-1, intraPredMode);
                 end
+
+                // Tokens Count
+                NbTokensPerCTU[2] := NbTokensPerCTU[2] + 1;
         end
 
         sendIntraPredMode.skip: action ==>
@@ -4465,6 +4634,11 @@ do
                                 end;
                         predMode_v := intraPredModeC[intraChrPredModIdx][idx];
                 end
+                
+                // Tokens count.
+                NbTokensPerCTU[1] := NbTokensPerCTU[1] + 2;
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
         end
 
         sendIntraPredMode.partNxN: action ==> IntraPredMode:[intraPredMode] repeat 8, CUInfo:[cuInfo] repeat 20, TileCUInfo:[tilecuInfo] repeat 20
@@ -4507,6 +4681,11 @@ do
                                 intraPredMode[2*i+1] := intraPredModeC[intraChrPredModIdx][idx];
                         end
                 end
+                
+                // Tokens count.
+                NbTokensPerCTU[1] := NbTokensPerCTU[1] + 8;
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 20;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 20;
         end
 
         /**************************************************************************
@@ -4624,6 +4803,10 @@ do
                                 cu_idx := 8;
                         end
                 end
+                
+                // Tokens count.
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;                
         end
         /**************************************************************************
          * read_CodingUnit.endFunction
@@ -4652,7 +4835,6 @@ do
                 		cu_idx := 11;
                 	end
                 end
-                
         end
 
         read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
@@ -4663,6 +4845,11 @@ do
             cu_idx = 11
         do
         	cu_idx  := 10;
+        	
+        	// Tokens count
+        	NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
+        	NbTokensPerCTU[6] := NbTokensPerCTU[6] + (7*3);
+        	NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
         end
 
         /**************************************************************************
@@ -4763,6 +4950,9 @@ do
 	        	cu_top_ctDepth[ct_x_cb + i] := cu_ctDepth;
 	        	cu_left_ctDepth[ct_y_cb + i] := cu_ctDepth;
 	        end
+	        
+	        // Tokens count
+	        NbTokensPerCTU[11] := NbTokensPerCTU[11] + 2;
         end
 
         /**************************************************************************
@@ -4906,11 +5096,17 @@ do
                 mvd[0], mvd[1], mvd[2], mvd[3]]
         guard
                 pu_idx = 7, mergeIdx = -1
+        do
+        	// Tokens count
+        	NbTokensPerCTU[8] := NbTokensPerCTU[8] + 9;
         end
         read_PredictionUnit_end.mergeIdx_notEq_min1 : action ==> MvPredSyntaxElem:[mergeIdx,
                 mvd[0], mvd[1], mvd[2], mvd[3]]
         guard
                 pu_idx = 7, mergeIdx != -1
+        do
+        	// Tokens count
+        	NbTokensPerCTU[8] := NbTokensPerCTU[8] + 5;
         end
         /**************************************************************************
          **************************************************************************
@@ -5157,7 +5353,10 @@ do
         guard
                 ttStack[ttStack_idx][TT_idx] = 10
         do
-        ttStack[ttStack_idx][TT_idx] := 2 + split_transform_flag;
+			ttStack[ttStack_idx][TT_idx] := 2 + split_transform_flag;
+        	
+        	// Tokens Count
+        	NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
         end
         /**************************************************************************
          * read_TransformTree_gotoTransformUnit
@@ -5175,6 +5374,9 @@ do
                 tu_log2TrafoSize                                		:= ttStack[ttStack_idx][TT_log2TrafoSize];
                 tu_trafoDepth                                   		:= ttStack[ttStack_idx][TT_trafoDepth];
                 tu_blkIdx                                               := ttStack[ttStack_idx][TT_blkIdx];
+
+                // Tokens count
+                NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
         end
         /**************************************************************************
          * read_TransformTree.gotoTransformTree
@@ -5373,6 +5575,9 @@ do
                 else
 //                	println("skipModeChroma size = " + (1<<rc_log2TrafoSize) + "QP = " + qp_y);
                 end
+                
+                // Tokens Count
+                NbTokensPerCTU[6] := NbTokensPerCTU[6] + 7;
         end
         
         /**************************************************************************
@@ -5571,6 +5776,9 @@ do
 //	            QPCounter := QPCounter +  (1<<rc_log2TrafoSize) *(1<<rc_log2TrafoSize) / 16;
 //	            println("qpCounter = " + QPCounter);
 	        end
+	        
+	        // Tokens count
+	        NbTokensPerCTU[6] := NbTokensPerCTU[6] + 7;
         end
         
         /**************************************************************************
@@ -5642,6 +5850,9 @@ do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end");
                 end
+                
+                // Tokens Count
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (4*4);
         end
 
         read_ResidualCoding_end.xIT8 : action ==>
@@ -5653,6 +5864,9 @@ do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end");
                 end
+
+                // Tokens Count
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (8*8);
         end
 
         read_ResidualCoding_end.xIT16 : action ==>
@@ -5664,6 +5878,9 @@ do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end");
                 end
+                
+                // Tokens Count
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (16*16);
         end
 
         read_ResidualCoding_end.xIT32 : action ==>
@@ -5675,6 +5892,9 @@ do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end");
                 end
+                
+                // Tokens Count
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (32*32);
         end
         /**************************************************************************
          * read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL_GREATER1_FLAG
