@@ -21,8 +21,8 @@ branches, each with 5 taps.
 The 'lib'-folder contains native function bodies, which
 are required when the filter is realized as C code and
 compiled for a Linux workstation. Native functions are provided
-in two files: linux.c and linuxbin.c of which the first reads
-and writes text files and the latter binary files.
+in three files: linux.c, linuxbin.c and linuxmulti.c of which
+the first reads and writes text files and the latter binary files.
 The 'lib' folder has also an input sample sequence and
 a reference output signal both in text and binary format.
 The FIR filter and the local oscillator
@@ -38,6 +38,10 @@ Compilation:
    * if you use small input files, such is the ones given in 'lib'
      remember to make the network FIFO size small (< 64) in order
      to see some output
+   * if filter_dpd_multi is used, indicate the FIFO size used in
+     the constants.cal file (default value 32). IMPORTANT: If you
+     change this value remember to clean and rebuild the project
+     before code generation!
 2. Copy either linux.c or linuxbin.c to <C_output_dir>/src and add the
    file name to the filenames list in <C_output_dir>/src/CMakeLists.txt
 3. If linuxbin.c is used, add the following entry to
@@ -62,6 +66,7 @@ More information:
 Changelog:
 - initial version 16/12/2013
 - new compilation instructions 14/07/2015
+- multi-token design added 15/07/2015
 
 Known issues:
 - the lowlevel_dpd implementation has some structural illogicalities
