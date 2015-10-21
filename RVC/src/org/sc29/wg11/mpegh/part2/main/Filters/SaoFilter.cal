@@ -65,7 +65,10 @@ actor SaoFilter(bool DEBUG)
 	uint(size=16) PicSize,
 	uint(size=8)  SampleIn,
 	int (size=9)  SaoSe,
-	uint(size=16) TilesCoord
+	uint(size=16) TilesCoord,
+
+	uint(size=8) LcuSizeMin,
+	uint(size=16) LFBypassCUInfo
 		==>
 	uint(size=8)  FiltSample
 		:
@@ -92,6 +95,8 @@ actor SaoFilter(bool DEBUG)
 	uint(size=5)  saoLeftClass[PICT_WIDTH/64][PICT_HEIGHT/64][3];
 	uint(size=8)  lcuSizeMax;
 	uint(size=8)  log2LcuSizeMax;
+	uint(size=8)  log2puSizeMin;
+	uint(size=8)  minPUSize[2];
 	uint(size=8)  picSizeInCu[2];
 	uint(size=8)  picSizeInMb[2];
 	uint(size=16) picSize[3][2];
@@ -1309,14 +1314,46 @@ actor SaoFilter(bool DEBUG)
 		end
 	end
 
+	uint(size=8) isLFBypass[PICT_WIDTH/4*PICT_HEIGHT/4];
+	procedure resetLFByPass()
+	begin
+		foreach int j in 0 .. (minPUSize[1]-1) do
+			foreach int i in 0 .. (minPUSize[0]-1) do			
+				isLFBypass[j*minPUSize[0]+i] := 0;
+			end
+		end
+	end
+
+	procedure setLFByPass(uint(size=16) val, uint(size=16) x, uint(size=16) y, uint(size=16) cb_size)
+	var
+		uint x_end = min(x+cb_size, picSize[0][0]),
+		uint y_end = min(y+cb_size, picSize[0][1])
+	begin
+		foreach int j in (y>>log2puSizeMin) .. ((y_end>>log2puSizeMin)-1) do
+			foreach int i in (x>>log2puSizeMin) .. ((x_end>>log2puSizeMin)-1) do			
+				isLFBypass[j*minPUSize[0]+i] := val;
+			end
+		end
+	end
+		
+	function getLFByPass(uint(size=8) cIdx, uint(size=16) x, uint(size=16) y) --> uint(size=8)
+	:
+		isLFBypass[(y>>log2puSizeMin)*minPUSize[0] + (x>>log2puSizeMin)]
+	end
+	
     isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu],
 		LcuSizeMax:[log2LcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
-		PicSize:[picWidthInPix, picHeightInPix], SaoSe:[saoSe] ==>
+		PicSize:[picWidthInPix, picHeightInPix], SaoSe:[saoSe], LcuSizeMin:[log2lcuSizeMin] ==>
 	guard
 		isNewPicSlcLcu = NEW_PIC
 	do
 		lcuSizeMax := (1 << log2LcuSz);
 		log2LcuSizeMax := log2LcuSz;
+		log2puSizeMin := log2lcuSizeMin - 1;
+		minPUSize[0] := picWidthInPix >> log2puSizeMin;
+		minPUSize[1] := picHeightInPix >> log2puSizeMin;
+		resetLFByPass();
+
 		picSizeInCu := [(picWidthInPix+(lcuSizeMax - 1)) >> log2LcuSizeMax, (picHeightInPix+(lcuSizeMax - 1)) >> log2LcuSizeMax];
 		picSizeInMb := [(picWidthInPix+15)/16, (picHeightInPix+15)/16];
 		picSize[0]  := [picWidthInPix   , picHeightInPix];
@@ -1354,7 +1391,7 @@ actor SaoFilter(bool DEBUG)
 	//There should be slice SAO enable for each independent slice.
 	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu],
 		LcuSizeMax:[log2LcuSz], LFAcrossSlcTile:[lfAcrossSlcTile],
-		PicSize:[picWidthInPix, picHeightInPix]/*, SaoSe:[saoSe]*/ ==>
+		PicSize:[picWidthInPix, picHeightInPix], LcuSizeMin:[log2lcuSizeMin]/*, SaoSe:[saoSe]*/ ==>
 	guard
 		isNewPicSlcLcu = NEW_SLC
 	do
@@ -1410,6 +1447,11 @@ actor SaoFilter(bool DEBUG)
 		filtAcrTile[xCu][yCu] := filtAcrCurrTile;
 	end
 
+	getLFBypassCUInfo: action LFBypassCUInfo:[val, x, y, cb_size_w, cb_size_h] ==>
+	do
+		setLFByPass(val, x, y, max(cb_size_w, cb_size_h));
+	end
+
 	getCuPix.launch.luma: action SampleIn:[samp] repeat 16 ==>
 	guard
 		tokenGot < numTokenPerLcu[0]
@@ -1421,7 +1463,8 @@ actor SaoFilter(bool DEBUG)
 		yPic := (yCu * lcuSizeMax) + (tokenGot >> log2LcuSizeMax);
 		foreach uint x in 0 .. 15
 		do
-			PictBuffer[0][yPic][x+xPic] := samp[x]; 
+			PictBuffer[0][yPic][x+xPic] := samp[x];
+			origPict[0][yPic][x+xPic] := samp[x]; 
 		end
 
 		tokenGot := tokenGot + 16;
@@ -1448,6 +1491,7 @@ actor SaoFilter(bool DEBUG)
 		foreach uint x in 0 .. 7
 		do
 			PictBuffer[cIdx][yPic][x+xPic] := samp[x]; 
+			origPict[cIdx][yPic][x+xPic] := samp[x]; 
 		end
 
 		tokenGot := tokenGot + 8;
@@ -1519,7 +1563,7 @@ actor SaoFilter(bool DEBUG)
 				end
 				saoEoClass[xCu][yCu][cIdx] := saoEoClass[xMerge][yMerge][cIdx];
 				saoLeftClass[xCu][yCu][cIdx] := saoLeftClass[xMerge][yMerge][cIdx];
-                saveLcuBorder(cIdx);
+                //saveLcuBorder(cIdx);
 			end
 		end
 		filtPrevLcu();
@@ -1570,7 +1614,7 @@ actor SaoFilter(bool DEBUG)
 			println("]");
 		end
 		
-        saveLcuBorder(cIdx);
+        //saveLcuBorder(cIdx);
 		saoTypeIdx[xCu][yCu][cIdx] := saoSe[0];
 		foreach uint i in 1 .. 4
 		do
@@ -1611,49 +1655,109 @@ actor SaoFilter(bool DEBUG)
 	var
 	    uint tokenOffset,
 		uint(size=8) filtSamp[16*16+2*8*8],
-        uint(size=16) blkAddrX, uint(size=16) blkAddrY
+        uint(size=16) blkAddrX, uint(size=16) blkAddrY,
+        uint(size=16) puAddrX, uint(size=16) puAddrY,
+        int idx
 	do
         blkAddrX := xMbSent*16;
 		blkAddrY := yMbSent*16;
-		foreach uint y in 0 .. 15
+
+		foreach uint puY in 0 .. 3
 		do
-			foreach uint x in 0 .. 15
+			puAddrY := blkAddrY + puY * 4;
+			foreach uint puX in 0 .. 3
 			do
-				if(not DEBUG) then
-					filtSamp[x+y*16] := PictBuffer[0][blkAddrY+y][blkAddrX+x];
-				else
-					if(blkAddrX+x<picSize[0][0] && blkAddrY+y<picSize[0][1]) then
-						filtSamp[x+y*16] := PictBuffer[0][blkAddrY+y][blkAddrX+x];
-					else
-						filtSamp[x+y*16] := 0;
+				puAddrX := blkAddrX + puX * 4;
+				if(getLFByPass(0, puAddrX, puAddrY) != 0) then
+					foreach uint y in 0 .. 3
+					do
+						foreach uint x in 0 .. 3
+						do
+							idx := puX*4+puY*64+x+y*16;
+							if(not DEBUG) then					
+								filtSamp[idx] := origPict[0][puAddrY+y][puAddrX+x];
+							else
+								if(puAddrX+x<picSize[0][0] && puAddrY+y<picSize[0][1]) then
+									filtSamp[idx] := origPict[0][puAddrY+y][puAddrX+x];
+								else
+									filtSamp[idx] := 0;
+								end
+							end
+						end
+					end
+				else // non-bypass
+					foreach uint y in 0 .. 3
+					do
+						foreach uint x in 0 .. 3
+						do
+							idx := puX*4+puY*64+x+y*16;
+							if(not DEBUG) then					
+								filtSamp[idx] := PictBuffer[0][puAddrY+y][puAddrX+x];
+							else
+								if(puAddrX+x<picSize[0][0] && puAddrY+y<picSize[0][1]) then
+									filtSamp[idx] := PictBuffer[0][puAddrY+y][puAddrX+x];
+								else
+									filtSamp[idx] := 0;
+								end
+							end
+						end
 					end
 				end
-			end
-		end
+			end	
+		end	
 
 		blkAddrX := blkAddrX>>1;
 		blkAddrY := blkAddrY>>1;
 		tokenOffset:= 16*16;
+
 		foreach uint comp in 1 .. 2
 		do
-			foreach uint y in 0 .. 7
+			foreach uint puY in 0 .. 3
 			do
-				foreach uint x in 0 .. 7
+				puAddrY := blkAddrY + puY * 2;
+				foreach uint puX in 0 .. 3
 				do
-					if(not DEBUG) then
-						filtSamp[x+y*8 + tokenOffset] := PictBuffer[comp][blkAddrY+y][blkAddrX+x];
-					else
-						if(blkAddrX+x<picSize[0][0]/2 && blkAddrY+y<picSize[0][1]/2) then
-							filtSamp[x+y*8 + tokenOffset] := PictBuffer[comp][blkAddrY+y][blkAddrX+x];
-						else
-							filtSamp[x+y*8 + tokenOffset] := 0;
+					puAddrX := blkAddrX + puX * 2;
+					if(getLFByPass(comp, puAddrX<<1, puAddrY<<1) != 0) then
+						foreach uint y in 0 .. 1
+						do
+							foreach uint x in 0 .. 1
+							do
+								idx := puX*2+puY*16 +  x+y*8 + tokenOffset;
+								if(not DEBUG) then
+									filtSamp[idx] := origPict[comp][puAddrY+y][puAddrX+x];
+								else
+									if(puAddrX+x<picSize[0][0]/2 && puAddrY+y<picSize[0][1]/2) then
+										filtSamp[idx] := origPict[comp][puAddrY+y][puAddrX+x];
+									else
+										filtSamp[idx] := 0;
+									end
+								end
+							end
 						end
-					end
+					else // non-bypass
+						foreach uint y in 0 .. 1
+						do
+							foreach uint x in 0 .. 1
+							do
+								idx := puX*2+puY*16 +  x+y*8 + tokenOffset;
+								if(not DEBUG) then
+									filtSamp[idx] := PictBuffer[comp][puAddrY+y][puAddrX+x];
+								else
+									if(puAddrX+x<picSize[0][0]/2 && puAddrY+y<picSize[0][1]/2) then
+										filtSamp[idx] := PictBuffer[comp][puAddrY+y][puAddrX+x];
+									else
+										filtSamp[idx] := 0;
+									end
+								end
+							end
+						end				
+					end	
 				end
 			end
 			tokenOffset:= tokenOffset + 8*8;
-		end
-
+		end	
+		
 		nextMbAddr();
 	end
 	
@@ -1673,6 +1777,7 @@ actor SaoFilter(bool DEBUG)
 
 		/* Using SAO */
 		GetCuPixFilt (isNewSlice           )--> GetNumTilesFilt;
+		GetCuPixFilt (getLFBypassCUInfo    )--> GetCuPixFilt;		
 		GetCuPixFilt (getCuPix.launch.init )--> GetCuPixLumaFilt;
 		GetCuPixFilt (getCuPix.done        )--> SendLastSamplesFilt;
 
@@ -1701,6 +1806,7 @@ actor SaoFilter(bool DEBUG)
 		/* Not using SAO. */
 
 		GetCuPixSkipFilt (isNewSlice           )--> GetNumTilesSkipFilt;
+		GetCuPixSkipFilt (getLFBypassCUInfo    )--> GetCuPixSkipFilt;
 		GetCuPixSkipFilt (getCuPix.launch.init )--> GetCuPixLumaSkipFilt;
 		GetCuPixSkipFilt (getCuPix.done        )--> SendLastSamplesSkipFilt;
 

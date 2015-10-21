@@ -112,7 +112,11 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                                 uint(size= 9) OutWppCtx,
                                 uint(size= 8) OutWppTopCUInfo,
                                  int(size= 8) HeaderControl,
-                                uint(size=16) NbTokens
+                                uint(size=16) NbTokens,
+                                uint(size= 8) LcuSizeMin,
+                                uint(size= 8) PcmSize,
+                                uint(size= 8) PcmBlk,
+                                uint(size=16) LFBypassCUInfo
 
 :
         uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -134,18 +138,18 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         uint parellelType := 0;
         
         // For each Slice Header (SH).
-        uint(size=16) nbTokensPerSH[25] := [0: for int i in 0 .. 24];
+        uint(size=16) nbTokensPerSH[26] := [0: for int i in 0 .. 25];
         // For each CTU.
-        uint(size=16) NbTokensPerCTU[12] := [0: for int i in 0 .. 11];
+        uint(size=16) NbTokensPerCTU[15] := [0: for int i in 0 .. 14];
         
         procedure resetNbTokensPerSH()
         begin
-	        nbTokensPerSH := [0: for int i in 0 .. 24];        
+	        nbTokensPerSH := [0: for int i in 0 .. 25];        
         end
 
         procedure resetNbTokensPerCTU()
         begin
-	        NbTokensPerCTU := [0: for int i in 0 .. 11];
+	        NbTokensPerCTU := [0: for int i in 0 .. 14];
         end
 
         initialize ==>
@@ -1437,10 +1441,9 @@ uint numPicDecoded := 0;
 	
 		uint log2_min_pcm_cb_size[NB_MAX_SPS];
 		uint log2_max_pcm_cb_size[NB_MAX_SPS];
-		uint pcm_bit_depth[NB_MAX_SPS];
+		uint pcm_bit_depth_luma[NB_MAX_SPS];
 		uint pcm_bit_depth_chroma[NB_MAX_SPS];
 		uint pcm_loop_filter_disable_flag[NB_MAX_SPS];
-		
 		
 		read_SPS_Header.se_idx_6 : action ==>
 	    guard
@@ -1460,7 +1463,7 @@ uint numPicDecoded := 0;
 	        if sps_pcm_enabled_flag[sps_id] = 1 then
 	        	vld_u_name(4, fifo, res,
 	        	"pcm_sample_bit_depth_luma_minus1        ");
-	        	pcm_bit_depth[sps_id] := res[0] + 1;
+	        	pcm_bit_depth_luma[sps_id] := res[0] + 1;
 	        	vld_u_name(4, fifo, res,
 	        	"pcm_sample_bit_depth_chroma_minus1      ");
 	        	pcm_bit_depth_chroma[sps_id] := res[0] + 1;
@@ -1469,11 +1472,18 @@ uint numPicDecoded := 0;
 	        	log2_min_pcm_cb_size[sps_id] := res[0] + 3;
 	        	vld_ue_name(fifo, res,
 	        	"log2_diff_max_min_pcm_luma_coding_block_size");
-	        	log2_max_pcm_cb_size[sps_id] := log2_min_pcm_cb_size[sps_id] +
-	        	res[0];
+	        	log2_max_pcm_cb_size[sps_id] := log2_min_pcm_cb_size[sps_id] + res[0];
 	        	vld_u_name(1, fifo, res,
 	        	"pcm_loop_filter_disable_flag            ");
 	        	pcm_loop_filter_disable_flag[sps_id] := res[0];
+	        	
+	        	if(pcm_bit_depth_luma[sps_id] > (sps_bit_depth_minus5[sps_id][0]+5)) then
+	        		println("ERROR: PCM bit depth for LUMA is greater than normal normal LUMA bit depth)\n");
+	        	end
+	        	
+	        	if(pcm_bit_depth_chroma[sps_id] > (sps_bit_depth_minus5[sps_id][1]+5)) then
+	        		println("ERROR: PCM bit depth for Chroma is greater than normal normal Cb bit depth)\n");
+	        	end
 	        end
 	        vld_ue_name(fifo, res,
 	        "num_short_term_ref_pic_sets             ");
@@ -1562,7 +1572,7 @@ uint numPicDecoded := 0;
 	        "sps_extension_flag                      ");
 	        if res[0] = 1 then
 	        	println("not support for sps_extension_flag != 0");
-	        end	        
+	        end
 	    end
 	    /**************************************************************************
 	     **************************************************************************
@@ -2148,7 +2158,7 @@ uint numPicDecoded := 0;
 	        nbTokensPerSH[4] := nbTokensPerSH[4] + 1;	// PartMode        
 	    end
         
-	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
+	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize], LcuSizeMin:[Log2MinCbSize]
 	    guard
 	            se_idx = 200 and isFifoFull(fifo)
 	    var
@@ -2200,7 +2210,8 @@ uint numPicDecoded := 0;
             // Tokens Count
 	        nbTokensPerSH[9] := nbTokensPerSH[9] + 1;   // Poc
 	        nbTokensPerSH[12] := nbTokensPerSH[12] + 1; // SliceType
-            nbTokensPerSH[3] := nbTokensPerSH[3] + 1;   // LcuSizeMax	    	
+            nbTokensPerSH[3] := nbTokensPerSH[3] + 1;   // LcuSizeMax
+            nbTokensPerSH[25] := nbTokensPerSH[25] + 1; // LcuSizeMin	    	
 		end
 		
 		uint(size=1) short_term_ref_pic_set_sps_flag;
@@ -4618,9 +4629,6 @@ uint numPicDecoded := 0;
         		get_CU_TRANSQUANT_BYPASS_FLAG(codIRange, codIOffset, ctxTable, fifo,
         		res);
         		cu_transquant_bypass_flag := res[0];
-        		if cu_transquant_bypass_flag != 0 then
-        			 set_deblocking_bypass(cu_x0, cu_y0, cu_log2CbSize);
-        		end
         	else
         		cu_transquant_bypass_flag := 0;
         	end
@@ -4643,6 +4651,10 @@ uint numPicDecoded := 0;
         	cu_nCbS := (1 << cu_log2CbSize);
         	partMode := PART_2Nx2N;
         	cu_idx := 2;
+        	
+        	if cu_transquant_bypass_flag != 0 then
+        		cu_idx := 33;
+        	end
         end
         
         int QPCounter := 0;
@@ -4723,6 +4735,7 @@ uint numPicDecoded := 0;
                         if( pcm_flag != 0) then
                                 //byte_align(fifo);
                                 intra_prediction_unit_default_value( cu_x0, cu_y0, cu_log2CbSize, partMode, Log2MinCbSize-1, intraPredMode);
+                                predMode := IPCM;
                                 cu_idx := 3;
                         else
                                 pbOffset := if partMode = PART_NxN then cu_nCbS>>1 else cu_nCbS end;
@@ -4858,12 +4871,44 @@ uint numPicDecoded := 0;
         /**************************************************************************
          * read_CodingUnit_gotoPCMSample
          *************************************************************************/
-        read_CodingUnit_gotoPCMSample : action ==>
+        read_CodingUnit_gotoPCMSample : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf:[false], SplitTransform:[false],
+        								LFBypassCUInfo:[lfBypassCUInfo] repeat 5 
         guard
                 cu_idx = 3
+        var
+                uint(size=16) tilecuInfo[5] = [IPCM,
+                ctStack[ctStack_idx][CT_x0]- colTileInPix[colIndex], ctStack[ctStack_idx][CT_y0]- rowTileInPix[rowIndex],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize],
+                uint(size=16) cuInfo[5] = [IPCM,
+                ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize],
+                uint(size=16) lfBypassCUInfo[5] = [if(pcm_loop_filter_disable_flag[sps_id] != 0 || cu_transquant_bypass_flag != 0) then 1 else 0 end,
+                ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize]
         do
+                // Tokens count.
+                NbTokensPerCTU[0] := NbTokensPerCTU[0] + 5;
+                NbTokensPerCTU[10] := NbTokensPerCTU[10] + 5;
+                NbTokensPerCTU[9] := NbTokensPerCTU[9] + 1;
+                NbTokensPerCTU[5] := NbTokensPerCTU[5] + 1;
+                NbTokensPerCTU[14] := NbTokensPerCTU[14] + 5;
+                
                 cu_idx := 8;
         end
+        
+        read_CodingUnit.sendLFBypassCUInfo: action ==> LFBypassCUInfo:[lfBypassCUInfo] repeat 5 
+        guard
+                cu_idx = 33
+        var
+                uint(size=16) lfBypassCUInfo[5] = [if(pcm_loop_filter_disable_flag[sps_id] != 0 || cu_transquant_bypass_flag != 0) then 1 else 0 end,
+                ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize]
+        do
+                // Tokens count.
+                NbTokensPerCTU[14] := NbTokensPerCTU[14] + 5;
+                
+                cu_idx := 2;
+        end        
         /**************************************************************************
          * read_CodingUnit_gotoPredictionUnit.goto2
          *************************************************************************/
@@ -5346,63 +5391,71 @@ uint numPicDecoded := 0;
          ********        PCM Sample                           *********************
          **************************************************************************
          *************************************************************************/
-		uint(size=8) pcm_sample_luma[4096]; // TODO size to be checked !!
-		uint(size=8) pcm_sample_chroma[4096];// TODO size to be checked !!
-		uint(size=8) is_pcm[4096];// TODO size to be checked !!
-		int pcm_skip_length;
+   		uint(size=16) pcm_cbSize_luma;
+   		uint(size=16) pcm_cbSize_chroma;		
+   		uint(size=8) pcm_shift_luma;
+   		uint(size=8) pcm_shift_chroma;
 		
-        read_PCMSample_start : action ==>
-        var
-                int cb_size = 1 << cu_log2CbSize,
-                int length
+        read_PCMSample_start : action ==> PcmSize:[1<<cu_log2CbSize]
         do
-                if DEBUG_CABAC then
-                        println("read_PCMSample");
-                end
-        		length := cb_size * cb_size * pcm_bit_depth[sps_id] + ((cb_size * cb_size) >> 1) * pcm_bit_depth_chroma[sps_id];
-        		pcm_skip_length := (length + 7) >> 3;
-        		cnt_i := 0;
+            byte_align(fifo);
+	   		pcm_cbSize_luma := 1 << (cu_log2CbSize << 1);
+	   		pcm_cbSize_chroma := (1 << (cu_log2CbSize << 1)) >> 1;
+	   		pcm_shift_luma := sps_bit_depth_minus5[sps_id][0] + 5 - pcm_bit_depth_luma[sps_id];
+	   		pcm_shift_chroma := sps_bit_depth_minus5[sps_id][1] + 5 - pcm_bit_depth_chroma[sps_id];
+
+    		//pcm_skip_length := (pcm_cbSize_luma * pcm_bit_depth_luma[sps_id] + pcm_cbSize_chroma * pcm_bit_depth_chroma[sps_id] + 7) >> 3;
+    		cnt_i := 0;
+
+        	// Tokens Count
+        	NbTokensPerCTU[12] := NbTokensPerCTU[12] + 1;
        end
-       read_PCMSample_skipLoop : action ==>
-       guard
-       		cnt_i < pcm_skip_length, isFifoFull(fifo)
+
+       read_PCMSample_loop_luma : action ==> PcmBlk:[pcm_sample]
+       guard cnt_i < pcm_cbSize_luma, isFifoFull(fifo)
+       var
+       		int(size=32) res[1],
+       		uint(size=8) pcm_sample
        do
-       		flushBits(8, fifo); // skipbyte
-       		cnt_i := cnt_i + 1;
+	        vld_u_name(pcm_bit_depth_luma[sps_id], fifo, res, "pcm_sample_luma[x][y]                      ");
+	        pcm_sample := res[0] << pcm_shift_luma;
+	        cnt_i := cnt_i + 1;
+	        
+        	// Tokens Count
+        	NbTokensPerCTU[13] := NbTokensPerCTU[13] + 1;
        end
-       read_PCMSample_skipLoop_end : action ==>
+       
+       read_PCMSample_end_luma : action ==> PcmSize:[(1<<cu_log2CbSize)>>1, (1<<cu_log2CbSize)>>1]
        guard
-       		cnt_i = pcm_skip_length, isFifoFull(fifo)
+       		cnt_i = pcm_cbSize_luma, isFifoFull(fifo)
+       do
+       		cnt_i := 0;
+       		
+        	// Tokens Count
+        	NbTokensPerCTU[12] := NbTokensPerCTU[12] + 2;       		
+       end
+
+       read_PCMSample_loop_chroma : action ==> PcmBlk:[pcm_sample]
+       guard cnt_i < pcm_cbSize_chroma, isFifoFull(fifo)
+       var
+       		int(size=32) res[1],
+       		uint(size=8) pcm_sample
+       do
+	        vld_u_name(pcm_bit_depth_chroma[sps_id], fifo, res, "pcm_sample_chroma[x][y]                      ");
+	        pcm_sample := res[0] << pcm_shift_chroma;
+	        cnt_i := cnt_i + 1;
+	        
+        	// Tokens Count
+        	NbTokensPerCTU[13] := NbTokensPerCTU[13] + 1;
+       end       
+       
+       read_PCMSample_end_chroma : action ==>
+       guard
+       		cnt_i = pcm_cbSize_chroma, isFifoFull(fifo)
        do
        		cnt_i := 0;
             decodeReInit(codIRange, codIOffset, fifo);
-            //ret = init_get_bits(&gb, pcm, length); TODO !!
-            
-            foreach int i  in 0 .. 1 << ( cu_log2CbSize ) do
-                    //vld_u_name(  1, fifo, res, "pcm_sample_luma[i]                      ");
-                    pcm_sample_luma[ i ] := pcm_bit_depth[sps_id];
-            end
-            foreach int i  in 0 .. 1 << ( cu_log2CbSize << 1 ) do
-                    //vld_u_name(  1, fifo, res, "pcm_sample_chroma[i]                    ");
-                    pcm_sample_chroma[ i ] := pcm_bit_depth_chroma[sps_id];
-            end
-        	if (pcm_loop_filter_disable_flag[sps_id] != 0) then
-                    set_deblocking_bypass(cu_x0, cu_y0, cu_log2CbSize);
-            end
         end
-        
-        procedure set_deblocking_bypass (uint (size=16) x0, uint (size=16) y0, uint (size=8) logSize)
-        var
-        	int min_pu_width     = sps_min_pu_width[sps_id],
-    		int x_end = min(x0 + logSize, sps_pic_width_in_luma_samples[sps_id]),
-    		int y_end = min(y0 + logSize, sps_pic_height_in_luma_samples[sps_id])
-    	begin
-    		foreach int j in (y0 >> sps_log2_min_pu_size[sps_id]) .. (y_end >> sps_log2_min_pu_size[sps_id]) - 1 do
-    			foreach int i in (x0 >> sps_log2_min_pu_size[sps_id]) .. (x_end >> sps_log2_min_pu_size[sps_id]) - 1 do
-    				is_pcm[i + j * min_pu_width] := 2;
-    			end
-    		end
-    	end
 
         /**************************************************************************
          **************************************************************************
@@ -6304,9 +6357,11 @@ uint numPicDecoded := 0;
                 read_MVDCoding                              ( read_MVDCoding.start                              ) --> read_MVDCoding_end;
                 read_MVDCoding_end                              ( read_MVDCoding.ended                          ) --> read_PredictionUnit;
                 // read_PCMSample
-                read_PCMSample                              ( read_PCMSample_start                              ) --> read_PCMSampleLoop;//read_PredictionUnit;
-                read_PCMSampleLoop							( read_PCMSample_skipLoop							) --> read_PCMSampleLoop;
-                read_PCMSampleLoop                          ( read_PCMSample_skipLoop_end                       ) --> read_CodingUnit;
+                read_PCMSample                              ( read_PCMSample_start                              ) --> read_PCMSampleLuma;//read_PredictionUnit;
+                read_PCMSampleLuma							( read_PCMSample_loop_luma							) --> read_PCMSampleLuma;
+                read_PCMSampleLuma							( read_PCMSample_end_luma							) --> read_PCMSampleChroma;
+				read_PCMSampleChroma						( read_PCMSample_loop_chroma						) --> read_PCMSampleChroma;
+                read_PCMSampleChroma						( read_PCMSample_end_chroma							) --> read_CodingUnit;                
                 // read_TransformTree
                 read_TransformTree                          ( read_TransformTree                                ) --> read_TransformTree;
                 read_TransformTree                          ( read_TransformTree_gotoTransformUnit				) --> read_TransformUnit;
