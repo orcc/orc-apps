@@ -54,6 +54,8 @@ Copyright (c) ISO/IEC 2011-2014.
 
 *****************************************************************************/
 // Modified by Damien de Saint Jorre (EPFL)
+// Modified by Daniele Renzi (EPFL)
+// Modified by Junaid Jameel Ahmad (EPFL)
 package org.sc29.wg11.mpegh.part2.main.synParser;
 
 import  std.util.Math.*;
@@ -68,9 +70,7 @@ import  org.sc29.wg11.mpegh.part2.common.CabacContextConstantHEVC.*;
 import  org.sc29.wg11.mpegh.part2.common.CabacContextFunctionHEVC.*;
 import  org.sc29.wg11.mpegh.part2.common.CabacParserFunctionHEVC.*;
 
-actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
-// TilesInfo[0]: number of tiles to decode
-// TilesInfo[i>0]: increasing indexes of tiles
+actor Algo_Parser ()
                                 uint(size= 8) byte
                                 ==>
                                 uint(size=16) CUInfo,
@@ -79,11 +79,11 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                                 uint(size=16) SliceAddr,
                                 uint(size=16) TilesCoord,
                                 uint(size=16) RealTilesCoord,
-                                uint(size=8)  LcuSizeMax,
+                                uint(size= 8) LcuSizeMax,
                                 uint(size= 4) PartMode,
-               					uint(size=2)  IsPicSlcLcu,
-               					uint(size=2)  IsPicSlc,
-                				uint(size=2)  LFAcrossSlcTile,
+               					uint(size= 2) IsPicSlcLcu,
+               					uint(size= 2) IsPicSlc,
+                				uint(size= 2) LFAcrossSlcTile,
                                 uint(size=16) PictSize,
                                  int(size=16) Poc,
                                  int(size= 9) SaoSe,
@@ -92,21 +92,25 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
                                 bool          SplitTransform,
                                  int(size= 8) TUSize,
                                  int(size=16) Coeff,
-                                bool              StrongIntraSmoothing,
+                                bool          StrongIntraSmoothing,
                                 uint(size=14) DispCoord,
-                                uint(size=9)  PicSizeInMb,
+                                uint(size= 9) PicSizeInMb,
                                 uint(size= 5) NumRefIdxLxActive,
                                 uint(size= 4) RefPicListModif,
                                  int(size=16) RefPoc,
                                  int(size=16) MvPredSyntaxElem,
-                                bool Cbf,
-                                bool DBFDisable,
-                                 int(size= 8)  DbfSe,
+                                bool		  Cbf,
+                                bool		  DBFDisable,
+                                 int(size= 8) DbfSe,
                                 uint(size= 8) ReorderPics,
                                  int(size=16) WeightedPred,
                                 uint(size=16) TileSize,
                                 uint(size=16) TileCUInfo,
-                                 int(size= 8) Qp
+                                 int(size= 8) Qp,
+                                uint(size= 8) LcuSizeMin,
+                                uint(size= 8) PcmSize,
+                                uint(size= 8) PcmBlk,
+                                uint(size=16) LFBypassCUInfo
 
 :
         uint(size=FIFO_DEPTH) fifo[FIFO_SIZE_ALL];
@@ -115,14 +119,9 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         uint(size=32) cnt_i;
         uint(size=10) sps_id;
         uint(size=10) pps_id;
-        uint(size= 8) localizeAEB := 0;
         uint NUM_ENTRY_MAX = 64;
         uint entryOffsetsTab[NUM_ENTRY_MAX];
-        //uint(size=8) curr_Tile := TilesInfo[1];
         bool byPassFlag := false;
-        uint(size=8) TilesInfo[2];
-
-
 
 		function updateDecoderTid(uint(size=6) nal_unit_type) --> uint(size=3)
 		:
@@ -151,14 +150,13 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         /**************************************************************************
          * search_start_code or getByte
          *************************************************************************/
-        uint counterByte := 0;
+        int countAEB := 0;
         action byte:[ b ] ==>
         guard
         	not isFifoFull(fifo)
         var
         	uint(size=4) fifo_idx  =  fifo[FIFO_IDX]
         do
-            counterByte := counterByte + 1; //localizeAEB := localizeAEB >> 1;
             if b != EPR_VALUE or zeroByte != 3 then
             	if b = START_CODE_VALUE and zeroByte = 3 then
             		fifo[fifo_idx] := b + START_CODE_FLAG;
@@ -172,8 +170,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
             	fifo[FIFO_IDX] := (fifo_idx + 1) & (FIFO_SIZE - 1);
             else
             	if b = EPR_VALUE then //println("AntiEmulationByte");
-            	//localizeAEB := localizeAEB + 128;
-            	//println("localize AEB = " + localizeAEB);
+            	countAEB := countAEB + 1;
             	end
             end
             if b = 0 then
@@ -194,7 +191,7 @@ actor Algo_Parser (uint TILE_INDEX, uint TILE_SPLIT_ENABLE)
         guard
         	isFifoFull(fifo)
         do
-        	byte_align(fifo); //localizeAEB := localizeAEB >> 1;
+        	byte_align(fifo);
         end
         /**************************************************************************
          * search_start_code
@@ -876,7 +873,7 @@ uint numPicDecoded := 0;
 		var
 	    	uint(size=32) res[1]
 	    do
-	        vld_u_name(  8, fifo, res, "rbsp_trailing_bits");
+	        vld_u_name(  8, fifo, res, "rbsp_trailing_bits");        
 	    end
 	
 	    /**************************************************************************
@@ -1104,7 +1101,7 @@ uint numPicDecoded := 0;
 	        se_idx := se_idx + 1;
 	    end
 	
-	       /**************************************************************************
+	/**************************************************************************
 	 * read_SPS_Header.se_idx_3
 	 *************************************************************************/
 		bool sps_sub_layer_ordering_info_present_flag;
@@ -1403,10 +1400,9 @@ uint numPicDecoded := 0;
 	
 		uint log2_min_pcm_cb_size[NB_MAX_SPS];
 		uint log2_max_pcm_cb_size[NB_MAX_SPS];
-		uint pcm_bit_depth[NB_MAX_SPS];
+		uint pcm_bit_depth_luma[NB_MAX_SPS];
 		uint pcm_bit_depth_chroma[NB_MAX_SPS];
 		uint pcm_loop_filter_disable_flag[NB_MAX_SPS];
-		
 		
 		read_SPS_Header.se_idx_6 : action ==>
 	    guard
@@ -1426,7 +1422,7 @@ uint numPicDecoded := 0;
 	        if sps_pcm_enabled_flag[sps_id] = 1 then
 	        	vld_u_name(4, fifo, res,
 	        	"pcm_sample_bit_depth_luma_minus1        ");
-	        	pcm_bit_depth[sps_id] := res[0] + 1;
+	        	pcm_bit_depth_luma[sps_id] := res[0] + 1;
 	        	vld_u_name(4, fifo, res,
 	        	"pcm_sample_bit_depth_chroma_minus1      ");
 	        	pcm_bit_depth_chroma[sps_id] := res[0] + 1;
@@ -1435,11 +1431,18 @@ uint numPicDecoded := 0;
 	        	log2_min_pcm_cb_size[sps_id] := res[0] + 3;
 	        	vld_ue_name(fifo, res,
 	        	"log2_diff_max_min_pcm_luma_coding_block_size");
-	        	log2_max_pcm_cb_size[sps_id] := log2_min_pcm_cb_size[sps_id] +
-	        	res[0];
+	        	log2_max_pcm_cb_size[sps_id] := log2_min_pcm_cb_size[sps_id] + res[0];
 	        	vld_u_name(1, fifo, res,
 	        	"pcm_loop_filter_disable_flag            ");
 	        	pcm_loop_filter_disable_flag[sps_id] := res[0];
+	        	
+	        	if(pcm_bit_depth_luma[sps_id] > (sps_bit_depth_minus5[sps_id][0]+5)) then
+	        		println("ERROR: PCM bit depth for LUMA is greater than normal normal LUMA bit depth)\n");
+	        	end
+	        	
+	        	if(pcm_bit_depth_chroma[sps_id] > (sps_bit_depth_minus5[sps_id][1]+5)) then
+	        		println("ERROR: PCM bit depth for Chroma is greater than normal normal Cb bit depth)\n");
+	        	end
 	        end
 	        vld_ue_name(fifo, res,
 	        "num_short_term_ref_pic_sets             ");
@@ -1731,7 +1734,7 @@ uint numPicDecoded := 0;
 	    do
 	        if (pps_tiles_enabled_flag[pps_id] = 1) then
 	                vld_u_name(  1, fifo, res, "loop_filter_across_tiles_enabled_flag   ");
-	                pps_loop_filter_across_tile_enabled_flag[pps_id] := res[0];
+	                pps_loop_filter_across_tile_enabled_flag[pps_id] := res[0];	                
 	        end
 	        vld_u_name(  1, fifo, res, "loop_filter_across_slices_enabled_flag  ");
 	        pps_loop_filter_across_slice_enabled_flag[pps_id] := res[0];
@@ -1990,7 +1993,7 @@ uint numPicDecoded := 0;
 	        	iPOCmsb := 0;
 	       	end
 	        
-		    poc:= iPOCmsb+iPOClsb;
+		    poc := iPOCmsb+iPOClsb;
 		end
 	
 	    uint(size= 1) first_slice_segment_in_pic_flag := 1;
@@ -2030,9 +2033,7 @@ uint numPicDecoded := 0;
 	        PicWidthInCtbsY   := ( sps_pic_width_in_luma_samples[sps_id]  + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
 	        PicHeightInCtbsY  := ( sps_pic_height_in_luma_samples[sps_id] + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
 	        PicSizeInCtbsY    := PicWidthInCtbsY * PicHeightInCtbsY;
-	        
-	        TilesInfo := [TILE_SPLIT_ENABLE, TILE_INDEX];
-	
+
 	        vld_u_name(  1, fifo, res, "first_slice_segment_in_pic_flag         ");
 	        first_slice_segment_in_pic_flag := res[0];
 	
@@ -2105,9 +2106,9 @@ uint numPicDecoded := 0;
 	        else
 	        	se_idx := 6;
 	        end
-		end
+	    end
         
-	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize]
+	    read_SliceHeader.se_idx_11 : action ==> Poc:[poc], SliceType:[slice_type], LcuSizeMax:[Log2CtbSize], LcuSizeMin:[Log2MinCbSize]
 	    guard
 	            se_idx = 200 and isFifoFull(fifo)
 	    var
@@ -2392,7 +2393,7 @@ uint numPicDecoded := 0;
 		            end
 		    	end
 	        end
-	        
+
 	        if num_tile_rows_minus1 >= (PICT_HEIGHT / MIN_CTB_SIZE_Y) then
 	            println("Error read_SliceData.init : RowHeight : "+num_tile_rows_minus1+" >= "+(PICT_HEIGHT / MIN_CTB_SIZE_Y));
 	        end
@@ -2419,22 +2420,9 @@ uint numPicDecoded := 0;
 		            end
 		    	end
 	        end
-	        if TILE_SPLIT_ENABLE = 0 then // no tiles split : send image size
-	            pictOrTileSize[0] := pictSize[0];
-	            pictOrTileSize[1] := pictSize[1];
-	        else // tiles split : send current tile size
-	            colIndex := TilesInfo[1]  mod (num_tile_columns_minus1+1);
-	            rowIndex := TilesInfo[1]  div (num_tile_columns_minus1+1);
-	
-	            pictOrTileSize[0] := colTileInPix[colIndex + 1] - colTileInPix[colIndex];
-	            pictOrTileSize[1] := rowTileInPix[rowIndex + 1] - rowTileInPix[rowIndex];
-	            if TilesInfo[1] != 0 then
-	                prevColIndex := (TilesInfo[1] - 1)  mod (num_tile_rows_minus1+1);
-	        		prevRowIndex := (TilesInfo[1] - 1)  div (num_tile_columns_minus1+1);
-	                prevTileCoord[0] := colTileInPix[prevColIndex + 1];
-	                prevTileCoord[1] := rowTileInPix[prevRowIndex + 1];
-	            end
-	        end
+
+            pictOrTileSize[0] := pictSize[0];
+            pictOrTileSize[1] := pictSize[1];
 	        se_idx := 2;
 	    end
 
@@ -2621,7 +2609,6 @@ uint numPicDecoded := 0;
         do
                 cnt_i := 0;
                 se_idx := 201;
-
         end
 
         read_SliceHeader.sendListEntryL1Flag : action ==> RefPicListModif:[ref_pic_list_modification_flag_lx[1]]
@@ -3025,8 +3012,7 @@ uint numPicDecoded := 0;
                 vld_se_name(    fifo, res, "delta_chroma_offset_lX                  ");
                 delta_chroma_offset_l11 := res[0];
                 cnt_i := cnt_i + 1;
-        end   
-  
+        end  
 		
 		uint(size=16) qp_bd_offset_luma;
         /**************************************************************************
@@ -3115,8 +3101,9 @@ uint numPicDecoded := 0;
 //                end
 //        end
         uint(size=16) num_entry_point_offsets := 0;
-        uint(size=16) offset_len;
-        uint(size=16) slice_segment_header_extension_length;
+        uint(size=16) num_entry_point_offsets_plus1 := 0;
+        uint(size=16) offset_len := 0;
+        uint(size=16) slice_segment_header_extension_length := 0;
         uint num_entry_offsets := 0;
 
         read_SliceHeader.se_idx_6 : action ==> 
@@ -3129,8 +3116,16 @@ uint numPicDecoded := 0;
             if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
             	vld_ue_name(fifo, res, "num_entry_point_offsets                 ");
             	num_entry_point_offsets := res[0];
-            	if num_entry_point_offsets > NUM_ENTRY_MAX then
-            		println("ERROR: fix NUM_ENTRY_MAX");
+            	num_entry_point_offsets_plus1 := res[0] + 1;
+
+            	if (pps_tiles_enabled_flag[pps_id] = 1 and num_entry_point_offsets > ((pps_num_tile_columns_minus1[pps_id] + 1) * (pps_num_tile_rows_minus1[pps_id] + 1) - 1) ) // Tiles
+            		or
+            	   (pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and num_entry_point_offsets > (PicHeightInCtbsY - 1)) // WPP 
+            		or // Tiles and WPP
+            	   (pps_tiles_enabled_flag[pps_id] = 1 and pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and num_entry_point_offsets > ((pps_num_tile_columns_minus1[pps_id] + 1) * (PicHeightInCtbsY - 1)))
+            	//if	num_entry_point_offsets > NUM_ENTRY_MAX 
+            	then
+            			println("ERROR: fix NUM_ENTRY_MAX");
             	end
             	if num_entry_point_offsets > 0 then
             		vld_ue_name(fifo, res,
@@ -3140,12 +3135,7 @@ uint numPicDecoded := 0;
             	end
         	end
 
-	        if TILE_SPLIT_ENABLE != 0 then
-	        	num_entry_offsets := 1;
-	        else
-	        	num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) *
-	        	(pps_num_tile_rows_minus1[pps_id] + 1);
-	        end
+			num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) * (pps_num_tile_rows_minus1[pps_id] + 1);
 	    end
 
 	    read_SliceHeader.se_idx_7_loop : action ==>
@@ -3157,8 +3147,8 @@ uint numPicDecoded := 0;
 	            if offset_len > 32 then
 	                    println("ERROR with vld_ue : check offset_len size");
 	            end
-	            vld_u_name(  offset_len, fifo, res, "entry_point_offset                      ");
-	            entryOffsetsTab[cnt_i] := res[0];
+	            vld_u_name(  offset_len, fifo, res, "entry_point_offset_minus1                 ");
+	            entryOffsetsTab[cnt_i] := res[0] + 1;
 	            cnt_i := cnt_i + 1;
 	    end
 	
@@ -3202,9 +3192,7 @@ uint numPicDecoded := 0;
 	        cnt_i := 0;
 	        se_idx := 100;
 	    end
-	
-	    uint totalByPass := 0;
-	
+
 	    read_SliceHeader_done : action ==> StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
 	    guard
         	se_idx = 100
@@ -3221,16 +3209,6 @@ uint numPicDecoded := 0;
         	//println("read_SliceHeader qp_y = " + qp_y);
         	
             sliceData_idx := 1;
-            totalByPass := 0;
-            if num_entry_point_offsets > 0 and TILE_SPLIT_ENABLE != 0 then //bypass
-                if TilesInfo[1] != 0 then
-                    byPassFlag := true;
-                    byte_align(fifo);
-                    foreach int k in 0 .. TilesInfo[1] - 1 do
-                        totalByPass := totalByPass + entryOffsetsTab[k];
-                    end
-                end
-            end
         end
 
         /**************************************************************************
@@ -3238,13 +3216,12 @@ uint numPicDecoded := 0;
          ********        Slice Data                           *********************
          **************************************************************************
          *************************************************************************/
-        int countAEB := 0;
         uint(size= 9) codIRange[1];
         uint(size=16) codIOffset[1];
         uint(size= 9) ctxTable[NB_MAX_SE][NB_MAX_NUM_CTX];
         uint(size= 9) ctxTableWPP[NB_MAX_SE][NB_MAX_NUM_CTX];
         uint(size= 8) sliceData_idx;
-
+		
         /**************************************************************************
          * read_SliceData.init
          *************************************************************************/
@@ -3259,7 +3236,6 @@ uint numPicDecoded := 0;
         uint(size=16) nbCtbTile[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
         uint(size=16) colTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
         uint(size=16) rowTileInPix[MAX_NUM_TILES] := [0 : for int i in 0 .. MAX_NUM_TILES -1];
-        uint tile_idx := 0;
         uint(size= 1) skip_flag_tab[PICT_WIDTH][2];
         uint(size= 8) intraPredMode[PICT_WIDTH][2];
         uint(size=16) colWidth[NB_MAX_PPS][PICT_WIDTH / MIN_CTB_SIZE_Y];
@@ -3297,7 +3273,7 @@ uint numPicDecoded := 0;
                 uint count :=0
         do
         		//println("newPict");
-                //isNotFirstSlice   := true;
+                //isNotFirstSlice   := true;               
                 prev_pps_id := pps_id;
                 skip_flag_tab := [ [ 0 : for int j in 0 .. 1 ] : for int i in
                 0 .. PICT_WIDTH - 1 ];
@@ -3314,7 +3290,7 @@ uint numPicDecoded := 0;
                 			nbCtbTile[count] := rowHeight[pps_id][i] * colWidth[pps_id][j];
                 		else
                 			nbCtbTile[count] := nbCtbTile[count - 1] + rowHeight[pps_id][i] * colWidth[pps_id][j];
-                		end //println("nbCtbTile[count]"+nbCtbTile[count]);
+                		end
                 		count := count + 1;
                 	end
                 end
@@ -3412,12 +3388,6 @@ uint numPicDecoded := 0;
                         countRow := countRow + 1;
                 end
                 cnt_i := cnt_i + 1;
-                if TILE_SPLIT_ENABLE = 1 then
-                        x0 := 0;
-                        x1 := pictOrTileSize[0];
-                        y0 := 0;
-                        y1 := pictOrTileSize[1];
-                end
         end
 
         read_SliceData.sendRealInfoTilesLoop: action ==> RealTilesCoord:[x0 ,y0 ,x1 ,y1]
@@ -3484,6 +3454,7 @@ uint numPicDecoded := 0;
                         sliceData_idx := 21;
                 end
         end
+
         /**************************************************************************
          * read_SliceData.start
          *************************************************************************/
@@ -3506,7 +3477,8 @@ uint numPicDecoded := 0;
                 xCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 0 ) ;
                 yCtb           := InverseRasterScan( CtbAddrRS, CtbSize, CtbSize, sps_pic_width_in_luma_samples[sps_id], 1 ) ;
                 end_of_slice_flag  := 0;
-                sliceData_idx := 3;
+
+				sliceData_idx := 3;
         end
         /**************************************************************************
          * read_SliceData_gotoCodingTree
@@ -3519,44 +3491,38 @@ uint numPicDecoded := 0;
                 codingTree_idx := 1;
         end
 
+		uint totalByPass := 0;
         read_SliceData_gotoCodingTree.byPass : action ==>
         guard
                 sliceData_idx = 3, byPassFlag = true
         do
+				totalByPass := 0;
+				cnt_i := 1;
+				// TODO:
+
+                countAEB := 0;
                 sliceData_idx  := 4;
                 codingTree_idx := 0;
         end
 
-        read_CodingTree.byPassBeforeTileLoop: action ==>
+        read_CodingTree.byPassBeforeUnitLoop: action ==>
         guard
-                codingTree_idx = 0 and isFifoFull(fifo), cnt_i < totalByPass + TilesInfo[1]
+                codingTree_idx = 0 and isFifoFull(fifo), cnt_i < (totalByPass - countAEB)
         do
-                if (localizeAEB & 1) = 0 then
-                        flushBits_name(8, fifo, "bypassed");
-                else
-                        countAEB := countAEB + 1;
-                end
-                //println("bypassed " + cnt_i);
+                flushBits_name(8, fifo, "bypassed");
                 cnt_i := cnt_i + 1;
         end
 
-        read_CodingTree.byPassBeforeTileEnd: action ==>
+        read_CodingTree.byPassBeforeUnitEnd: action ==>
         guard
-                codingTree_idx = 0 and isFifoFull(fifo), cnt_i = totalByPass + TilesInfo[1]
+                codingTree_idx = 0 and isFifoFull(fifo), cnt_i = (totalByPass - countAEB)
         do
-                //println("totalByPass = " +totalByPass);
                 cnt_i := 0;
                 byPassFlag := false;
                 codingTree_idx := 1;
-                //flushBits_name(8, fifo, "bypassed");
-                tile_idx := TilesInfo [1];
-                CtbAddrTS := nbCtbTile[tile_idx - 1];
-                //println("CtbAddrTS" + CtbAddrTS);
+				// TODO:
                 CtbAddrRS := ctbAddrTStoRS[CtbAddrTS];
-                //println("CtbAddrRS" + CtbAddrRS);
         end
-
-        int counter := 0;
 
         read_SliceData.retCodingTree : action ==>
         guard
@@ -3564,7 +3530,6 @@ uint numPicDecoded := 0;
         var
                 uint(size=32) res[1] := [0]
         do
-                //println("retcodingtree");
                 get_END_OF_SLICE_FLAG(codIRange, codIOffset, fifo, res);
                 end_of_slice_flag := res[0];
                 CtbAddrTS := CtbAddrTS + 1;
@@ -3579,29 +3544,22 @@ uint numPicDecoded := 0;
                     sliceData_idx := 3;
                     if pps_tiles_enabled_flag[pps_id] != 0 and (TileId[ CtbAddrTS ] != TileId[ CtbAddrTS - 1]) then
                         //println("endOfTile ###################################################");
-                        if TILE_SPLIT_ENABLE = 0 then
-                            sliceData_idx := 3;
-                        else
-                            sliceData_idx := 5;
-                        end
                     end
                 else
                     //println("endOfSlice ################################################### counter = " + counter);
-                    counter := counter + 1;
                     sliceData_idx := 5;
-                    //curr_Tile := 0;
                     CtbAddrTS := 0;
                     CtbAddrRS := 0;
-                    //numByPassBytes := [0: for int i in 0 .. MAX_NUM_TILES - 1];
                     byPassFlag := false;
                 end
         end
+
         /**************************************************************************
          * read_SliceData_end
          *************************************************************************/
-        read_SliceData_end: action ==>
+        read_SliceData_end: action ==> 
         guard
-                sliceData_idx = 5
+               sliceData_idx = 5
         end
 
         /**************************************************************************
@@ -3701,20 +3659,20 @@ uint numPicDecoded := 0;
             
             codingTree_idx := 2;
             if CtbAddrTS = ctbAddrRStoTS[slice_segment_address] then 
-//                println("codIRangeINITCABACbegin := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+                //println("codIRangeINITCABACbegin := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	decodeStart(codIRange, codIOffset, fifo); 
-//            	println("codIRangeINITCABAC1 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            	//println("codIRangeINITCABAC1 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	if (dependent_slice_segment_flag = 0 or
             	(pps_tiles_enabled_flag[pps_id] != 0 and (TileId[CtbAddrTS] != TileId[indexTS]))) then
             		contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-//            		println("codIRangeINITCABAC2 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            		//println("codIRangeINITCABAC2 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	end
             	if first_slice_segment_in_pic_flag = 0 and
             	pps_entropy_coding_sync_enabled_flag[pps_id] != 0 then
             		if (CtbAddrTS mod PicWidthInCtbsY) = 0 then
             			if PicWidthInCtbsY = 1 then
             				contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-//            				println("codIRangeINITCABAC3 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            				//println("codIRangeINITCABAC3 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             			else
             				if dependent_slice_segment_flag != 0 then
             					ctxTable := [ [ ctxTableWPP[i][j] : for int j in 0 .. NB_MAX_NUM_CTX - 1 ] : for int i in 0 .. NB_MAX_SE - 1 ];
@@ -3726,25 +3684,24 @@ uint numPicDecoded := 0;
             	if CtbAddrTS = 0 or pps_tiles_enabled_flag[pps_id] != 0 and
             	(TileId[CtbAddrTS] != TileId[indexTS]) then 
             		decodeReInit(codIRange, codIOffset, fifo); 
-//            		println("codIRangeINITCABAC4 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            		//println("codIRangeINITCABAC4 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             		contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-//            		println("codIRangeINITCABAC5 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            		//println("codIRangeINITCABAC5 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             	end
             	if pps_entropy_coding_sync_enabled_flag[pps_id] != 0 then
             		if (CtbAddrTS mod PicWidthInCtbsY) = 0 then
             			get_END_OF_SUB_STREAM_ONE_BIT(codIRange, codIOffset, fifo, res);
             			decodeReInit(codIRange, codIOffset, fifo); 
-//            			println("codIRangeINITCABAC6 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            			//println("codIRangeINITCABAC6 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             			if PicWidthInCtbsY = 1 then
             				contextInit(slice_qp, slice_type, ctxTable, cabac_init_flag); 
-//            				println("codIRangeINITCABAC7 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
+            				//println("codIRangeINITCABAC7 := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
             			else
             				ctxTable := [ [ ctxTableWPP[i][j] : for int j in 0 .. NB_MAX_NUM_CTX - 1 ] : for int i in 0 .. NB_MAX_SE - 1 ];
             			end
             		end
             	end
             end
-//              println("codIRangeINITCABACfinal := "+codIRange[0]+ " codIOffset := " +codIOffset[0]);
         end
         /**************************************************************************
          * read_CodingTree_gotoSaoParam
@@ -3775,7 +3732,7 @@ uint numPicDecoded := 0;
                 codingTree_idx = 3
         do
                 codingTree_idx                          := 4;
-                ctStack_idx                                     := 0;
+                ctStack_idx                             := 0;
                 ctStack[0][CT_idx]                      := 1;
                 ctStack[0][CT_x0]                       := xCtb;
                 ctStack[0][CT_y0]                       := yCtb;
@@ -3944,9 +3901,9 @@ uint numPicDecoded := 0;
     	    MinCbAddrZS := ctbAddrRStoTS[CtbAddrRS] << ((Log2CtbSize - Log2MinCbSize) * 2);
 
     	    if DEBUG_CABAC and DEBUG_TRACE1 then
-    	    	println("read_CodingTree.start (" + ct_x0 + ", " + ct_y0 + ", " + (1
+    	    	println("read_CodingQuadTree.start (" + ct_x0 + ", " + ct_y0 + ", " + (1
     	    	<< ct_log2CbSize) + ", " + ctStack[ctStack_idx][CT_ctDepth] + ")");
-    	    	elsif DEBUG_CABAC then println("read_CodingTree.start");
+    	    	elsif DEBUG_CABAC then println("read_CodingQuadTree.start");
     	    end
     	    foreach int i in 0 .. Log2CtbSize - Log2MinCbSize - 1 do
     	    	m := 1 << i;
@@ -4005,7 +3962,7 @@ uint numPicDecoded := 0;
                 uint(size= 8) idx =  ctStack_idx
         do
                 ctStack[ctStack_idx][CT_idx]        := 3;
-                ctStack_idx                                                     := ctStack_idx + 1;
+                ctStack_idx                         := ctStack_idx + 1;
                 ctStack[ctStack_idx][CT_idx]        := 1;
                 ctStack[ctStack_idx][CT_x0]         := ctStack[idx][CT_x0];
                 ctStack[ctStack_idx][CT_y0]         := ctStack[idx][CT_y0];
@@ -4031,7 +3988,6 @@ uint numPicDecoded := 0;
                 ctStack[ctStack_idx][CT_log2CbSize] := ctStack[idx][CT_log2CbSize] - 1;
                 ctStack[ctStack_idx][CT_ctDepth]    := ctStack[idx][CT_ctDepth] + 1;
         end
-
 
         read_CodingQuadTree.noCase2 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5,
                  PartMode:[PART_2Nx2N]
@@ -4185,7 +4141,7 @@ uint numPicDecoded := 0;
                  [0, 26, 10, 1, 0]];
 
 		int qp_block_mask := 0;
-                /**************************************************************************
+        /**************************************************************************
          * read_CodingUnit.start
          *************************************************************************/
         uint(size= 8) cu_nCbS;
@@ -4223,9 +4179,6 @@ uint numPicDecoded := 0;
         		get_CU_TRANSQUANT_BYPASS_FLAG(codIRange, codIOffset, ctxTable, fifo,
         		res);
         		cu_transquant_bypass_flag := res[0];
-        		if cu_transquant_bypass_flag != 0 then
-        			 set_deblocking_bypass(cu_x0, cu_y0, cu_log2CbSize);
-        		end
         	else
         		cu_transquant_bypass_flag := 0;
         	end
@@ -4248,17 +4201,21 @@ uint numPicDecoded := 0;
         	cu_nCbS := (1 << cu_log2CbSize);
         	partMode := PART_2Nx2N;
         	cu_idx := 2;
+        	
+        	if cu_transquant_bypass_flag != 0 then
+        		cu_idx := 33;
+        	end
         end
         
         int QPCounter := 0;
         /**************************************************************************
          * read_CodingUnit_gotoPredictionUnit.goto1
          *************************************************************************/
-        read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf :[false],
+        read_CodingUnit_gotoPredictionUnit.goto1 : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf:[false],
                  PartMode:[PART_2Nx2N], SplitTransform:[false]
                  , TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
-                          1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0, //cb
-                          1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
+                 1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0, //cb
+                 1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0] //cr
                                                                                                                                 
         guard
                 cu_idx = 2,
@@ -4320,6 +4277,7 @@ uint numPicDecoded := 0;
                         if( pcm_flag != 0) then
                                 //byte_align(fifo);
                                 intra_prediction_unit_default_value( cu_x0, cu_y0, cu_log2CbSize, partMode, Log2MinCbSize-1, intraPredMode);
+                                predMode := IPCM;
                                 cu_idx := 3;
                         else
                                 pbOffset := if partMode = PART_NxN then cu_nCbS>>1 else cu_nCbS end;
@@ -4442,12 +4400,34 @@ uint numPicDecoded := 0;
         /**************************************************************************
          * read_CodingUnit_gotoPCMSample
          *************************************************************************/
-        read_CodingUnit_gotoPCMSample : action ==>
+        read_CodingUnit_gotoPCMSample : action ==> CUInfo:[cuInfo] repeat 5, TileCUInfo:[tilecuInfo] repeat 5, Cbf:[false], SplitTransform:[false],
+        								LFBypassCUInfo:[lfBypassCUInfo] repeat 5 
         guard
                 cu_idx = 3
+        var
+                uint(size=16) tilecuInfo[5] = [IPCM,
+                ctStack[ctStack_idx][CT_x0]- colTileInPix[colIndex], ctStack[ctStack_idx][CT_y0]- rowTileInPix[rowIndex],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize],
+                uint(size=16) cuInfo[5] = [IPCM,
+                ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize],
+                uint(size=16) lfBypassCUInfo[5] = [if(pcm_loop_filter_disable_flag[sps_id] != 0 || cu_transquant_bypass_flag != 0) then 1 else 0 end,
+                ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize]
         do
                 cu_idx := 8;
         end
+        
+        read_CodingUnit.sendLFBypassCUInfo: action ==> LFBypassCUInfo:[lfBypassCUInfo] repeat 5 
+        guard
+                cu_idx = 33
+        var
+                uint(size=16) lfBypassCUInfo[5] = [if(pcm_loop_filter_disable_flag[sps_id] != 0 || cu_transquant_bypass_flag != 0) then 1 else 0 end,
+                ctStack[ctStack_idx][CT_x0], ctStack[ctStack_idx][CT_y0],
+                1<<cu_log2CbSize, 1<<cu_log2CbSize]
+        do
+                cu_idx := 2;
+        end        
         /**************************************************************************
          * read_CodingUnit_gotoPredictionUnit.goto2
          *************************************************************************/
@@ -4582,13 +4562,12 @@ uint numPicDecoded := 0;
                 		cu_idx := 11;
                 	end
                 end
-                
         end
 
         read_CodingUnit.endFunctionSend : action ==> SplitTransform:[false], TUSize:[1<<cu_log2CbSize, 1, 0, 0, slice_qp, TEXT_LUMA, 0, //luma
-                                                                                     1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,     //cb
-                                                                                     1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
-                                                                                                                                Cbf:[false]
+                  1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_U, 0,     //cb
+                  1<<(cu_log2CbSize-1), 1, 0, 0, 0, TEXT_CHROMA_V, 0], //cr
+                  Cbf:[false]
         guard
             cu_idx = 11
         do
@@ -4770,6 +4749,7 @@ uint numPicDecoded := 0;
             	end
             end
         end
+        
         /**************************************************************************
          * read_PredictionUnit.retMVDcoding_goto1
          *************************************************************************/
@@ -4912,63 +4892,59 @@ uint numPicDecoded := 0;
          ********        PCM Sample                           *********************
          **************************************************************************
          *************************************************************************/
-		uint(size=8) pcm_sample_luma[4096]; // TODO size to be checked !!
-		uint(size=8) pcm_sample_chroma[4096];// TODO size to be checked !!
-		uint(size=8) is_pcm[4096];// TODO size to be checked !!
-		int pcm_skip_length;
+   		uint(size=16) pcm_cbSize_luma;
+   		uint(size=16) pcm_cbSize_chroma;		
+   		uint(size=8) pcm_shift_luma;
+   		uint(size=8) pcm_shift_chroma;
 		
-        read_PCMSample_start : action ==>
-        var
-                int cb_size = 1 << cu_log2CbSize,
-                int length
+        read_PCMSample_start : action ==> PcmSize:[1<<cu_log2CbSize]
         do
-                if DEBUG_CABAC then
-                        println("read_PCMSample");
-                end
-        		length := cb_size * cb_size * pcm_bit_depth[sps_id] + ((cb_size * cb_size) >> 1) * pcm_bit_depth_chroma[sps_id];
-        		pcm_skip_length := (length + 7) >> 3;
-        		cnt_i := 0;
+            byte_align(fifo);
+	   		pcm_cbSize_luma := 1 << (cu_log2CbSize << 1);
+	   		pcm_cbSize_chroma := (1 << (cu_log2CbSize << 1)) >> 1;
+	   		pcm_shift_luma := sps_bit_depth_minus5[sps_id][0] + 5 - pcm_bit_depth_luma[sps_id];
+	   		pcm_shift_chroma := sps_bit_depth_minus5[sps_id][1] + 5 - pcm_bit_depth_chroma[sps_id];
+
+    		//pcm_skip_length := (pcm_cbSize_luma * pcm_bit_depth_luma[sps_id] + pcm_cbSize_chroma * pcm_bit_depth_chroma[sps_id] + 7) >> 3;
+    		cnt_i := 0;
        end
-       read_PCMSample_skipLoop : action ==>
-       guard
-       		cnt_i < pcm_skip_length, isFifoFull(fifo)
+
+       read_PCMSample_loop_luma : action ==> PcmBlk:[pcm_sample]
+       guard cnt_i < pcm_cbSize_luma, isFifoFull(fifo)
+       var
+       		int(size=32) res[1],
+       		uint(size=8) pcm_sample
        do
-       		flushBits(8, fifo); // skipbyte
-       		cnt_i := cnt_i + 1;
+	        vld_u_name(pcm_bit_depth_luma[sps_id], fifo, res, "pcm_sample_luma[x][y]                      ");
+	        pcm_sample := res[0] << pcm_shift_luma;
+	        cnt_i := cnt_i + 1;
        end
-       read_PCMSample_skipLoop_end : action ==>
+       
+       read_PCMSample_end_luma : action ==> PcmSize:[(1<<cu_log2CbSize)>>1, (1<<cu_log2CbSize)>>1]
        guard
-       		cnt_i = pcm_skip_length, isFifoFull(fifo)
+       		cnt_i = pcm_cbSize_luma, isFifoFull(fifo)
+       do
+       		cnt_i := 0;
+       end
+
+       read_PCMSample_loop_chroma : action ==> PcmBlk:[pcm_sample]
+       guard cnt_i < pcm_cbSize_chroma, isFifoFull(fifo)
+       var
+       		int(size=32) res[1],
+       		uint(size=8) pcm_sample
+       do
+	        vld_u_name(pcm_bit_depth_chroma[sps_id], fifo, res, "pcm_sample_chroma[x][y]                      ");
+	        pcm_sample := res[0] << pcm_shift_chroma;
+	        cnt_i := cnt_i + 1;
+       end       
+       
+       read_PCMSample_end_chroma : action ==>
+       guard
+       		cnt_i = pcm_cbSize_chroma, isFifoFull(fifo)
        do
        		cnt_i := 0;
             decodeReInit(codIRange, codIOffset, fifo);
-            //ret = init_get_bits(&gb, pcm, length); TODO !!
-            
-            foreach int i  in 0 .. 1 << ( cu_log2CbSize ) do
-                    //vld_u_name(  1, fifo, res, "pcm_sample_luma[i]                      ");
-                    pcm_sample_luma[ i ] := pcm_bit_depth[sps_id];
-            end
-            foreach int i  in 0 .. 1 << ( cu_log2CbSize << 1 ) do
-                    //vld_u_name(  1, fifo, res, "pcm_sample_chroma[i]                    ");
-                    pcm_sample_chroma[ i ] := pcm_bit_depth_chroma[sps_id];
-            end
-        	if (pcm_loop_filter_disable_flag[sps_id] != 0) then
-                    set_deblocking_bypass(cu_x0, cu_y0, cu_log2CbSize);
-            end
         end
-        
-        procedure set_deblocking_bypass (uint (size=16) x0, uint (size=16) y0, uint (size=8) logSize)
-        var
-        	int min_pu_width     = sps_min_pu_width[sps_id],
-    		int x_end = min(x0 + logSize, sps_pic_width_in_luma_samples[sps_id]),
-    		int y_end = min(y0 + logSize, sps_pic_height_in_luma_samples[sps_id])
-    	begin
-    		foreach int j in (y0 >> sps_log2_min_pu_size[sps_id]) .. (y_end >> sps_log2_min_pu_size[sps_id]) - 1 do
-    			foreach int i in (x0 >> sps_log2_min_pu_size[sps_id]) .. (x_end >> sps_log2_min_pu_size[sps_id]) - 1 do
-    				is_pcm[i + j * min_pu_width] := 2;
-    			end
-    		end
-    	end
 
         /**************************************************************************
          **************************************************************************
@@ -5087,7 +5063,7 @@ uint numPicDecoded := 0;
         guard
                 ttStack[ttStack_idx][TT_idx] = 10
         do
-        ttStack[ttStack_idx][TT_idx] := 2 + split_transform_flag;
+			ttStack[ttStack_idx][TT_idx] := 2 + split_transform_flag;
         end
         /**************************************************************************
          * read_TransformTree_gotoTransformUnit
@@ -5846,9 +5822,11 @@ uint numPicDecoded := 0;
                 read_MVDCoding                              ( read_MVDCoding.start                              ) --> read_MVDCoding_end;
                 read_MVDCoding_end                              ( read_MVDCoding.ended                          ) --> read_PredictionUnit;
                 // read_PCMSample
-                read_PCMSample                              ( read_PCMSample_start                              ) --> read_PCMSampleLoop;//read_PredictionUnit;
-                read_PCMSampleLoop							( read_PCMSample_skipLoop							) --> read_PCMSampleLoop;
-                read_PCMSampleLoop                          ( read_PCMSample_skipLoop_end                       ) --> read_CodingUnit;
+                read_PCMSample                              ( read_PCMSample_start                              ) --> read_PCMSampleLuma;//read_PredictionUnit;
+                read_PCMSampleLuma							( read_PCMSample_loop_luma							) --> read_PCMSampleLuma;
+                read_PCMSampleLuma							( read_PCMSample_end_luma							) --> read_PCMSampleChroma;
+				read_PCMSampleChroma						( read_PCMSample_loop_chroma						) --> read_PCMSampleChroma;
+                read_PCMSampleChroma						( read_PCMSample_end_chroma							) --> read_CodingUnit;                
                 // read_TransformTree
                 read_TransformTree                          ( read_TransformTree                                ) --> read_TransformTree;
                 read_TransformTree                          ( read_TransformTree_gotoTransformUnit				) --> read_TransformUnit;
