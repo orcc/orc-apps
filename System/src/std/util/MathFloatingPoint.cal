@@ -1,0 +1,285 @@
+/*
+ * Copyright (c) 2016, Heriot-Watt University
+ * Copyright (c) 2016, University of Glasgow
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the EPFL nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+ 
+/**
+ *     About this module:
+ * 
+ * This unit module contains the expose API for arithmetic operations
+ * on 32bit binary string representations of floating point values.
+ * Floating point numbers are represented with 32 bits using the IEEE754
+ * floating point representation, specified in "IEEE Standard for Binary
+ * Floating-Point Arithmetic", Institute of Electrical and Electronics
+ * Engineers, 1985. This CAL implementation is based on SoftFLoat, a
+ * C library for floating point arithmetic using 32bit binary strings, see
+ * "Berkeley SoftFloat Release 3: Library Interface", University of California,
+ * Berkeley, February 2015.
+ * 
+ * The floating point operations are applied to binary string representations
+ * of floating point numbers. The implementations involve separating binary
+ * strings to sign, mantissa and biased exponent components, applying comparison,
+ * shift and integer based operations on these parts, before reconstructing a
+ * new binary string result. The floating point implementations of division and
+ * square root following the Goldschmidt algorithm, specified in "Applications of
+ * Division by Convergence", MIT, June 1964.
+ * 
+ *     The API is:
+ * 
+ * Add  (uint(size=32) a, uint(size=32) b) --> uint(size=32)
+ * Sub  (uint(size=32) a, uint(size=32) b) --> uint(size=32)
+ * Mul  (uint(size=32) a, uint(size=32) b) --> uint(size=32)
+ * Div  (uint(size=32) a, uint(size=32) b) --> uint(size=32)
+ *
+ * These top level functions depend on internal functions in
+ * 
+ *     std.util.internal.MathFloatingPointInternal.cal 
+ * 
+ * @author Rob Stewart, Heriot-Watt University <R.Stewart@hw.ac.uk>
+ * @author Ruxandra Bob, University of Glasgow
+ */
+
+package std.util;
+import std.util.internal.MathFloatingPointInternal.*;
+unit MathFloatingPoint :
+
+	//Addition
+	function Add(uint(size=32) a, uint(size=32) b) --> uint(size=32)
+	var
+		uint(size=32) uA = a,
+		uint(size=32) uiA = uA,
+		uint(size=32) signA = signF32UI(uiA),
+		uint(size=32) uB = b,
+		uint(size=32) uiB = uB,
+		uint(size=32) signB = signF32UI(uiB)
+		:
+			if (signA = signB) then addMagsF32(uiA , uiB , signA)
+			else subMagsF32(uiA, uiB, signA)
+			end
+	end
+
+	//Subtraction
+	function Sub(uint(size=32) a, uint(size=32) b) --> uint(size=32)
+	var
+		uint(size=32) uA = a,
+		uint(size=32) uiA = uA,
+		uint(size=32) signA = signF32UI(uiA),
+		uint(size=32) uB = b,
+		uint(size=32) uiB = uB,
+		uint(size=32) signB = signF32UI(uiB)
+		:
+			if (signA = signB) then subMagsF32(uiA, uiB, signA)
+			else addMagsF32(uiA, uiB, signA)
+			end
+	end
+
+	//Multiplication
+	function Mul(uint(size=32) a , uint(size=32) b) --> uint(size=32)
+	var
+		uint(size=32) uiA = a,
+		uint(size=32) signA = signF32UI(uiA),
+		int(size=16)  expA = expF32UI(uiA),
+		uint(size=32) sigA = fracF32UI(uiA),
+		uint(size=32) uiB = b,
+		uint(size=32) signB = signF32UI(uiB),
+		int(size=16)  expB = expF32UI(uiB),
+		uint(size=32) sigB = fracF32UI(uiB),
+		uint(size=32) signZ = signA ^ signB,
+		uint(size=32) magBits = 0,
+		uint(size=32) uiZ = 0,
+		uint(size=32) zeroInt = 0,
+
+		uint(size=32) v1 = if (expA = 0xFF) then expB | sigB else magBits end, /*magBits */
+		uint(size=32) v2 = if (v1 = zeroInt) then 0xFFC00000 else packToF32UI(signZ,0xFF, 0) end,
+		uint(size=32) v3 = if (expB = 0xFF) then expA | sigA else v1 end, /*magBits */
+		uint(size=32) v4 = if (v3 = zeroInt) then 0xFFC00000 else packToF32UI(signZ,0xFF, 0) end,
+		uint(size=32) expa = if (expA = zeroInt) then normSubnormalF32Sig1(sigA) else expA end, /*expA */
+		uint(size=32) siga = if (expA = zeroInt) then normSubnormalF32Sig2(sigA) else sigA end, /*sigA */
+		uint(size=32) v5 = if (sigA = zeroInt) then packToF32UI(signZ, 0, 0) else uiZ end, /*uiZ */
+		uint(size=32) expb = if (expB = zeroInt) then normSubnormalF32Sig1(sigB) else expB end, /*expB */
+		uint(size=32) sigb = if (expB = zeroInt) then normSubnormalF32Sig2(sigB) else sigB end, /*sigB */
+		uint(size=32) v6 = if (sigB = zeroInt) then packToF32UI(signZ, 0, 0) else v5 end, /*uiZ */
+		int(size=16)  expZ = expa + expb - 0x7F,
+		uint(size=32) v7 = (siga | 0x00800000) << 7, /*sigA */
+		uint(size=32) v8 = (sigb | 0x00800000) << 8, /*sigB */
+		uint(size=64) v7Timesv8 = v7 * v8,
+		uint(size=32) sigZ = shortShiftRightJam64(v7Timesv8, 32),
+		uint(size=32) expz = if (sigZ < 0x40000000) then expZ -1 else expZ end, /*expZ */
+		uint(size=32) sigz = if (sigZ < 0x40000000) then sigZ << 1 else sigZ end/*sigZ */
+		:
+		  if (expA = zeroInt && sigA = zeroInt) then v6      // if operand 1 is 0 then return 0
+		  else if (expB = zeroInt && sigB = zeroInt) then v6 // if operand 2 is 0 then return 0
+		   else
+
+			if (expA = 0xFF) then
+				if((sigA != zeroInt) || ((expB = 0xFF) && (sigB != 0))) then propagateNaNF32UI(uiA, uiB) else v2 end
+			else if (expB = 0xFF) then
+				if (sigB != zeroInt) then propagateNaNF32UI(uiA, uiB) else v4 end
+			else roundPackToF32(signZ, expz, sigz) end
+			end
+		  end
+		  end
+	end
+
+/*----------------------------------------------------------------------------
+| Compare less than. Returns true if a is less than b.
+*----------------------------------------------------------------------------*/
+
+	function f32LT(uint(size=32) a, uint(size=32) b) --> bool
+	var
+		uint(size=32) uiA = a,
+		uint(size=32) uiB = b,
+		uint(size=32) signA = signF32UI(uiA),
+		uint(size=32) signB = signF32UI(uiB),
+		uint(size=32) zeroInt = 0,
+		uint(size=32) v1 = if ((uiA < uiB)=true) then 1 else 0 end,
+		bool v2 = if (signA != signB) then ((signA != zeroInt) && (((uiA | uiB)<<1) != zeroInt)) else (uiA != uiB) && ((signA ^ v1)!= zeroInt) end
+		:
+			if ( (isNaNF32UI(uiA)=true) || (isNaNF32UI(uiB)=true)) then false
+			else v2 end
+	end
+
+	// Division
+	function Div(uint(size=32) a, uint(size=32) b) --> uint(size=32)
+	var
+		uint(size=32) uiA = a,
+		uint(size=32) signA = signF32UI(uiA),
+		int(size=16)  expA = expF32UI(uiA),
+		uint(size=32) sigA = fracF32UI(uiA),
+		uint(size=32) uiB = b,
+		uint(size=32) signB = signF32UI(uiB),
+		int(size=16)  expB = expF32UI(uiB),
+		uint(size=32) sigB = fracF32UI(uiB),
+		uint(size=32) signZ = signA ^ signB,
+		uint(size=32) uiZ = 0,
+		uint(size=32) v1 = if ((sigA != 0) && (expA = 0xFF)) then propagateNaNF32UI(uiA, uiB) else uiZ end, /*uiZ */
+		uint(size=32) v2 = if (sigB !=0) then propagateNaNF32UI(uiA, uiB) else 0xFFC00000 end,
+		uint(size=32) v3 = if (expB = 0xFF && expA = 0xFF) then v2 else v1 end,/*uiZ */
+		uint(size=32) v4 = if ((expA = 0xFF) && (sigA = 0) && (expB != 0xFF)) then packToF32UI(signZ, 0xFF, 0) else v3 end,/*uiZ */
+		uint(size=32) v5 = if (sigB != 0) then propagateNaNF32UI(uiA, uiB) else packToF32UI(signZ, 0, 0) end,
+		uint(size=32) v6 = if (expB = 0xFF) then v5 else v4 end,/*uiZ */
+		uint(size=32) v7 = if ((expA | sigA) = 0) then 0xFFC00000 else packToF32UI(signZ, 0xFF, 0) end,
+		uint(size=32) v8 = if ((expB = 0) && sigB = 0) then v7 else v6 end, /*uiZ */
+		int(size=16)  expb = if (expB = 0) then normSubnormalF32Sig1(sigB) else expB end, /*expB */
+		uint(size=32) sigb = if (expB = 0) then normSubnormalF32Sig2(sigB) else sigB end,/*sigB */
+		uint(size=32) v9 = if ((expA = 0) && (sigA = 0)) then packToF32UI(signZ, 0, 0) else v8 end, /*uiZ */
+		int(size=16)  expa = if (expA = 0) then normSubnormalF32Sig1(sigA) else expA end, /*expA */
+		uint(size=32) siga = if (expA = 0) then normSubnormalF32Sig2(sigA) else sigA end, /*sigA */
+		int(size=16)  expZ = expa - expb + 0x7E,
+		uint(size=32) v10 = siga | 0x00800000, /*sigA */
+		uint(size=32) v11 = sigb | 0x00800000, /*sigB */
+
+		uint(size=64) v13 = v10,
+		int(size=16)  expz = if (v10 < v11) then expZ - 1 else expZ end, /*expZ */
+		uint(size=64) sig64 = if (v10 < v11) then v13 <<31 else v13 << 30 end,
+		uint(size=32) sigZ = sig64 / v11,
+		uint(size=64) v14 = v11,
+		uint(size=64) v14TIMESsigZ = v14 * sigZ,
+		uint(size=32) v15 = if (v14TIMESsigZ != sig64) then 1 else 0 end,
+		uint(size=32) v16 = if ((sigZ & 0x3F) = 0) then sigZ | v15 else sigZ end, /*sigZ */
+		uint(size=32) v17 = v16 + 2, /*sigZ */
+		uint(size=32) v18 = if ((v17 & 0x3F) < 2) then (v17 & (~3)) else v17 end, /*sigZ */
+		uint(size=64) sigz = v18,
+		uint(size=64) rem = if ((v17 & 0x3F) < 2) then (v13 << 31) - sigz * v11 else 0 end,
+		uint(size=64) bigNum = 0x8000000000000000,
+		uint(size=32) v19 = if (((v17 & 0x3F) < 2) && ((rem & bigNum)!= 0)) then v18 - 4 else v18 end, /*sigZ */
+		uint(size=32) v20 = if (rem != 0) then v19 | 1 else v19 end, /*sigZ */
+		uint(size=32) v21 = if (((v17 & 0x3F) < 2) && ((rem & bigNum) = 0)) then v20 else v19 end /*sigZ */
+
+		:
+			if ((expA = 0xFF) || (expB = 0xFF) || (expB = 0) || (expA = 0)) then v9
+			else roundPackToF32(signZ, expz, v21) end
+		end
+
+	// Square root
+	function SQRT(uint(size=32) a) --> uint(size=32)
+	var
+		uint(size=32) uiA = a,
+		uint(size=32) signA = signF32UI(uiA),
+		int(size=16)  expA = expF32UI(uiA),
+		uint(size=32) sigA = fracF32UI(uiA),
+		uint(size=32) uiZ = 0,
+		uint(size=32) shiftedSigZ = 0,
+		uint(size=32) negRem = 0,
+		uint(size=32) v2 = if ((expA | sigA) = 0) then a else uiZ end, /*uiZ */
+		uint(size=32) v3 = if (sigA = 0) then a else v2 end, /*uiZ */
+		uint(size=16) expa = if (expA = 0) then normSubnormalF32Sig1(sigA) else expA end, /*expA */
+		uint(size=32) siga = if (expA = 0) then normSubnormalF32Sig2(sigA) else sigA end, /*sigA */
+		int(size=16)  expZ = ((expa - 0x7F) >> 1) + 0x7E,
+		int(size=16)  v4 = expa & 1, /*expA */
+		uint(size=32) v5 = (siga | 0x00800000) << 8, /*sigA */
+		uint(size=64) v6 = v5, /*sigA 64 bits */
+		uint(size=32) sigZ = (v6 * approxRecipSqrt(v4, v5)) >> 32 ,
+		uint(size=32) v7 = if (v4 != 0) then sigZ >> 1 else sigZ end, /*sigZ */
+		uint(size=32) sigz = v7 + 2, /*sigZ */
+		uint(size=32) v8 = if ((sigz & 0x3F) < 2) then sigz >> 2 else shiftedSigZ end, /*shiftedSigZ*/
+		uint(size=32) v9 = if ((sigz & 0x3F) < 2) then v8 * v8 else negRem end, /*negRem*/
+		uint(size=32) v10 = if ((sigz & 0x3F) < 2) then v8 << 2 else sigz end, /*sigZ*/
+		uint(size=32) v11 = if (v9 != 0) then v10 - 1 else v10 end,
+		uint(size=32) v12 = if ((v9 & 0x80000000) != 0) then v10 | 1 else v11 end, /*sigZ*/
+		uint(size=32) v13 = if ((sigz & 0x3F) < 2) then v12 else sigz end /*sigZ */
+		:
+			if (expA = 0xFF && sigA != 0) then propagateNaNF32UI(uiA, 0)
+			else if (signA = 0 && expA = 0xFF) then a
+			else if (signA != 0 || expA = 0) then v3
+			else roundPackToF32(0, expZ, v13) end
+			end
+			end
+		end
+
+	/* returns the binary string representation for an 8bit integer between 0 and 255 */
+  	function lookupInt8ToBinaryString32(uint(size=8) x) --> uint(size=32) :
+ 		lookupInt8ToBinaryString32Arr[x]
+ 		end
+
+ 	/* returns the binary string representation for an 16bit integer between 0 and 255 */
+  	function lookupInt16ToBinaryString32(uint(size=16) x) --> uint(size=32) :
+ 		lookupInt16ToBinaryString32Arr[x]
+ 		end
+
+ 	/* returns the binary string representation for a half number between 0.5 and 255.5
+ 	 * e.g. 1 --> binary string representation of 1.5
+ 	 *      8 --> binary string representation of 8.5
+ 	 */
+	function lookupInt8HalfToBinaryString32(uint(size=8) x) --> uint(size=32) :
+ 			lookupHalves[x]
+ 	end
+
+ 	function Abs(uint(size=32)a) --> uint(size=32):
+ 		if f32LT(a,0x00000000) = true then Mul(0xbf800000,a)
+ 		else a
+ 		end
+ 	end
+
+ 	/* takes a binary string representing a real number
+ 	 * and returns a binary string representing the nearest whole integer */
+ 	function f32IntTo8Int(uint(size=32) a) --> uint(size=32) :
+ 	   F32ToI32(a,0,true) // note: 0 indicates nearest number
+ 	end
+
+end
