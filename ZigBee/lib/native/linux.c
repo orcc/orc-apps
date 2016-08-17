@@ -71,7 +71,7 @@ unsigned char source_readByte() {
 	ret_val = fscanf(input, "%i\n", &sample);
 
 	if(ret_val != 1) {
-		printf("Packet payload ended unexpectedly\nExit\n", opt->input_file);
+		printf("Packet payload ended unexpectedly\nExit\n");
 		close_all();
 		exit(0);
 	}
@@ -80,8 +80,14 @@ unsigned char source_readByte() {
 }
 
 void throw_away(int value) {
-	if(output == NULL)
+	if(output == NULL) {
 		output = fopen(opt->write_file, "w");
+		if(output == NULL) {
+			printf("Please specify output file with -w\n");
+			close_all();
+			exit(0);
+		}
+	}
 	
 	fprintf(output, "%i\n", value);		
 }
