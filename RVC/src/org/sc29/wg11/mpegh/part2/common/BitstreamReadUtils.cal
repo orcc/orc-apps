@@ -1,0 +1,189 @@
+/******************************************************************************
+ * Definition of CommonPackage
+ *****************************************************************************/
+package org.sc29.wg11.mpegh.part2.common;
+
+unit BitstreamReadUtils :
+	bool DEBUG_PARSER    = false;
+	/**************************************************************************
+	 * GLOBAL BISTREAM READER
+ 	 *************************************************************************/
+	uint(size= 8) FIFO_SIZE_ADDR   =  3;
+	uint(size= 8) FIFO_DEPTH       =  8;
+	uint(size= 8) FIFO_SIZE        =  1<<FIFO_SIZE_ADDR;
+	uint(size= 8) FIFO_CPT_BITS    =  FIFO_SIZE;
+	uint(size= 8) FIFO_IDX         =  FIFO_SIZE+1;
+	uint(size= 8) FIFO_SIZE_ALL    =  FIFO_SIZE+2;
+	
+	uint(size= 8) BUFFER_SIZE      =  524288; // (512K)
+	uint(size= 8) BUFFER_DEPTH     =  32;
+	/**************************************************************************
+	 * function isBufferFull
+	 *************************************************************************/
+  	function isBufferFull (uint(size=8) bufferIdx) --> bool :
+  		bufferIdx >= BUFFER_SIZE
+  	end
+	/**************************************************************************
+	 * function isFifoFull
+	 *************************************************************************/
+  	function isFifoFull (uint(size=8) fifoIdx) --> bool :
+  		fifoIdx >= (FIFO_SIZE-1)<<3
+  	end
+	/**************************************************************************
+	 * function IsStartCode
+	 *************************************************************************/
+  	function IsStartCode (uint(size=8) isNewNal, uint(size=8) fifoIdx) --> bool
+  		:
+  		((isNewNal >> (fifoIdx-1) / 8)  & 1) != 0
+  	end
+  	/**************************************************************************
+	 * procedure byte_align
+	 *************************************************************************/
+ 	procedure byte_alignment (uint(size=8) fifoIdx[1])
+   	begin
+		fifoIdx[0] := fifoIdx[0] - 1;
+	    byte_align(fifoIdx);
+  	end
+  	procedure byte_align (uint(size=8) fifoIdx[1])
+   	begin
+	    fifoIdx[0] := fifoIdx[0] &(~0x7);
+  	end
+  	function isByteAlign (uint(size=8) fifoIdx) --> bool
+  		:
+  		(fifoIdx & 0x7) = 0
+  	end
+	/**************************************************************************
+	 * function show_bits
+	 *************************************************************************/
+  	function show_bits(uint(size=8) nb, uint(size=64) fifoContent, uint(size=8) fifoIdx)
+  		--> uint(size=32)
+  		:	(fifoContent >> (fifoIdx - nb)) & ((1 << nb) - 1)
+  	end
+	/**************************************************************************
+	 * procedure skip_bits
+	 *************************************************************************/
+  	procedure skip_bits_name (uint(size=8) nb, uint(size=8) fifoIdx[1], String name)
+  	begin
+  		skip_bits(nb, fifoIdx);
+	end
+  	procedure skip_bits (uint(size= 8) nb, uint(size=8) fifoIdx[1])
+  	begin
+		fifoIdx[0] := fifoIdx[0] - nb;
+  	end
+	/**************************************************************************
+	 * procedure vld_u
+	 *************************************************************************/
+  	procedure vld_u_name (uint(size=8) nb,
+ 						  uint(size=64) fifoContent,
+ 						  uint(size=8) fifoIdx[1],
+ 						  uint(size=32) res[1],
+ 						  String name)
+  	begin
+  		vld_u(nb, fifoContent, fifoIdx, res);
+  		if DEBUG_PARSER then
+			println("          "+name+" u("+nb+") : "+res[0]);
+		end
+	end
+  	procedure vld_u (uint(size= 8) nb,
+ 					 uint(size=64) fifoContent,
+ 					 uint(size=8) fifoIdx[1],
+ 					 uint(size=32) res[1])
+  	begin
+  		res[0] := (fifoContent >> (fifoIdx[0] - nb)) & ((1 << nb) - 1);
+		fifoIdx[0] := fifoIdx[0] - nb;
+  	end
+	/**************************************************************************
+	 * procedure vld_ue
+	 *************************************************************************/
+  	procedure vld_ue_name (uint(size=64) fifoContent,
+  	                       uint(size=8) fifoIdx[1],
+ 					 	   uint(size=32) res[1],
+ 					 	   String name)
+  	begin
+  		vld_ue(fifoContent, fifoIdx, res);
+  		if DEBUG_PARSER then
+			println("          "+name+" u(v) : "+res[0]);
+		end
+	end
+	procedure vld_ue (uint(size=64) fifoContent,
+	                  uint(size=8) fifoIdx[1],
+ 					  uint(size=32) res[1])
+  	var
+  		uint codeLen := 0
+  	begin
+		fifoIdx[0] := fifoIdx[0] - 1;
+		while(((fifoContent >> fifoIdx[0]) & 1) = 0)
+		do
+			fifoIdx[0] := fifoIdx[0] - 1;
+			codeLen := codeLen + 1;
+		end
+		res[0] := ((fifoContent >> fifoIdx[0] - codeLen) & ((1 << codeLen + 1) - 1)) - 1;
+		fifoIdx[0] := fifoIdx[0] - codeLen;
+  	end
+	/**************************************************************************
+	 * vld_se
+ 	 *************************************************************************/
+ 	procedure vld_se_name (uint(size=64) fifoContent,
+ 	                       uint(size=8) fifoIdx[1],
+ 					 	   int(size=32) res[1],
+ 					 	   String name)
+  	begin
+  		vld_se(fifoContent, fifoIdx, res);
+  		if DEBUG_PARSER then
+			println("          "+name+" s(v) : "+res[0]);
+		end
+	end
+	procedure vld_se(uint(size=64) fifoContent,
+		             uint(size=8) fifoIdx[1],
+ 					 int(size=32) res[1])
+	var
+		uint(size=32) ures[1]
+	begin
+		vld_ue(fifoContent, fifoIdx, ures);
+		if (ures[0] & 1) = 0 then
+			res[0] := -(ures[0] >> 1);
+		else
+			res[0] :=  (ures[0] >> 1) + 1;
+		end
+	end
+	/**************************************************************************
+	 * vld_me
+ 	 *************************************************************************/
+ 	 uint(size=6) CBP_Table[64][2] = // [codeNum][CBP Intra_4x4,Intra_8x8 / CBP Inter]
+		[ // chroma_format_idc is equal to 0
+			[15, 0], [ 0, 1], [ 7, 2], [11, 4], [13, 8], [14, 3], [ 3, 5], [ 5,10],
+			[10,12], [12,15], [ 1, 7], [ 2,11], [ 4,13], [ 8,14], [ 6, 6], [ 9, 9],
+			// chroma_format_idc is not equal to 0
+			[47, 0], [31,16], [15, 1], [ 0, 2], [23, 4], [27, 8], [29,32], [30, 3],
+			[ 7, 5], [11,10], [13,12], [14,15], [39,47], [43, 7], [45,11], [46,13],
+			[16,14], [ 3, 6], [ 5, 9], [10,31], [12,35], [19,37], [21,42], [26,44],
+			[28,33], [35,34], [37,36], [42,40], [44,39], [ 1,43], [ 2,45], [ 4,46],
+			[ 8,17], [17,18], [18,20], [20,24], [24,19], [ 6,21], [ 9,26], [22,28],
+			[25,23], [32,27], [33,29], [34,30], [36,22], [40,25], [38,38], [41,41]    
+		];
+ 	procedure vld_me_name (uint(size=64) fifoContent,
+ 		                   uint(size=8) fifoIdx[1],
+ 					       int(size=32) res[1],
+ 					 	   uint(size= 2) chroma_format_idc,
+					 	   bool isIntraNxN,
+					 	   String name)
+  	begin
+  		vld_me(fifoContent, fifoIdx, res, chroma_format_idc, isIntraNxN);
+  		if DEBUG_PARSER then
+			println("          "+name+" m(v) : "+res[0]);
+		end
+	end
+ 	procedure vld_me(uint(size=64) fifoContent,
+ 		             uint(size=8) fifoIdx[1],
+ 					 int(size=32) res[1],
+ 					 uint(size= 2) chroma_format_idc,
+					 bool isIntraNxN)
+	begin
+		vld_ue(fifoContent, fifoIdx, res);
+		if chroma_format_idc = 0 then 
+			res[0] := CBP_Table[res[0]][if (isIntraNxN) then 0 else 1 end];
+		else
+			res[0] := CBP_Table[16 + res[0]][if (isIntraNxN) then 0 else 1 end]; 
+		end 
+	end
+end
