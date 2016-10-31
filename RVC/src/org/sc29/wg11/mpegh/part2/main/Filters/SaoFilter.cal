@@ -60,37 +60,42 @@ import org.sc29.wg11.mpegh.part2.common.CommonConstantHEVC.*;
 //There should be a function for the code which test if two pixels are in the same slice thanks to the variable filtAcrSlc.
 actor SaoFilter(bool DEBUG)
 	uint(size=2)  IsPicSlcLcu,
+	uint(size=8)  BitDepth,
 	uint(size=8)  LcuSize,
 	uint(size=2)  LFAcrossSlcTile,
 	uint(size=16) PicSize,
-	uint(size=8)  SampleIn,
+	uint(size=16) SampleIn,
 	int (size=9)  SaoSe,
 	uint(size=16) TilesCoord,
 	uint(size=16) LFBypassCUInfo
 		==>
-	uint(size=8)  FiltSample
+	uint(size=16) FiltSample
 		:
 		
 	bool DEBUG_Trace = false;
 		
-	uint(size=4)  BIT_DEPTH = 8;
-
 	int(size=3) constHPos0[4][2] = [[-1,1],  [ 0,0], [-1,1],  [ 1,-1]];
 	int(size=3) constVPos0[4][2] = [[ 0,0],  [-1,1], [-1,1],  [-1, 1]];
 	int(size=3) edgeIdxConv[5] = [1, 2, 0, 3, 4];
 	
 	int(size=2) signResult[3][128][128];
  
-	bool         slcSaoCompEn[3];
+	bool        slcSaoCompEn[3];
 
-	uint(size=8) PictBuffer[3][PICT_HEIGHT][PICT_WIDTH];
-    uint(size=8) origPict[3][PICT_HEIGHT][PICT_WIDTH];
+	uint(size=16) PictBuffer[3][PICT_HEIGHT][PICT_WIDTH];
+    uint(size=16) origPict[3][PICT_HEIGHT][PICT_WIDTH];
 	
 	uint(size=2)  cIdx;
 	uint(size=2)  saoTypeIdx[PICT_WIDTH/64][PICT_HEIGHT/64][3];
 	int (size=9)  saoOffset[PICT_WIDTH/64][PICT_HEIGHT/64][3][5];
 	uint(size=2)  saoEoClass[PICT_WIDTH/64][PICT_HEIGHT/64][3];
 	uint(size=5)  saoLeftClass[PICT_WIDTH/64][PICT_HEIGHT/64][3];
+
+	uint(size=8)  bandShiftY := 3;
+	uint(size=8)  bandShiftC := 3;
+	uint(size=16) maxPixValY := 255;
+	uint(size=16) maxPixValC := 255;
+
 	uint(size=8)  lcuSizeMax;
 	uint(size=8)  log2LcuSizeMax;
 	uint(size=8)  log2puSizeMin;
@@ -98,10 +103,11 @@ actor SaoFilter(bool DEBUG)
 	uint(size=8)  picSizeInCu[2];
 	uint(size=8)  picSizeInMb[2];
 	uint(size=16) picSize[3][2];
+
 	uint(size=8)  xCu := 0;
 	uint(size=8)  yCu := 0;
-	uint(size=16)  xMbSent := 0;
-	uint(size=16)  yMbSent := 0;
+	uint(size=16) xMbSent := 0;
+	uint(size=16) yMbSent := 0;
 	uint(size=6)  xCuFilt := 0;
 	uint(size=6)  yCuFilt := 0;
 	uint(size=16) numTokenPerLcu[2];
@@ -333,8 +339,8 @@ actor SaoFilter(bool DEBUG)
 		yCuFilt+1 >= picSizeInCu[1]
 	end
 	
-	procedure revertFiltering(uint(size=2) saoTypeIdxBorder[8], uint(size=8)  lcuSizeMax, uint(size=16) idxOrig[2],
-		uint (size=16) idxMax[2], uint(size=2) cIdx, uint(size=8)  newPix[66][66])
+	procedure revertFiltering(uint(size=2) saoTypeIdxBorder[8], uint(size=8) lcuSizeMax, uint(size=16) idxOrig[2],
+		uint(size=16) idxMax[2], uint(size=2) cIdx, uint(size=16) newPix[66][66])
 	begin
 		//UP-LEFT
 		if(saoTypeIdxBorder[0] != 0 && idxOrig[0] != 0 && idxOrig[1] != 0) then
@@ -412,7 +418,7 @@ actor SaoFilter(bool DEBUG)
 	end
 
 	procedure putBackFilteredPix(uint(size=2) saoTypeIdxBorder[8], uint(size=8) lcuSizeMax, uint(size=16) idxOrig[2],
-		uint (size=16) idxMax[2], uint(size=2) cIdx, uint(size=8)  newPix[66][66])
+		uint(size=16) idxMax[2], uint(size=2) cIdx, uint(size=16) newPix[66][66])
 	begin
 		//UP-LEFT
 		if(saoTypeIdxBorder[0] != 0 && idxOrig[0] != 0 && idxOrig[1] != 0) then
@@ -551,8 +557,8 @@ actor SaoFilter(bool DEBUG)
 		uint(size=16) idxMin[2], uint(size=8) lcuSizeMax, uint(size=16) picSize[2],
 		bool lcuIsPictBorder, 
 		int(size=32) saoOff[5], bool filtAcrossSlcAndTiles,
-		uint(size=8) origPict[3][PICT_HEIGHT][PICT_WIDTH],
-		uint(size=8) PictBuffer[3][PICT_HEIGHT][PICT_WIDTH],
+		uint(size=16) origPict[3][PICT_HEIGHT][PICT_WIDTH],
+		uint(size=16) PictBuffer[3][PICT_HEIGHT][PICT_WIDTH],
 		uint(size=2) saoTypeIdxBorder[8])
 	begin
 		if(cIdx = 0) then
@@ -662,12 +668,10 @@ actor SaoFilter(bool DEBUG)
 				xIdx := idxMin[0] + x;
 				xPix2 := xIdx + 1;
 
-				edgeIdx := 2 + signResult[0][y][x]
-					- signResult[0][y][x+1];
+				edgeIdx := 2 + signResult[0][y][x] - signResult[0][y][x+1];
 				edgeIdx := edgeIdxConv[edgeIdx];
 				PictBuffer[0][yIdx][xIdx] :=
-					clip_i32(PictBuffer[0][yIdx][xIdx] +
-						saoOffset[edgeIdx], 0, 255);
+					clip_i32(PictBuffer[0][yIdx][xIdx] + saoOffset[edgeIdx], 0, maxPixValY);
 			end
 		end
 
@@ -769,8 +773,7 @@ actor SaoFilter(bool DEBUG)
 					- signResult[0][y+1][x];
 				edgeIdx := edgeIdxConv[edgeIdx];
 				PictBuffer[0][yIdx][xIdx] :=
-					clip_i32(PictBuffer[0][yIdx][xIdx] +
-						saoOffset[edgeIdx], 0, 255);
+					clip_i32(PictBuffer[0][yIdx][xIdx] + saoOffset[edgeIdx], 0, maxPixValY);
 			end
 		end
 
@@ -794,7 +797,7 @@ actor SaoFilter(bool DEBUG)
 		uint(size=3)  edgeIdx,
 		int (size=2)  xOff[2],
 		int (size=2)  yOff[2],
-		uint(size=8)  newPix[66][66]
+		uint(size=16)  newPix[66][66]
 	begin
 		idxMax[0] := min(lcuSizeMax - 1, picSize[0] - idxOrig[0] - 1);
 		idxMax[1] := min(lcuSizeMax - 1, picSize[1] - idxOrig[1] - 1);
@@ -858,8 +861,7 @@ actor SaoFilter(bool DEBUG)
 				edgeIdx := edgeIdxConv[edgeIdx];
 
 				PictBuffer[0][yIdx][xIdx] :=
-					clip_i32(PictBuffer[0][yIdx][xIdx] +
-					saoOffset[edgeIdx], 0, 255);
+					clip_i32(PictBuffer[0][yIdx][xIdx] + saoOffset[edgeIdx], 0, maxPixValY);
 			end
 		end
 		if(not filtAcrossSlcAndTiles) then
@@ -870,9 +872,10 @@ actor SaoFilter(bool DEBUG)
 	@optimize_c(condition="OPENHEVC_ENABLE", name="saoBandFilter_orcc")
 	procedure saoBandFilter(uint(size=5) saoLeftClass, int(size=32) saoOffset[5],
 		uint(size=2) cIdx, uint(size=8) cIdxOffset, uint (size=16) idxMin[2], uint (size=16) idxMax[2],
-		uint(size=8) PictBuffer[3][PICT_HEIGHT][PICT_WIDTH])
+		uint(size=16) PictBuffer[3][PICT_HEIGHT][PICT_WIDTH])
 	var
-		uint(size=3)  bandShift = BIT_DEPTH-5,
+		uint(size=16) maxPixVal = (if(cIdx = 0) then maxPixValY else maxPixValC end),
+		uint(size=8)  bandShift = (if(cIdx = 0) then bandShiftY else bandShiftC end),
 		uint(size=3)  bandIdx,
 		uint(size=3)  bandTable[32] := [0: for int i in 0 .. 31]
 	begin
@@ -886,8 +889,7 @@ actor SaoFilter(bool DEBUG)
 			do
 				bandIdx := bandTable[PictBuffer[cIdx][y][x]>>bandShift];
 				PictBuffer[cIdx][y][x] :=
-					clip_i32(PictBuffer[cIdx][y][x] +
-					saoOffset[bandIdx], 0, 255);
+					clip_i32(PictBuffer[cIdx][y][x] + saoOffset[bandIdx], 0, maxPixVal);
 			end
 		end
 	end
@@ -1010,8 +1012,7 @@ actor SaoFilter(bool DEBUG)
 					- signResult[cIdx][y][x+1];
 				edgeIdx := edgeIdxConv[edgeIdx];
 				PictBuffer[cIdx][yIdx][xIdx] :=
-					clip_i32(PictBuffer[cIdx][yIdx][xIdx] +
-						saoOffset[xCuFilt][yCuFilt][cIdx][edgeIdx], 0, 255);
+					clip_i32(PictBuffer[cIdx][yIdx][xIdx] + saoOffset[xCuFilt][yCuFilt][cIdx][edgeIdx], 0, maxPixValC);
 			end
 		end
 
@@ -1127,8 +1128,7 @@ actor SaoFilter(bool DEBUG)
 					- signResult[cIdx][y+1][x];
 				edgeIdx := edgeIdxConv[edgeIdx];
 				PictBuffer[cIdx][yIdx][xIdx] :=
-					clip_i32(PictBuffer[cIdx][yIdx][xIdx] +
-						saoOffset[xCuFilt][yCuFilt][cIdx][edgeIdx], 0, 255);
+					clip_i32(PictBuffer[cIdx][yIdx][xIdx] + saoOffset[xCuFilt][yCuFilt][cIdx][edgeIdx], 0, maxPixValC);
 			end
 		end
 
@@ -1173,7 +1173,7 @@ actor SaoFilter(bool DEBUG)
 		uint(size=3)  edgeIdx,
 		int(size=2)  xOff[2],
 		int(size=2)  yOff[2],
-		uint(size=8)  newPix[66][66]
+		uint(size=16) newPix[66][66]
 	begin
 		foreach uint k in 0 .. 1
 		do
@@ -1242,8 +1242,7 @@ actor SaoFilter(bool DEBUG)
 				edgeIdx := edgeIdxConv[edgeIdx];
 
 				PictBuffer[cIdx][yIdx][xIdx] :=
-					clip_i32(PictBuffer[cIdx][yIdx][xIdx] +
-					saoOffset[xCuFilt][yCuFilt][cIdx][edgeIdx], 0, 255);
+					clip_i32(PictBuffer[cIdx][yIdx][xIdx] + saoOffset[xCuFilt][yCuFilt][cIdx][edgeIdx], 0, maxPixValC);
 			end
 		end
 		if(not filtAcrAllSlc || not filtAcrAllTiles) then
@@ -1339,12 +1338,17 @@ actor SaoFilter(bool DEBUG)
 		isLFBypass[(y>>log2puSizeMin)*minPUSize[0] + (x>>log2puSizeMin)]
 	end
 	
-    isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu],
+    isNewPict: action IsPicSlcLcu:[isNewPicSlcLcu], BitDepth:[bitDepthLuma, bitDepthChr],
 		LcuSize:[log2LcuSzMax, log2lcuSzMin], LFAcrossSlcTile:[lfAcrossSlcTile],
 		PicSize:[picWidthInPix, picHeightInPix], SaoSe:[saoSe] ==>
 	guard
 		isNewPicSlcLcu = NEW_PIC
 	do
+		bandShiftY := bitDepthLuma - 5;
+		bandShiftC := bitDepthChr  - 5;
+		maxPixValY := (1 << bitDepthLuma) - 1;
+		maxPixValC := (1 << bitDepthChr)  - 1;
+
 		lcuSizeMax := (1 << log2LcuSzMax);
 		log2LcuSizeMax := log2LcuSzMax;
 		log2puSizeMin := log2lcuSzMin - 1;
@@ -1357,6 +1361,7 @@ actor SaoFilter(bool DEBUG)
 		picSize[0]  := [picWidthInPix   , picHeightInPix];
 		picSize[1]  := [picSize[0][0] >> 1, picSize[0][1] >> 1];
 		picSize[2]  := [picSize[1][0], picSize[1][1]];
+
 		slcSaoCompEn[0] := (saoSe & 1) !=0;
 		slcSaoCompEn[1] := (saoSe & 2) !=0;
 		slcSaoCompEn[2] := slcSaoCompEn[1];
@@ -1387,12 +1392,17 @@ actor SaoFilter(bool DEBUG)
 	end
 
 	//There should be slice SAO enable for each independent slice.
-	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu],
+	isNewSlice: action IsPicSlcLcu:[isNewPicSlcLcu], BitDepth:[bitDepthLuma, bitDepthChr],
 		LcuSize:[log2LcuSzMax, log2lcuSzMin], LFAcrossSlcTile:[lfAcrossSlcTile],
 		PicSize:[picWidthInPix, picHeightInPix] /*, SaoSe:[saoSe]*/ ==>
 	guard
 		isNewPicSlcLcu = NEW_SLC
 	do
+		bandShiftY := bitDepthLuma - 5;
+		bandShiftC := bitDepthChr  - 5;
+		maxPixValY := (1 << bitDepthLuma) - 1;
+		maxPixValC := (1 << bitDepthChr)  - 1;
+		
 		/*slcSaoCompEn[0] := (saoSe & 1) !=0;
 		slcSaoCompEn[1] := (saoSe & 2) !=0;
 		slcSaoCompEn[2] := slcSaoCompEn[1];*/
@@ -1652,7 +1662,7 @@ actor SaoFilter(bool DEBUG)
 	sendSamples.launch: action ==> FiltSample:[filtSamp] repeat 16*16 + 2 * 8*8
 	var
 	    uint tokenOffset,
-		uint(size=8) filtSamp[16*16+2*8*8],
+		uint(size=16) filtSamp[16*16+2*8*8],
         uint(size=16) blkAddrX, uint(size=16) blkAddrY,
         uint(size=16) puAddrX, uint(size=16) puAddrY,
         int idx
