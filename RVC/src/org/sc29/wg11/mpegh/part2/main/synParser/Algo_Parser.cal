@@ -577,6 +577,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    uint(size= 1) vps_timing_info_present_flag;
 	    uint(size=10) vps_num_op_sets_minus1;
 	    uint(size=10) vps_num_hrd_parameters;
+	    uint(size= 5) vps_profile_idc := 1;
 		uint(size= 8) video_sequence_id := 0;
 
 	    bool profile_present_flag := true;
@@ -594,7 +595,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        if(profilePresentFlag) then
 	        	skip_bits_name( 2, fifoIdx, "general_profile_space                   			");
 	        	skip_bits_name( 1, fifoIdx, "general_tier_flag                       			");
-	        	skip_bits_name( 5, fifoIdx, "general_profile_idc                     			");
+	        	vld_u_name(5, fifoContent, fifoIdx, res, "general_profile_idc                   ");
+	        	vps_profile_idc := res[0] & 32; // 32 = 2^5
 	        	skip_bits_name(32, fifoIdx, "general_profile_compatibility_flag[i]	 			");
 	
 	        	skip_bits_name( 1, fifoIdx, "general_progressive_source_flag         			");
@@ -1085,6 +1087,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 		uint(size=16) sps_pic_height_in_luma_samples[NB_MAX_SPS];
 		uint(size= 1) sps_separate_colour_plane_flag[NB_MAX_SPS];
 	    uint(size= 2) sps_chroma_format_idc[NB_MAX_SPS];
+	    uint(size= 5) sps_profile_idc[NB_MAX_SPS];
 	
 	    bool sps_profile_present_flag := true;
 	    bool sps_sub_layer_level_present_flag[64] := [false: for int i in 0 .. 63];
@@ -1092,6 +1095,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 
 	    uint(size= 8) sps_log2_max_pic_order_cnt_lsb_minus4[NB_MAX_SPS];
 	    uint(size=32) max_poc_lsb[NB_MAX_SPS];
+	    int sps_bit_depth_luma[NB_MAX_SPS];
+	    int sps_bit_depth_chroma[NB_MAX_SPS];
 	    int sps_bit_depth_minus5[NB_MAX_SPS][3];
 
 		bool sps_sub_layer_ordering_info_present_flag;
@@ -1148,7 +1153,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        load_fifo();
         	skip_bits_name( 2, fifoIdx, "general_profile_space                   ");
         	skip_bits_name( 1, fifoIdx, "general_tier_flag                       ");
-        	skip_bits_name( 5, fifoIdx, "general_profile_idc                     ");
+        	vld_u_name(5, fifoContent, fifoIdx, res, "general_profile_idc        ");
+        	sps_profile_idc[sps_id] := res[0] & 32; // 32 = 2^5
         	skip_bits_name(32, fifoIdx, "general_profile_compatibility_flag[i]	 ");
 
         	skip_bits_name( 1, fifoIdx, "general_progressive_source_flag         ");
@@ -1542,8 +1548,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 			vld_ue_name(fifoContent, fifoIdx, res, "sps_seq_parameter_set_id                ");
 	        sps_id := res[0];
 	        sps_id_decoded[sps_id] := true;
-	        vld_ue_name(fifoContent, fifoIdx, res,
-	        "chroma_format_idc                       ");
+	        vld_ue_name(fifoContent, fifoIdx, res, "sps_chroma_format_idc                   ");
 	        sps_chroma_format_idc[sps_id] := res[0];
 	        if res[0] = 3 then
 	        	vld_u_name(1, fifoContent, fifoIdx, res,
@@ -1558,7 +1563,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        sps_pic_height_in_luma_samples[sps_id] := res[0];
 
 	    	load_fifo();
-			vld_u_name(1, fifoContent, fifoIdx, res, "conformance_window_flag                 ");
+			vld_u_name(1, fifoContent, fifoIdx, res, "conformance_window_flag               ");
 	        if res[0] = 1 then
 	        	vld_ue_name(fifoContent, fifoIdx, res,
 	        	"conf_win_left_offset                    ");
@@ -1571,9 +1576,11 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        end
 	        vld_ue_name(fifoContent, fifoIdx, res,
 	        "sps_bit_depth_luma_minus8                   ");
+	        sps_bit_depth_luma[sps_id] := res[0] + 8;
 	        sps_bit_depth_minus5[sps_id][0] := res[0] + 8 - 5;
 	        vld_ue_name(fifoContent, fifoIdx, res,
 	        "sps_bit_depth_chroma_minus8                 ");
+	        sps_bit_depth_chroma[sps_id] := res[0] + 8;
 	        sps_bit_depth_minus5[sps_id][1] := res[0] + 8 - 5;
 	        sps_bit_depth_minus5[sps_id][2] := res[0] + 8 - 5;
 	        vld_ue_name(fifoContent, fifoIdx, res,
@@ -1679,11 +1686,11 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        	"pcm_loop_filter_disable_flag            ");
 	        	pcm_loop_filter_disable_flag[sps_id] := res[0];
 	        	
-	        	if(pcm_bit_depth_luma[sps_id] > (sps_bit_depth_minus5[sps_id][0]+5)) then
+	        	if(pcm_bit_depth_luma[sps_id] > (sps_bit_depth_luma[sps_id])) then
 	        		println("ERROR: PCM bit depth for LUMA is greater than normal normal LUMA bit depth)\n");
 	        	end
 	        	
-	        	if(pcm_bit_depth_chroma[sps_id] > (sps_bit_depth_minus5[sps_id][1]+5)) then
+	        	if(pcm_bit_depth_chroma[sps_id] > (sps_bit_depth_chroma[sps_id])) then
 	        		println("ERROR: PCM bit depth for Chroma is greater than normal normal Cb bit depth)\n");
 	        	end
 	        end
@@ -3405,7 +3412,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 slice_chroma_qp_offset := [0, 0, 0];
 //                qp_y := slice_qp;
 //                println("read_SliceHeader qp_y := " + qp_y);
-//                qp_bd_offset_luma           := 6 * sps_bit_depth_luma_minus8[sps_id];
+//                qp_bd_offset_luma           := 6 * (sps_bit_depth_luma[sps_id] - 8);
 //                if pps_cu_qp_delta_enabled_flag[pps_id] = 0 then
 //		            qp_y    := ((slice_qp + 52 + 2 * qp_bd_offset_luma) mod (52 + qp_bd_offset_luma)) - qp_bd_offset_luma;
 //				end
@@ -5603,8 +5610,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
             byte_align(fifoIdx);
 	   		pcm_cbSize_luma := 1 << (cu_log2CbSize << 1);
 	   		pcm_cbSize_chroma := (1 << (cu_log2CbSize << 1)) >> 1;
-	   		pcm_shift_luma := sps_bit_depth_minus5[sps_id][0] + 5 - pcm_bit_depth_luma[sps_id];
-	   		pcm_shift_chroma := sps_bit_depth_minus5[sps_id][1] + 5 - pcm_bit_depth_chroma[sps_id];
+	   		pcm_shift_luma := sps_bit_depth_luma[sps_id] - pcm_bit_depth_luma[sps_id];
+	   		pcm_shift_chroma := sps_bit_depth_chroma[sps_id] - pcm_bit_depth_chroma[sps_id];
 
     		//pcm_skip_length := (pcm_cbSize_luma * pcm_bit_depth_luma[sps_id] + pcm_cbSize_chroma * pcm_bit_depth_chroma[sps_id] + 7) >> 3;
     		cnt_i := 0;
