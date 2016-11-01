@@ -88,16 +88,17 @@ import org.sc29.wg11.mpegh.part2.main.intra.IntraFunctions.*;
 actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=16) CUInfo,
 	uint(size=6)  IntraPredMode,
+	uint(size=8)  BitDepth,
 	uint(size=8)  LcuSize,
 	uint(size=4)  PartMode,
 	uint(size=16) PictSize,
-	uint(size=8)  Sample,
+	uint(size=16) Sample,
 	uint(size=16) SliceAddr,
 	bool          SplitTransform,
 	bool 		  StrongIntraSmoothing,
 	uint(size=16) TilesCoord
 		==>
-	uint(size=8) PredSample
+	uint(size=16) PredSample
 		:
 
 	int(size=16) iLoop;
@@ -125,21 +126,28 @@ actor IntraPrediction(bool EnabSkipInPix)
 	uint(size=8) maxLcuSizeLuma;
 	uint(size=8) maxLcuSizeChr;
 
+	uint(size=8)  bitDepthY  := 8;
+	uint(size=8)  bitDepthC  := 8;
+	uint(size=16) maxPixValY := 255;
+	uint(size=16) maxPixValC := 255;
+	uint(size=16) dcValY := 128;
+	uint(size=16) dcValC := 128;
+	
 	uint(size=6) predMode;
 	uint(size=6) predModeTab[3];
 	int (size=4) trafoTreeDepth;
 	uint(size=3) trafoTreeIdx[6];
 	uint(size=2) interPartIdx := 0;
 
-	uint(size=8)  pNeighb_left[129];
-	uint(size=8)  pNeighb_above[129];
-	uint(size=8)  puNeighb[3][NEIGHB_TAB_SZ];
+	uint(size=16) pNeighb_left[129];
+	uint(size=16) pNeighb_above[129];
+	uint(size=16) puNeighb[3][NEIGHB_TAB_SZ];
 	bool          puIsIntra[3][NEIGHB_TAB_SZ];
 	uint(size=7)  neighbBlkSz;
 
-	uint(size=8) lumaComp[64*64];
-	uint(size=8) chrComp_u[64*64];
-	uint(size=8) chrComp_v[64*64]; 
+	uint(size=16) lumaComp[64*64];
+	uint(size=16) chrComp_u[64*64];
+	uint(size=16) chrComp_v[64*64]; 
 	uint(size=9) numBlkToSend;
 	uint(size=9) idxBlk;
 
@@ -151,7 +159,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 		int xMin, int yMin, int xMax, int yMax,
 		int xIdx, int yIdx,
 		int origPixIdx,
-		uint(size=8) pixVal
+		uint(size=16) dcVal := if(cIdx = 0) then dcValY else dcValC end,
+		uint(size=16) pixVal
 	begin
 		neighbExist(cuAddr, minVal, maxVal, cIdx, nS);
 		xMin := minVal[0];
@@ -172,7 +181,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 		if (constrIntraPred) then
 			if (yMax = 0 || not puIsIntra[cIdx][(origPixIdx - 1 - (yMax - 1)) &
 			NEIGHB_TAB_MASK]) then
-				pixVal := 128;
+				pixVal := dcVal;
 				xIdx := xMax - 1;
 				while (xIdx >= xMin) do
 					if (puIsIntra[cIdx][(origPixIdx + 1 + xIdx - 1) & NEIGHB_TAB_MASK]) then
@@ -231,8 +240,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 */
 		if (xMax = xMin && yMax = yMin) then
 			foreach int idx in 0 .. 2 * nS do
-				pNeighb_above[idx] := 128;
-				pNeighb_left[idx] := 128;
+				pNeighb_above[idx] := dcVal;
+				pNeighb_left[idx] := dcVal;
 			end
 		else
 			if (xMax = xMin && yMax != yMin) then
@@ -351,16 +360,15 @@ actor IntraPrediction(bool EnabSkipInPix)
 	/* Filtering process of neighbouring sample. */
 	procedure filterNeighbSamp(uint(size=7) nS, uint(size=3) log2NS)
 	var
-		uint bitDepthY = 8,
 		uint threshold = 1 << (bitDepthY - 5),
-		uint(size=8) bottomLeft = pNeighb_left[2 * nS],
-		uint(size=8) topLeft = pNeighb_above[0],
-		uint(size=8) topRight = pNeighb_above[2 * nS],
-		uint(size=8) edgePix [ 2 ] = [ topRight, bottomLeft ],
+		uint(size=16) bottomLeft = pNeighb_left[2 * nS],
+		uint(size=16) topLeft = pNeighb_above[0],
+		uint(size=16) topRight = pNeighb_above[2 * nS],
+		uint(size=16) edgePix [ 2 ] = [ topRight, bottomLeft ],
 		bool bilinearLeft,
 		bool bilinearAbove,
 		uint(size=5) minDistVertHor,
-		uint(size=8) pFNeighb [ 2 ] [ 64 ]
+		uint(size=16) pFNeighb [ 2 ] [ 64 ]
 	begin
 		if (predMode != INTRA_DC) then
 			minDistVertHor := min(abs(predMode - 26), abs(predMode - 10));
@@ -368,15 +376,12 @@ actor IntraPrediction(bool EnabSkipInPix)
 			16 && minDistVertHor > 1 || nS = 32 && minDistVertHor > 0 || nS = 64 &&
 			minDistVertHor > 10) then
 				if (strongIntraSmoothing) then
-					bilinearLeft := abs(bottomLeft + topLeft - 2 * pNeighb_left[nS]) <
-					threshold;
-					bilinearAbove := abs(topLeft + topRight - 2 * pNeighb_above[nS]) <
-					threshold;
+					bilinearLeft := abs(bottomLeft + topLeft - 2 * pNeighb_left[nS]) < threshold;
+					bilinearAbove := abs(topLeft + topRight - 2 * pNeighb_above[nS]) < threshold;
 					if (nS >= 32 && bilinearLeft && bilinearAbove) then
 						foreach uint neighb in 0 .. 1 do
 							foreach uint i in 1 .. nS * 2 - 1 do
-								pFNeighb[neighb][i] := ((2 * nS - i) * topLeft + i * edgePix[neighb] +
-								nS) >> log2NS + 1;
+								pFNeighb[neighb][i] := ((2 * nS - i) * topLeft + i * edgePix[neighb] + nS) >> log2NS + 1;
 							end
 						end
 						foreach uint i in 1 .. nS * 2 - 1 do
@@ -427,7 +432,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 	procedure intraDcPred(uint(size=2) cIdx, uint(size=7) nS, uint(size=3) log2NS)
 	var
 		uint(size=1) minVal,
-		uint(size=13) dcVal
+		uint(size=32) dcVal
 	begin
 		dcVal := nS;
 		foreach uint x in 0 .. nS - 1 do
@@ -444,8 +449,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 				1
 			end;
 			if (nS <= 16) then
-				lumaComp[0] := (pNeighb_left[0 + 1] + 2 * dcVal + pNeighb_above[0 + 1] +
-				2) >> 2;
+				lumaComp[0] := (pNeighb_left[0 + 1] + 2 * dcVal + pNeighb_above[0 + 1] + 2) >> 2;
 				foreach uint x in 1 .. nS - 1 do
 					lumaComp[x] := (pNeighb_above[x + 1] + 3 * dcVal + 2) >> 2;
 				end
@@ -473,8 +477,8 @@ actor IntraPrediction(bool EnabSkipInPix)
 
 	/* Updating the picture size. */
 	isNewSliceOrPict.notDep: action PartMode:[partMode], LcuSize:[log2LcuSzMax, log2lcuSzMin],
+		StrongIntraSmoothing:[smoothing, constrIntra], BitDepth:[bitDepthLuma, bitDepthChr],
 		PictSize:[pictSizeVal] repeat 2, SliceAddr:[slcAddr] repeat 2,
-		StrongIntraSmoothing:[smoothing, constrIntra],
 		TilesCoord:[valNumTiles] ==>
 	guard
 		partMode = PART_MODE_SLICE_INDEP ||
@@ -493,6 +497,13 @@ actor IntraPrediction(bool EnabSkipInPix)
 		iLoop := 0;
 		maxLcuSizeLuma := 1 << log2LcuSzMax;
 		maxLcuSizeChr := maxLcuSizeLuma >> 1;
+		
+		bitDepthY := bitDepthLuma;
+		bitDepthC := bitDepthChr;
+		maxPixValY := (1 << bitDepthY) - 1;
+		maxPixValC := (1 << bitDepthC) - 1;
+		dcValY :=  1 << (bitDepthY - 1);
+		dcValC :=  1 << (bitDepthC - 1);
 	end
 
 	/* Updating the picture size. */
@@ -831,7 +842,7 @@ actor IntraPrediction(bool EnabSkipInPix)
 	guard
 		idxBlk < numBlkToSend
 	var
-		uint(size=8) sampleVal[16 + 2*4],
+		uint(size=16) sampleVal[16 + 2*4],
 		uint(size=7) idxSample := 0,
 		uint(size=16) blkAddr[2]
 	do
