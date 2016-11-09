@@ -98,7 +98,9 @@ actor SelectCu()
 		[0, 1, 4, 4, 16, 16, 16, 16, 64, 64, 64,
 			64, 64, 64, 64, 64, 256];
 
-	uint(size=8)  SCU_SIZE = 16+2*4;
+	uint(size=8)  SCU_SIZE_Y = 16;
+	uint(size=8)  SCU_SIZE_C = 2 * 4;
+	uint(size=8)  SCU_SIZE = SCU_SIZE_Y + SCU_SIZE_C;
 	uint(size=4)  numPart;
 	uint(size=3)  numPartDecoded;
 
@@ -118,17 +120,22 @@ actor SelectCu()
 	uint(size=7)  xIdx;
 	uint(size=7)  yIdx;
 
+	uint(size=16) maxPixValY := 255;
+	uint(size=16) maxPixValC := 255;
+	
 	initialize ==>
 	do
 		sampGot := [false: for int i in 0 .. 511];
 	end
 
-	isNewSlice: action PartMode:[partModeVal]
-		//, BitDepth:[bitDepthLuma, bitDepthChr] 
+	isNewSlice: action PartMode:[partModeVal], BitDepth:[bitDepthLuma, bitDepthChr] 
 		==>
 	guard
 		partModeVal = PART_MODE_SLICE_DEP || partModeVal = PART_MODE_SLICE_INDEP ||
 		partModeVal = PART_MODE_PICT
+	do
+		maxPixValY := (1 << bitDepthLuma) - 1;
+		maxPixValC := (1 << bitDepthChr) - 1;
 	end
 
 	getPartMode: action PartMode:[partModeVal] ==>
@@ -198,8 +205,7 @@ actor SelectCu()
 	guard
 		cuMode = IPCM
 	do
-		numPartDecoded := numPartDecoded + 1;
-//println("getCuMode.isIPCM "+numPartDecoded+" "+nbBlk);		
+		numPartDecoded := numPartDecoded + 1;	
 	end
 
 	getCuMode.isInter: action ==>
@@ -222,16 +228,21 @@ actor SelectCu()
 	getCuSample.isIntra: action IntraSample:[intraSample] repeat SCU_SIZE,
 		ResidualSample:[resSample] repeat SCU_SIZE
 		==> Sample:[sample] repeat SCU_SIZE
-	//guard
-		//idxBlk < nbBlk		
+	guard
+		idxBlk < nbBlk
 	var
 		uint(size=16) sample[SCU_SIZE]
 	do
-		foreach uint sampIdx in 0 .. SCU_SIZE-1
+		foreach uint sampIdx in 0 .. SCU_SIZE_Y-1
 		do
-			sample[sampIdx] :=
-				clip_i32(intraSample[sampIdx]+resSample[sampIdx], 0, 255);
+			sample[sampIdx] := clip_i32(intraSample[sampIdx]+resSample[sampIdx], 0, maxPixValY);
 		end
+
+		foreach uint sampIdx in SCU_SIZE_Y .. SCU_SIZE-1
+		do
+			sample[sampIdx] := clip_i32(intraSample[sampIdx]+resSample[sampIdx], 0, maxPixValC);
+		end
+
 		idxBlk := idxBlk + 1;
 	end
 
@@ -242,11 +253,6 @@ actor SelectCu()
 		idxBlk < nbBlk			
 	do
 		idxBlk := idxBlk + 1;
-//println("getCuSample-IPCM "+idxBlk);
-/*foreach int i in 0 .. SCU_SIZE-1 do
-	print(pcmSample[i]+", ");
-end
-println();*/
 	end
 	
 	/* Getting prediction samples from interPrediction */
@@ -317,11 +323,16 @@ println();*/
 	var
 		uint(size=16) sample[SCU_SIZE]
 	do
-		foreach int i in 0 .. SCU_SIZE-1
+		foreach int i in 0 .. SCU_SIZE_Y-1
 		do
-			sample[i] := clip_i32(predSamp[24*idxBlk + i] +
-						resSample[i], 0, 255);
+			sample[i] := clip_i32(predSamp[24*idxBlk + i] + resSample[i], 0, maxPixValY);
 		end
+
+		foreach uint i in SCU_SIZE_Y .. SCU_SIZE-1
+		do
+			sample[i] := clip_i32(predSamp[24*idxBlk + i] + resSample[i], 0, maxPixValC);
+		end
+		
 		idxBlk := idxBlk + 1;
 	end
 
@@ -335,11 +346,18 @@ println();*/
 	var
 		uint(size=16) sample[SCU_SIZE * 4]
 	do
-		foreach int i in 0 .. SCU_SIZE * 4 - 1
+		foreach int s in 0 .. 3
 		do
-			sample[i] := clip_i32(predSamp[24*idxBlk + i] +
-						resSample[i], 0, 255);
-		end
+			foreach int i in 0 .. SCU_SIZE_Y - 1
+			do
+				sample[s*SCU_SIZE+i] := clip_i32(predSamp[24*idxBlk + s*SCU_SIZE+i] + resSample[s*SCU_SIZE+i], 0, maxPixValY);
+			end
+
+			foreach int i in SCU_SIZE_Y .. SCU_SIZE - 1
+			do
+				sample[s*SCU_SIZE+i] := clip_i32(predSamp[24*idxBlk + s*SCU_SIZE+i] + resSample[s*SCU_SIZE+i], 0, maxPixValC);
+			end
+		end	
 		idxBlk := idxBlk + 4;
 	end
 
@@ -353,11 +371,18 @@ println();*/
 	var
 		uint(size=16) sample[SCU_SIZE * 16]
 	do
-		foreach int i in 0 .. SCU_SIZE * 16 - 1
+		foreach int s in 0 .. 15
 		do
-			sample[i] := clip_i32(predSamp[24*idxBlk + i] +
-						resSample[i], 0, 255);
-		end
+			foreach int i in 0 .. SCU_SIZE_Y - 1
+			do
+				sample[s*SCU_SIZE+i] := clip_i32(predSamp[24*idxBlk + s*SCU_SIZE+i] + resSample[s*SCU_SIZE+i], 0, maxPixValY);
+			end
+
+			foreach int i in SCU_SIZE_Y .. SCU_SIZE - 1
+			do
+				sample[s*SCU_SIZE+i] := clip_i32(predSamp[24*idxBlk + s*SCU_SIZE+i] + resSample[s*SCU_SIZE+i], 0, maxPixValC);
+			end
+		end	
 		idxBlk := idxBlk + 16;
 	end
 
@@ -371,11 +396,18 @@ println();*/
 	var
 		uint(size=16) sample[SCU_SIZE * 64]
 	do
-		foreach int i in 0 .. SCU_SIZE * 64 - 1
+		foreach int s in 0 .. 63
 		do
-			sample[i] := clip_i32(predSamp[24*idxBlk + i] +
-						resSample[i], 0, 255);
-		end
+			foreach int i in 0 .. SCU_SIZE_Y - 1
+			do
+				sample[s*SCU_SIZE+i] := clip_i32(predSamp[24*idxBlk + s*SCU_SIZE+i] + resSample[s*SCU_SIZE+i], 0, maxPixValY);
+			end
+
+			foreach int i in SCU_SIZE_Y .. SCU_SIZE - 1
+			do
+				sample[s*SCU_SIZE+i] := clip_i32(predSamp[24*idxBlk + s*SCU_SIZE+i] + resSample[s*SCU_SIZE+i], 0, maxPixValC);
+			end
+		end	
 		idxBlk := idxBlk + 64;
 	end
 
