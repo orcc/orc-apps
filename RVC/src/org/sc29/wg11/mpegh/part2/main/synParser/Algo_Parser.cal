@@ -5919,6 +5919,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 rc_log2TrafoSize        		:= tu_log2TrafoSize;
                 rc_scanIdx                      := getScanIdx(predMode, tu_log2TrafoSize, cur_intra_pred_mode);
                 rc_cIdx                         := TEXT_LUMA;
+                rc_cBitDepth 					:= sps_bit_depth_luma[sps_id];                
                 if cbf_luma = 1 then
                         tu_idx                  := 2;
                 end
@@ -5939,6 +5940,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 rc_log2TrafoSize        		:= tu_log2TrafoSize;
                 rc_scanIdx                      := getScanIdx(predMode, rc_log2TrafoSize, intra_pred_mode_c);
                 rc_cIdx                         := TEXT_CHROMA_U;
+                rc_cBitDepth 					:= sps_bit_depth_chroma[sps_id];
                 if tu_log2TrafoSize > 2 then
                         tu_idx                          := 10;  // skipResidualCoding
                         rc_x0                           := tu_x0;
@@ -5968,8 +5970,9 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 uint(size=16) cbf_xBase                 = tu_xBase & ((1<<tu_log2TrafoSize)-1),
                 uint(size=16) cbf_yBase                 = tu_yBase & ((1<<tu_log2TrafoSize)-1)
         do
-                tu_idx   := 7;
-                rc_cIdx  := TEXT_CHROMA_V;
+                tu_idx   		:= 7;
+                rc_cIdx  		:= TEXT_CHROMA_V;
+                rc_cBitDepth	:= sps_bit_depth_chroma[sps_id];
                 if tu_log2TrafoSize > 2 then
                         tu_idx                          := 12;  // skipResidualCoding
                         rc_log2TrafoSize        := tu_log2TrafoSize - 1;
@@ -6036,6 +6039,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         uint(size= 8) rc_log2TrafoSize;
         uint(size= 8) rc_scanIdx;
         uint(size= 8) rc_cIdx;
+        uint(size= 8) rc_cBitDepth;
         //
         uint(size= 8) ScanOrder[4][3][(BLW_WIDTH_MAX/4)*(BLW_HEIGHT_MAX/4)][2];
         uint(size= 8) significant_coeff_flag_idx[16];
@@ -6203,7 +6207,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         /**************************************************************************
          * read_ResidualCoding()
          *************************************************************************/
-        procedure read_residualCoding(int(size= 16) tabTransCoeffLevel[32*32])
+        procedure read_residualCoding(int(size= 16) tabTransCoeffLevel[32*32+1])
         var
                 uint(size=1) res[1],
                 uint(size= 8) n,
@@ -6464,7 +6468,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
          * reset_Coeffs()
          *************************************************************************/
         @optimize_c(condition="SSE_ENABLE", name="memset_16_orcc")
-        procedure resetCoeffsX4(int(size=16) tabTransCoeffLevel[4*4], int value, int arraySize)
+        procedure resetCoeffsX4(int(size=16) tabTransCoeffLevel[4*4+1], int value, int arraySize)
         begin
             foreach int i in 0 .. 4 * 4 - 1
             do
@@ -6473,7 +6477,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         end
         
         @optimize_c(condition="SSE_ENABLE", name="memset_16_orcc")
-        procedure resetCoeffsX8(int(size=16) tabTransCoeffLevel[8*8], int value, int arraySize)
+        procedure resetCoeffsX8(int(size=16) tabTransCoeffLevel[8*8+1], int value, int arraySize)
         begin
             foreach int i in 0 .. 8 * 8 - 1
             do
@@ -6482,7 +6486,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         end
         
         @optimize_c(condition="SSE_ENABLE", name="memset_16_orcc")
-        procedure resetCoeffsX16(int(size=16) tabTransCoeffLevel[16*16], int value, int arraySize)
+        procedure resetCoeffsX16(int(size=16) tabTransCoeffLevel[16*16+1], int value, int arraySize)
         begin
             foreach int i in 0 .. 16 * 16 - 1
             do
@@ -6491,42 +6495,43 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         end
         
         @optimize_c(condition="SSE_ENABLE", name="memset_16_orcc")
-        procedure resetCoeffsX32(int(size=16) tabTransCoeffLevel[32*32], int value, int arraySize)
+        procedure resetCoeffsX32(int(size=16) tabTransCoeffLevel[32*32+1], int value, int arraySize)
         begin
             foreach int i in 0 .. 32 * 32 - 1
             do
                 tabTransCoeffLevel[i] := 0;
             end
-        end
+        end        
         
         /**************************************************************************
          * read_ResidualCoding_end
          *************************************************************************/
          
         read_ResidualCoding_end.xIT4 : action ==>
-                                                Coeff:[tabTransCoeffLevel] repeat 4 * 4
+                                                Coeff:[tabTransCoeffLevel] repeat 4 * 4 + 1
         guard
                 rc_log2TrafoSize = 2
         var
-                int(size=16) tabTransCoeffLevel[4*4] 
+                int(size=16) tabTransCoeffLevel[4 * 4 + 1] 
         do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end.xIT4");
                 end
                 
                 resetCoeffsX4(tabTransCoeffLevel, 0, 4 * 4);
-                read_residualCoding(tabTransCoeffLevel);
+                read_residualCoding(tabTransCoeffLevel);                
+                tabTransCoeffLevel[16] := rc_cBitDepth;
                 
                 // Tokens Count
-                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (4*4);
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + 4 * 4 + 1;
         end
 
         read_ResidualCoding_end.xIT8 : action ==>
-                                                Coeff:[tabTransCoeffLevel] repeat 8 * 8
+                                                Coeff:[tabTransCoeffLevel] repeat 8 * 8 + 1
         guard
                 rc_log2TrafoSize = 3
         var
-                int(size=16) tabTransCoeffLevel[8*8] 
+                int(size=16) tabTransCoeffLevel[8 * 8 + 1] 
         do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end.xIT8");
@@ -6534,17 +6539,18 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 
                 resetCoeffsX8(tabTransCoeffLevel, 0, 8 * 8);
                 read_residualCoding(tabTransCoeffLevel);
+                tabTransCoeffLevel[64] := rc_cBitDepth;
                 
                 // Tokens Count
-                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (8*8);
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + 8 * 8 + 1;
         end
 
         read_ResidualCoding_end.xIT16 : action ==>
-                                                Coeff:[tabTransCoeffLevel] repeat 16 * 16
+                                                Coeff:[tabTransCoeffLevel] repeat 16 * 16 + 1
         guard
                 rc_log2TrafoSize = 4
         var
-                int(size=16) tabTransCoeffLevel[16*16] 
+                int(size=16) tabTransCoeffLevel[16 * 16 + 1] 
         do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end.xIT16");
@@ -6552,17 +6558,18 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 
                 resetCoeffsX16(tabTransCoeffLevel, 0, 16 * 16);
                 read_residualCoding(tabTransCoeffLevel);
+                tabTransCoeffLevel[256] := rc_cBitDepth;
                 
                 // Tokens Count
-                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (16*16);
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + 16 * 16 + 1;
         end
 
         read_ResidualCoding_end.xIT32 : action ==>
-                                                Coeff:[tabTransCoeffLevel] repeat 32 * 32
+                                                Coeff:[tabTransCoeffLevel] repeat 32 * 32 + 1
         guard
                 rc_log2TrafoSize = 5
         var
-                int(size=16) tabTransCoeffLevel[32*32] 
+                int(size=16) tabTransCoeffLevel[32 * 32 + 1] 
         do
                 if DEBUG_CABAC then
                         println("read_ResidualCoding_end.xIT32");
@@ -6570,9 +6577,10 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 
                 resetCoeffsX32(tabTransCoeffLevel, 0, 32 * 32);
                 read_residualCoding(tabTransCoeffLevel);
+                tabTransCoeffLevel[1024] := rc_cBitDepth;
                 
                 // Tokens Count
-                NbTokensPerCTU[7] := NbTokensPerCTU[7] + (32*32);                
+                NbTokensPerCTU[7] := NbTokensPerCTU[7] + 32 * 32 + 1;                
         end
 
 
