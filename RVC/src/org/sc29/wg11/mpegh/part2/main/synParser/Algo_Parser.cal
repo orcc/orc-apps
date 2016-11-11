@@ -1579,11 +1579,13 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        "sps_bit_depth_luma_minus8                   ");
 	        sps_bit_depth_luma[sps_id] := res[0] + 8;
 	        sps_bit_depth_minus5[sps_id][0] := res[0] + 8 - 5;
+	        qp_bd_offset_luma := 6 * res[0];
 	        vld_ue_name(fifoContent, fifoIdx, res,
 	        "sps_bit_depth_chroma_minus8                 ");
 	        sps_bit_depth_chroma[sps_id] := res[0] + 8;
 	        sps_bit_depth_minus5[sps_id][1] := res[0] + 8 - 5;
 	        sps_bit_depth_minus5[sps_id][2] := res[0] + 8 - 5;
+	        qp_bd_offset_chroma := 6 * res[0];
 	        vld_ue_name(fifoContent, fifoIdx, res,
 	        "log2_max_pic_order_cnt_lsb_minus4       ");
 	        sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] := res[0];
@@ -3390,6 +3392,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         end  
 		
 		uint(size=16) qp_bd_offset_luma;
+		uint(size=16) qp_bd_offset_chroma;
         /**************************************************************************
          * read_SliceHeader.se_idx_5
          *************************************************************************/
@@ -6073,20 +6076,20 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         read_ResidualCoding.start : action ==> TUSize:[sz, 0, isDST, transform_skip_flag, slice_qp, rc_cIdx,
                             pps_chroma_qp_offset[pps_id][rc_cIdx] + slice_chroma_qp_offset[rc_cIdx]]
         var
-         uint(size=32) res[1],
-         uint(size=1) res1bit[1],
-         int sz = 1 << rc_log2TrafoSize,
-        uint(size=1) transform_skip_flag,
-         int matrix_id,
-         int qp_offset,
-         int(size=16) qp_i,
-         
-		 uint(size=16) num_coeff := 0,
-         int x_cg_last_sig, 
-		 int y_cg_last_sig,
-		 int last_x_c,
-         int last_y_c,
-                 uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
+			uint(size=32) res[1],
+			uint(size=1) res1bit[1],
+			int sz = 1 << rc_log2TrafoSize,
+			uint(size=1) transform_skip_flag,
+			int matrix_id,
+			int qp_offset,
+			int(size=16) qp_i,
+			 
+			uint(size=16) num_coeff := 0,
+			int x_cg_last_sig, 
+			int y_cg_last_sig,
+			int last_x_c,
+			int last_y_c,
+			uint(size=1) isDST = if (predMode = INTRA and rc_cIdx = TEXT_LUMA and sz = 4) then 1 else 0 end
         do
 		    load_fifo();
             if DEBUG_CABAC and DEBUG_TRACE1 then
@@ -6101,8 +6104,12 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        		qp := qp_y + qp_bd_offset_luma;
 	    		else
                     qp_offset := pps_chroma_qp_offset[pps_id][rc_cIdx] + slice_chroma_qp_offset[rc_cIdx];
-	        		qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_luma, 57);
-	            	qp := qp_c[qp_i] + qp_bd_offset_luma;
+	        		qp_i := clip_i32(qp_y + qp_offset, - qp_bd_offset_chroma, 57);
+	        		if(qp_i < 0) then
+	        			qp := qp_i + qp_bd_offset_luma;
+	        		else
+	            		qp := qp_c[qp_i] + qp_bd_offset_luma;
+	            	end	
 	        	end
 	            add := 1 << (shift - 1 );
 	            scale := levelScaleArray[qp];
@@ -6191,7 +6198,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         
         uint(size=16) rc_xS;
         uint(size=16) rc_yS;
-         int(size= 8) m_end;        
+         int(size= 8) m_end;
+		int(size=16) transCoeffLevel := 0;         
         
         uint(size= 8) rc_ctxSet[1];
         uint(size= 8) rc_greater1Ctx[1];
@@ -6203,6 +6211,34 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         uint(size= 1) rc_signHidden;
         uint(size= 8) rc_sumAbsLevel;
         uint(size= 8) rc_cLastRiceParam;
+        
+        procedure applyDequant(uint(size=16) xC, uint(size=16) yC)
+        var
+			int pos,
+			int scale_m
+        begin
+			if cu_transquant_bypass_flag = 0 then
+			    if sps_scaling_list_enabled_flag[sps_id] = 0 then
+			        transCoeffLevel := clip_i32(( ( transCoeffLevel * 16 * scale + add )) >> shift, -32768, 32767 );
+			    else
+			        if yC != 0 or xC != 0 or (rc_log2TrafoSize < 4) then
+			            if rc_log2TrafoSize = 3 then
+			                pos := (yC << 3) + xC;
+			            elsif rc_log2TrafoSize = 4 then
+			                pos := ((yC >> 1) << 3) + (xC >> 1);
+			            elsif rc_log2TrafoSize = 5 then
+			                pos := ((yC >> 2) << 3) + (xC >> 2);
+			            else
+			                pos := (yC << 2) + xC;
+			            end
+			            scale_m := scale_matrix[pos];
+			        else
+			            scale_m := dc_scale;
+			        end
+			        transCoeffLevel := clip_i32(( ( transCoeffLevel * scale_m * scale + add )) >> shift, -32768, 32767 );
+			    end
+			end
+        end
         
         /**************************************************************************
          * read_ResidualCoding()
@@ -6222,9 +6258,6 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 uint(size= 9) ctxIdxInc[1],
                 
                 uint(size=32) resCoeff[1] 		:= [0],
-	            int(size=16) transCoeffLevel 	:= 0,
-	            int pos,
-                int scale_m,
                 bool subAbsLevelFlag
         begin
                 while (rc_i >= 0)
@@ -6358,27 +6391,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                                 end
                                 coeff_sign_flag := coeff_sign_flag << 1;
 
-                                if cu_transquant_bypass_flag = 0 then
-                                    if sps_scaling_list_enabled_flag[sps_id] = 0 then
-		    					        transCoeffLevel := clip_i32(( ( transCoeffLevel * 16 * scale + add )) >> shift, -32768, 32767 );
-                                    else
-                                        if yC != 0 or xC != 0 or (rc_log2TrafoSize < 4) then
-                                            if rc_log2TrafoSize = 3 then
-                                                pos := (yC << 3) + xC;
-                                            elsif rc_log2TrafoSize = 4 then
-                                                pos := ((yC >> 1) << 3) + (xC >> 1);
-                                            elsif rc_log2TrafoSize = 5 then
-                                                pos := ((yC >> 2) << 3) + (xC >> 2);
-                                            else
-                                                pos := (yC << 2) + xC;
-                                            end
-                                            scale_m := scale_matrix[pos];
-                                        else
-                                            scale_m := dc_scale;
-                                        end
-							            transCoeffLevel := clip_i32(( ( transCoeffLevel * scale_m * scale + add )) >> shift, -32768, 32767 );
-                                    end
-                                end
+                                applyDequant(xC, yC);
                                 tabTransCoeffLevel[xC + (yC << rc_log2TrafoSize)] := transCoeffLevel;
                                 // read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL <<<<
                            end
@@ -6407,27 +6420,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                                     end
                                     coeff_sign_flag := coeff_sign_flag << 1;
 
-                                    if cu_transquant_bypass_flag = 0 then
-                                        if sps_scaling_list_enabled_flag[sps_id] = 0 then
-		    					            transCoeffLevel := clip_i32(( ( transCoeffLevel * 16 * scale + add )) >> shift, -32768, 32767 );
-                                        else
-                                            if yC != 0 or xC != 0 or (rc_log2TrafoSize < 4) then
-                                                if rc_log2TrafoSize = 3 then
-                                                    pos := (yC << 3) + xC;
-                                                elsif rc_log2TrafoSize = 4 then
-                                                    pos := ((yC >> 1) << 3) + (xC >> 1);
-                                                elsif rc_log2TrafoSize = 5 then
-                                                    pos := ((yC >> 2) << 3) + (xC >> 2);
-                                                else
-                                                    pos := (yC << 2) + xC;
-                                                end
-                                                scale_m := scale_matrix[pos];
-                                            else
-                                                scale_m := dc_scale;
-                                            end
-							                transCoeffLevel := clip_i32(( ( transCoeffLevel * scale_m * scale + add )) >> shift, -32768, 32767 );
-                                        end
-                                    end
+                                    applyDequant(xC, yC);
                                     tabTransCoeffLevel[xC + (yC << rc_log2TrafoSize)] := transCoeffLevel;
                                     // read_ResidualCoding.for_numLastSubset.get_COEFF_ABS_LEVEL <<<<
                                 end
