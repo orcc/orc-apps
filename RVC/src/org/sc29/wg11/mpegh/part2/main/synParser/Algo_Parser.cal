@@ -3450,46 +3450,22 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	            nbTokensPerSH[2] := nbTokensPerSH[2] + 2;   // BitDepth
 	            nbTokensPerSH[3] := nbTokensPerSH[3] + 2;   // LcuSize
         end
-        /**************************************************************************
-         * read_SliceHeader_done
-         *************************************************************************/
-//         procedure initWpScaling()
-//         begin
-//                foreach uint(size=8) e in 0 .. 1 do
-//                        foreach uint(size=8) i in 0 .. MAX_NUM_REF-1 do
-//                                foreach uint(size=8) yuv in 0 .. 2 do
-//                                        if wp[e][i][yuv][WP_PRESENT_FLAG] = 1 then
-//                                                wp[e][i][yuv][WP_I_WEIGHT] := (1 << wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM]);
-//                                                wp[e][i][yuv][WP_I_OFFSET] := 0;
-//                                        end
-//                                        wp[e][i][yuv][WP_W]     := wp[e][i][yuv][WP_I_WEIGHT];
-//                                        wp[e][i][yuv][WP_O]     := wp[e][i][yuv][WP_I_OFFSET] * (1);
-//                                        wp[e][i][yuv][WP_SHIFT] := wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM];
-//                                        if wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM] >= 1 then
-//                                                wp[e][i][yuv][WP_ROUND] := (1 << wp[e][i][yuv][WP_LOG2_WEIGHT_DENOM]) - 1;
-//                                        else
-//                                                wp[e][i][yuv][WP_ROUND] := 0;
-//                                        end
-//                                end
-//                        end
-//                end
-//        end
+
+        uint(size=32) num_entry_offsets := 0;
         uint(size=16) num_entry_point_offsets := 0;
         uint(size=16) num_entry_point_offsets_plus1 := 0;
-        uint(size=16) offset_len := 0;
-        uint(size=16) slice_segment_header_extension_length := 0;
-        uint num_entry_offsets := 0;
 
-        read_SliceHeader.se_idx_6 : action ==> 
+        read_SliceHeader_done : action ==> StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
         guard
-                se_idx = 6
+			se_idx = 6
         var
-                uint(size=32) res[1]
+			uint(size=32) res[1],
+			uint(size= 8) offset_len,
+			uint(size=16) slice_segment_header_extension_length := 0
         do
-            load_fifo();
-			se_idx := 8;
             if pps_tiles_enabled_flag[pps_id] = 1 or pps_entropy_coding_sync_enabled_flag[pps_id] = 1 then
-            	vld_ue_name(fifoContent, fifoIdx, res, "num_entry_point_offsets                 ");
+            	load_fifo();
+            	vld_ue_name(fifoContent, fifoIdx, res, "num_entry_point_offsets                 						");
             	num_entry_point_offsets := res[0];
             	num_entry_point_offsets_plus1 := res[0] + 1;
 
@@ -3497,95 +3473,41 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
             		or
             	   (pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and num_entry_point_offsets > (PicHeightInCtbsY - 1)) // WPP 
             		or // Tiles and WPP
-            	   (pps_tiles_enabled_flag[pps_id] = 1 and pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and num_entry_point_offsets > ((pps_num_tile_columns_minus1[pps_id] + 1) * (PicHeightInCtbsY - 1)))
-            	//if	num_entry_point_offsets > NUM_ENTRY_MAX 
+            	   (pps_tiles_enabled_flag[pps_id] = 1 and pps_entropy_coding_sync_enabled_flag[pps_id] = 1 and num_entry_point_offsets > ((pps_num_tile_columns_minus1[pps_id] + 1) * (PicHeightInCtbsY - 1))) 
             	then
-            			println("ERROR: fix NUM_ENTRY_MAX");
+					println("ERROR: num_entry_point_offsets is out of range.");
             	end
             	if num_entry_point_offsets > 0 then
-            		vld_ue_name(fifoContent, fifoIdx, res,
-            		"offset_len_minus1                       ");
+            		load_fifo();
+            		vld_ue_name(fifoContent, fifoIdx, res, "offset_len_minus1                    						");
             		offset_len := res[0] + 1;
-            		se_idx := 7;
+					if offset_len > 32 then
+						println("ERROR: offset_len > 32");
+					end
+
+            		foreach int i in 0 .. (num_entry_point_offsets-1) do
+            			load_fifo();
+						vld_u_name(offset_len, fifoContent, fifoIdx, res, "entry_point_offset_minus1                    ");
+						entryOffsetsTab[i] := res[0] + 1;
+            		end
             	end
         	end
-
 			num_entry_offsets := (pps_num_tile_columns_minus1[pps_id] + 1) * (pps_num_tile_rows_minus1[pps_id] + 1);
-	    end
 
-	    read_SliceHeader.se_idx_7_loop : action ==>
-	    guard
-	            se_idx = 7, cnt_i < num_entry_point_offsets
-	    var
-	            uint(size=32) res[1]
-	    do
-	            load_fifo();
-				if offset_len > 32 then
-	                    println("ERROR with vld_ue : check offset_len size");
-	            end
-	            vld_u_name(  offset_len, fifoContent, fifoIdx, res, "entry_point_offset_minus1                      ");
-	            entryOffsetsTab[cnt_i] := res[0] + 1;
-	            cnt_i := cnt_i + 1;
-	    end
-	
-	    read_SliceHeader.se_idx_7_endLoop : action ==>
-	    guard
-	            se_idx = 7, cnt_i = num_entry_point_offsets
-	    do
-	            cnt_i := 0;
-	            se_idx := 8;
-	    end
-	
-	    read_SliceHeader.se_idx_8 : action ==>
-	    guard
-	                se_idx = 8
-	    var
-	            uint(size=32) res[1]
-	    do
-	        load_fifo();
-			se_idx := 100;
 		    if pps_slice_segment_header_extension_present_flag[pps_id] = 1 then
-		        vld_ue_name(fifoContent, fifoIdx, res, "slice_segment_header_extension_length   ");
+		    	load_fifo();
+		        vld_ue_name(fifoContent, fifoIdx, res, "slice_segment_header_extension_length   ");		        
 		        slice_segment_header_extension_length := res[0];
-		        se_idx := 9;
-		        cnt_i := 0;
+		        foreach int i in 0 .. (slice_segment_header_extension_length-1) do
+		        	load_fifo();
+					vld_u_name(8, fifoContent, fifoIdx, res, "slice_segment_header_extension_data_byte					");
+		        end
 		    end
-	    end
-	
-	    read_SliceHeader.se_idx_9_loop : action ==>
-	    guard
-            se_idx = 9 and cnt_i < slice_segment_header_extension_length
-        var
-            uint(size=32) res[1]
-        do
-        	load_fifo();
-			vld_u_name(8, fifoContent, fifoIdx, res, "slice_segment_header_extension_data_byte");
-        	cnt_i := cnt_i + 1;
-	    end
-	
-	    read_SliceHeader.se_idx_9_endLoop : action ==>
-	    guard
-	    	se_idx = 9, cnt_i = slice_segment_header_extension_length
-	    do
-	        cnt_i := 0;
-	        se_idx := 100;
-	    end
-
-	    read_SliceHeader_done : action ==> StrongIntraSmoothing:[sps_strong_intra_smoothing_enable_flag[sps_id], pps_constrained_intra_pred_flag[pps_id]]
-	    guard
-        	se_idx = 100
-	    do
-            if DEBUG_CABAC or CHECK_CABAC then
-            	println("\tPOC: "+poc);
-            end
-            //CtbAddrRS := slice_segment_address;
             
             first_qp_group := if dependent_slice_segment_flag = 1 then 0 else 1 end;
             if (pps_cu_qp_delta_enabled_flag[pps_id] = 0) then
         		qp_y := slice_qp;
         	end
-        	//println("read_SliceHeader qp_y = " + qp_y);
-        	
             sliceData_idx := 1;
             
 	        // Tokens Count
