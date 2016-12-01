@@ -2437,8 +2437,6 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    	end
 	    	if nal_unit_type = NAL_IDR_W_RADL or nal_unit_type = NAL_IDR_N_LP then
 	        	poc := 0;
-	        	se_idx := 302;
-	        	//sps_num_short_term_ref_pic_sets[sps_id] := 0;
 	        else
 	        	vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifoContent, fifoIdx, res, "pic_order_cnt_lsb                       ");
 	            pic_order_cnt_lsb := res[0];
@@ -2454,11 +2452,15 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	                	vld_u_name(   numbits, fifoContent, fifoIdx, res, "short_term_ref_pic_set_idx              ");
 	           		end
 	                pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1];
-	                se_idx := 301;
+	    			readSliceHeaderLongtermPics();
 	       		else
 	    			readSliceHeaderShortTermPics();
+	    			readSliceHeaderLongtermPics();
 	    		end
 	    	end
+
+ 		    readSliceHeaderSaoParams();	    	
+	    	se_idx := 2;
 
             // Tokens Count
 	        nbTokensPerSH[9] := nbTokensPerSH[9] + 1;   // Poc
@@ -2483,8 +2485,6 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 			 int(size=32) prev := 0
    		begin
    			load_fifo();
-	   		se_idx := 301;
-	   		
 	 		if (sps_num_short_term_ref_pic_sets[sps_id] != 0) then
 	 			vld_u_name(1, fifoContent, fifoIdx, res, "inter_ref_pic_set_prediction_flag				"); 
 	 			inter_rps_flag := res[0];
@@ -2559,70 +2559,66 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    	end
 	    end
 
-		read_SliceHeader.se_idx_13 : action ==> 
-		guard
-			se_idx = 301
-		 var
-	        uint(size=32) res[1],
-	        uint(size= 8) lt_idx_sps := 0,
-	        uint(size= 8) prevDeltaMSB := 0
-		do
-	            load_fifo();
-				num_long_term_sps := 0;
-	            num_long_term_pics := 0;
-   				cnt_i := 0;
-	
-	            if sps_long_term_ref_pics_present_flag[sps_id] = 1 then
-	            	if sps_num_long_term_ref_pics_sps[sps_id] > 0 then
-	            		vld_ue_name(fifoContent, fifoIdx, res, "num_long_term_sps                       ");
-	            		num_long_term_sps := res[0];
-	        		end
-	                vld_ue_name(fifoContent, fifoIdx, res, "num_long_term_pics                      ");
-	                num_long_term_pics := res[0];
-	                foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
-	                	if i < num_long_term_sps then
-	                		if num_long_term_pics > 1 then
-	                            vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifoContent, fifoIdx, res, "lt_idx_sps                              ");
-	                            lt_idx_sps := res[0];
-	                    	end
-	                        poc_lsb_lt[i] := lt_ref_pic_poc_lsb_sps[lt_idx_sps];
-	                        UsedByCurrPicLt[i] := used_by_curr_pic_lt_sps_flag[lt_idx_sps];
-	                	else
-	                        vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifoContent, fifoIdx, res, "poc_lsb_lt                              ");
-	                        poc_lsb_lt[i] := res[0];
-	                        vld_u_name(1, fifoContent, fifoIdx, res, "used_by_curr_pic_lt_flag                ");
-	                        UsedByCurrPicLt[i] :=  res[0];
-	                    end
-	                    
-	                    vld_u_name(1, fifoContent, fifoIdx, res, "delta_poc_msb_present_flag              ");
-	                    delta_poc_msb_present_flag[i] := res[0];
-	                    if res[0] = 1 then
-                    		vld_ue_name(fifoContent, fifoIdx, res, "delta_poc_msb_cycle_lt_minus1                ");
-                    		DeltaPocMsbCycleLt[i] := res[0];
+		procedure readSliceHeaderLongtermPics()
+		var
+			uint(size=32) res[1],
+			uint(size= 8) lt_idx_sps := 0,
+			uint(size= 8) prevDeltaMSB := 0
+		begin
+			load_fifo();
+			num_long_term_sps := 0;
+			num_long_term_pics := 0;
+			
+			if sps_long_term_ref_pics_present_flag[sps_id] = 1 then
+				if sps_num_long_term_ref_pics_sps[sps_id] > 0 then
+					vld_ue_name(fifoContent, fifoIdx, res, "num_long_term_sps                       ");
+					num_long_term_sps := res[0];
+				end
+			    vld_ue_name(fifoContent, fifoIdx, res, "num_long_term_pics							");
+			    num_long_term_pics := res[0];
+			    foreach int i in 0 .. (num_long_term_sps + num_long_term_pics - 1) do
+			    	load_fifo();
+			    	if i < num_long_term_sps then
+			    		if num_long_term_pics > 1 then
+			                vld_u_name(log2((PicSizeInCtbsY-1)<<1) , fifoContent, fifoIdx, res, "lt_idx_sps");
+			                lt_idx_sps := res[0];
+			        	end
+			            poc_lsb_lt[i] := lt_ref_pic_poc_lsb_sps[lt_idx_sps];
+			            UsedByCurrPicLt[i] := used_by_curr_pic_lt_sps_flag[lt_idx_sps];
+			    	else
+			            vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifoContent, fifoIdx, res, "poc_lsb_lt");
+			            poc_lsb_lt[i] := res[0];
+			            vld_u_name(1, fifoContent, fifoIdx, res, "used_by_curr_pic_lt_flag			");
+			            UsedByCurrPicLt[i] :=  res[0];
+			        end
 
-	                    	if( i != 0 && i != num_long_term_sps ) then
-	                            DeltaPocMsbCycleLt[i] := DeltaPocMsbCycleLt[i] + prevDeltaMSB;
-	                        end
-	                    else
-	                    	if( i != num_long_term_sps ) then
-	                            DeltaPocMsbCycleLt[i] := 0;
-	                        end
-	                    end
-	                    prevDeltaMSB := DeltaPocMsbCycleLt[i];	                    
-	                end
-	            end
-	    		if sps_temporal_mvp_enable_flag[sps_id] = 1 then
-	        		vld_u_name(1, fifoContent, fifoIdx, res, "slice_temporal_mvp_enable_flag          ");
-	        		slice_temporal_mvp_enable_flag := res[0];
-	    		else
-	            	slice_temporal_mvp_enable_flag := 0;
-	   			end        
-	        se_idx := 302;
+			        vld_u_name(1, fifoContent, fifoIdx, res, "delta_poc_msb_present_flag			");
+			        delta_poc_msb_present_flag[i] := res[0];
+			        if res[0] = 1 then
+			    		vld_ue_name(fifoContent, fifoIdx, res, "delta_poc_msb_cycle_lt_minus1		");
+			    		DeltaPocMsbCycleLt[i] := res[0];
+
+			        	if( i != 0 && i != num_long_term_sps ) then
+			                DeltaPocMsbCycleLt[i] := DeltaPocMsbCycleLt[i] + prevDeltaMSB;
+			            end
+			        else
+			        	if( i != num_long_term_sps ) then
+			                DeltaPocMsbCycleLt[i] := 0;
+			            end
+			        end
+			        prevDeltaMSB := DeltaPocMsbCycleLt[i];	                    
+			    end
+			end
+
+			if sps_temporal_mvp_enable_flag[sps_id] = 1 then
+				vld_u_name(1, fifoContent, fifoIdx, res, "slice_temporal_mvp_enable_flag          ");
+				slice_temporal_mvp_enable_flag := res[0];
+			else
+				slice_temporal_mvp_enable_flag := 0;
+			end
 		end
 		
-		read_SliceHeader.se_idx_14 : action  ==> 
-		guard
-			se_idx = 302
+		procedure readSliceHeaderSaoParams()
 		var
 			uint(size=32) res[1],
 			uint(size=16) column_width[PICT_WIDTH / MIN_CTB_SIZE_Y]= [pps_column_width[pps_id][ i ] : for int i in 0 .. (PICT_WIDTH / MIN_CTB_SIZE_Y)-1],
@@ -2630,9 +2626,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 		    uint(size= 8) num_tile_columns_minus1           = pps_num_tile_columns_minus1[pps_id],
 		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
 		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id]
-		do
+		begin
 		    load_fifo();
-	        
 	        if( sps_sample_adaptive_offset_enabled_flag[sps_id] = 1) then
 	            vld_u_name(1, fifoContent, fifoIdx, res, "slice_sao_luma_flag                     ");
 	            slice_sample_adaptive_offset_flag[0] := res[0];
@@ -2699,10 +2694,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 		            end
 		    	end
 	        end
-
-	        se_idx := 2;
-	    end
-
+		end
 
         /**************************************************************************
          * read_SliceHeader.se_idx_2
@@ -2721,6 +2713,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 int NumPocTotalCurr := 0
         do
             load_fifo();
+            cnt_i := 0;
 			num_ref_idx_l0_active    := 0;
             num_ref_idx_l1_active    := 0;
             mvd_l1_zero_flag         := 0;
