@@ -2264,14 +2264,168 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    uint(size=16) PicHeightInCtbsY;
 	    uint(size=16) PicSizeInCtbsY;
 	    uint(size=16) nbMaxCUsPerCTU;
+		uint(size=16) PictSize[2];
+
+	    procedure setPictureDrivedVars()
+	    var
+			uint(size=16) column_width[PICT_WIDTH / MIN_CTB_SIZE_Y]	= [pps_column_width[pps_id][ i ] : for int i in 0 .. (PICT_WIDTH / MIN_CTB_SIZE_Y)-1],
+		    uint(size=16) row_height[PICT_HEIGHT / MIN_CTB_SIZE_Y]  = [pps_row_height[pps_id][ i ] : for int i in 0 .. (PICT_HEIGHT / MIN_CTB_SIZE_Y)-1],
+		    uint(size= 8) num_tile_columns_minus1           		= pps_num_tile_columns_minus1[pps_id],
+		    uint(size= 8) num_tile_rows_minus1                      = pps_num_tile_rows_minus1[pps_id],
+		    uint(size= 1) uniform_spacing_flag                      = pps_uniform_spacing_flag[pps_id],
+		    
+            uint(size=16) ColBd[PICT_WIDTH / MIN_CTB_SIZE_Y],
+            uint(size=16) RowBd[PICT_HEIGHT / MIN_CTB_SIZE_Y],
+            uint(size=16) tileX,
+            uint(size=16) tileY,
+            uint(size=16) val,
+            uint(size=16) tbX,
+            uint(size=16) tbY,
+            uint(size=16) tIdx,
+            uint count := 0
+	    begin
+// -- 1.1 & 1.2
+	        Log2MinCbSize     := sps_log2_min_coding_block_size[sps_id] ;
+	        Log2CtbSize       := Log2MinCbSize + sps_log2_diff_max_min_coding_block_size[sps_id];
+	        nbMaxCUsPerCTU	  := (1 << Log2CtbSize) >> Log2MinCbSize;
+		    PictSize[0]		  := sps_pic_width_in_luma_samples[sps_id];
+		    PictSize[1]		  := sps_pic_height_in_luma_samples[sps_id];
+	        PicWidthInCtbsY   := ( sps_pic_width_in_luma_samples[sps_id]  + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
+	        PicHeightInCtbsY  := ( sps_pic_height_in_luma_samples[sps_id] + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
+	        PicSizeInCtbsY    := PicWidthInCtbsY * PicHeightInCtbsY;
+
+//-- 2
+	        if num_tile_columns_minus1 >= (PICT_WIDTH / MIN_CTB_SIZE_Y) then
+	            println("Error read_SliceData.init : ColumnWidth : "+num_tile_columns_minus1+" >= "+(PICT_WIDTH / MIN_CTB_SIZE_Y));
+	        end
+	        if uniform_spacing_flag = 1 then
+	            foreach int i in 0 .. num_tile_columns_minus1 do
+	                colWidth[pps_id][ i ] := ((i + 1)*PicWidthInCtbsY) / (num_tile_columns_minus1+1) - (i*PicWidthInCtbsY) / (num_tile_columns_minus1+1);
+	                colTileInPix[ i + 1 ] :=   (colWidth[pps_id][ i ] << Log2CtbSize) + colTileInPix[ i ];
+	                if i = num_tile_columns_minus1 then
+	                    colTileInPix[ i + 1 ] := PictSize[0];
+	                end
+	            end
+	        else
+	            colWidth[pps_id][ num_tile_columns_minus1 ] := PicWidthInCtbsY;
+	            if num_tile_columns_minus1 = 0 then
+	            	colTileInPix[ 1 ] := PictSize[0];
+	            else
+		            foreach int i in 0 .. num_tile_columns_minus1 - 1 do
+		                colWidth[pps_id][ i ] := column_width[ i ] ;
+		                colWidth[pps_id][ num_tile_columns_minus1 ] := colWidth[pps_id][ num_tile_columns_minus1 ] - colWidth[pps_id][ i ];
+		                colTileInPix[ i + 1 ] :=   (colWidth[pps_id][ i ] << Log2CtbSize) + colTileInPix[ i ];
+		                if i = num_tile_columns_minus1 - 1 then
+		                    colTileInPix[ i + 2 ] := PictSize[0];
+		                end
+		            end
+		    	end
+	        end
+
+	        if num_tile_rows_minus1 >= (PICT_HEIGHT / MIN_CTB_SIZE_Y) then
+	            println("Error read_SliceData.init : RowHeight : "+num_tile_rows_minus1+" >= "+(PICT_HEIGHT / MIN_CTB_SIZE_Y));
+	        end
+	        if uniform_spacing_flag = 1 then
+	            foreach int i in 0 .. num_tile_rows_minus1 do
+	                rowHeight[pps_id][ i ] := ((i+1)*PicHeightInCtbsY) / (num_tile_rows_minus1+1) - (i*PicHeightInCtbsY) / (num_tile_rows_minus1+1);
+	                rowTileInPix[ i + 1 ] :=   (rowHeight[pps_id][ i ] << Log2CtbSize) + rowTileInPix[ i ];
+	                if i = num_tile_rows_minus1 then
+	                    rowTileInPix[ i + 1 ] := PictSize[1];
+	                end
+	            end
+	        else
+	            rowHeight[pps_id][ num_tile_rows_minus1 ] := PicHeightInCtbsY;
+	            if num_tile_rows_minus1 = 0 then
+	            	rowTileInPix[ 1 ] := PictSize[1];
+	            else 
+		            foreach int i in 0 .. num_tile_rows_minus1 - 1 do
+		                rowHeight[pps_id][ i ] := row_height[ i ];
+		                rowHeight[pps_id][ num_tile_rows_minus1 ] := rowHeight[pps_id][ num_tile_columns_minus1 ] - rowHeight[pps_id][ i ];
+		                rowTileInPix[ i + 1 ] :=   (rowHeight[pps_id][ i ] << Log2CtbSize) + rowTileInPix[ i ];
+		                if i = num_tile_rows_minus1 - 1 then
+		                    rowTileInPix[ i + 2 ] := PictSize[1];
+		                end
+		            end
+		    	end
+	        end
+// -- 3
+                foreach int i in 0 .. num_tile_rows_minus1 do
+                	foreach int j in 0 .. num_tile_columns_minus1 do
+                		nbCtbPerTile[count] := rowHeight[pps_id][i] * colWidth[pps_id][j];
+                		if count = 0 then
+                			nbCtbTile[count] := rowHeight[pps_id][i] * colWidth[pps_id][j];
+                		else
+                			nbCtbTile[count] := nbCtbTile[count - 1] + rowHeight[pps_id][i] * colWidth[pps_id][j];
+                		end
+                		count := count + 1;
+                	end
+                end
+                ColBd[0] := 0;
+                foreach int i in 0 .. num_tile_columns_minus1 do
+                	ColBd[i + 1] := ColBd[i] + colWidth[pps_id][i];
+                end
+                RowBd[0] := 0;
+                foreach int i in 0 .. num_tile_rows_minus1 do
+                	RowBd[i + 1] := RowBd[i] + rowHeight[pps_id][i];
+                end
+
+                /*********************************************************************
+                 * 6.5 Conversion process for coding tree block address
+                 * in coding tree block raster order to tile scan order
+                 ********************************************************************/
+                if PicHeightInCtbsY * PicWidthInCtbsY >= CTB_ADDR_TS_MAX then
+                        println("Error read_SliceData.init : CtbAddrTS : "+(PicHeightInCtbsY * PicWidthInCtbsY)+" >= "+CTB_ADDR_TS_MAX);
+                end
+                foreach int ctbAddrRS_v in 0 .. PicSizeInCtbsY - 1 do
+                        tbX   := ctbAddrRS_v mod PicWidthInCtbsY;
+                        tbY   := ctbAddrRS_v / PicWidthInCtbsY;
+                        tileX := 0;
+                        tileY := 0;
+                        foreach int i in 0 .. num_tile_columns_minus1 do
+                                if tbX < ColBd[i + 1] then
+                                        tileX := i;
+                                        i := num_tile_columns_minus1;
+                                end
+                        end
+                        foreach int j in 0 .. num_tile_rows_minus1 do
+                                if tbY < RowBd[j + 1] then
+                                        tileY := j;
+                                        j := num_tile_rows_minus1;
+                                end
+                        end
+                        val := 0;
+                        foreach int i in 0 .. tileX-1 do
+                                val := val + rowHeight[pps_id][ tileY ] * colWidth[pps_id][ i ];
+                        end
+                        foreach int j in 0 .. tileY-1 do
+                                val := val + PicWidthInCtbsY * rowHeight[pps_id][ j ];
+                        end
+                        val                                              := val + ( tbY - RowBd[tileY] ) * colWidth[pps_id][tileX] + tbX - ColBd[tileX];
+                        ctbAddrRStoTS[ ctbAddrRS_v ] := val;
+                        ctbAddrTStoRS[ val ]             := ctbAddrRS_v;
+                end
+
+                tIdx := 0;
+                foreach int j in 0 .. num_tile_rows_minus1 do
+                        foreach int i in 0 .. num_tile_columns_minus1 do
+                                foreach int y in RowBd[ j ] .. RowBd[ j + 1 ] - 1 do
+                                        foreach int x in ColBd[ i ] .. ColBd[ i + 1 ] - 1 do
+                                                TileId[ ctbAddrRStoTS[ y*PicWidthInCtbsY + x ] ] := tIdx;
+                                        end
+                                end
+                                tIdx := tIdx + 1;
+                        end
+                end
+
+	    end
+
 	    uint(size= 1) slice_temporal_mvp_enable_flag;
 	    uint(size= 1) slice_loop_filter_across_slices_enabled_flag;
-	
-	    int(size=32) poc;
 	    uint(size= 3) slice_type;
 	    uint(size=32) slice_segment_address;
 	    uint(size= 1) slice_sample_adaptive_offset_flag[4];
-	
+	     int(size=32) poc;
+
 		procedure compute_POC(int pic_order_cnt_lsb)
 		var
 		     int iPOClsb = pic_order_cnt_lsb,
@@ -2301,7 +2455,6 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	
 	    uint(size= 1) first_slice_segment_in_pic_flag := 1;
 	    uint(size= 1) dependent_slice_segment_flag;
-	    uint(size=16) pictSize[2];
 	    uint(size=16) num_long_term_sps := 0;
 	    uint(size=16) num_long_term_pics := 0;
 	    uint(size= 8) poc_lsb_lt[32];
@@ -2322,6 +2475,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        uint(size=32) res[1]
 	    do
 	    	load_fifo();
+//-- 1.2
 	        Log2MinCbSize     := sps_log2_min_coding_block_size[sps_id] ;
 	        Log2CtbSize       := Log2MinCbSize + sps_log2_diff_max_min_coding_block_size[sps_id];
 	        PicWidthInCtbsY   := ( sps_pic_width_in_luma_samples[sps_id]  + ( 1 << Log2CtbSize )-1 ) >> Log2CtbSize;
@@ -2364,9 +2518,9 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 		            slice_segment_address := 0;
 		            slice_addr := 0;
 		        end
-		        
-		        pictSize[0] := sps_pic_width_in_luma_samples[sps_id];
-		        pictSize[1] := sps_pic_height_in_luma_samples[sps_id];
+//-- 1.1
+		        PictSize[0] := sps_pic_width_in_luma_samples[sps_id];
+		        PictSize[1] := sps_pic_height_in_luma_samples[sps_id];
 		        
 		        if first_slice_segment_in_pic_flag = 1 then
 		            part_mode := PART_MODE_PICT;
@@ -2646,6 +2800,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    		slice_sample_adaptive_offset_flag[2] := 0;
 	        end
 	
+//-- 2
 	        //////////////////////////////////////////////////////////////////////////// copied from line 2412
 	        if num_tile_columns_minus1 >= (PICT_WIDTH / MIN_CTB_SIZE_Y) then
 	            println("Error read_SliceData.init : ColumnWidth : "+num_tile_columns_minus1+" >= "+(PICT_WIDTH / MIN_CTB_SIZE_Y));
@@ -2655,20 +2810,20 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	                colWidth[pps_id][ i ] := ((i + 1)*PicWidthInCtbsY) / (num_tile_columns_minus1+1) - (i*PicWidthInCtbsY) / (num_tile_columns_minus1+1);
 	                colTileInPix[ i + 1 ] :=   (colWidth[pps_id][ i ] << Log2CtbSize) + colTileInPix[ i ];
 	                if i = num_tile_columns_minus1 then
-	                    colTileInPix[ i + 1 ] := pictSize [0];
+	                    colTileInPix[ i + 1 ] := PictSize[0];
 	                end
 	            end
 	        else
 	            colWidth[pps_id][ num_tile_columns_minus1 ] := PicWidthInCtbsY;
 	            if num_tile_columns_minus1 = 0 then
-	            	colTileInPix[ 1 ] := pictSize [0];
+	            	colTileInPix[ 1 ] := PictSize[0];
 	            else
 		            foreach int i in 0 .. num_tile_columns_minus1 - 1 do
 		                colWidth[pps_id][ i ] := column_width[ i ] ;
 		                colWidth[pps_id][ num_tile_columns_minus1 ] := colWidth[pps_id][ num_tile_columns_minus1 ] - colWidth[pps_id][ i ];
 		                colTileInPix[ i + 1 ] :=   (colWidth[pps_id][ i ] << Log2CtbSize) + colTileInPix[ i ];
 		                if i = num_tile_columns_minus1 - 1 then
-		                    colTileInPix[ i + 2 ] := pictSize [0];
+		                    colTileInPix[ i + 2 ] := PictSize[0];
 		                end
 		            end
 		    	end
@@ -2682,20 +2837,20 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	                rowHeight[pps_id][ i ] := ((i+1)*PicHeightInCtbsY) / (num_tile_rows_minus1+1) - (i*PicHeightInCtbsY) / (num_tile_rows_minus1+1);
 	                rowTileInPix[ i + 1 ] :=   (rowHeight[pps_id][ i ] << Log2CtbSize) + rowTileInPix[ i ];
 	                if i = num_tile_rows_minus1 then
-	                    rowTileInPix[ i + 1 ] := pictSize [1];
+	                    rowTileInPix[ i + 1 ] := PictSize[1];
 	                end
 	            end
 	        else
 	            rowHeight[pps_id][ num_tile_rows_minus1 ] := PicHeightInCtbsY;
 	            if num_tile_rows_minus1 = 0 then
-	            	rowTileInPix[ 1 ] := pictSize [1];
+	            	rowTileInPix[ 1 ] := PictSize[1];
 	            else 
 		            foreach int i in 0 .. num_tile_rows_minus1 - 1 do
 		                rowHeight[pps_id][ i ] := row_height[ i ];
 		                rowHeight[pps_id][ num_tile_rows_minus1 ] := rowHeight[pps_id][ num_tile_columns_minus1 ] - rowHeight[pps_id][ i ];
 		                rowTileInPix[ i + 1 ] :=   (rowHeight[pps_id][ i ] << Log2CtbSize) + rowTileInPix[ i ];
 		                if i = num_tile_rows_minus1 - 1 then
-		                    rowTileInPix[ i + 2 ] := pictSize [1];
+		                    rowTileInPix[ i + 2 ] := PictSize[1];
 		                end
 		            end
 		    	end
@@ -3509,7 +3664,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         								SaoSe:[slice_sample_adaptive_offset_flag[0] + (slice_sample_adaptive_offset_flag[1]<<1)], TilesCoord:[num_entry_offsets],
         								LFAcrossSlcTile:[slice_loop_filter_across_slices_enabled_flag + (pps_loop_filter_across_tile_enabled_flag[pps_id]<<1)],
         								ReorderPics:[no_output_of_prior_pics, pic_output_flag, num_reorder_pics, max_dec_pic_buff, max_latency_pict, currentTID, decoderTID, log2_max_pic_order_cnt_lsb],
-        								PictSize:[pictSize] repeat 2, DispCoord:[0, pictSize[0]-1, 0, pictSize[1]-1],
+        								PictSize:[PictSize] repeat 2, DispCoord:[0, PictSize[0]-1, 0, PictSize[1]-1],
         								BitDepth:[sps_bit_depth_luma[sps_id], sps_bit_depth_chroma[sps_id]], LcuSize:[Log2CtbSize, Log2MinCbSize]
         guard
                 sliceData_idx = 1,
@@ -3545,8 +3700,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 prev_pps_id := pps_id;
                 first_qp_group := 1;
                 Log2MinTrafoSize := sps_log2_min_transform_block_size[sps_id];
-                Log2MaxTrafoSize := Log2MinTrafoSize +
-                sps_log2_diff_max_min_transform_block_size[sps_id];
+                Log2MaxTrafoSize := Log2MinTrafoSize + sps_log2_diff_max_min_transform_block_size[sps_id];
+//-- 3
                 foreach int i in 0 .. num_tile_rows_minus1 do
                 	foreach int j in 0 .. num_tile_columns_minus1 do
                 		nbCtbPerTile[count] := rowHeight[pps_id][i] * colWidth[pps_id][j];
@@ -3635,7 +3790,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	            nbTokensPerSH[3] := nbTokensPerSH[3] + 2;    // LcuSize
         end
 
-        read_SliceData.sendInfoSlice: action ==> TilesCoord:[0 ,0 ,pictSize[0] ,pictSize[1]]
+        read_SliceData.sendInfoSlice: action ==> TilesCoord:[0 ,0 ,PictSize[0] ,PictSize[1]]
         guard
                 sliceData_idx = 21
         do
@@ -3654,8 +3809,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         var
                 uint x0 := 0,
                 uint y0 := 0,
-                uint x1 := pictSize[0],
-                uint y1 := pictSize[1]
+                uint x1 := PictSize[0],
+                uint y1 := PictSize[1]
         do
                 //colTileInPix[0] :=0;
                 x0 := colTileInPix[countCol];
