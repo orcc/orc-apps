@@ -2466,7 +2466,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    	end
 
  		    parseSliceHeaderSaoParams();
-        	parseSliceHeaderRefPicLists();
+        	parseSliceHeaderRefPicListsIndices();
 
             se_idx := 10;
             cnt_i := 0;
@@ -2708,15 +2708,28 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         uint(size= 8) ref_pic_list_modification_flag_lx[2] := [0,0];
         uint(size=4) list_entry_lx [2][32];
 
-        procedure parseSliceHeaderRefPicLists()
+        uint(size=16) MaxNumMergeCand;
+        uint(size= 1) cabac_init_flag;
+        uint(size= 1) collocated_from_lX := 0;
+        uint(size= 3) collocated_ref_idx := 0;
+        uint(size= 2) weighted_pred_flag := 0;
+                
+        procedure parseSliceHeaderRefPicListsIndices()
         var
 	        uint(size=32) res[1],
-	        int NumPocTotalCurr := 0
+	        int NumPocTotalCurr := 0,
+	        uint(size= 1) collocated_from_l0_flag := 1
         begin
             load_fifo();
 			num_ref_idx_l0_active    := 0;
             num_ref_idx_l1_active    := 0;
             mvd_l1_zero_flag         := 0;
+
+			cabac_init_flag		:= 0;
+			collocated_from_lX	:= 0;
+			collocated_ref_idx	:= 0;
+            weighted_pred_flag	:= 0;
+            
             if slice_type = P_SLICE or slice_type = B_SLICE then
                 vld_u_name(1, fifoContent, fifoIdx, res, "num_ref_idx_active_override_flag					");
                 if res[0] = 1 then
@@ -2776,10 +2789,33 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                         end
                     end
                 end
+
                 if slice_type = B_SLICE then
                     vld_u_name(1, fifoContent, fifoIdx, res, "mvd_l1_zero_flag								");
                     mvd_l1_zero_flag := res[0];
                	end
+
+				load_fifo();
+				if pps_cabac_init_present_flag[pps_id] = 1 then
+					vld_u_name(1, fifoContent, fifoIdx, res, "cabac_init_flag								");
+					cabac_init_flag := res[0];
+				end
+				if slice_temporal_mvp_enable_flag = 1 then
+					res[0] := 1;
+					if( slice_type = B_SLICE ) then
+						vld_u_name(1, fifoContent, fifoIdx, res, "collocated_from_l0_flag					");
+						collocated_from_l0_flag := res[0];
+						collocated_from_lX := res[0];
+					end
+				    if ( collocated_from_l0_flag = 1 and num_ref_idx_l0_active > 1 ) or 
+				       ( collocated_from_l0_flag = 0 and num_ref_idx_l1_active > 1 ) then
+						vld_ue_name(fifoContent, fifoIdx, res, "collocated_ref_idx							");
+						collocated_ref_idx := res[0];
+					end
+				end
+				if pps_weighted_pred_flag[pps_id] = 1 or pps_weighted_bipred_flag[pps_id] = 1 then
+					weighted_pred_flag := 1;
+				end
             end
         end
         /**************************************************************************
@@ -2969,53 +3005,16 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         /**************************************************************************
          * read_SliceHeader.se_idx_3
          *************************************************************************/
-         int(size= 8) slice_qp;
-         int(size= 8) slice_chroma_qp_offset[3];
-        uint(size=16) MaxNumMergeCand;
-        uint(size= 1) cabac_init_flag;
-        uint(size= 1) collocated_from_lX := 0;
-        uint(size= 3) collocated_ref_idx := 0;
-
         read_SliceHeader.se_idx_3 : action ==> WeightedPred:[weighted_pred_flag]
         guard
                 se_idx = 3
-        var
-                uint(size=32) res[1],
-                uint(size= 2) weighted_pred_flag := 0,
-                uint(size= 1) collocated_from_l0_flag := 1
         do
-        		load_fifo();
-				collocated_from_lX := 0;
-        		collocated_ref_idx := 0;
-                cabac_init_flag := 0;
-                se_idx := 5;
-
-                if slice_type = P_SLICE or slice_type = B_SLICE then
-                        if pps_cabac_init_present_flag[pps_id] = 1      then
-                                vld_u_name(1, fifoContent, fifoIdx, res, "cabac_init_flag                         ");
-                                cabac_init_flag := res[0];
-                        end
-                        if slice_temporal_mvp_enable_flag = 1 then
-                                res[0] := 1;
-                                if( slice_type = B_SLICE ) then
-                                        vld_u_name(1, fifoContent, fifoIdx, res, "collocated_from_l0_flag                 ");
-                                        collocated_from_l0_flag := res[0];
-                                        collocated_from_lX := res[0];
-                                end
-                                if ( collocated_from_l0_flag = 1 and num_ref_idx_l0_active > 1 ) or ( collocated_from_l0_flag = 0 and num_ref_idx_l1_active > 1 ) then
-                                        vld_ue_name(fifoContent, fifoIdx, res, "collocated_ref_idx                      ");
-                                        collocated_ref_idx := res[0];
-                                end
-                        end
-                        if pps_weighted_pred_flag[pps_id] = 1 or pps_weighted_bipred_flag[pps_id] = 1 then
-                                weighted_pred_flag := 1;
-                        end
-
-                        if weighted_pred_flag != 0 then
-                                se_idx := 4;
-                        end
+                if weighted_pred_flag != 0 then
+					se_idx := 4;
+                else
+                	se_idx := 5;
                 end
-                
+
 		        // Tokens Count
 		        nbTokensPerSH[23] := nbTokensPerSH[23] + 1; // WeightedPred
         end
@@ -3333,11 +3332,14 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 				nbTokensPerSH[23] := nbTokensPerSH[23] + 3;  // WeightedPred
         end  
 		
-		uint(size=16) qp_bd_offset_luma;
-		uint(size=16) qp_bd_offset_chroma;
         /**************************************************************************
          * read_SliceHeader.se_idx_5
          *************************************************************************/
+         int(size= 8) slice_qp;
+         int(size= 8) slice_chroma_qp_offset[3];
+		uint(size=16) qp_bd_offset_luma;
+		uint(size=16) qp_bd_offset_chroma;
+
         read_SliceHeader.se_idx_5 : action ==> DBFDisable:[slice_disable_deblocking_filter_flag !=0],
                 DbfSe:[betaOff, tcOff, pps_chroma_qp_offset[pps_id][1] + slice_chroma_qp_offset[1], pps_chroma_qp_offset[pps_id][2] + slice_chroma_qp_offset[2]], 
                 BitDepth:[sps_bit_depth_luma[sps_id], sps_bit_depth_chroma[sps_id]], LcuSize:[Log2CtbSize, Log2MinCbSize]
