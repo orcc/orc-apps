@@ -1700,7 +1700,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        
 	    	foreach int cnt_i in 0 .. (sps_num_short_term_ref_pic_sets[sps_id]-1) do
 	    		load_fifo();
-				parseShortTermRefPicSet(sps_id, cnt_i, sps_num_short_term_ref_pic_sets[sps_id], fifoContent, fifoIdx, pcRPS);
+				parseShortTermRefPicSet(cnt_i);
 			end
 			
 	        load_fifo();
@@ -2419,8 +2419,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        uint(size= 8) numbits := 0
 	    do
 			load_fifo();
-			foreach int i in 0 .. pps_num_extra_slice_header_bits[pps_id] - 1 do
-	            vld_u_name(1, fifoContent, fifoIdx, res, "slice_reserved_undetermined_flag[i]						");
+			foreach int i in 0 .. (pps_num_extra_slice_header_bits[pps_id] - 1) do
+	            vld_u_name(1, fifoContent, fifoIdx, res, "slice_reserved_flag[i]									");
 	        end
 	        load_fifo();
 	        vld_ue_name(fifoContent, fifoIdx, res, "slice_type														");
@@ -2440,10 +2440,9 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        	poc := 0;
 	        else
 	        	load_fifo();
-	        	vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifoContent, fifoIdx, res, "pic_order_cnt_lsb");
+	        	vld_u_name( sps_log2_max_pic_order_cnt_lsb_minus4[sps_id] + 4, fifoContent, fifoIdx, res, "slice_pic_order_cnt_lsb");
 	            pic_order_cnt_lsb := res[0];
-	            //compute the number of POC
-	            compute_POC(res[0]);
+	            compute_POC(res[0]);	//compute the number of POC
 	            vld_u_name(1, fifoContent, fifoIdx, res, "short_term_ref_pic_set_sps_flag							");
 	            if res[0] != 0 then
 	                while ((1 << numbits) < sps_num_short_term_ref_pic_sets[sps_id]) do
@@ -2455,15 +2454,15 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	                	vld_u_name(   numbits, fifoContent, fifoIdx, res, "short_term_ref_pic_set_idx				");
 	           		end
 	                pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]] := [pcRPS[sps_id][res[0]][i] : for int i in 0 .. PC_RPS_STRUCT_SIZE - 1];
-	    			readSliceHeaderLongtermPics();
+	    			parseSliceHeaderLongtermPics();
 	       		else
-	    			readSliceHeaderShortTermPics();
-	    			readSliceHeaderLongtermPics();
+	    			parseShortTermRefPicSet(sps_num_short_term_ref_pic_sets[sps_id]);
+	    			parseSliceHeaderLongtermPics();
 	    		end
 	    	end
 
- 		    readSliceHeaderSaoParams();	    	
-        	readSliceHeaderRefPicLists();
+ 		    parseSliceHeaderSaoParams();
+        	parseSliceHeaderRefPicLists();
 
             se_idx := 10;
             cnt_i := 0;
@@ -2475,7 +2474,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
             nbTokensPerSH[3] := nbTokensPerSH[3] + 2;   // LcuSize
 		end
 		
-		procedure readSliceHeaderShortTermPics()
+		procedure parseShortTermRefPicSet(uint(size=8) idxRps)
 	    var
 			uint(size=32) res[1],
 			uint(size= 1) inter_rps_flag := 0,
@@ -2491,17 +2490,20 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 			 int(size=32) prev := 0
    		begin
    			load_fifo();
-	 		if (sps_num_short_term_ref_pic_sets[sps_id] != 0) then
+	 		if idxRps != 0 then
 	 			vld_u_name(1, fifoContent, fifoIdx, res, "inter_ref_pic_set_prediction_flag				"); 
 	 			inter_rps_flag := res[0];
 	 		end
-			
+
 			if inter_rps_flag = 1 then
-	  			vld_ue_name(fifoContent, fifoIdx, res, "delta_idx_minus1                        		");
-	  			delta_idx := res[0] + 1;
-	    		rIdx := sps_num_short_term_ref_pic_sets[sps_id] - delta_idx;
+				if idxRps = sps_num_short_term_ref_pic_sets[sps_id] then
+		  			vld_ue_name(fifoContent, fifoIdx, res, "delta_idx_minus1                        	");
+		  			delta_idx := res[0] + 1;
+				end
+	    		rIdx := idxRps - delta_idx;
 	    		vld_u_name(1, fifoContent, fifoIdx, res, "delta_rps_sign								");
 	    		delta_rps_sign	:= res[0];
+	    		load_fifo();
 	    		vld_ue_name(fifoContent, fifoIdx, res, "abs_delta_rps_minus1							");
 	    		abs_delta_rps := res[0] + 1;
 	    		deltaRPS := (1 - (delta_rps_sign<<1)) * (abs_delta_rps);
@@ -2518,8 +2520,8 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	    				else
 	    					deltaPOC := deltaRPS;
 						end
-						pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][DELTAPOC+k] := deltaPOC;
-						pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+k] := if res[0] = 1 then 1 else 0 end;
+						pcRPS[sps_id][idxRps][DELTAPOC+k] := deltaPOC;
+						pcRPS[sps_id][idxRps][USED+k] := if res[0] = 1 then 1 else 0 end;
 				        if deltaPOC < 0 then
 	          				k0 := k0 + 1;
 	        			else 
@@ -2528,46 +2530,45 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 	        			k := k + 1;
 	    			end
 	    		end
-	    		pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]          := k;
-	    		pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] := k0;
-				pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_POSITIVE_PICS] := k1;
-				sortDeltaPOC(sps_id, sps_num_short_term_ref_pic_sets[sps_id], pcRPS);
+	    		pcRPS[sps_id][idxRps][NUM_PICS]          := k;
+	    		pcRPS[sps_id][idxRps][NUM_NEGATIVE_PICS] := k0;
+				pcRPS[sps_id][idxRps][NUM_POSITIVE_PICS] := k1;
+				sortDeltaPOC(sps_id, idxRps, pcRPS);
 	  		else
 	    		vld_ue_name(fifoContent, fifoIdx, res, "num_negative_pics                       		");
-	    		pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] := res[0];
+	    		pcRPS[sps_id][idxRps][NUM_NEGATIVE_PICS] := res[0];
 	    		vld_ue_name(fifoContent, fifoIdx, res, "num_positive_pics                       		");
-	    		pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_POSITIVE_PICS] := res[0];
-	    		pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS] := pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] + res[0];
+	    		pcRPS[sps_id][idxRps][NUM_POSITIVE_PICS] := res[0];
+	    		pcRPS[sps_id][idxRps][NUM_PICS] := pcRPS[sps_id][idxRps][NUM_NEGATIVE_PICS] + res[0];
 
-	    		if pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] != 0 then
+	    		if pcRPS[sps_id][idxRps][NUM_NEGATIVE_PICS] != 0 then
 	    			prev := 0;
-	    			foreach int cnt_i in 0 .. (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]-1) do
+	    			foreach int i in 0 .. (pcRPS[sps_id][idxRps][NUM_NEGATIVE_PICS]-1) do
 						load_fifo();
 						vld_ue_name(fifoContent, fifoIdx, res, "delta_poc_s0_minus1						");
 						prev := prev-res[0]-1;
-						pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][DELTAPOC+cnt_i] := prev;
+						pcRPS[sps_id][idxRps][DELTAPOC+i] := prev;
 						vld_u_name(1, fifoContent, fifoIdx, res, "used_by_curr_pic_s0_flag				");
-						pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+cnt_i] := res[0];
+						pcRPS[sps_id][idxRps][USED+i] := res[0];
 	    			end
 	    			
 	    		end
 
-				if pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_POSITIVE_PICS] != 0 then
+				if pcRPS[sps_id][idxRps][NUM_POSITIVE_PICS] != 0 then
 					prev := 0;
-    				foreach int cnt_i in pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] .. 
-    								(pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS] - 1) do
+    				foreach int i in pcRPS[sps_id][idxRps][NUM_NEGATIVE_PICS] .. (pcRPS[sps_id][idxRps][NUM_PICS] - 1) do
 						load_fifo();
 						vld_ue_name(fifoContent, fifoIdx, res, "delta_poc_s1_minus1						");
 						prev := prev+res[0]+1;
-						pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][DELTAPOC+cnt_i] := prev;
+						pcRPS[sps_id][idxRps][DELTAPOC+i] := prev;
 						vld_u_name(1, fifoContent, fifoIdx, res, "used_by_curr_pic_s1_flag				");
-						pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+cnt_i] := res[0];
+						pcRPS[sps_id][idxRps][USED+i] := res[0];
     				end
 				end
 	    	end
 	    end
 
-		procedure readSliceHeaderLongtermPics()
+		procedure parseSliceHeaderLongtermPics()
 		var
 			uint(size=32) res[1],
 			uint(size= 8) lt_idx_sps := 0,
@@ -2619,14 +2620,14 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
 			end
 
 			if sps_temporal_mvp_enable_flag[sps_id] = 1 then
-				vld_u_name(1, fifoContent, fifoIdx, res, "slice_temporal_mvp_enable_flag          ");
+				vld_u_name(1, fifoContent, fifoIdx, res, "slice_temporal_mvp_enable_flag			");
 				slice_temporal_mvp_enable_flag := res[0];
 			else
 				slice_temporal_mvp_enable_flag := 0;
 			end
 		end
 		
-		procedure readSliceHeaderSaoParams()
+		procedure parseSliceHeaderSaoParams()
 		var
 			uint(size=32) res[1],
 			uint(size=16) column_width[PICT_WIDTH / MIN_CTB_SIZE_Y]= [pps_column_width[pps_id][ i ] : for int i in 0 .. (PICT_WIDTH / MIN_CTB_SIZE_Y)-1],
@@ -2710,7 +2711,7 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
         uint(size= 8) ref_pic_list_modification_flag_lx[2] := [0,0];
         uint(size=4) list_entry_lx [2][32];
 
-        procedure readSliceHeaderRefPicLists()
+        procedure parseSliceHeaderRefPicLists()
         var
 	        uint(size=32) res[1],
 	        int NumPocTotalCurr := 0
@@ -2724,12 +2725,12 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 if slice_type = B_SLICE then
                         num_ref_idx_l1_active := pps_num_ref_idx_l1_default_active_minus1[pps_id] + 1;
                 end
-                vld_u_name(1, fifoContent, fifoIdx, res, "num_ref_idx_active_override_flag        ");
+                vld_u_name(1, fifoContent, fifoIdx, res, "num_ref_idx_active_override_flag					");
                 if res[0] = 1 then
-                    vld_ue_name(fifoContent, fifoIdx, res, "num_ref_idx_l0_active_minus1            ");
+                    vld_ue_name(fifoContent, fifoIdx, res, "num_ref_idx_l0_active_minus1					");
                     num_ref_idx_l0_active := res[0] + 1;
                     if slice_type = B_SLICE then
-                        vld_ue_name(fifoContent, fifoIdx, res, "num_ref_idx_l1_active_minus1            ");
+                        vld_ue_name(fifoContent, fifoIdx, res, "num_ref_idx_l1_active_minus1				");
                         num_ref_idx_l1_active := res[0] + 1;
                     end
                 end
@@ -2737,49 +2738,47 @@ actor Algo_Parser (uint(size=8) PARSER_ID = 0, uint(size=8) TOTAL_PARSERS = 1)
                 ref_pic_list_modification_flag_lx[0] := 0;
                 ref_pic_list_modification_flag_lx[1] := 0;
 
-                foreach int i in 0 ..
-                pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]- 1 do
-                	if
-                	(pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED + i] = 1) then
+                foreach int i in 0 .. (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS]- 1) do
+                	if (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED + i] = 1) then
                 		NumPocTotalCurr := NumPocTotalCurr + 1;
                 	end
                 end
 
-                foreach int i in pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] .. pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]-1 do
+                foreach int i in pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_NEGATIVE_PICS] .. (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][NUM_PICS]-1) do
                     if (pcRPS[sps_id][sps_num_short_term_ref_pic_sets[sps_id]][USED+i] = 1) then
                         NumPocTotalCurr := NumPocTotalCurr + 1;
                     end
                 end
 
-                foreach int i in 0 .. num_long_term_sps + num_long_term_pics - 1 do
-                    if ( UsedByCurrPicLt[i] = 1) then
+                foreach int i in 0 .. (num_long_term_sps + num_long_term_pics - 1) do
+                    if (UsedByCurrPicLt[i] = 1) then
                         NumPocTotalCurr := NumPocTotalCurr + 1;
                     end
                 end
 
                 if pps_lists_modification_present_flag[pps_id] = 1 and NumPocTotalCurr > 1 then
-                    vld_u_name(1, fifoContent, fifoIdx, res, "ref_pic_list_modification_flag_l0       ");
+                    vld_u_name(1, fifoContent, fifoIdx, res, "ref_pic_list_modification_flag_l0				");
                     ref_pic_list_modification_flag_lx[0] := res[0];
                     if ref_pic_list_modification_flag_lx[0] = 1 then
                         foreach int i in 0 .. num_ref_idx_l0_active - 1 do
-                            vld_u_name(log2((NumPocTotalCurr-1)<<1) , fifoContent, fifoIdx, res, "list_entry_lx                           ");
+                            vld_u_name(log2((NumPocTotalCurr-1)<<1) , fifoContent, fifoIdx, res, "list_entry_lx");
                             list_entry_lx[0][i] := res[0];
                         end
                     end
 
                     if slice_type = B_SLICE then
-                        vld_u_name(1, fifoContent, fifoIdx, res, "ref_pic_list_modification_flag_l1       ");
+                        vld_u_name(1, fifoContent, fifoIdx, res, "ref_pic_list_modification_flag_l1			");
                         ref_pic_list_modification_flag_lx[1] := res[0];
                         if ref_pic_list_modification_flag_lx[1] = 1 then
                             foreach int i in 0 .. num_ref_idx_l1_active - 1 do
-                                vld_u_name(log2((NumPocTotalCurr-1)<<1) , fifoContent, fifoIdx, res, "list_entry_lx                           ");
+                                vld_u_name(log2((NumPocTotalCurr-1)<<1) , fifoContent, fifoIdx, res, "list_entry_lx");
                                 list_entry_lx[1][i] := res[0];
                             end
                         end
                     end
                 end
                 if slice_type = B_SLICE then
-                    vld_u_name(1, fifoContent, fifoIdx, res, "mvd_l1_zero_flag                        ");
+                    vld_u_name(1, fifoContent, fifoIdx, res, "mvd_l1_zero_flag								");
                     mvd_l1_zero_flag := res[0];
                	end
             end
