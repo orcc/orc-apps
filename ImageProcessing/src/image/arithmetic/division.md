@@ -9,7 +9,7 @@ This image division operator takes as two identically sized images as input and 
 * **uint(size=8) Gout**: The stream to write translated values out to.
 
 ## Usage ##
-This actor reads `x` from `Gin1` and `y` from `Gin2`, and outputs the result of `x * y` to the output.
+This actor reads `x` from `Gin1` and `y` from `Gin2`, and outputs the result of `x / y` to the output.
 
 ## Notes ##
 Some divide by 0 error checking.
