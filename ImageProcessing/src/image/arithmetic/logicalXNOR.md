@@ -9,7 +9,7 @@ This operator takes two images as input, and outputs a third image whose pixel v
 * **uint(size=8) Gout**: The stream to write translated values out to.
 
 ## Usage ##
-This actor reads `x` from `Gin1` and `y` from `Gin2`, and outputs the result of `x ^ y` to the output.
+This actor reads `x` from `Gin1` and `y` from `Gin2`, and outputs the result of `~(x ^ y)` to the output.
 
 ## Notes ##
 None.
