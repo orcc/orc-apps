@@ -18,7 +18,7 @@ Orc-apps is a library of open-source applications described in a dynamic dataflo
 - DigitalFiltering: Descriptions of a 4-tap FIR filter and a 1-tap IIR filter.
 - JPEG: Descriptions of the JPEG decoder and encoder.
 - Jpeg2000: Description of a JPEG2000 decoder.
-- RIP: Reconfigurable Image Processing, only contains a Sobel filter at this point.
+- ImageProcessing: Image processing operations.
 - SmartMotion: Implementation of a motion estimation based on diamond search algorithm.
 - Stereo: Implementation of a stereo matching algorithm.
 - Zigbee: Implementation of the ZigBee protocol.
