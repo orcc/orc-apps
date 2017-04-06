@@ -1,0 +1,158 @@
+/*
+ * Copyright (c) 2017, Heriot-Watt University, Edinburgh
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/*
+ * Author: Ross Brunton <bruntonross@gmail.com>
+ * Date: 02.03.2017
+ * See Blocks.md for documentation.
+ */
+
+package image.hog_person_detector;
+
+import image.constants.constants.*;
+import image.hog_person_detector.constants.*;
+
+actor Blocks() uint(size=16) Gin ==> uint(size=16) Gout :
+	uint(size=8) WINDOW_SIZE = CELL_WIDTH;
+	uint(size=32) ROWS = FRAME_HEIGHT / WINDOW_SIZE;
+	uint(size=32) COLS = FRAME_WIDTH / WINDOW_SIZE;
+	uint(size=16) above[COLS][HIST_LENGTH];
+	uint(size=16) above_read[COLS][HIST_LENGTH];
+	uint(size=16) last[HIST_LENGTH];
+	uint(size=16) now[HIST_LENGTH];
+	int(size=32) col := 0;
+	uint(size=32) row := ROWS;
+	uint(size=32) op := 0;
+	uint(size=32) o := 0;
+
+	reset: action ==>
+	guard row = ROWS
+	do
+		row := 0;
+		col := 0;
+		op := 0;
+	end
+
+	write: action ==> Gout:[o]
+	var
+		uint(size=32) slot,
+		uint(size=32) offset
+	do
+		slot := op / HIST_LENGTH;
+		offset := op mod HIST_LENGTH;
+
+		if slot = 0 then
+			// Top left
+			o := above[col - 1][offset];
+		end
+		if slot = 1 then
+			// Top right
+			o := above[col][offset];
+		end
+		if slot = 2 then
+			// Bottom left
+			o := last[offset];
+		end
+		if slot = 3 then
+			// Bottom right
+			o := now[offset];
+		end
+
+		op := op + 1;
+	end
+
+	wtor: action ==>
+	guard op = HIST_LENGTH * 4
+	end
+
+	skip: action ==>
+	guard row = 0 || col = 0
+	end
+
+	read: action Gin:[x] repeat 9 ==>
+	var
+		uint(size=8) i := 0,
+		uint(size=8) j := 0
+	do
+		// Move "Now" to the previous histogram
+		while i < HIST_LENGTH do
+			last[i] := now[i];
+			i := i + 1;
+		end
+
+		// And update the "now" histogram
+		i := 0;
+		while i < HIST_LENGTH do
+			now[i] := x[i];
+			i := i + 1;
+		end
+
+		// Set the cell in the row above to the correct value
+		i := 0;
+		while i < HIST_LENGTH do
+			   above_read[col][i] := now[i];
+			   i := i + 1;
+		   end
+
+		col := col + 1;
+		// If we need to go to the next line...
+		if col > COLS then
+			col := 0;
+			row := row + 1;
+
+			// above = above_read
+			i := 0;
+			while i < ROWS do
+				j := 0;
+				while j < HIST_LENGTH do
+					above[i][j] := above_read[i][j];
+					j := j + 1;
+				end
+
+				i := i + 1;
+			end
+		end
+
+		op := 0;
+	end
+
+	schedule fsm write:
+		write (write) --> write;
+		write (reset) --> write;
+		write (skip) --> read;
+		write (wtor) --> read;
+		read (read) --> write;
+	end
+
+	priority
+		wtor > write;
+		skip > write;
+		reset > skip;
+	end
+end

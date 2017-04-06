@@ -1,0 +1,185 @@
+/*
+ * Copyright (c) 2017, Heriot-Watt University, Edinburgh
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/*
+ * Author: Ross Brunton <bruntonross@gmail.com>
+ * Date: 23.02.2017
+ * See Gradient.md for documentation.
+ */
+
+package image.hog_person_detector;
+
+import image.constants.constants.*;
+import image.hog_person_detector.constants.*;
+
+actor Gradient() uint(size=8) Gin ==> uint(size=8) Angle, uint(size=8) Magnitude :
+	uint(size=8) WIDTH = CELL_WIDTH;
+	uint(size=8) HEIGHT = CELL_HEIGHT;
+	uint(size=32) SIZE = WIDTH * HEIGHT;
+	uint(size=8) buff[SIZE];
+	uint(size=32) rp := 0;
+	uint(size=32) op := 0;
+	uint(size=8) angle := 0;
+	uint(size=8) mag := 0;
+	int(size=32) out := 0;
+
+	// These are multiplied by 100
+	uint(size=16) tan_lookup[180] = [
+		0, 2, 3, 5, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 25, 27, 29, 31, 32, 34, 36, 38, 40, 42, 45, 47, 49, 51, 53,
+		55, 58, 60, 62, 65, 67, 70, 73, 75, 78, 81, 84, 87, 90, 93, 97, 100, 104, 107, 111, 115, 119, 123, 128, 133,
+		138, 143, 148, 154, 160, 166, 173, 180, 188, 196, 205, 214, 225, 236, 248, 261, 275, 290, 308, 327, 349, 373,
+		401, 433, 470, 514, 567, 631, 712, 814, 951, 1143, 1430, 1908, 2864, 5729, 0, -5729, -2864,
+		1908, -1430, -1143, -951, -814, -712, -631, -567, -514, -470, -433, -401, -373, -349, -327, -308, -290, -275,
+		-261, -248, -236, -225, -214, -205, -196, -188, -180, -173, -166, -160, -154, -148, -143, -138, -133, -128,
+		-123, -119, -115, -111, -107, -104, -100, -97, -93, -90, -87, -84, -81, -78, -75, -73, -70, -67, -65, -62, -60,
+		-58, -55, -53, -51, -49, -47, -45, -42, -40, -38, -36, -34, -32, -31, -29, -27, -25, -23, -21, -19, -18, -16,
+		-14, -12, -11, -9, -7, -5, -3, -2
+	];
+
+	function Get (int(size=8) x, int(size=8) y, int(size=8) ox, int(size=8) oy) --> uint(size=16):
+		if x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT then
+			buff[oy * WIDTH + ox]
+		else
+			buff[y * WIDTH + x]
+		end
+	end
+
+	function Abs(int(size=16) val) --> uint(size=16):
+		if val < 0 then -val else val end
+	end
+
+	// Proceducre shamelessly copied from segmentation.edgeDetection.Sobel;
+	procedure Sqrt(int num)
+	var
+		int op := num,
+		int one := (1 << 14), // The second-to-top bit is set: 1L<<30 for long
+		int lres := 0
+	begin
+		// "one" starts at the highest power of four <= the argument.
+		while (one > op) do
+		   one := (one >> 2);
+		end
+
+		while (one != 0) do
+		  if (op >= lres + one) then
+			op := op - (lres + one);
+			lres := lres + (one << 1);
+		  end
+		  lres := (lres >> 1);
+		  one := (one >> 2);
+		end
+
+		out := lres;
+	end
+
+	procedure Arctan(int(size=16) o, int(size=16)a)
+	var
+		uint(size=8) i,
+		int(size=32) factor,
+		int(size=32) delta,
+		uint(size=8) best,
+		int(size=32) bestDelta,
+		bool invert
+	begin
+		i := 0;
+		if a != 0 then
+			factor := (o * 100) / a;
+			invert := factor < 0;
+			factor := Abs(factor);
+			bestDelta := 10000;
+
+			while i < 180 do
+				if i != 90 && bestDelta != 0 then
+					delta := Abs(factor - tan_lookup[i]);
+					if delta < bestDelta then
+						best := i;
+						bestDelta := delta;
+					end
+				end
+				i := i + 1;
+			end
+
+			if invert then
+				out := -best;
+			else
+				out := best;
+			end
+		else
+			if o < 0 then
+				out := -90;
+			else
+				out := 90;
+			end
+		end
+	end
+
+	reset: action ==>
+	guard rp = SIZE && op = SIZE
+	do
+		rp := 0;
+		op := 0;
+	end
+
+	read: action Gin:[val] ==>
+	guard rp < SIZE
+	do
+		buff[rp] := val;
+		rp := rp + 1;
+	end
+
+	write: action ==> Angle:[angle], Magnitude:[mag]
+	guard rp = SIZE && op < SIZE
+	var
+		int(size=8) x,
+		int(size=8) y,
+		int(size=16) dx,
+		int(size=16) dy
+	do
+		x := op mod WIDTH;
+		y := op / WIDTH;
+
+		dy := Get(x, y - 1, x, y) - Get(x, y + 1, x, y);
+		dx := Get(x - 1, y, x, y) - Get(x + 1, y, x, y);
+
+		// Calculate magnitude
+		Sqrt(dx * dx + dy * dy);
+		out := out / 2;
+		mag := out;
+
+		// Calculate angle
+		Arctan(dy, dx);
+		if out < 0 then
+			out := 360 + out;
+		end
+		out := out / 2;
+		angle := out;
+
+		op := op + 1;
+	end
+end
