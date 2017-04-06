@@ -1,0 +1,207 @@
+/*
+ * Copyright (c) 2017, Heriot-Watt University, Edinburgh
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/*
+ * Author: Ross Brunton <bruntonross@gmail.com>
+ * Date: 01.02.2017
+ * See Replace.md for documentation.
+ */
+
+package image.analysis.connected_components;
+
+import image.constants.constants.*;
+
+// Uses around 22KiB
+actor Replace() uint(size=16) Gin, uint(size=16) Equiv ==> uint(size=16) Gout :
+    uint(size=32) imageSize = IM_WIDTH_OUT * IM_HEIGHT_OUT;
+    uint(size=16) DATA_SIZE = 1024 * 10;
+    uint(size=32) BUCKET_COUNT = 1000;
+    uint(size=32) p := imageSize;
+    uint(size=16) data[DATA_SIZE];
+    uint(size=16) dp := 0;
+    uint(size=16) bucketHeads[BUCKET_COUNT]; // Pointing to the first element of the list
+    bool doTransition := false;
+    uint(size=16) out := 0;
+    uint(size=16) fromBucket := 0;
+    uint(size=16) toBucket := 0;
+    int(size=32) i := 0;
+    int(size=32) j := 0;
+    bool set := false;
+
+    reset: action ==>
+    guard p = imageSize
+    do
+        bucketHeads := [0: for uint(size=16) _ in 1 .. (BUCKET_COUNT)]; // Need 16 bit integers because bug in orcc
+        dp := 2;
+        p := 0;
+        doTransition := false;
+    end
+
+    transition: action ==>
+    guard doTransition
+    end
+
+    learn: action Equiv:[from, to] ==>
+    do
+        if from = 0 then
+            doTransition := true;
+        else
+            if dp >= DATA_SIZE - 4 then
+                println("Replace actor out of memory!");
+            end
+
+            // Check which buckets they are in
+            i := 1;
+            fromBucket := 0;
+            toBucket := 0;
+            while i < BUCKET_COUNT do
+                j := bucketHeads[i];
+                while j != 0 do
+                    if data[j] = from then
+                        fromBucket := i;
+                    end
+                    if data[j] = to then
+                        toBucket := i;
+                    end
+                    j := data[j + 1];
+                end
+                i := i + 1;
+            end
+
+            set := true;
+
+            // If none are in buckets, find an empty bucket
+            if fromBucket = 0 && toBucket = 0 then
+                i := 1;
+                set := false;
+                while i < BUCKET_COUNT and not set do
+                    if bucketHeads[i] = 0 then
+                        data[dp] := from;
+                        data[dp + 1] := dp + 2;
+                        data[dp + 2] := to;
+                        data[dp + 3] := 0;
+                        bucketHeads[i] := dp;
+                        dp := dp + 4;
+                        set := true;
+                    end
+                    i := i + 1;
+                end
+            end
+
+            // If one is in a bucket, but the other isn't, append the unused one to the other's bucket
+            if fromBucket = 0 && toBucket > 0 then
+                data[dp] := from;
+                data[dp + 1] := bucketHeads[toBucket];
+                bucketHeads[toBucket] := dp;
+                dp := dp + 2;
+            end
+            if fromBucket > 0 && toBucket = 0 then
+                data[dp] := to;
+                data[dp + 1] := bucketHeads[fromBucket];
+                bucketHeads[fromBucket] := dp;
+                dp := dp + 2;
+            end
+
+            // If they are in the same bucket
+            // ... Do nothing
+
+            // If they are in different buckets, pour one into the other
+            if fromBucket > 0 && toBucket > 0 && fromBucket != toBucket then
+                // Pour one into the other
+                j := bucketHeads[toBucket];
+                while j != 0 do
+                    i := j;
+                    j := data[j + 1];
+                end
+                data[i + 1] := bucketHeads[fromBucket];
+                bucketHeads[fromBucket] := 0;
+            end
+
+            if not set then
+                println("Ran out of buckets!");
+            end
+        end
+    end
+
+    replace: action Gin:[x] ==> Gout:[out]
+    do
+        out := 0;
+        if x = 0 then
+            out := x;
+        else
+            // Find the bucket it is in
+            i := 1;
+            while i < BUCKET_COUNT do
+                j := bucketHeads[i];
+                while j != 0 do
+                    if data[j] = x then
+                        out := i;
+                        i := BUCKET_COUNT;
+                    end
+                    j := data[j + 1];
+                end
+                i := i + 1;
+            end
+
+            // Not in a bucket, put it in one
+            if out = 0 then
+                i := 1;
+                while i < BUCKET_COUNT do
+                    if bucketHeads[i] = 0 then
+                        bucketHeads[i] := dp;
+                        data[dp] := x;
+                        data[dp + 1] := 0;
+                        dp := dp + 2;
+                        out := i;
+                        i := BUCKET_COUNT;
+                    end
+                    i := i + 1;
+                end
+            end
+
+            if out = 0 then
+                println("Failed to put value in bucket.");
+            end
+        end
+
+        p := p + 1;
+    end
+
+    schedule fsm replace:
+        replace (replace) --> replace;
+        replace (reset) --> learn;
+        learn (learn) --> learn;
+        learn (transition) --> replace;
+    end
+
+    priority
+        reset > replace;
+        transition > learn;
+    end
+end
