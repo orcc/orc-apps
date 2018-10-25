@@ -59,17 +59,16 @@ actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(siz
 	//int BURSTSIZE       = COMPONENTS * BLOCKSIZE / PIXELS_PER_WORD;
 	int BURSTSIZE = 96;
 
-	List(type: uint(size=32), size=MEMSIZE) buf;
+	@external
+	List(type: int(size=32), size=MEMSIZE) buf;
 
-	 int address := 0;
-  int burstSize := 0;
+	int address := 0;
   bool preferRead := true;
   
   select.read.prefer: action RA:[a] ==>
     guard preferRead
     do
       address := a;
-      burstSize := BURSTSIZE;
       preferRead := false;
   end
 
@@ -77,7 +76,6 @@ actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(siz
     guard not preferRead
     do
       address := a;
-      burstSize := BURSTSIZE;
       preferRead := true;
   end
 
@@ -85,7 +83,6 @@ actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(siz
     guard not preferRead
     do
       address := a;
-      burstSize := BURSTSIZE;
       preferRead := false;
   end
 
@@ -93,48 +90,33 @@ actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(siz
     guard preferRead
     do
       address := a;
-      burstSize := BURSTSIZE;
       preferRead := true;
   end
 
-  data.read: action ==> RD:[ dat ]
-    guard
-      burstSize > 0
-    var
-      int dat
-    do
-      dat := buf[address];
-      address := address + 1;
-      burstSize := burstSize - 1;
-  end
-
-  data.write: action WD:[ dat ] ==>
-    guard
-      burstSize > 0
-    var
-      int wa := address
-    do
-      burstSize := burstSize - 1;
-      address := address + 1;
-      buf[wa] := dat;
+  data.read: action ==> RD: [ [buf[ra + i]: for int i in 0 .. (BURSTSIZE - 1) ]] repeat BURSTSIZE
+  var
+  	int ra = address
   end
   
-  data.done: action ==>
-    guard burstSize = 0
-  end
 
-
+	data.write: action WD:[ dat ] repeat BURSTSIZE ==>
+	var
+	  int wa := address
+	do
+		foreach int i in 0 .. BURSTSIZE - 1 do
+			buf[wa + i] := dat[i];
+		end
+	end
+  
       
   schedule fsm getAddr :
 
     getAddr ( select.read ) --> doDataRead;
     getAddr ( select.write ) --> doDataWrite;
 
-    doDataRead ( data.read ) --> doDataRead;
-    doDataRead ( data.done ) --> getAddr;
+    doDataRead ( data.read ) --> getAddr;
     
-    doDataWrite ( data.write ) --> doDataWrite;
-    doDataWrite ( data.done ) --> getAddr;
+    doDataWrite ( data.write ) --> getAddr;
     
   end
 
@@ -145,7 +127,5 @@ actor DDRModel() int(size=32) RA, int(size=32) WA, uint(size=32) WD ==> uint(siz
     select.write.prefer > select.read.low;
     select.write.prefer > select.write.low;
 
-    data.read > data.done;
-    data.write > data.done;
   end
 end
