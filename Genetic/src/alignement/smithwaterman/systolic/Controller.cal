@@ -1,0 +1,181 @@
+/*
+ * Copyright (c) 2017, SIB Swiss Institute of Bioinformatics 
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Simone Casale-Brunet <simone.casalebrunet@sib.swiss>
+
+package alignement.smithwaterman.systolic;
+
+import common.Alphabet.*;
+import alignement.smithwaterman.systolic.Configuration.*;
+
+actor Controller()  uint(size=3) REF, 
+					uint(size=3) READ 
+						==>  
+						uint(size=8) SIZE_READ,
+						uint(size=8) SIZE_REF_CUTS,						 
+						uint(size=3) PE_A_REF,
+						uint(size=3) PE_B_REF, 
+						uint(size=3) PE_C_REF,  
+						uint(size=3) PE_D_REF,
+						uint(size=3) PE_ALL_READ:
+						
+	bool hasA := false;
+	bool hasB := false;
+
+	uint(size=3) stringA[MAX_STRING_SIZE];
+	uint(size=3) stringB[MAX_STRING_SIZE];
+	
+	uint(size=8) sizeRef := 0;
+	uint(size=8) sizeRead := 0;
+	
+	uint(size=8) macroblocks; 
+	uint(size=8) m;
+	uint(size=8) mPE;
+	
+	uint(size=8) bi; 
+	
+	uint(size=3) l_ABCDb; uint(size=3) l_Aa; uint(size=3) l_Ba; uint(size=3) l_Ca; uint(size=3) l_Da;
+	
+	getAB: action REF:[a], READ:[b] ==>
+		guard (not hasA) and (not hasB)
+	do
+		if a = EOS then
+			hasA := true;
+		else
+			stringA[sizeRef] := a;
+			sizeRef := sizeRef + 1;
+		end
+		
+		if b = EOS then
+			hasB := true;	
+		end
+		stringB[sizeRead] := b;
+		sizeRead := sizeRead + 1;
+	end
+
+	getA: action REF:[a] ==>
+		guard not hasA
+	do
+		
+		if a = EOS then
+			hasA := true;
+		else
+			stringA[sizeRef] := a;
+			sizeRef := sizeRef + 1;	
+		end
+	end
+	
+	getB: action READ:[b] ==>
+		guard not hasB
+	do
+		stringB[sizeRead] := b;
+		sizeRead := sizeRead + 1;
+		
+		if b = EOS then
+			hasB := true;	
+		end
+	end
+	
+	setBlocks: action ==> SIZE_READ:[sizeRead], SIZE_REF_CUTS:[macroblocks]
+	guard
+		hasA and hasB
+	var
+		uint(size=8) tmp
+	do
+		// now stringA should in size of n*PE
+		tmp:= sizeRef;
+		macroblocks := (sizeRef-1)/PE + 1;
+		sizeRef := macroblocks * PE;
+		
+		if(sizeRef > tmp) then
+			foreach int j in tmp - 1 .. sizeRef - 1
+			do
+				stringA[j] := N;
+			end
+		end
+		
+		m := 0;
+		bi := 0;
+		mPE := 0; 
+		
+		l_Aa := stringA[PE_A];
+ 		l_Ba := stringA[PE_B];
+ 		l_Ca := stringA[PE_C];
+ 		l_Da := stringA[PE_D];
+	end
+	
+	sendControl : action ==> PE_ALL_READ:[l_ABCDb], PE_A_REF:[l_Aa], PE_B_REF:[l_Ba], PE_C_REF:[l_Ca], PE_D_REF:[l_Da]
+	guard
+		bi < sizeRead and m < macroblocks
+	do
+		 // Send down all READS char for the current macroblock
+		 l_ABCDb := stringB[bi];
+ 		 bi := bi + 1;
+	end
+	
+	nextMacroblock: action ==>
+	guard
+		bi = sizeRead and m < macroblocks
+	do
+		bi := 0;
+		m := m+1;
+		mPE := mPE + PE;
+		
+		l_Aa := stringA[mPE + PE_A];
+ 		l_Ba := stringA[mPE + PE_B];
+ 		l_Ca := stringA[mPE + PE_C];
+ 		l_Da := stringA[mPE + PE_D];
+	end
+	
+	
+	reset: action ==> 
+	guard
+		m = macroblocks 
+	do
+		hasA := false;
+		hasB := false;
+		sizeRef := 0;
+		sizeRead := 0;
+	end
+	
+	schedule fsm s0 :
+		s0(getAB) --> s0;
+		s0(getA) --> s0;
+		s0(getB) --> s0;
+		s0(setBlocks) --> s1;
+		s1(sendControl) --> s1;
+		s1(nextMacroblock) --> s1;
+		s1(reset) --> s0;
+	end
+	
+	priority
+		getAB > getA;
+		getAB > getB;
+	end
+end

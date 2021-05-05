@@ -1,0 +1,150 @@
+/*
+ * Copyright (c) 2017, SIB Swiss Institute of Bioinformatics 
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of the IRISA nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ * WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+  
+// Author: Simone Casale-Brunet <simone.casalebrunet@sib.swiss>
+
+package matching.bruteforce.parallel;
+
+import common.Alphabet.*;
+import matching.bruteforce.Configuration.*;
+
+actor NaiveSequencesShifter() 	uint(size=3) REF, 
+								uint(size=3) READ ==> 
+									int(size=8) MATCH_IDX	:
+							
+	bool hasRef  := false;
+	bool hasRead := false;
+	
+	int(size=8)  shift  :=  0;
+	int(size=32) sum    := 0;
+
+	uint(size=3) stringA[MAX_STRING_SIZE_REF];
+	uint(size=3) stringB[MAX_STRING_SIZE_READ];
+	
+	uint(size=8) sizeRef  := 0;
+	uint(size=8) sizeRead := 0;
+	
+	get_ref_and_read: action REF:[a], READ:[b] ==>
+		guard (not hasRef) and (not hasRead)
+	do
+		hasRef  := a = EOS;
+		hasRead := b = EOS;
+		
+		stringA[sizeRef] := a;
+		stringB[sizeRead] := b;
+				
+		sizeRef  := sizeRef + 1;
+		sizeRead := sizeRead + 1;
+	end
+
+	get_only_ref: action REF:[a] ==>
+		guard not hasRef and hasRead and sum = (sizeRead - 1)
+	do
+		hasRef  := a = EOS;
+		
+		stringA[sizeRef] := a;
+		sizeRef := sizeRef + 1;
+	end
+	
+	get_ref_compute: action  REF:[a] ==>
+	guard 
+		not hasRef and hasRead 
+	var
+		int(size=8) shift_tmp = shift
+	do
+		sum := 0;
+		
+		foreach uint(size=32) i in 0 .. MAX_STRING_SIZE_READ - 1 do
+			sum := sum + if (i < (sizeRead-1) and stringA[i+shift_tmp] = stringB[i]) then 1 else 0 end;	
+		end
+					
+		hasRef  := a = EOS;
+		stringA[sizeRef] := a;
+		
+		sizeRef := sizeRef + 1;
+		shift := shift + 1;
+	
+	end
+	
+	compute_last_shift: action ==>
+	guard
+		hasRef and hasRead and sum != (sizeRead - 1)
+	var
+		int(size=8) shift_tmp = shift
+	do
+		sum := 0;
+		
+		foreach uint(size=32) i in 0 .. MAX_STRING_SIZE_READ - 1 do
+			sum := sum + if (i < (sizeRead - 1) and stringA[i+shift_tmp] = stringB[i]) then 1 else 0 end;	
+		end
+		
+		shift := shift + 1;
+	end
+	
+	skip_last_shift: action ==>
+	guard
+		hasRef and hasRead and sum = (sizeRead - 1)
+	do
+	end
+	
+	send_match_idx: action ==> MATCH_IDX:[match_idx]
+	guard
+		hasRef and hasRead 
+	var
+		int(size=8) match_idx = if sum = (sizeRead - 1) then shift - 1 else -1 end
+	do
+		println("match_idx: " + match_idx);
+	end
+	
+	
+	reset_variables: action ==>
+	do
+		hasRead      := false;
+		hasRef       := false;
+		sizeRef      := 0;
+		sizeRead     := 0;
+		sum          := 0;
+		shift        := 0;
+	end
+	
+	schedule fsm r0:
+		r0(reset_variables)    --> s0;
+		s0(get_ref_and_read)   --> s0;
+		s0(get_only_ref)       --> s0;
+		s0(get_ref_compute)    --> s0;
+		s0(compute_last_shift) --> ss;
+		s0(skip_last_shift)    --> ss;
+		ss(send_match_idx)     --> r0;
+	end
+	
+	priority
+		get_only_ref > get_ref_compute;
+	end
+	
+end
